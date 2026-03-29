@@ -60,6 +60,7 @@ add_executable(phig-tests
     tests/test_database.cpp
     tests/test_organize.cpp
     tests/test_faces.cpp
+    tests/test_porcelain.cpp
 )
 
 target_link_libraries(phig-tests PRIVATE
