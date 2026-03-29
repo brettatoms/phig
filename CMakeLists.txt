@@ -31,6 +31,8 @@ target_link_libraries(phig PRIVATE
     pthread
 )
 
+install(TARGETS phig DESTINATION bin)
+
 # ---- Library target for tests ----
 add_library(phig-lib STATIC
     src/scanner.cpp

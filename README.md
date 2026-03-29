@@ -10,30 +10,48 @@ An image management power tool. Scan directories of images, build a metadata dat
 - **Purge** — remove entries from the database by filename glob or directory
 - **Match/filter** — repeatable `--match` and `--filter` globs across all commands, with filter taking precedence
 
-## Requirements
+## Building
 
-- [Nix](https://nixos.org/download/) with [devenv](https://devenv.sh/) installed
-- [direnv](https://direnv.net/) (optional, for automatic environment activation)
+### With devenv (development)
 
-## Getting Started
+Requires [Nix](https://nixos.org/download/) with [devenv](https://devenv.sh/) and optionally [direnv](https://direnv.net/).
 
 ```bash
-git clone <repo-url> phig
 cd phig
 direnv allow          # auto-activates the dev environment (one-time)
 
-cmake -B build        # configure
-cmake --build build   # compile
+cmake -B build
+cmake --build build
 ```
 
-The binary is at `./build/phig`.
+The binary is at `./build/phig`. It links against Nix store libraries and is intended for local development use.
 
-If you don't use direnv, activate the environment manually:
+### With system packages (distribution)
+
+Install dependencies with your system package manager:
 
 ```bash
-devenv shell
-cmake -B build && cmake --build build
+# Arch Linux
+sudo pacman -S opencv libexif sqlite cmake base-devel
+
+# Debian / Ubuntu
+sudo apt install libopencv-dev libopencv-contrib-dev libexif-dev libsqlite3-dev cmake g++
+
+# macOS (Homebrew)
+brew install opencv libexif sqlite cmake
 ```
+
+Then build and install:
+
+```bash
+cmake -B build
+cmake --build build
+sudo cmake --install build                     # installs to /usr/local/bin/phig
+# or
+cmake --install build --prefix ~/.local        # installs to ~/.local/bin/phig
+```
+
+Note: OpenCV's `contrib` modules (specifically `img_hash`) are required. On some distributions this is a separate package (e.g., `libopencv-contrib-dev` on Debian/Ubuntu).
 
 ## Usage
 
