@@ -20,6 +20,7 @@ public:
     void init_schema();
     void insert(const ImageInfo& info);
     void insert_batch(const std::vector<ImageInfo>& infos);
+    void insert_copy(const std::string& source_path, const std::string& dest_path);
     void begin_transaction();
     void commit_transaction();
 

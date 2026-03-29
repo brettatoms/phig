@@ -1,6 +1,6 @@
 ---
 name: Track Copied Files
-status: planned
+status: completed
 created: 2026-03-28
 description: >
   Add copied files to the database during organize --action copy so the DB

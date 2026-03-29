@@ -905,7 +905,8 @@ int cmd_organize(const OrganizeOptions& opts) {
                 db.update_path(a.source, a.dest.string());
             } else {
                 fs::copy_file(a.source, a.dest, fs::copy_options::overwrite_existing);
-                // Don't update DB — source still exists at original path
+                // Track the copy in the DB
+                db.insert_copy(a.source, a.dest.string());
             }
             done++;
 

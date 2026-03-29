@@ -148,6 +148,33 @@ void Database::insert_batch(const std::vector<ImageInfo>& infos) {
     exec("COMMIT");
 }
 
+void Database::insert_copy(const std::string& source_path, const std::string& dest_path) {
+    const char* sql = R"(
+        INSERT OR REPLACE INTO images
+            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, exif)
+        SELECT ?, ?, extension, file_size, created_at, modified_at, sha256, phash, width, height, exif
+        FROM images WHERE path = ?
+    )";
+
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare insert_copy: " + std::string(sqlite3_errmsg(db_)));
+    }
+
+    fs::path dp(dest_path);
+    sqlite3_bind_text(stmt, 1, dest_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, dp.filename().c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, source_path.c_str(), -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error("Failed to insert copy: " + std::string(sqlite3_errmsg(db_)));
+    }
+}
+
 void Database::begin_transaction() {
     exec("BEGIN TRANSACTION");
 }
