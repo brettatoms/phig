@@ -1,0 +1,15 @@
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+.envrc
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+
+# Build
+build/
+compile_commands.json
