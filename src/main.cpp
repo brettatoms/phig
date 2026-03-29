@@ -58,7 +58,8 @@ void print_usage() {
     std::cerr << "Usage:\n"
               << "  phig scan <directory> [flags]\n"
               << "  phig duplicates [flags]\n"
-              << "  phig organize <destination> [flags]\n"
+              << "  phig cp <destination> [flags]\n"
+              << "  phig mv <destination> [flags]\n"
               << "  phig purge [flags]\n"
               << "\nScan flags:\n"
               << "  --recursive              Scan subdirectories\n"
@@ -74,13 +75,12 @@ void print_usage() {
               << "  --filter <glob>          Exclude files matching glob (repeatable, wins over --match)\n"
               << "  --path <directory>       Only check files under this directory\n"
               << "  --db <path>              Database path\n"
-              << "\nOrganize flags:\n"
+              << "\nCopy/Move flags (cp, mv):\n"
               << "  --format <string>        Output path format (default: %Y/%m/%original)\n"
               << "                           Tokens: %Y %m %d %camera %make %original\n"
-              << "  --match <glob>           Only organize files matching glob (repeatable)\n"
+              << "  --match <glob>           Only files matching glob (repeatable)\n"
               << "  --filter <glob>          Exclude files matching glob (repeatable, wins over --match)\n"
-              << "  --path <directory>       Only organize files from this directory\n"
-              << "  --action copy|move       Copy or move files (default: copy)\n"
+              << "  --path <directory>       Only files from this directory\n"
               << "  --dry-run                Show what would happen without doing it\n"
               << "  --on-conflict skip|overwrite|rename  (default: skip)\n"
               << "  --db <path>              Database path\n"
@@ -532,7 +532,7 @@ struct OrganizeOptions {
     std::vector<std::string> matches;
     std::vector<std::string> filters;
     std::string path_prefix;        // filter by source directory
-    std::string action = "copy";    // copy or move
+    bool is_move = false;           // true for mv, false for cp
     bool dry_run = false;
     std::string on_conflict = "skip"; // skip, overwrite, rename
     std::string db_path;
@@ -713,7 +713,7 @@ int cmd_organize(const OrganizeOptions& opts) {
         else to_process++;
     }
 
-    std::string verb = (opts.action == "move") ? "Move" : "Copy";
+    std::string verb = opts.is_move ? "Move" : "Copy";
     std::cout << "\n" << verb << ": " << to_process << " files"
               << ", skip: " << to_skip << " (conflict/exists)\n";
 
@@ -738,7 +738,7 @@ int cmd_organize(const OrganizeOptions& opts) {
         try {
             fs::create_directories(a.dest.parent_path());
 
-            if (opts.action == "move") {
+            if (opts.is_move) {
                 fs::rename(a.source, a.dest);
                 // Update DB — file has moved
                 db.update_path(a.source, a.dest.string());
@@ -940,15 +940,16 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: " << e.what() << "\n";
             return 1;
         }
-    } else if (command == "organize") {
+    } else if (command == "cp" || command == "mv") {
         if (argc < 3) {
-            std::cerr << "Error: organize requires a destination directory\n";
+            std::cerr << "Error: " << command << " requires a destination directory\n";
             print_usage();
             return 1;
         }
 
         OrganizeOptions opts;
         opts.destination = argv[2];
+        opts.is_move = (command == "mv");
         opts.db_path = default_db_path();
 
         for (int i = 3; i < argc; i++) {
@@ -962,12 +963,6 @@ int main(int argc, char* argv[]) {
             } else if (arg == "--path" && i + 1 < argc) {
                 opts.path_prefix = fs::canonical(argv[++i]).string();
                 if (opts.path_prefix.back() != '/') opts.path_prefix += '/';
-            } else if (arg == "--action" && i + 1 < argc) {
-                opts.action = argv[++i];
-                if (opts.action != "copy" && opts.action != "move") {
-                    std::cerr << "Error: --action must be 'copy' or 'move'\n";
-                    return 1;
-                }
             } else if (arg == "--dry-run") {
                 opts.dry_run = true;
             } else if (arg == "--on-conflict" && i + 1 < argc) {

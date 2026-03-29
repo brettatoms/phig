@@ -4,7 +4,7 @@
 |---|------|--------|------|-------------|
 | 001 | Scan & Database | completed | [001-scan-database.md](001-scan-database.md) | Directory scanning, image decoding, phash + SHA256 hashing, EXIF extraction, SQLite storage with WAL mode, mtime-based skip, stale entry cleanup with unmount safety guard. |
 | 002 | Duplicate Detection | completed | [002-duplicate-detection.md](002-duplicate-detection.md) | Find exact (SHA256) and near (phash hamming distance) duplicates. Text/CSV/JSON output. Path prefix filtering. Match/filter globs with full-DB comparison. |
-| 003 | Organize | completed | [003-organize.md](003-organize.md) | Copy/move files into structured folder layout using format strings (%Y/%m/%d/%camera/%original). Dedup against full DB. Glob match/filter. Conflict resolution (skip/overwrite/rename). Dry-run mode. DB path updates on move. |
+| 003 | Copy & Move | completed | [003-organize.md](003-organize.md) | `phig cp` and `phig mv` — copy/move files into structured folder layout using format strings (%Y/%m/%d/%camera/%original). Glob match/filter. Conflict resolution (skip/overwrite/rename). Dry-run mode. DB path updates on move. |
 | 004 | Purge | completed | [004-purge.md](004-purge.md) | Remove database entries by glob match/filter and path prefix. Dry-run mode. |
 | 005 | Track Copied Files | planned | [005-track-copies.md](005-track-copies.md) | Add copied files to the database during organize --action copy so the DB tracks all known image locations. |
 | 006 | API Layer | planned | [006-api-layer.md](006-api-layer.md) | HTTP/JSON API exposing scan, duplicates, organize, and query operations. Foundation for TUI/GUI clients. |

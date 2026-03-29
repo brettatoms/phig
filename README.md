@@ -6,7 +6,7 @@ An image management power tool. Scan directories of images, build a metadata dat
 
 - **Scan** — recursively scan directories, computing SHA256 + perceptual hashes, extracting EXIF data, and storing everything in SQLite
 - **Duplicates** — find exact copies (same SHA256) and visually similar images (perceptual hash)
-- **Organize** — copy or move images into a structured layout (e.g., `YYYY/MM/`) with deduplication, configurable format strings, and dry-run mode
+- **Copy/Move** — copy or move images into a structured layout (e.g., `YYYY/MM/`) with configurable format strings, conflict resolution, and dry-run mode
 - **Purge** — remove entries from the database by filename glob or directory
 - **Match/filter** — repeatable `--match` and `--filter` globs across all commands, with filter taking precedence
 
@@ -49,10 +49,12 @@ phig duplicates
 phig duplicates --type exact
 phig duplicates --match "vacation*" --format json
 
-# Organize into YYYY/MM structure
-phig organize ~/Photos/Organized --dry-run
-phig organize ~/Photos/Organized --format "%Y/%m/%d/%original"
-phig organize ~/Photos/Organized --match "*.jpg" --filter "*_copy*" --action move
+# Copy into YYYY/MM structure
+phig cp ~/Photos/Organized --dry-run
+phig cp ~/Photos/Organized --format "%Y/%m/%d/%original"
+
+# Move with filters
+phig mv ~/Photos/Organized --match "*.jpg" --filter "*_copy*"
 
 # Remove entries from the database
 phig purge --match "*.tmp" --dry-run

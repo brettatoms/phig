@@ -1,13 +1,13 @@
 ---
-name: Organize
+name: Copy & Move
 status: completed
 created: 2026-03-28
 description: >
-  Copy/move files into structured folder layout using format strings.
-  Glob match/filter. Conflict resolution. Dry-run mode.
+  Copy or move files into structured folder layout using format strings.
+  Two commands: cp and mv. Glob match/filter. Conflict resolution. Dry-run mode.
 ---
 
-# Organize
+# Copy & Move
 
 ## Goal
 
@@ -16,12 +16,14 @@ Copy or move images from their current locations into a structured folder layout
 ## CLI
 
 ```
-phig organize <destination> [flags]
+phig cp <destination> [flags]
+phig mv <destination> [flags]
+
+Flags:
   --format <string>            Output path format (default: %Y/%m/%original)
-  --match <glob>               Only organize files matching glob (repeatable)
+  --match <glob>               Only files matching glob (repeatable)
   --filter <glob>              Exclude files matching glob (repeatable, wins over --match)
-  --path <directory>           Only organize files from this source directory
-  --action copy|move           Copy or move files (default: copy)
+  --path <directory>           Only files from this source directory
   --dry-run                    Show what would happen without doing it
   --on-conflict skip|overwrite|rename  (default: skip)
   --db <path>                  Database path

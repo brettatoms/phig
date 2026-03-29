@@ -37,8 +37,11 @@ phig scan <directory> [--recursive] [--force] [--on-error warn|fail] [--db <path
 # Find duplicate images
 phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--filter <glob>] [--path <dir>] [--db <path>]
 
-# Organize files into YYYY/MM structure
-phig organize <destination> [--format <string>] [--match <glob>] [--filter <glob>] [--path <dir>] [--action copy|move] [--dry-run] [--duplicates skip|keep] [--on-conflict skip|overwrite|rename] [--db <path>]
+# Copy files into YYYY/MM structure
+phig cp <destination> [--format <string>] [--match <glob>] [--filter <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+
+# Move files into YYYY/MM structure
+phig mv <destination> [--format <string>] [--match <glob>] [--filter <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
 
 # Remove entries from the database
 phig purge [--match <glob>] [--filter <glob>] [--path <dir>] [--dry-run] [--db <path>]
@@ -71,7 +74,7 @@ tests/
 - **EXIF stored as JSON blob** — no schema migrations needed, queryable via `json_extract()`.
 - **Re-scan skips unchanged files** — matches on path + mtime. Use `--force` to reprocess.
 - **Safety guard on scan** — warns if all DB entries for a directory are missing (possible unmounted drive). Requires `--force` to proceed with deletion.
-- **Organize with copy is default** — non-destructive. DB paths only updated on move, not copy.
+- **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.
 - **Match/filter system** — `--match` includes (repeatable), `--filter` excludes (repeatable), filter wins on overlap.
 - **Duplicates compare against full DB** — `--match` filters which groups to show, not which files to compare.
 
