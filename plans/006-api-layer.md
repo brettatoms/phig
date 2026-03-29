@@ -1,6 +1,6 @@
 ---
 name: API Layer
-status: planned
+status: deferred
 created: 2026-03-28
 description: >
   HTTP/JSON API exposing scan, duplicates, organize, and query operations.
