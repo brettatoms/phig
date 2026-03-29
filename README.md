@@ -93,4 +93,4 @@ cmake --build build && ./build/phig-tests
 
 ## License
 
-TBD
+[MIT](LICENSE)
