@@ -179,6 +179,35 @@ TEST(FilterTest, MatchAndFilterTogether) {
     EXPECT_FALSE(passes_filters("photo_small.png", matches, filters)); // filtered
 }
 
+TEST(FilterTest, MatchesAgainstFullPath) {
+    EXPECT_TRUE(passes_filters("/home/user/Photos/vacation.jpg", {"*/Photos/*"}, {}));
+    EXPECT_FALSE(passes_filters("/home/user/Backup/vacation.jpg", {"*/Photos/*"}, {}));
+}
+
+TEST(FilterTest, FilterAgainstFullPath) {
+    EXPECT_FALSE(passes_filters("/home/user/Photos/thumbs/photo.jpg", {}, {"*/thumbs/*"}));
+    EXPECT_TRUE(passes_filters("/home/user/Photos/photo.jpg", {}, {"*/thumbs/*"}));
+}
+
+TEST(FilterTest, MixedPathAndFilename) {
+    std::vector<std::string> matches = {"*/Webcam/*", "*.png"};
+    EXPECT_TRUE(passes_filters("/home/user/Pictures/Webcam/photo.jpg", matches, {}));
+    EXPECT_TRUE(passes_filters("/home/user/Pictures/screenshot.png", matches, {}));
+    EXPECT_FALSE(passes_filters("/home/user/Pictures/photo.jpg", matches, {}));
+}
+
+TEST(FilterTest, ExpandTilde) {
+    std::string expanded = expand_tilde("~/Photos/*");
+    EXPECT_FALSE(expanded.empty());
+    EXPECT_NE(expanded[0], '~');
+    EXPECT_TRUE(expanded.find("/Photos/*") != std::string::npos);
+
+    // No tilde — unchanged
+    EXPECT_EQ(expand_tilde("/absolute/path"), "/absolute/path");
+    EXPECT_EQ(expand_tilde("relative/path"), "relative/path");
+    EXPECT_EQ(expand_tilde("*.jpg"), "*.jpg");
+}
+
 // ---- Date parsing tests ----
 
 TEST(DateParseTest, ExifFormat) {

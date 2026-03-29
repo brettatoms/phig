@@ -1,10 +1,12 @@
 #pragma once
 
 #include "types.h"
+#include "faces.h"
 #include <sqlite3.h>
 #include <string>
 #include <optional>
 #include <vector>
+#include <array>
 #include <functional>
 
 class Database {
@@ -18,6 +20,8 @@ public:
     void init_schema();
     void insert(const ImageInfo& info);
     void insert_batch(const std::vector<ImageInfo>& infos);
+    void begin_transaction();
+    void commit_transaction();
 
     // Returns modified_at for a path if it exists in the DB, nullopt otherwise
     std::optional<std::string> get_modified_at(const std::string& path);
@@ -44,7 +48,6 @@ public:
 
     // Search with multiple criteria
     struct SearchCriteria {
-        std::string path_prefix;
         std::string extension;
         std::string after;           // YYYY-MM-DD
         std::string before;          // YYYY-MM-DD
@@ -55,6 +58,42 @@ public:
         int limit = -1;
     };
     std::vector<ImageInfo> search(const SearchCriteria& criteria);
+
+    // Face operations
+    void insert_face(int64_t image_id, const FaceInfo& face);
+    bool has_faces(const std::string& path);
+    void delete_faces_for_image(int64_t image_id);
+    int64_t get_image_id(const std::string& path);
+
+    struct FaceSearchResult {
+        std::string path;
+        float distance;
+        int face_x, face_y, face_w, face_h;
+    };
+    std::vector<FaceSearchResult> search_faces(const std::array<float, 128>& embedding,
+                                                float threshold, int limit);
+
+    // People / face naming
+    int64_t get_or_create_person(const std::string& name);
+    void set_face_person(int64_t face_id, int64_t person_id);
+    int64_t find_closest_face(const std::array<float, 128>& embedding, float threshold);
+
+    struct PersonInfo {
+        int64_t id;
+        std::string name;
+        int64_t face_count;
+    };
+    std::vector<PersonInfo> list_people();
+
+    // Search by person name
+    std::vector<std::string> get_images_for_person(const std::string& name);
+
+    // Auto-label a face if it matches any known person (returns person name or empty)
+    std::string auto_label_face(int64_t face_id, const std::array<float, 128>& embedding,
+                                 float threshold = 0.6);
+
+    // Raw handle for advanced queries
+    sqlite3* db_ptr() { return db_; }
 
 private:
     sqlite3* db_ = nullptr;

@@ -5,6 +5,8 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/img_hash.hpp>
 #include <iostream>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include <fstream>
 #include <iomanip>
@@ -101,7 +103,7 @@ std::string compute_sha256(const std::string& path) {
     return sha256_bytes(buffer.data(), buffer.size());
 }
 
-PhashResult compute_phash(const std::string& path) {
+cv::Mat decode_image(const std::string& path) {
     // Suppress OpenCV's internal warnings (e.g., "Invalid SOS parameters")
     // and re-emit them with the filename for context
     std::string cv_warning;
@@ -113,28 +115,54 @@ PhashResult compute_phash(const std::string& path) {
             return 0; // don't throw
         }, &cv_warning);
 
+    // Suppress libjpeg's direct stderr output (e.g., "Premature end of JPEG file")
+    // by temporarily redirecting stderr to /dev/null
+    int saved_stderr = dup(STDERR_FILENO);
+    int devnull = open("/dev/null", O_WRONLY);
+    if (devnull >= 0) {
+        dup2(devnull, STDERR_FILENO);
+        close(devnull);
+    }
+
     cv::Mat img = cv::imread(path, cv::IMREAD_COLOR);
 
-    // Restore default handler
+    // Restore stderr
+    if (saved_stderr >= 0) {
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
+    }
+
+    // Restore OpenCV error handler
     cv::redirectError(nullptr);
 
     if (!cv_warning.empty()) {
-        std::cerr << "\nWarning: " << path << ": " << cv_warning << std::endl;
+        std::cerr << "\n[warning] " << path << " -- " << cv_warning << std::endl;
     }
 
+    return img;
+}
+
+PhashResult compute_phash(const cv::Mat& img) {
     if (img.empty()) {
-        throw std::runtime_error("Cannot decode image: " + path);
+        throw std::runtime_error("Cannot compute phash: empty image");
     }
 
     auto hasher = cv::img_hash::PHash::create();
     cv::Mat hash_mat;
     hasher->compute(img, hash_mat);
 
-    // PHash produces an 8-byte hash
     uint64_t hash_val = 0;
     for (int i = 0; i < 8; i++) {
         hash_val |= static_cast<uint64_t>(hash_mat.at<uint8_t>(0, i)) << (i * 8);
     }
 
     return PhashResult{hash_val, img.cols, img.rows};
+}
+
+PhashResult compute_phash(const std::string& path) {
+    cv::Mat img = decode_image(path);
+    if (img.empty()) {
+        throw std::runtime_error("Cannot decode image: " + path);
+    }
+    return compute_phash(img);
 }

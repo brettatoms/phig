@@ -10,6 +10,7 @@
     pkgs.sqlite
     pkgs.pkg-config
     pkgs.gtest
+    pkgs.curl
   ];
 
   env.CMAKE_PREFIX_PATH = lib.makeSearchPath "" [

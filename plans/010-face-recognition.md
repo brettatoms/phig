@@ -1,6 +1,6 @@
 ---
 name: Face Recognition
-status: planned
+status: completed
 created: 2026-03-28
 description: >
   Detect and recognize faces in images using dlib. Store face embeddings in
@@ -16,15 +16,15 @@ Detect faces in scanned images, compute 128D face embeddings, and store them in 
 
 ## Libraries
 
-- **dlib** — face detection (HOG or CNN) + 128D face embedding (ResNet). Dynamic linking via nixpkgs.
+- **OpenCV DNN** — face detection via YuNet (`FaceDetectorYN`) + 128D face embedding via SFace (`FaceRecognizerSF`). No additional dependency beyond OpenCV which we already use. Originally implemented with dlib but migrated to OpenCV DNN for faster detection (2x), faster compilation (12x), smaller models (228KB + 37MB vs 95MB + 22MB), and removal of dlib dependency and OpenMP deadlock issues.
 - **sqlite-vec** — zero-dependency SQLite extension for vector search. Vendored single .c/.h file.
 
-### dlib Models (pre-trained, freely available)
+### Models (downloaded via `phig models download`)
 
-- `shape_predictor_68_face_landmarks.dat` — face landmark detection
-- `dlib_face_recognition_resnet_model_v1.dat` — 128D embedding model
+- `face_detection_yunet_2023mar.onnx` — YuNet face detection (228KB)
+- `face_recognition_sface_2021dec.onnx` — SFace face recognition, 128D embeddings (37MB)
 
-Models would be downloaded on first use or bundled. Need to decide on a model storage location (e.g., `~/.local/share/phig/models/`).
+Stored in `~/.local/share/phig/models/`.
 
 ## Schema
 
@@ -117,22 +117,34 @@ sqlite-vec supports Euclidean distance (L2) natively.
 
 - **Model management:** Download on first use, bundle with binary, or expect user to provide? Where to store? (`~/.local/share/phig/models/`)
 - **`--faces` as default?** Should face detection be opt-in per scan, or always-on once models are present? Currently opt-in.
-- **Named people:** Future feature — `phig tag-face <image> <name>` to label a face cluster. The faces table could get a `person_id` column linking to a `people` table. Not in scope for this plan.
+- **Named people:** `phig face name` command to associate a face embedding with a named person. Auto-tag matching faces on future scans.
 - **Performance:** dlib CNN face detector is slow (~1-2s per image on CPU). HOG detector is faster (~50ms) but less accurate. Should we default to HOG and offer `--face-model hog|cnn`?
 - **Multiple faces in query image:** If the reference photo has multiple faces, how to select? `--face-index N` with a preview? Or detect the largest face by default?
 - **sqlite-vec integration:** Vendor the .c/.h file, or use CMake FetchContent?
 
 ## Checklist
 
-- [ ] Add dlib to devenv.nix
-- [ ] Vendor or fetch sqlite-vec
-- [ ] Face detection module (`src/faces.h/cpp`)
-- [ ] Face embedding computation via dlib
-- [ ] `faces` table schema + migration
-- [ ] `vec_faces` virtual table setup
-- [ ] `--faces` flag on scan command
-- [ ] Insert embeddings into both tables during scan
-- [ ] `phig search --face <image>` command
-- [ ] KNN query via sqlite-vec
-- [ ] Model download / management
-- [ ] Tests for face detection, embedding storage, vector search
+- [x] Add dlib to devenv.nix
+- [x] Vendor sqlite-vec (amalgamation build)
+- [x] Face detection module (`src/faces.h/cpp`)
+- [x] Face embedding computation via dlib
+- [x] `faces` table schema + migration
+- [x] `vec_faces` virtual table setup
+- [x] `--faces` flag on scan command (single pass, no re-decode)
+- [x] Insert embeddings into both tables during scan
+- [x] `phig search --face <image>` command
+- [x] `phig search --face -` (stdin support)
+- [x] `phig models download` command
+- [x] Release build mode (dlib requires -O2)
+- [x] CMake restructure (compile faces.cpp once, not twice)
+- [x] Fix `search --face` hang (OpenMP deadlock — fixed with omp_set_num_threads(1))
+- [x] Parallel face detection (per-thread FaceDetector instances, `--parallel N`)
+- [x] `phig face name` — associate faces with named people (single-face photo)
+- [x] `phig face identify` — label all matching faces in DB
+- [x] `phig face list` — list known people
+- [x] `people` table schema + `person_id` on faces
+- [x] `phig search --person <name>` — find images of a named person
+- [x] Graceful Ctrl-C with progress saved
+- [x] Faces-only rescan (skip hash/phash/EXIF for already-scanned files)
+- [x] Auto-tag known faces on scan (matches against known people during insert)
+- [x] Tests for face DB operations, embedding distance, auto-labeling (15 tests)

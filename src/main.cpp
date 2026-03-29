@@ -4,6 +4,8 @@
 #include "database.h"
 #include "types.h"
 #include "filters.h"
+#include "faces.h"
+#include "models.h"
 
 #include <algorithm>
 #include <chrono>
@@ -23,8 +25,13 @@
 #include <map>
 #include <bit>
 #include <functional>
+#include <csignal>
 
 namespace fs = std::filesystem;
+
+// Graceful shutdown on Ctrl-C
+static volatile std::sig_atomic_t g_interrupted = 0;
+static void sigint_handler(int) { g_interrupted = 1; }
 
 // ---- Helpers ----
 
@@ -62,33 +69,37 @@ void print_usage() {
               << "  phig mv <destination> [flags]\n"
               << "  phig purge [flags]\n"
               << "  phig search [flags]\n"
+              << "  phig face name <image> <name>     Name a face from a single-face photo\n"
+              << "  phig face identify <name>          Label all matching faces in DB\n"
+              << "  phig face rebuild [--match] [--filter] [--parallel N]  Re-detect all faces\n"
+              << "  phig face list                     List known people\n"
+              << "  phig models download\n"
               << "\nScan flags:\n"
               << "  --recursive              Scan subdirectories\n"
               << "  --on-error warn|fail     Behavior for unreadable files (default: warn)\n"
               << "  --force                  Re-hash all files, ignore mtime check\n"
+              << "  --faces                  Detect faces and compute embeddings\n"
+              << "  --parallel N             Number of images to process in parallel (default: auto)\n"
               << "  --db <path>              Database path\n"
               << "\nDuplicates flags:\n"
               << "  --type exact|near|all    Duplicate type to find (default: all)\n"
               << "  --threshold [0-64]       Hamming distance for near duplicates (default: 5)\n"
               << "  --format text|csv|json   Output format (default: text)\n"
               << "  --output <path>          Write to file instead of stdout\n"
-              << "  --match <glob>           Show groups containing matching files (repeatable)\n"
-              << "  --filter <glob>          Exclude files matching glob (repeatable, wins over --match)\n"
-              << "  --path <directory>       Only check files under this directory\n"
+              << "  --match <glob>           Show groups containing matching files (repeatable, matches path)\n"
+              << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
               << "  --db <path>              Database path\n"
               << "\nCopy/Move flags (cp, mv):\n"
               << "  --format <string>        Output path format (default: %Y/%m/%original)\n"
               << "                           Tokens: %Y %m %d %camera %make %original\n"
-              << "  --match <glob>           Only files matching glob (repeatable)\n"
-              << "  --filter <glob>          Exclude files matching glob (repeatable, wins over --match)\n"
-              << "  --path <directory>       Only files from this directory\n"
+              << "  --match <glob>           Only files matching glob (repeatable, matches path)\n"
+              << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
               << "  --dry-run                Show what would happen without doing it\n"
               << "  --on-conflict skip|overwrite|rename  (default: skip)\n"
               << "  --db <path>              Database path\n"
               << "\nPurge flags:\n"
-              << "  --match <glob>           Remove entries matching filename glob (repeatable)\n"
-              << "  --filter <glob>          Exclude files matching glob (repeatable, wins over --match)\n"
-              << "  --path <directory>       Remove entries under this directory\n"
+              << "  --match <glob>           Remove entries matching glob (repeatable, matches path)\n"
+              << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
               << "  --dry-run                Show what would be removed\n"
               << "  --db <path>              Database path\n"
               << "\nSearch flags:\n"
@@ -102,10 +113,13 @@ void print_usage() {
               << "  --similar <image-path>   Find visually similar images (by phash)\n"
               << "  --similar-hash <hex>     Find images similar to this phash\n"
               << "  --threshold [0-64]       Hamming distance for --similar (default: 5)\n"
-              << "  --path <directory>       Only files under this directory\n"
-              << "  --match <glob>           Include filter (repeatable)\n"
-              << "  --filter <glob>          Exclude filter (repeatable, wins over --match)\n"
+              << "  --face <image-path>      Find images containing this person\n"
+              << "  --face-threshold <float> Distance threshold for face match (default: 0.6)\n"
+              << "  --person <name>          Find images containing a named person\n"
+              << "  --match <glob>           Include filter (repeatable, matches path)\n"
+              << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
               << "  --limit N                Maximum number of results\n"
+              << "  --count                  Show count of matches only\n"
               << "  --porcelain              Tab-separated machine output\n"
               << "  --print0                 Null-separated paths\n"
               << "  --format text|csv|json   Output format (default: text)\n"
@@ -120,11 +134,20 @@ struct ScanOptions {
     bool recursive = false;
     bool fail_on_error = false;
     bool force = false;
+    bool faces = false;
+    int parallel = -1;  // -1 = auto
     std::string db_path;
 };
 
-ImageInfo process_file(const fs::path& filepath) {
+struct ProcessResult {
     ImageInfo info;
+    std::vector<FaceInfo> faces;  // empty if faces not requested
+};
+
+ProcessResult process_file(const fs::path& filepath, FaceDetector* face_detector) {
+    ProcessResult result;
+    auto& info = result.info;
+
     info.path = fs::canonical(filepath).string();
     info.filename = filepath.filename().string();
     info.extension = filepath.extension().string();
@@ -143,16 +166,27 @@ ImageInfo process_file(const fs::path& filepath) {
     // SHA256
     info.sha256 = compute_sha256(info.path);
 
-    // Phash + dimensions
-    auto phash_result = compute_phash(info.path);
+    // Decode image once
+    cv::Mat img = decode_image(info.path);
+    if (img.empty()) {
+        throw std::runtime_error("Cannot decode image: " + info.path);
+    }
+
+    // Phash from decoded image
+    auto phash_result = compute_phash(img);
     info.phash = phash_result.hash;
     info.width = phash_result.width;
     info.height = phash_result.height;
 
+    // Face detection from same decoded image (no re-decode)
+    if (face_detector) {
+        result.faces = face_detector->detect(img);
+    }
+
     // EXIF
     info.exif_json = extract_exif_json(info.path);
 
-    return info;
+    return result;
 }
 
 int cmd_scan(const ScanOptions& opts) {
@@ -160,6 +194,18 @@ int cmd_scan(const ScanOptions& opts) {
 
     Database db(opts.db_path);
     db.init_schema();
+
+    // Helper to show paths relative to the scan directory
+    std::string base_dir = fs::canonical(opts.directory).string();
+    if (base_dir.back() != '/') base_dir += '/';
+
+    auto rel_path = [&](const fs::path& p) -> std::string {
+        std::string full = p.string();
+        if (full.starts_with(base_dir)) {
+            return full.substr(base_dir.size());
+        }
+        return full;
+    };
 
     std::cout << "Scanning: " << opts.directory
               << (opts.recursive ? " (recursive)" : "") << "\n";
@@ -169,28 +215,71 @@ int cmd_scan(const ScanOptions& opts) {
     auto files = scan_directory(opts.directory, opts.recursive);
     std::cout << "Found " << files.size() << " files\n";
 
+    // Determine thread count
+    int num_threads;
+    if (opts.parallel > 0) {
+        num_threads = opts.parallel;
+    } else if (opts.faces) {
+        // With faces: conservative default (each thread loads ~150MB of models)
+        num_threads = std::min(static_cast<int>(std::thread::hardware_concurrency()) / 2, 4);
+        num_threads = std::max(num_threads, 1);
+    } else {
+        num_threads = std::max(1u, std::thread::hardware_concurrency());
+    }
+
+    // Create per-thread face detectors if needed
+    std::vector<std::unique_ptr<FaceDetector>> face_detectors;
+    if (opts.faces) {
+        std::cout << "Loading face recognition models (" << num_threads << " instances)...\n";
+        for (int i = 0; i < num_threads; i++) {
+            face_detectors.push_back(std::make_unique<FaceDetector>());
+        }
+    }
+
+    // Install signal handler for graceful Ctrl-C
+    g_interrupted = 0;
+    auto prev_handler = std::signal(SIGINT, sigint_handler);
+
     // Process files with thread pool
     std::atomic<size_t> processed{0};
     std::atomic<size_t> skipped{0};
     std::atomic<size_t> errors{0};
+    std::atomic<size_t> face_count{0};
 
     if (!files.empty()) {
-    const int num_threads = std::max(1u, std::thread::hardware_concurrency());
     std::atomic<size_t> next_file{0};
 
     std::mutex db_mutex;
-    std::vector<ImageInfo> batch;
-    const size_t batch_size = 50;
+    std::vector<ProcessResult> batch;
+    const size_t batch_size = 10; // small batches so Ctrl-C loses less work
 
     auto flush_batch = [&]() {
-        if (!batch.empty()) {
-            db.insert_batch(batch);
-            batch.clear();
+        if (batch.empty()) return;
+        // Insert image metadata
+        std::vector<ImageInfo> infos;
+        for (auto& r : batch) infos.push_back(r.info);
+        db.insert_batch(infos);
+
+        // Insert faces (need image_id from DB) and auto-label known people
+        for (auto& r : batch) {
+            if (!r.faces.empty()) {
+                int64_t image_id = db.get_image_id(r.info.path);
+                if (image_id >= 0) {
+                    for (const auto& face : r.faces) {
+                        db.insert_face(image_id, face);
+                        int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
+                        db.auto_label_face(face_id, face.embedding);
+                    }
+                    face_count.fetch_add(r.faces.size());
+                }
+            }
         }
+        batch.clear();
     };
 
-    auto worker = [&]() {
-        while (true) {
+    auto worker = [&](int thread_id) {
+        FaceDetector* detector = (!face_detectors.empty()) ? face_detectors[thread_id].get() : nullptr;
+        while (!g_interrupted) {
             size_t idx = next_file.fetch_add(1);
             if (idx >= files.size()) break;
 
@@ -204,6 +293,9 @@ int cmd_scan(const ScanOptions& opts) {
             }
 
             // Check if we should skip (path + mtime match)
+            bool needs_full_process = opts.force;
+            bool needs_faces_only = false;
+
             if (!opts.force) {
                 std::string mtime;
                 try {
@@ -215,41 +307,73 @@ int cmd_scan(const ScanOptions& opts) {
                 std::lock_guard<std::mutex> lock(db_mutex);
                 auto existing_mtime = db.get_modified_at(canonical);
                 if (existing_mtime && *existing_mtime == mtime) {
-                    skipped.fetch_add(1);
-                    size_t done = processed.load() + skipped.load() + errors.load();
-                    std::cout << "\r[" << done << "/" << files.size() << "] " << std::flush;
-                    continue;
+                    // File unchanged — check if we only need faces
+                    if (detector && !db.has_faces(canonical)) {
+                        needs_faces_only = true;
+                    } else {
+                        skipped.fetch_add(1);
+                        size_t done = processed.load() + skipped.load() + errors.load();
+                        std::cout << "\r[" << done << "/" << files.size() << "] " << std::flush;
+                        continue;
+                    }
+                } else {
+                    needs_full_process = true;
                 }
             }
 
             try {
-                auto info = process_file(filepath);
+                if (needs_faces_only) {
+                    // Only decode and detect faces — skip hash/phash/EXIF
+                    cv::Mat img = decode_image(canonical);
+                    if (!img.empty() && detector) {
+                        auto faces = detector->detect(img);
+                        if (!faces.empty()) {
+                            std::lock_guard<std::mutex> lock(db_mutex);
+                            // Flush any pending batch first, then insert faces in a transaction
+                            flush_batch();
+                            db.begin_transaction();
+                            int64_t image_id = db.get_image_id(canonical);
+                            if (image_id >= 0) {
+                                for (const auto& face : faces) {
+                                    db.insert_face(image_id, face);
+                                    int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
+                                    db.auto_label_face(face_id, face.embedding);
+                                }
+                                face_count.fetch_add(faces.size());
+                            }
+                            db.commit_transaction();
+                        }
+                    }
+                    processed.fetch_add(1);
+                } else {
+                    auto result = process_file(filepath, detector);
 
-                std::lock_guard<std::mutex> lock(db_mutex);
-                batch.push_back(std::move(info));
-                if (batch.size() >= batch_size) {
-                    flush_batch();
+                    std::lock_guard<std::mutex> lock(db_mutex);
+                    batch.push_back(std::move(result));
+                    if (batch.size() >= batch_size) {
+                        flush_batch();
+                    }
+                    processed.fetch_add(1);
                 }
-                processed.fetch_add(1);
             } catch (const std::exception& e) {
                 errors.fetch_add(1);
                 if (opts.fail_on_error) {
-                    std::cerr << "\nError processing " << filepath << ": " << e.what() << "\n";
+                    std::cerr << "\n[error] " << rel_path(filepath) << " -- " << e.what() << "\n";
                     throw;
                 } else {
-                    std::cerr << "\nWarning: skipping " << filepath << ": " << e.what() << "\n";
+                    std::cerr << "\n[warning] " << rel_path(filepath) << " -- " << e.what() << "\n";
                 }
             }
 
             size_t done = processed.load() + skipped.load() + errors.load();
             std::cout << "\r\033[K[" << done << "/" << files.size() << "] "
-                      << filepath.filename().string() << std::flush;
+                      << rel_path(filepath) << std::flush;
         }
     };
 
     std::vector<std::thread> threads;
     for (int i = 0; i < num_threads; i++) {
-        threads.emplace_back(worker);
+        threads.emplace_back(worker, i);
     }
     for (auto& t : threads) {
         t.join();
@@ -258,6 +382,13 @@ int cmd_scan(const ScanOptions& opts) {
     // Flush remaining
     flush_batch();
     } // end if (!files.empty())
+
+    // Restore previous signal handler
+    std::signal(SIGINT, prev_handler);
+
+    if (g_interrupted) {
+        std::cout << "\n\nInterrupted. Progress saved.\n";
+    }
 
     // Clean up entries for files that no longer exist on disk
     std::string scan_prefix = fs::canonical(opts.directory).string();
@@ -290,8 +421,11 @@ int cmd_scan(const ScanOptions& opts) {
               << "  Processed: " << processed.load() << "\n"
               << "  Skipped:   " << skipped.load() << "\n"
               << "  Errors:    " << errors.load() << "\n"
-              << "  Removed:   " << removed_count << "\n"
-              << "  Total DB:  " << db.count() << " images\n";
+              << "  Removed:   " << removed_count << "\n";
+    if (opts.faces) {
+        std::cout << "  Faces:     " << face_count.load() << "\n";
+    }
+    std::cout << "  Total DB:  " << db.count() << " images\n";
 
     return 0;
 }
@@ -303,7 +437,6 @@ struct DuplicatesOptions {
     int threshold = 5;             // hamming distance for near duplicates
     std::string format = "text";   // text, csv, json
     std::string output;            // empty = stdout
-    std::string path_prefix;       // empty = all, otherwise filter by path prefix
     std::vector<std::string> matches;
     std::vector<std::string> filters;
     std::string db_path;
@@ -482,7 +615,7 @@ std::vector<DuplicateGroup> filter_groups(
     for (const auto& g : groups) {
         bool has_match = false;
         for (const auto& img : g.images) {
-            if (passes_filters(img.filename, matches, filters)) {
+            if (passes_filters(img.path, matches, filters)) {
                 has_match = true;
                 break;
             }
@@ -509,7 +642,7 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
     std::set<std::string> exact_sha256s;
 
     if (do_exact) {
-        auto groups = db.get_exact_duplicates(opts.path_prefix);
+        auto groups = db.get_exact_duplicates();
         for (auto& g : groups) {
             exact_sha256s.insert(g[0].sha256);
             DuplicateGroup dg;
@@ -523,7 +656,7 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
 
     std::vector<DuplicateGroup> near_groups;
     if (do_near) {
-        auto all_images = db.get_all_images(opts.path_prefix);
+        auto all_images = db.get_all_images();
         std::cerr << "Comparing " << all_images.size() << " images for near duplicates...\n";
         near_groups = find_near_duplicates(all_images, opts.threshold, exact_sha256s);
         near_groups = filter_groups(near_groups, opts.matches, opts.filters);
@@ -558,7 +691,6 @@ struct OrganizeOptions {
     std::string format = "%Y/%m/%original";
     std::vector<std::string> matches;
     std::vector<std::string> filters;
-    std::string path_prefix;        // filter by source directory
     bool is_move = false;           // true for mv, false for cp
     bool dry_run = false;
     std::string on_conflict = "skip"; // skip, overwrite, rename
@@ -693,12 +825,8 @@ int cmd_organize(const OrganizeOptions& opts) {
         return 1;
     }
 
-    auto images = db.get_all_images(opts.path_prefix);
-    std::cout << "Found " << images.size() << " images in database";
-    if (!opts.path_prefix.empty()) {
-        std::cout << " under " << opts.path_prefix;
-    }
-    std::cout << "\n";
+    auto images = db.get_all_images();
+    std::cout << "Found " << images.size() << " images in database\n";
 
     // Apply match/filter
     bool has_filters = !opts.matches.empty() || !opts.filters.empty();
@@ -706,7 +834,7 @@ int cmd_organize(const OrganizeOptions& opts) {
         images.erase(
             std::remove_if(images.begin(), images.end(),
                 [&](const ImageInfo& img) {
-                    return !passes_filters(img.filename, opts.matches, opts.filters);
+                    return !passes_filters(img.path, opts.matches, opts.filters);
                 }),
             images.end());
         std::cout << "After match/filter: " << images.size() << " images\n";
@@ -802,26 +930,24 @@ int cmd_organize(const OrganizeOptions& opts) {
 struct PurgeOptions {
     std::vector<std::string> matches;
     std::vector<std::string> filters;
-    std::string path_prefix;    // filter by directory
     bool dry_run = false;
     std::string db_path;
 };
 
 int cmd_purge(const PurgeOptions& opts) {
-    if (opts.matches.empty() && opts.path_prefix.empty()) {
-        std::cerr << "Error: purge requires at least --match or --path\n";
+    if (opts.matches.empty()) {
+        std::cerr << "Error: purge requires at least one --match pattern\n";
         return 1;
     }
 
     Database db(opts.db_path);
 
-    // Get all images, filtered by path prefix
-    auto all_images = db.get_all_images(opts.path_prefix);
+    auto all_images = db.get_all_images();
 
     // Apply match/filter
     std::vector<std::string> matched;
     for (const auto& img : all_images) {
-        if (passes_filters(img.filename, opts.matches, opts.filters)) {
+        if (passes_filters(img.path, opts.matches, opts.filters)) {
             matched.push_back(img.path);
         }
     }
@@ -860,10 +986,13 @@ struct SearchOptions {
     std::string similar;          // image path for phash similarity
     std::string similar_hash;     // hex phash string
     int threshold = 5;
-    std::string path_prefix;
+    std::string face;             // image path for face similarity search
+    float face_threshold = 0.6;   // dlib recommended threshold
+    std::string person;           // search by named person
     std::vector<std::string> matches;
     std::vector<std::string> filters;
     int limit = -1;
+    bool count_only = false;
     bool porcelain = false;
     bool print0 = false;
     std::string format = "text";
@@ -925,6 +1054,22 @@ int64_t parse_size(const std::string& s) {
     throw std::runtime_error("Unknown size suffix: " + suffix + " (use B, KB, MB, GB)");
 }
 
+// Read stdin to a temp file, return the path. Caller should delete when done.
+std::string read_stdin_to_temp() {
+    auto temp_path = fs::temp_directory_path() / "phig-stdin-image";
+    std::ofstream out(temp_path, std::ios::binary);
+    if (!out) {
+        throw std::runtime_error("Cannot create temp file: " + temp_path.string());
+    }
+    out << std::cin.rdbuf();
+    out.close();
+    if (fs::file_size(temp_path) == 0) {
+        fs::remove(temp_path);
+        throw std::runtime_error("No data received on stdin");
+    }
+    return temp_path.string();
+}
+
 uint64_t parse_hex_phash(const std::string& hex) {
     uint64_t val = 0;
     for (char c : hex) {
@@ -950,19 +1095,155 @@ int cmd_search(const SearchOptions& opts) {
 
     std::vector<ImageInfo> results;
     bool is_similar = !opts.similar.empty() || !opts.similar_hash.empty();
+    bool is_face_search = !opts.face.empty();
+    bool is_person_search = !opts.person.empty();
 
-    if (is_similar) {
+    // Handle stdin ("-") for --face and --similar
+    std::string temp_file;
+    std::string face_path = opts.face;
+    std::string similar_path = opts.similar;
+    if (is_face_search && face_path == "-") {
+        temp_file = read_stdin_to_temp();
+        face_path = temp_file;
+    } else if (is_similar && similar_path == "-") {
+        temp_file = read_stdin_to_temp();
+        similar_path = temp_file;
+    }
+
+    // Clean up temp file on exit
+    struct TempCleanup {
+        std::string path;
+        ~TempCleanup() { if (!path.empty()) fs::remove(path); }
+    } cleanup{temp_file};
+
+    if (is_person_search) {
+        // Search by named person
+        auto paths = db.get_images_for_person(opts.person);
+        if (opts.count_only) {
+            std::cout << paths.size() << "\n";
+            return 0;
+        }
+        if (paths.empty()) {
+            std::cout << "No images found for \"" << opts.person << "\"\n";
+            return 0;
+        }
+
+        // Output
+        std::ofstream file_out;
+        if (!opts.output.empty()) {
+            file_out.open(opts.output);
+            if (!file_out) { std::cerr << "Error: cannot open output file\n"; return 1; }
+        }
+        std::ostream& out = opts.output.empty() ? std::cout : file_out;
+
+        if (opts.print0) {
+            for (const auto& p : paths) out << p << '\0';
+        } else if (opts.porcelain) {
+            for (const auto& p : paths) out << p << '\n';
+        } else {
+            for (const auto& p : paths) out << p << "\n";
+            out << "\nFound " << paths.size() << " images of \"" << opts.person << "\"\n";
+        }
+        return 0;
+    } else if (is_face_search) {
+        // Face similarity search — decode with OpenCV, detect with dlib
+        preload_face_models();
+        cv::Mat query_img = decode_image(face_path);
+        if (query_img.empty()) {
+            std::cerr << "Cannot decode image: " << face_path << "\n";
+            return 1;
+        }
+        auto faces = detect_faces(query_img);
+        if (faces.empty()) {
+            std::cerr << "No faces detected in: " << face_path << "\n";
+            return 1;
+        }
+
+        std::cerr << "Detected " << faces.size() << " face(s), searching all...\n";
+
+        // Search for ALL faces found in the query image
+        std::vector<Database::FaceSearchResult> face_results;
+        std::set<std::string> seen_paths;
+        int per_face_limit = opts.limit > 0 ? opts.limit : 100;
+
+        for (const auto& face : faces) {
+            auto matches = db.search_faces(face.embedding, opts.face_threshold, per_face_limit);
+            for (auto& m : matches) {
+                // Deduplicate by path — keep the closest match per image
+                if (seen_paths.insert(m.path).second) {
+                    face_results.push_back(std::move(m));
+                }
+            }
+        }
+
+        // Sort by distance
+        std::sort(face_results.begin(), face_results.end(),
+            [](const Database::FaceSearchResult& a, const Database::FaceSearchResult& b) {
+                return a.distance < b.distance;
+            });
+
+        if (opts.limit > 0 && static_cast<int>(face_results.size()) > opts.limit) {
+            face_results.resize(opts.limit);
+        }
+
+        if (opts.count_only) {
+            std::cout << face_results.size() << "\n";
+            return 0;
+        }
+
+        // Convert to output — face search has its own output since it includes distance
+        std::ofstream file_out;
+        if (!opts.output.empty()) {
+            file_out.open(opts.output);
+            if (!file_out) {
+                std::cerr << "Error: cannot open output file: " << opts.output << "\n";
+                return 1;
+            }
+        }
+        std::ostream& out = opts.output.empty() ? std::cout : file_out;
+
+        if (opts.print0) {
+            for (const auto& r : face_results) {
+                out << r.path << '\0';
+            }
+        } else if (opts.porcelain) {
+            for (const auto& r : face_results) {
+                out << r.path << '\t' << r.distance << '\n';
+            }
+        } else if (opts.format == "json") {
+            out << "{\"results\":[";
+            for (size_t i = 0; i < face_results.size(); i++) {
+                if (i > 0) out << ",";
+                out << "{\"path\":\"" << face_results[i].path << "\""
+                    << ",\"distance\":" << face_results[i].distance
+                    << ",\"face_x\":" << face_results[i].face_x
+                    << ",\"face_y\":" << face_results[i].face_y
+                    << ",\"face_w\":" << face_results[i].face_w
+                    << ",\"face_h\":" << face_results[i].face_h << "}";
+            }
+            out << "],\"count\":" << face_results.size() << "}\n";
+        } else {
+            for (const auto& r : face_results) {
+                out << r.path << "\n"
+                    << "  distance: " << r.distance
+                    << "  face: " << r.face_x << "," << r.face_y
+                    << " " << r.face_w << "x" << r.face_h << "\n\n";
+            }
+            out << "Found " << face_results.size() << " matching faces\n";
+        }
+        return 0;
+    } else if (is_similar) {
         // Compute or parse the query phash
         uint64_t query_phash;
-        if (!opts.similar.empty()) {
-            auto phash_result = compute_phash(opts.similar);
+        if (!similar_path.empty()) {
+            auto phash_result = compute_phash(similar_path);
             query_phash = phash_result.hash;
         } else {
             query_phash = parse_hex_phash(opts.similar_hash);
         }
 
         // Get all images (within path prefix) and compare
-        auto all_images = db.get_all_images(opts.path_prefix);
+        auto all_images = db.get_all_images();
 
         // Compute distances and filter
         struct ScoredImage {
@@ -990,7 +1271,6 @@ int cmd_search(const SearchOptions& opts) {
     } else {
         // Build search criteria
         Database::SearchCriteria criteria;
-        criteria.path_prefix = opts.path_prefix;
         criteria.extension = opts.extension;
         criteria.after = opts.after;
         criteria.before = opts.before;
@@ -1010,7 +1290,7 @@ int cmd_search(const SearchOptions& opts) {
         results.erase(
             std::remove_if(results.begin(), results.end(),
                 [&](const ImageInfo& img) {
-                    return !passes_filters(img.filename, opts.matches, opts.filters);
+                    return !passes_filters(img.path, opts.matches, opts.filters);
                 }),
             results.end());
     }
@@ -1018,6 +1298,11 @@ int cmd_search(const SearchOptions& opts) {
     // Apply limit (if not already applied in DB)
     if (opts.limit > 0 && static_cast<int>(results.size()) > opts.limit) {
         results.resize(opts.limit);
+    }
+
+    if (opts.count_only) {
+        std::cout << results.size() << "\n";
+        return 0;
     }
 
     // Output
@@ -1092,6 +1377,288 @@ int cmd_search(const SearchOptions& opts) {
     return 0;
 }
 
+// ---- Face command ----
+
+int cmd_face(int argc, char* argv[], const std::string& db_path) {
+    if (argc < 3) {
+        std::cerr << "Usage:\n"
+                  << "  phig face name <image> <name>     Name a face from a single-face photo\n"
+                  << "  phig face identify <name>          Label all matching faces in DB\n"
+                  << "  phig face rebuild [flags]          Re-detect all faces from scratch\n"
+                  << "  phig face list                     List known people\n";
+        return 1;
+    }
+
+    std::string subcmd = argv[2];
+    Database db(db_path);
+    db.init_schema();
+
+    if (subcmd == "name") {
+        if (argc < 5) {
+            std::cerr << "Usage: phig face name <image> <name>\n";
+            return 1;
+        }
+        std::string image_path = argv[3];
+        std::string name = argv[4];
+
+        // Detect faces in the reference image
+        preload_face_models();
+        cv::Mat img = decode_image(image_path);
+        if (img.empty()) {
+            std::cerr << "Cannot decode image: " << image_path << "\n";
+            return 1;
+        }
+        auto faces = detect_faces(img);
+
+        if (faces.empty()) {
+            std::cerr << "No faces detected in: " << image_path << "\n";
+            return 1;
+        }
+        if (faces.size() > 1) {
+            std::cerr << "Error: Multiple faces detected (" << faces.size()
+                      << "). Please use a photo with a single face.\n";
+            return 1;
+        }
+
+        // Find the closest matching face in the DB
+        int64_t face_id = db.find_closest_face(faces[0].embedding, 0.6);
+        if (face_id < 0) {
+            // No matching face in DB — scan this image first
+            std::cerr << "No matching face found in the database.\n"
+                      << "Make sure the image (or similar photos) have been scanned with --faces first.\n";
+            return 1;
+        }
+
+        // Create or get person, assign to face
+        int64_t person_id = db.get_or_create_person(name);
+        db.set_face_person(face_id, person_id);
+
+        std::cout << "Named face as \"" << name << "\"\n";
+        return 0;
+
+    } else if (subcmd == "identify") {
+        if (argc < 4) {
+            std::cerr << "Usage: phig face identify <name>\n";
+            return 1;
+        }
+        std::string name = argv[3];
+
+        // Get the person's reference embeddings (all faces already named as this person)
+        auto people = db.list_people();
+        int64_t person_id = -1;
+        for (const auto& p : people) {
+            if (p.name == name) { person_id = p.id; break; }
+        }
+        if (person_id < 0) {
+            std::cerr << "Unknown person: " << name << "\n"
+                      << "Use 'phig face name <image> <name>' first.\n";
+            return 1;
+        }
+
+        // Get all face embeddings for this person (as reference)
+        // Then search the entire DB for matching untagged faces
+        auto all_images = db.get_all_images();
+        std::cout << "Searching " << all_images.size() << " images for \"" << name << "\"...\n";
+
+        // Get reference embeddings from already-named faces
+        // We use the vec_faces table to find all faces near the named ones
+        auto named_paths = db.get_images_for_person(name);
+        if (named_paths.empty()) {
+            std::cerr << "No reference faces found for \"" << name << "\".\n"
+                      << "Use 'phig face name <image> <name>' to provide a reference.\n";
+            return 1;
+        }
+
+        // Get embeddings of named faces
+        // For each named face, search for similar untagged faces
+        const char* ref_sql = R"(
+            SELECT f.id, f.embedding FROM faces f
+            WHERE f.person_id = ?
+        )";
+        sqlite3_stmt* stmt;
+        int rc = sqlite3_prepare_v2(db.db_ptr(), ref_sql, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            std::cerr << "Error querying reference faces\n";
+            return 1;
+        }
+        sqlite3_bind_int64(stmt, 1, person_id);
+
+        std::vector<std::array<float, 128>> ref_embeddings;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            std::array<float, 128> emb;
+            const float* data = static_cast<const float*>(sqlite3_column_blob(stmt, 1));
+            if (data) {
+                std::copy(data, data + 128, emb.begin());
+                ref_embeddings.push_back(emb);
+            }
+        }
+        sqlite3_finalize(stmt);
+
+        // For each reference embedding, find all matching faces and label them
+        size_t labeled = 0;
+        for (const auto& ref_emb : ref_embeddings) {
+            auto matches = db.search_faces(ref_emb, 0.6, 1000);
+            for (const auto& match : matches) {
+                // Find the face_id for this match and label it
+                int64_t fid = db.find_closest_face(ref_emb, 0.6);
+                // Actually we need all matching face IDs — let's query directly
+            }
+        }
+
+        // Simpler approach: scan all untagged faces and check against references
+        const char* untagged_sql = "SELECT id, embedding FROM faces WHERE person_id IS NULL";
+        rc = sqlite3_prepare_v2(db.db_ptr(), untagged_sql, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            std::cerr << "Error querying faces\n";
+            return 1;
+        }
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int64_t face_id = sqlite3_column_int64(stmt, 0);
+            const float* data = static_cast<const float*>(sqlite3_column_blob(stmt, 1));
+            if (!data) continue;
+
+            std::array<float, 128> emb;
+            std::copy(data, data + 128, emb.begin());
+
+            // Check against all reference embeddings
+            for (const auto& ref_emb : ref_embeddings) {
+                float dist = embedding_distance(ref_emb, emb);
+                if (dist <= 0.6) {
+                    db.set_face_person(face_id, person_id);
+                    labeled++;
+                    break;
+                }
+            }
+        }
+        sqlite3_finalize(stmt);
+
+        std::cout << "Labeled " << labeled << " additional faces as \"" << name << "\"\n";
+        return 0;
+
+    } else if (subcmd == "rebuild") {
+        // Parse match/filter flags
+        std::vector<std::string> matches, filters;
+        int parallel = -1;
+        for (int i = 3; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "--match" && i + 1 < argc) {
+                matches.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--filter" && i + 1 < argc) {
+                filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--parallel" && i + 1 < argc) {
+                parallel = std::stoi(argv[++i]);
+            } else if (arg == "--db") {
+                i++; // already handled
+            }
+        }
+
+        auto all_images = db.get_all_images();
+
+        // Apply match/filter
+        std::vector<ImageInfo> images;
+        for (const auto& img : all_images) {
+            if (passes_filters(img.path, matches, filters)) {
+                images.push_back(img);
+            }
+        }
+
+        if (images.empty()) {
+            std::cout << "No matching images found.\n";
+            return 0;
+        }
+
+        std::cout << "Rebuilding face data for " << images.size() << " images...\n";
+
+        // Determine thread count
+        int num_threads;
+        if (parallel > 0) {
+            num_threads = parallel;
+        } else {
+            num_threads = std::min(static_cast<int>(std::thread::hardware_concurrency()) / 2, 4);
+            num_threads = std::max(num_threads, 1);
+        }
+
+        // Create per-thread detectors
+        std::cout << "Loading face recognition models (" << num_threads << " instances)...\n";
+        std::vector<std::unique_ptr<FaceDetector>> detectors;
+        for (int i = 0; i < num_threads; i++) {
+            detectors.push_back(std::make_unique<FaceDetector>());
+        }
+
+        std::atomic<size_t> next_img{0};
+        std::atomic<size_t> total_faces{0};
+        std::mutex db_mutex;
+
+        auto worker = [&](int thread_id) {
+            while (!g_interrupted) {
+                size_t idx = next_img.fetch_add(1);
+                if (idx >= images.size()) break;
+
+                const auto& img_info = images[idx];
+                cv::Mat img = decode_image(img_info.path);
+                if (img.empty()) continue;
+
+                auto faces = detectors[thread_id]->detect(img);
+
+                {
+                    std::lock_guard<std::mutex> lock(db_mutex);
+                    int64_t image_id = db.get_image_id(img_info.path);
+                    if (image_id >= 0) {
+                        db.delete_faces_for_image(image_id);
+                        db.begin_transaction();
+                        for (const auto& face : faces) {
+                            db.insert_face(image_id, face);
+                            int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
+                            db.auto_label_face(face_id, face.embedding);
+                        }
+                        db.commit_transaction();
+                        total_faces.fetch_add(faces.size());
+                    }
+                }
+
+                fs::path p(img_info.path);
+                std::string display = (p.parent_path().filename() / p.filename()).string();
+                std::cout << "\r\033[K[" << (idx + 1) << "/" << images.size() << "] "
+                          << display << std::flush;
+            }
+        };
+
+        g_interrupted = 0;
+        auto prev_handler = std::signal(SIGINT, sigint_handler);
+
+        std::vector<std::thread> threads;
+        for (int i = 0; i < num_threads; i++) {
+            threads.emplace_back(worker, i);
+        }
+        for (auto& t : threads) t.join();
+
+        std::signal(SIGINT, prev_handler);
+
+        if (g_interrupted) {
+            std::cout << "\n\nInterrupted. Progress saved.\n";
+        }
+
+        std::cout << "\n\nDone. " << total_faces.load() << " faces detected.\n";
+        return 0;
+
+    } else if (subcmd == "list") {
+        auto people = db.list_people();
+        if (people.empty()) {
+            std::cout << "No named people.\n";
+            return 0;
+        }
+        for (const auto& p : people) {
+            std::cout << p.name << " (" << p.face_count << " faces)\n";
+        }
+        return 0;
+
+    } else {
+        std::cerr << "Unknown face subcommand: " << subcmd << "\n";
+        return 1;
+    }
+}
+
 // ---- Main ----
 
 int main(int argc, char* argv[]) {
@@ -1133,6 +1700,10 @@ int main(int argc, char* argv[]) {
                 opts.recursive = true;
             } else if (arg == "--force") {
                 opts.force = true;
+            } else if (arg == "--faces") {
+                opts.faces = true;
+            } else if (arg == "--parallel" && i + 1 < argc) {
+                opts.parallel = std::stoi(argv[++i]);
             } else if (arg == "--on-error" && i + 1 < argc) {
                 std::string val = argv[++i];
                 if (val == "fail") {
@@ -1181,12 +1752,9 @@ int main(int argc, char* argv[]) {
             } else if (arg == "--output" && i + 1 < argc) {
                 opts.output = argv[++i];
             } else if (arg == "--match" && i + 1 < argc) {
-                opts.matches.push_back(argv[++i]);
+                opts.matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--filter" && i + 1 < argc) {
-                opts.filters.push_back(argv[++i]);
-            } else if (arg == "--path" && i + 1 < argc) {
-                opts.path_prefix = fs::canonical(argv[++i]).string();
-                if (opts.path_prefix.back() != '/') opts.path_prefix += '/';
+                opts.filters.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--db" && i + 1 < argc) {
                 opts.db_path = argv[++i];
             } else {
@@ -1209,12 +1777,9 @@ int main(int argc, char* argv[]) {
         for (int i = 2; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
-                opts.matches.push_back(argv[++i]);
+                opts.matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--filter" && i + 1 < argc) {
-                opts.filters.push_back(argv[++i]);
-            } else if (arg == "--path" && i + 1 < argc) {
-                opts.path_prefix = fs::canonical(argv[++i]).string();
-                if (opts.path_prefix.back() != '/') opts.path_prefix += '/';
+                opts.filters.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--dry-run") {
                 opts.dry_run = true;
             } else if (arg == "--db" && i + 1 < argc) {
@@ -1249,12 +1814,9 @@ int main(int argc, char* argv[]) {
             if (arg == "--format" && i + 1 < argc) {
                 opts.format = argv[++i];
             } else if (arg == "--match" && i + 1 < argc) {
-                opts.matches.push_back(argv[++i]);
+                opts.matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--filter" && i + 1 < argc) {
-                opts.filters.push_back(argv[++i]);
-            } else if (arg == "--path" && i + 1 < argc) {
-                opts.path_prefix = fs::canonical(argv[++i]).string();
-                if (opts.path_prefix.back() != '/') opts.path_prefix += '/';
+                opts.filters.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--dry-run") {
                 opts.dry_run = true;
             } else if (arg == "--on-conflict" && i + 1 < argc) {
@@ -1274,6 +1836,38 @@ int main(int argc, char* argv[]) {
 
         try {
             return cmd_organize(opts);
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
+        }
+    } else if (command == "face") {
+        std::string face_db = default_db_path();
+        // Check for --db flag
+        for (int i = 2; i < argc; i++) {
+            if (std::string(argv[i]) == "--db" && i + 1 < argc) {
+                face_db = argv[i + 1];
+                break;
+            }
+        }
+        try {
+            return cmd_face(argc, argv, face_db);
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
+        }
+    } else if (command == "models") {
+        if (argc < 3 || std::string(argv[2]) != "download") {
+            std::cerr << "Usage: phig models download\n";
+            return 1;
+        }
+        try {
+            if (download_face_models()) {
+                std::cout << "All models downloaded successfully.\n";
+                return 0;
+            } else {
+                std::cerr << "Model download failed.\n";
+                return 1;
+            }
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << "\n";
             return 1;
@@ -1304,15 +1898,20 @@ int main(int argc, char* argv[]) {
                 opts.similar_hash = argv[++i];
             } else if (arg == "--threshold" && i + 1 < argc) {
                 opts.threshold = std::stoi(argv[++i]);
-            } else if (arg == "--path" && i + 1 < argc) {
-                opts.path_prefix = fs::canonical(argv[++i]).string();
-                if (opts.path_prefix.back() != '/') opts.path_prefix += '/';
+            } else if (arg == "--face" && i + 1 < argc) {
+                opts.face = argv[++i];
+            } else if (arg == "--face-threshold" && i + 1 < argc) {
+                opts.face_threshold = std::stof(argv[++i]);
+            } else if (arg == "--person" && i + 1 < argc) {
+                opts.person = argv[++i];
             } else if (arg == "--match" && i + 1 < argc) {
-                opts.matches.push_back(argv[++i]);
+                opts.matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--filter" && i + 1 < argc) {
-                opts.filters.push_back(argv[++i]);
+                opts.filters.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--limit" && i + 1 < argc) {
                 opts.limit = std::stoi(argv[++i]);
+            } else if (arg == "--count") {
+                opts.count_only = true;
             } else if (arg == "--porcelain") {
                 opts.porcelain = true;
             } else if (arg == "--print0") {
