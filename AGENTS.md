@@ -81,3 +81,8 @@ tests/
 ## Plans
 
 See `plans/000-INDEX.md` for the plan index and `plans/` for detailed plans.
+
+**Plan rules:**
+- Completed plans should not be edited unless the user explicitly asks. It's fine to add cross-references to other plans.
+- Changes to completed features get a new plan rather than editing the original.
+- Always write a plan and get approval before implementing.
