@@ -349,6 +349,87 @@ std::vector<std::vector<ImageInfo>> Database::get_exact_duplicates(const std::st
     return groups;
 }
 
+std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
+    std::string sql = "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, exif FROM images WHERE 1=1";
+    std::vector<std::pair<std::string, bool>> binds; // {value, is_int}
+
+    if (!c.path_prefix.empty()) {
+        sql += " AND path LIKE ? || '%'";
+        binds.push_back({c.path_prefix, false});
+    }
+    if (!c.extension.empty()) {
+        sql += " AND LOWER(extension) = LOWER(?)";
+        binds.push_back({c.extension, false});
+    }
+    if (!c.after.empty()) {
+        // Compare against best available date
+        std::string exif_date = c.after;
+        if (exif_date.size() >= 10) { exif_date[4] = ':'; exif_date[7] = ':'; }
+        sql += " AND COALESCE(json_extract(exif, '$.DateTimeOriginal'), json_extract(exif, '$.DateTimeDigitized'), modified_at) >= ?";
+        binds.push_back({exif_date, false});
+    }
+    if (!c.before.empty()) {
+        std::string exif_date = c.before;
+        if (exif_date.size() >= 10) { exif_date[4] = ':'; exif_date[7] = ':'; }
+        sql += " AND COALESCE(json_extract(exif, '$.DateTimeOriginal'), json_extract(exif, '$.DateTimeDigitized'), modified_at) <= ?";
+        binds.push_back({exif_date, false});
+    }
+    if (!c.camera.empty()) {
+        sql += " AND json_extract(exif, '$.Model') LIKE '%' || ? || '%'";
+        binds.push_back({c.camera, false});
+    }
+    if (!c.make.empty()) {
+        sql += " AND json_extract(exif, '$.Make') LIKE '%' || ? || '%'";
+        binds.push_back({c.make, false});
+    }
+    if (c.min_size >= 0) {
+        sql += " AND file_size >= " + std::to_string(c.min_size);
+    }
+    if (c.max_size >= 0) {
+        sql += " AND file_size <= " + std::to_string(c.max_size);
+    }
+
+    sql += " ORDER BY path";
+
+    if (c.limit > 0) {
+        sql += " LIMIT " + std::to_string(c.limit);
+    }
+
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare search: " + std::string(sqlite3_errmsg(db_)));
+    }
+
+    for (size_t i = 0; i < binds.size(); i++) {
+        sqlite3_bind_text(stmt, i + 1, binds[i].first.c_str(), -1, SQLITE_TRANSIENT);
+    }
+
+    std::vector<ImageInfo> results;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        ImageInfo info;
+        auto text = [&](int col) -> std::string {
+            const char* t = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+            return t ? t : "";
+        };
+        info.path = text(0);
+        info.filename = text(1);
+        info.extension = text(2);
+        info.file_size = sqlite3_column_int64(stmt, 3);
+        info.created_at = text(4);
+        info.modified_at = text(5);
+        info.sha256 = text(6);
+        info.phash = static_cast<uint64_t>(sqlite3_column_int64(stmt, 7));
+        info.width = sqlite3_column_int(stmt, 8);
+        info.height = sqlite3_column_int(stmt, 9);
+        info.exif_json = text(10);
+        results.push_back(std::move(info));
+    }
+
+    sqlite3_finalize(stmt);
+    return results;
+}
+
 void Database::exec(const std::string& sql) {
     char* err = nullptr;
     int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err);

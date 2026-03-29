@@ -42,6 +42,20 @@ public:
     // Get groups of exact duplicates (same SHA256), optionally filtered by path prefix
     std::vector<std::vector<ImageInfo>> get_exact_duplicates(const std::string& path_prefix = "");
 
+    // Search with multiple criteria
+    struct SearchCriteria {
+        std::string path_prefix;
+        std::string extension;
+        std::string after;           // YYYY-MM-DD
+        std::string before;          // YYYY-MM-DD
+        std::string camera;          // substring match on EXIF Model
+        std::string make;            // substring match on EXIF Make
+        int64_t min_size = -1;
+        int64_t max_size = -1;
+        int limit = -1;
+    };
+    std::vector<ImageInfo> search(const SearchCriteria& criteria);
+
 private:
     sqlite3* db_ = nullptr;
     void exec(const std::string& sql);

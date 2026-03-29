@@ -1,6 +1,6 @@
 ---
 name: Search
-status: planned
+status: completed
 created: 2026-03-28
 description: >
   General-purpose query command for searching the image database by filename,
@@ -18,7 +18,6 @@ Search the image database with flexible criteria. Returns matching images with m
 
 ```
 phig search [flags]
-  --name <glob>            Match filename glob
   --ext <extension>        Match file extension (e.g., jpg, png, cr2)
   --after <date>           Files dated after YYYY-MM-DD
   --before <date>          Files dated before YYYY-MM-DD
@@ -26,13 +25,16 @@ phig search [flags]
   --make <string>          Substring match on EXIF camera make
   --min-size <bytes>       Minimum file size
   --max-size <bytes>       Maximum file size
-  --similar <image-path>   Find images visually similar to this image
+  --similar <image-path>   Find images visually similar to this image (by phash)
+  --similar-hash <hex>     Find images similar to this phash (hex string)
   --threshold [0-64]       Hamming distance for --similar (default: 5)
   --path <directory>       Only files under this directory
   --match <glob>           Include filter (repeatable)
   --filter <glob>          Exclude filter (repeatable, wins over --match)
-  --porcelain              Machine-parseable output (stable format)
-  --format text|csv|json   Output format (default: text, ignored with --porcelain)
+  --limit N                Maximum number of results
+  --porcelain              Machine-parseable tab-separated output (stable format)
+  --print0                 Null-separated paths (like find -print0)
+  --format text|csv|json   Output format (default: text, ignored with --porcelain/--print0)
   --output <path>          Write to file
   --db <path>              Database path
 ```
@@ -90,17 +92,17 @@ Uses the same fallback chain as organize:
 
 ## Open Questions
 
-- Should `--min-size` / `--max-size` accept human-friendly units (e.g., `5MB`, `100KB`)?
-- Should there be a `--limit N` flag for large result sets?
-- Should `--similar` support providing a phash directly (hex string) instead of an image path?
-- Porcelain format: is tab-separated the right choice, or should it be null-separated (like `find -print0`) for paths with special characters?
+- Should `--min-size` / `--max-size` accept human-friendly units (e.g., `5MB`, `100KB`) in a future update?
 
 ## Checklist
 
-- [ ] Database search with criteria (path, name, extension, date, EXIF, size)
+- [ ] Database search with criteria (path, extension, date, EXIF, size)
 - [ ] `--similar` image search via phash comparison
+- [ ] `--similar-hash` search via hex phash string
+- [ ] `--limit N` result cap
 - [ ] Human-readable default output
-- [ ] Porcelain output mode
+- [ ] Porcelain output mode (tab-separated)
+- [ ] `--print0` output mode (null-separated paths)
 - [ ] CSV/JSON output formats
 - [ ] `--match` / `--filter` glob support
 - [ ] `--output` file redirect

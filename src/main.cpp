@@ -61,6 +61,7 @@ void print_usage() {
               << "  phig cp <destination> [flags]\n"
               << "  phig mv <destination> [flags]\n"
               << "  phig purge [flags]\n"
+              << "  phig search [flags]\n"
               << "\nScan flags:\n"
               << "  --recursive              Scan subdirectories\n"
               << "  --on-error warn|fail     Behavior for unreadable files (default: warn)\n"
@@ -89,6 +90,26 @@ void print_usage() {
               << "  --filter <glob>          Exclude files matching glob (repeatable, wins over --match)\n"
               << "  --path <directory>       Remove entries under this directory\n"
               << "  --dry-run                Show what would be removed\n"
+              << "  --db <path>              Database path\n"
+              << "\nSearch flags:\n"
+              << "  --ext <extension>        Match file extension (e.g., jpg, png, cr2)\n"
+              << "  --after <date>           Files dated after YYYY-MM-DD\n"
+              << "  --before <date>          Files dated before YYYY-MM-DD\n"
+              << "  --camera <string>        Substring match on EXIF camera model\n"
+              << "  --make <string>          Substring match on EXIF camera make\n"
+              << "  --min-size <size>        Minimum file size (e.g., 1000, 5KB, 10MB, 1GB)\n"
+              << "  --max-size <size>        Maximum file size (e.g., 1000, 5KB, 10MB, 1GB)\n"
+              << "  --similar <image-path>   Find visually similar images (by phash)\n"
+              << "  --similar-hash <hex>     Find images similar to this phash\n"
+              << "  --threshold [0-64]       Hamming distance for --similar (default: 5)\n"
+              << "  --path <directory>       Only files under this directory\n"
+              << "  --match <glob>           Include filter (repeatable)\n"
+              << "  --filter <glob>          Exclude filter (repeatable, wins over --match)\n"
+              << "  --limit N                Maximum number of results\n"
+              << "  --porcelain              Tab-separated machine output\n"
+              << "  --print0                 Null-separated paths\n"
+              << "  --format text|csv|json   Output format (default: text)\n"
+              << "  --output <path>          Write to file\n"
               << "  --db <path>              Database path\n";
 }
 
@@ -473,6 +494,12 @@ std::vector<DuplicateGroup> filter_groups(
 
 int cmd_duplicates(const DuplicatesOptions& opts) {
     Database db(opts.db_path);
+    db.init_schema();
+
+    if (db.count() == 0) {
+        std::cerr << "Database is empty. Run 'phig scan <directory>' first.\n";
+        return 1;
+    }
 
     bool do_exact = (opts.type == "all" || opts.type == "exact");
     bool do_near = (opts.type == "all" || opts.type == "near");
@@ -659,6 +686,12 @@ fs::path resolve_conflict(const fs::path& dest, const std::string& on_conflict) 
 
 int cmd_organize(const OrganizeOptions& opts) {
     Database db(opts.db_path);
+    db.init_schema();
+
+    if (db.count() == 0) {
+        std::cerr << "Database is empty. Run 'phig scan <directory>' first.\n";
+        return 1;
+    }
 
     auto images = db.get_all_images(opts.path_prefix);
     std::cout << "Found " << images.size() << " images in database";
@@ -814,6 +847,251 @@ int cmd_purge(const PurgeOptions& opts) {
     return 0;
 }
 
+// ---- Search command ----
+
+struct SearchOptions {
+    std::string extension;
+    std::string after;
+    std::string before;
+    std::string camera;
+    std::string make;
+    int64_t min_size = -1;
+    int64_t max_size = -1;
+    std::string similar;          // image path for phash similarity
+    std::string similar_hash;     // hex phash string
+    int threshold = 5;
+    std::string path_prefix;
+    std::vector<std::string> matches;
+    std::vector<std::string> filters;
+    int limit = -1;
+    bool porcelain = false;
+    bool print0 = false;
+    std::string format = "text";
+    std::string output;
+    std::string db_path;
+};
+
+namespace {
+
+std::string format_size(int64_t bytes) {
+    if (bytes >= 1024 * 1024) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.1fMB", bytes / (1024.0 * 1024.0));
+        return buf;
+    } else if (bytes >= 1024) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.1fKB", bytes / 1024.0);
+        return buf;
+    }
+    return std::to_string(bytes) + "B";
+}
+
+std::string get_best_date_str(const ImageInfo& img) {
+    // Try EXIF DateTimeOriginal
+    std::string dt = json_get(img.exif_json, "DateTimeOriginal");
+    if (!dt.empty() && dt.size() >= 10 && dt.substr(0, 4) != "0000" && dt.substr(0, 4) != "1970") {
+        return dt.substr(0, 10);
+    }
+    // Try DateTimeDigitized
+    dt = json_get(img.exif_json, "DateTimeDigitized");
+    if (!dt.empty() && dt.size() >= 10 && dt.substr(0, 4) != "0000" && dt.substr(0, 4) != "1970") {
+        return dt.substr(0, 10);
+    }
+    // Fall back to modified_at
+    if (!img.modified_at.empty() && img.modified_at.size() >= 10) {
+        return img.modified_at.substr(0, 10);
+    }
+    return "unknown";
+}
+
+int64_t parse_size(const std::string& s) {
+    if (s.empty()) throw std::runtime_error("Empty size value");
+
+    // Find where the digits end
+    size_t i = 0;
+    while (i < s.size() && (std::isdigit(s[i]) || s[i] == '.')) i++;
+
+    double num = std::stod(s.substr(0, i));
+    std::string suffix = s.substr(i);
+
+    // Lowercase the suffix
+    for (auto& c : suffix) c = std::tolower(c);
+
+    if (suffix.empty() || suffix == "b") return static_cast<int64_t>(num);
+    if (suffix == "k" || suffix == "kb") return static_cast<int64_t>(num * 1024);
+    if (suffix == "m" || suffix == "mb") return static_cast<int64_t>(num * 1024 * 1024);
+    if (suffix == "g" || suffix == "gb") return static_cast<int64_t>(num * 1024 * 1024 * 1024);
+
+    throw std::runtime_error("Unknown size suffix: " + suffix + " (use B, KB, MB, GB)");
+}
+
+uint64_t parse_hex_phash(const std::string& hex) {
+    uint64_t val = 0;
+    for (char c : hex) {
+        val <<= 4;
+        if (c >= '0' && c <= '9') val |= (c - '0');
+        else if (c >= 'a' && c <= 'f') val |= (c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') val |= (c - 'A' + 10);
+        else throw std::runtime_error("Invalid hex character in phash: " + hex);
+    }
+    return val;
+}
+
+} // anonymous namespace
+
+int cmd_search(const SearchOptions& opts) {
+    Database db(opts.db_path);
+    db.init_schema();
+
+    if (db.count() == 0) {
+        std::cerr << "Database is empty. Run 'phig scan <directory>' first.\n";
+        return 1;
+    }
+
+    std::vector<ImageInfo> results;
+    bool is_similar = !opts.similar.empty() || !opts.similar_hash.empty();
+
+    if (is_similar) {
+        // Compute or parse the query phash
+        uint64_t query_phash;
+        if (!opts.similar.empty()) {
+            auto phash_result = compute_phash(opts.similar);
+            query_phash = phash_result.hash;
+        } else {
+            query_phash = parse_hex_phash(opts.similar_hash);
+        }
+
+        // Get all images (within path prefix) and compare
+        auto all_images = db.get_all_images(opts.path_prefix);
+
+        // Compute distances and filter
+        struct ScoredImage {
+            ImageInfo info;
+            int distance;
+        };
+        std::vector<ScoredImage> scored;
+
+        for (auto& img : all_images) {
+            int dist = std::popcount(query_phash ^ img.phash);
+            if (dist <= opts.threshold) {
+                scored.push_back({std::move(img), dist});
+            }
+        }
+
+        // Sort by distance (closest first)
+        std::sort(scored.begin(), scored.end(),
+            [](const ScoredImage& a, const ScoredImage& b) {
+                return a.distance < b.distance;
+            });
+
+        for (auto& s : scored) {
+            results.push_back(std::move(s.info));
+        }
+    } else {
+        // Build search criteria
+        Database::SearchCriteria criteria;
+        criteria.path_prefix = opts.path_prefix;
+        criteria.extension = opts.extension;
+        criteria.after = opts.after;
+        criteria.before = opts.before;
+        criteria.camera = opts.camera;
+        criteria.make = opts.make;
+        criteria.min_size = opts.min_size;
+        criteria.max_size = opts.max_size;
+        // Don't apply limit in DB if we also need match/filter (apply after)
+        if (opts.matches.empty() && opts.filters.empty()) {
+            criteria.limit = opts.limit;
+        }
+        results = db.search(criteria);
+    }
+
+    // Apply match/filter
+    if (!opts.matches.empty() || !opts.filters.empty()) {
+        results.erase(
+            std::remove_if(results.begin(), results.end(),
+                [&](const ImageInfo& img) {
+                    return !passes_filters(img.filename, opts.matches, opts.filters);
+                }),
+            results.end());
+    }
+
+    // Apply limit (if not already applied in DB)
+    if (opts.limit > 0 && static_cast<int>(results.size()) > opts.limit) {
+        results.resize(opts.limit);
+    }
+
+    // Output
+    std::ofstream file_out;
+    if (!opts.output.empty()) {
+        file_out.open(opts.output);
+        if (!file_out) {
+            std::cerr << "Error: cannot open output file: " << opts.output << "\n";
+            return 1;
+        }
+    }
+    std::ostream& out = opts.output.empty() ? std::cout : file_out;
+
+    if (opts.print0) {
+        for (const auto& img : results) {
+            out << img.path << '\0';
+        }
+    } else if (opts.porcelain) {
+        for (const auto& img : results) {
+            std::string date = get_best_date_str(img);
+            std::string camera = json_get(img.exif_json, "Model");
+            out << img.path << '\t'
+                << img.width << '\t' << img.height << '\t'
+                << img.file_size << '\t'
+                << date << '\t'
+                << camera << '\n';
+        }
+    } else if (opts.format == "csv") {
+        out << "path,filename,width,height,file_size,date,camera,sha256,phash\n";
+        for (const auto& img : results) {
+            std::string date = get_best_date_str(img);
+            std::string camera = json_get(img.exif_json, "Model");
+            out << "\"" << img.path << "\"," << img.filename << ","
+                << img.width << "," << img.height << ","
+                << img.file_size << "," << date << ","
+                << "\"" << camera << "\"," << img.sha256 << ","
+                << img.phash << "\n";
+        }
+    } else if (opts.format == "json") {
+        out << "{\"results\":[";
+        for (size_t i = 0; i < results.size(); i++) {
+            if (i > 0) out << ",";
+            const auto& img = results[i];
+            std::string date = get_best_date_str(img);
+            std::string camera = json_get(img.exif_json, "Model");
+            out << "{\"path\":\"" << img.path << "\""
+                << ",\"filename\":\"" << img.filename << "\""
+                << ",\"width\":" << img.width
+                << ",\"height\":" << img.height
+                << ",\"file_size\":" << img.file_size
+                << ",\"date\":\"" << date << "\""
+                << ",\"camera\":\"" << camera << "\""
+                << ",\"sha256\":\"" << img.sha256 << "\""
+                << ",\"phash\":" << img.phash << "}";
+        }
+        out << "],\"count\":" << results.size() << "}\n";
+    } else {
+        // Human-readable
+        for (const auto& img : results) {
+            std::string date = get_best_date_str(img);
+            std::string camera = json_get(img.exif_json, "Model");
+            out << img.path << "\n"
+                << "  " << img.width << "x" << img.height
+                << "  " << format_size(img.file_size)
+                << "  " << date;
+            if (!camera.empty()) out << "  " << camera;
+            out << "\n\n";
+        }
+        out << "Found " << results.size() << " images\n";
+    }
+
+    return 0;
+}
+
 // ---- Main ----
 
 int main(int argc, char* argv[]) {
@@ -823,6 +1101,20 @@ int main(int argc, char* argv[]) {
     }
 
     std::string command = argv[1];
+
+    if (command == "--help" || command == "-h" || command == "help") {
+        print_usage();
+        return 0;
+    }
+
+    // Check for --help on any command
+    for (int i = 2; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_usage();
+            return 0;
+        }
+    }
 
     if (command == "scan") {
         if (argc < 3) {
@@ -982,6 +1274,68 @@ int main(int argc, char* argv[]) {
 
         try {
             return cmd_organize(opts);
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
+        }
+    } else if (command == "search") {
+        SearchOptions opts;
+        opts.db_path = default_db_path();
+
+        for (int i = 2; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "--ext" && i + 1 < argc) {
+                opts.extension = argv[++i];
+            } else if (arg == "--after" && i + 1 < argc) {
+                opts.after = argv[++i];
+            } else if (arg == "--before" && i + 1 < argc) {
+                opts.before = argv[++i];
+            } else if (arg == "--camera" && i + 1 < argc) {
+                opts.camera = argv[++i];
+            } else if (arg == "--make" && i + 1 < argc) {
+                opts.make = argv[++i];
+            } else if (arg == "--min-size" && i + 1 < argc) {
+                opts.min_size = parse_size(argv[++i]);
+            } else if (arg == "--max-size" && i + 1 < argc) {
+                opts.max_size = parse_size(argv[++i]);
+            } else if (arg == "--similar" && i + 1 < argc) {
+                opts.similar = argv[++i];
+            } else if (arg == "--similar-hash" && i + 1 < argc) {
+                opts.similar_hash = argv[++i];
+            } else if (arg == "--threshold" && i + 1 < argc) {
+                opts.threshold = std::stoi(argv[++i]);
+            } else if (arg == "--path" && i + 1 < argc) {
+                opts.path_prefix = fs::canonical(argv[++i]).string();
+                if (opts.path_prefix.back() != '/') opts.path_prefix += '/';
+            } else if (arg == "--match" && i + 1 < argc) {
+                opts.matches.push_back(argv[++i]);
+            } else if (arg == "--filter" && i + 1 < argc) {
+                opts.filters.push_back(argv[++i]);
+            } else if (arg == "--limit" && i + 1 < argc) {
+                opts.limit = std::stoi(argv[++i]);
+            } else if (arg == "--porcelain") {
+                opts.porcelain = true;
+            } else if (arg == "--print0") {
+                opts.print0 = true;
+            } else if (arg == "--format" && i + 1 < argc) {
+                opts.format = argv[++i];
+                if (opts.format != "text" && opts.format != "csv" && opts.format != "json") {
+                    std::cerr << "Error: --format must be 'text', 'csv', or 'json'\n";
+                    return 1;
+                }
+            } else if (arg == "--output" && i + 1 < argc) {
+                opts.output = argv[++i];
+            } else if (arg == "--db" && i + 1 < argc) {
+                opts.db_path = argv[++i];
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                print_usage();
+                return 1;
+            }
+        }
+
+        try {
+            return cmd_search(opts);
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << "\n";
             return 1;
