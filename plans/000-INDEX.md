@@ -14,3 +14,5 @@
 | 010 | Face Recognition | completed | [010-face-recognition.md](010-face-recognition.md) | Detect faces via dlib, store 128D embeddings in SQLite with sqlite-vec for fast KNN search. Search by providing a reference photo of a person. |
 | 011 | Tags & Events | planned | [011-tags-events.md](011-tags-events.md) | Tag images with user-defined labels (N per image) and assign events (1 per image). Searchable and usable as organize format tokens. |
 | 012 | Blur Detection | planned | [012-blur-detection.md](012-blur-detection.md) | Compute sharpness score via Laplacian variance during scan. Store in DB. Search for blurry images to clean up. |
+| 013 | Geolocation Search | planned | [013-geo-search.md](013-geo-search.md) | Offline location search via SpatiaLite + Natural Earth boundaries. Parse GPS EXIF at scan time, reverse-geocode to country/region, search by place name or coordinates. |
+| 014 | Thumbnails | planned | [014-thumbs.md](014-thumbs.md) | Generate 512px JPEG thumbnails cached on filesystem by SHA256 hash. `phig thumbs` command + `--thumbs` on scan. Granular `--force` rework (hash/thumbs/faces/all). |
