@@ -85,7 +85,14 @@ Bare `--force` (no value) defaults to `all` — "redo everything."
 
 **Note:** `--force` without `--thumbs`/`--faces` still only forces what's enabled. E.g., `--force thumbs` without `--thumbs` is a no-op for thumbnails. The `--force` values control *what gets reprocessed*, while `--thumbs`/`--faces` control *what's enabled*.
 
-**Safety guard exception:** The existing unmounted-drive safety guard (`--force` to proceed when all DB entries are missing) remains. This is orthogonal — it's about allowing stale entry cleanup, not about reprocessing. This will need a `--force` value or a separate flag (e.g. `--force purge` or keeping the bare `--force` behavior for this case). TBD during implementation — may warrant a separate `--yes` or `--confirm` flag to avoid overloading `--force`.
+**Safety guard:** The existing unmounted-drive safety guard (warns when all DB entries for a directory are missing from disk) is separated from `--force` into its own flag: `--ignore-mount-warning`. When all files in a scanned directory are missing, phig warns and stops — this flag overrides that warning. A few missing files are still cleaned up automatically as before. `--force` is now purely about reprocessing.
+
+Warning message becomes:
+```
+Warning: All 1,234 files in /mnt/photos are missing from disk.
+This may indicate an unmounted drive.
+Use --ignore-mount-warning to remove these entries from the database.
+```
 
 ## Pipeline
 
@@ -119,6 +126,16 @@ After each image is processed (hashed + inserted):
 - Skip if file exists (unless `--force thumbs` or `--force all`)
 - Resize the already-decoded image (avoid re-reading from disk)
 - Write thumbnail to cache
+
+## Search Output
+
+All machine-readable search output formats include the thumbnail cache path as a standard column:
+
+- **Porcelain:** appended as an additional tab-separated column: `path \t width \t height \t file_size \t date \t camera \t thumb_path`
+- **CSV:** added as a `thumb_path` column
+- **JSON:** added as a `thumb_path` field
+
+The path is derived from the SHA256 hash at output time — no extra DB query needed. If the thumbnail file doesn't exist (not yet generated), the path is still included — consumers can check for existence themselves.
 
 ## Cache Management
 
@@ -174,4 +191,8 @@ Replace `bool force` in scan options with `ForceOptions force`.
 - [ ] Update help text
 - [ ] Tests for thumbnail path derivation
 - [ ] Tests for thumbnail generation (size, format, aspect ratio)
+- [ ] Add thumb_path to porcelain output (search)
+- [ ] Add thumb_path to CSV output (search)
+- [ ] Add thumb_path to JSON output (search)
+- [ ] Separate safety guard into `--ignore-mount-warning` flag
 - [ ] Update AGENTS.md project description
