@@ -51,8 +51,11 @@ std::string default_db_path() {
 }
 
 std::string format_time(fs::file_time_type ftime) {
-    auto sctp = std::chrono::time_point_cast<std::chrono::seconds>(
-        std::chrono::clock_cast<std::chrono::system_clock>(ftime));
+    // Portable conversion: compute offset between file_clock and system_clock
+    auto file_now = decltype(ftime)::clock::now();
+    auto sys_now = std::chrono::system_clock::now();
+    auto sys_tp = sys_now + (ftime - file_now);
+    auto sctp = std::chrono::time_point_cast<std::chrono::seconds>(sys_tp);
     auto time_t = std::chrono::system_clock::to_time_t(sctp);
     std::tm tm;
     gmtime_r(&time_t, &tm);

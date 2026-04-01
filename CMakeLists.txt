@@ -69,4 +69,4 @@ target_link_libraries(phig-tests PRIVATE
 )
 
 include(GoogleTest)
-gtest_discover_tests(phig-tests)
+gtest_discover_tests(phig-tests DISCOVERY_TIMEOUT 30)
