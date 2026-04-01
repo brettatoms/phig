@@ -1,17 +1,17 @@
 ---
-name: Tags & Events
+name: Tags & Galleries
 status: planned
 created: 2026-03-28
 description: >
-  Tag images with user-defined labels (N per image) and assign events
+  Tag images with user-defined labels (N per image) and assign galleries
   (1 per image). Searchable via the search command.
 ---
 
-# Tags & Events
+# Tags & Galleries
 
 ## Goal
 
-Allow users to annotate images with tags (many per image) and events (one per image). Both are searchable and usable as filters across commands.
+Allow users to annotate images with tags (many per image) and galleries (one per image). Both are searchable and usable as filters across commands.
 
 ## Schema
 
@@ -27,13 +27,13 @@ CREATE TABLE image_tags (
     PRIMARY KEY (image_id, tag_id)
 );
 
--- Event is a simple column on the images table (0 or 1 per image)
-ALTER TABLE images ADD COLUMN event TEXT;
+-- Gallery is a simple column on the images table (0 or 1 per image)
+ALTER TABLE images ADD COLUMN gallery TEXT;
 
-CREATE INDEX idx_event ON images(event);
+CREATE INDEX idx_gallery ON images(gallery);
 ```
 
-Tags use a junction table since images can have many tags. Events are a single column since an image has at most one.
+Tags use a junction table since images can have many tags. Galleries are a single column since an image has at most one.
 
 ## CLI
 
@@ -65,73 +65,73 @@ phig tag remove vacation --match "IMG_20230815_001.jpg"
 phig tag list                    # list all tags and their counts
 ```
 
-### Events
+### Galleries
 
 ```
-phig event set <event-name> [flags]
+phig gallery set <gallery-name> [flags]
   --match <glob>           Apply to files matching glob (repeatable)
   --filter <glob>          Exclude files matching glob (repeatable)
   --path <directory>       Apply to files under this directory
-  --no-overwrite           Skip images that already have an event
+  --no-overwrite           Skip images that already have a gallery
   --db <path>
 
-phig event clear [flags]
+phig gallery clear [flags]
   --match <glob>           Clear from files matching glob (repeatable)
   --filter <glob>          Exclude files matching glob (repeatable)
   --path <directory>       Clear from files under this directory
   --db <path>
 
-phig event list [flags]
+phig gallery list [flags]
   --db <path>
 ```
 
 Examples:
 ```bash
-phig event set "Italy 2024" --path ~/Photos/Italy
-phig event set "Sarah Birthday" --match "IMG_202308*" --no-overwrite
-phig event clear --match "IMG_20230815_001.jpg"
-phig event list                  # list all events and their counts
+phig gallery set "Italy 2024" --path ~/Photos/Italy
+phig gallery set "Sarah Birthday" --match "IMG_202308*" --no-overwrite
+phig gallery clear --match "IMG_20230815_001.jpg"
+phig gallery list                  # list all galleries and their counts
 ```
 
 ## Search Integration
 
-Both tags and events should be searchable via the search command (plan 008):
+Both tags and galleries should be searchable via the search command (plan 008):
 
 ```bash
 phig search --tag vacation
 phig search --tag vacation --tag family     # images with both tags
-phig search --event "Italy 2024"
+phig search --gallery "Italy 2024"
 phig search --tag family --after 2023-01-01
 ```
 
 ## Organize Integration
 
-Events could be used as a format token in organize:
+Galleries could be used as a format token in organize:
 
 ```bash
-phig organize ~/Organized --format "%event/%Y/%m/%original"
+phig organize ~/Organized --format "%gallery/%Y/%m/%original"
 # → Italy 2024/2024/07/IMG_1234.jpg
 ```
 
-Images without an event would use `unsorted` or `no-event` as the folder name.
+Images without a gallery would use `unsorted` or `no-gallery` as the folder name.
 
 ## Open Questions
 
 - Should `phig tag add` report how many images were tagged?
 - Should there be a `phig tag rename` command?
-- Should `phig event set` report how many images were updated vs skipped (with `--no-overwrite`)?
-- Should tags/events be included in the porcelain output of search?
+- Should `phig gallery set` report how many images were updated vs skipped (with `--no-overwrite`)?
+- Should tags/galleries be included in the porcelain output of search?
 - Should `%tag` be a format token for organize? (Tricky since images can have multiple tags)
 
 ## Checklist
 
-- [ ] Schema migration (tags table, image_tags table, event column)
+- [ ] Schema migration (tags table, image_tags table, gallery column)
 - [ ] `phig tag add` command
 - [ ] `phig tag remove` command
 - [ ] `phig tag list` command
-- [ ] `phig event set` command (with `--no-overwrite`)
-- [ ] `phig event clear` command
-- [ ] `phig event list` command
-- [ ] Search integration (`--tag`, `--event`)
-- [ ] Organize format token `%event`
+- [ ] `phig gallery set` command (with `--no-overwrite`)
+- [ ] `phig gallery clear` command
+- [ ] `phig gallery list` command
+- [ ] Search integration (`--tag`, `--gallery`)
+- [ ] Organize format token `%gallery`
 - [ ] Tests
