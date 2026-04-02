@@ -26,13 +26,17 @@ Binary: `./build/phig`
 cmake --build build && ./build/phig-tests
 ```
 
-101 tests across 11 suites: scanner, hasher (SHA256 + phash), exif, database, glob, filters (match/filter precedence), date parsing, JSON helpers, format strings, face DB operations, embedding distance.
+116 tests across 13 suites: scanner, hasher (SHA256 + phash), exif, database, glob, filters (match/filter precedence), date parsing, JSON helpers, format strings, face DB operations, embedding distance.
 
 ## CLI Commands
 
 ```bash
 # Scan a directory into the database
-phig scan <directory> [--recursive] [--force] [--on-error warn|fail] [--db <path>]
+phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--ignore-mount-warning] [--on-error warn|fail] [--db <path>]
+
+# Generate thumbnails
+phig thumbs rebuild [--match <glob>] [--filter <glob>] [--force] [--parallel N] [--db <path>]
+phig thumbs clean [--db <path>]
 
 # Find duplicate images
 phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--filter <glob>] [--path <dir>] [--db <path>]
@@ -59,6 +63,7 @@ src/
 ├── exif.h/cpp        EXIF extraction to JSON via libexif
 ├── database.h/cpp    SQLite schema, CRUD, queries
 ├── filters.h/cpp     Glob matching, match/filter logic
+├── thumbs.h/cpp      Thumbnail generation (512px JPEG, SHA256-keyed cache)
 └── types.h           ImageInfo struct
 tests/
 ├── test_scanner.cpp
@@ -73,7 +78,9 @@ tests/
 - **Database is source of truth** — always reflects current file locations. Designed to be reusable by other tools (e.g., a future API/GUI).
 - **EXIF stored as JSON blob** — no schema migrations needed, queryable via `json_extract()`.
 - **Re-scan skips unchanged files** — matches on path + mtime. Use `--force` to reprocess.
-- **Safety guard on scan** — warns if all DB entries for a directory are missing (possible unmounted drive). Requires `--force` to proceed with deletion.
+- **Granular --force** — `--force` accepts `hash,thumbs,faces,all` (comma-separated or repeated). Bare `--force` = all.
+- **Safety guard on scan** — warns if all DB entries for a directory are missing (possible unmounted drive). Requires `--ignore-mount-warning` to proceed with deletion.
+- **Thumbnails** — 512px JPEG cached in `~/.cache/phig/thumbs/` keyed by SHA256. Deduplicates naturally.
 - **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.
 - **Match/filter system** — `--match` includes (repeatable), `--filter` excludes (repeatable), filter wins on overlap.
 - **Duplicates compare against full DB** — `--match` filters which groups to show, not which files to compare.

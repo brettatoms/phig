@@ -24,6 +24,7 @@ add_library(phig-lib STATIC
     src/filters.cpp
     src/faces.cpp
     src/models.cpp
+    src/thumbs.cpp
     vendor/sqlite-vec/sqlite-vec.c
 )
 
@@ -61,6 +62,7 @@ add_executable(phig-tests
     tests/test_organize.cpp
     tests/test_faces.cpp
     tests/test_porcelain.cpp
+    tests/test_thumbs.cpp
 )
 
 target_link_libraries(phig-tests PRIVATE

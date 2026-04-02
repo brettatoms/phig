@@ -206,6 +206,29 @@ std::optional<std::string> Database::get_modified_at(const std::string& path) {
     return result;
 }
 
+std::optional<std::string> Database::get_sha256(const std::string& path) {
+    const char* sql = "SELECT sha256 FROM images WHERE path = ?";
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare query: " + std::string(sqlite3_errmsg(db_)));
+    }
+
+    sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+
+    std::optional<std::string> result;
+    if (rc == SQLITE_ROW) {
+        const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (text) {
+            result = std::string(text);
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    return result;
+}
+
 void Database::update_path(const std::string& old_path, const std::string& new_path) {
     const char* sql = "UPDATE images SET path = ?, filename = ? WHERE path = ?";
     sqlite3_stmt* stmt;
@@ -333,6 +356,23 @@ int64_t Database::count() {
         result = sqlite3_column_int64(stmt, 0);
     }
 
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+std::set<std::string> Database::get_all_sha256s() {
+    const char* sql = "SELECT DISTINCT sha256 FROM images WHERE sha256 IS NOT NULL AND sha256 != ''";
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare query: " + std::string(sqlite3_errmsg(db_)));
+    }
+
+    std::set<std::string> result;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (text) result.insert(text);
+    }
     sqlite3_finalize(stmt);
     return result;
 }

@@ -186,16 +186,17 @@ TEST_F(PorcelainTest, RegularSearchFieldCountIs6) {
     // This test exists to catch accidental additions/removals of fields.
     // If you need to add a field, add a new porcelain version.
     //
-    // Current format (v1):
-    //   path\twidth\theight\tfile_size\tdate\tcamera
+    // Current format (v2):
+    //   path\twidth\theight\tfile_size\tdate\tcamera\tthumb_path
     //
-    // 6 fields, 5 tabs per line.
-    const int EXPECTED_FIELDS = 6;
+    // 7 fields, 6 tabs per line.
+    const int EXPECTED_FIELDS = 7;
     const int EXPECTED_TABS = EXPECTED_FIELDS - 1;
 
     std::ostringstream out;
     out << "/path" << '\t' << "640" << '\t' << "480" << '\t'
-        << "1000" << '\t' << "2024-01-15" << '\t' << "Canon" << '\n';
+        << "1000" << '\t' << "2024-01-15" << '\t' << "Canon" << '\t'
+        << "/cache/thumbs/ab/abcdef.jpg" << '\n';
 
     std::string line = out.str();
     int tabs = 0;

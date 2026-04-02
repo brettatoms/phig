@@ -1,6 +1,7 @@
 ---
 name: Thumbnails
-status: planned
+status: completed
+completed: 2026-04-02
 created: 2026-03-29
 description: >
   Generate 512px JPEG thumbnails for scanned images. Store on filesystem
@@ -42,17 +43,25 @@ Two-character prefix subdirectories prevent large flat directories. Benefits:
 
 ### `phig thumbs` Command
 
-Standalone command to generate thumbnails, following the same pattern as `phig faces` / `phig face rebuild`:
+Subcommand-based, following the same pattern as `phig face`:
 
 ```
-phig thumbs [--match <glob>] [--filter <glob>] [--path <dir>]
-            [--force] [--parallel N] [--db <path>]
+phig thumbs rebuild [--match <glob>] [--filter <glob>]
+                    [--force] [--parallel N] [--db <path>]
+phig thumbs clean [--db <path>]
 ```
 
-- Generates thumbnails for all matching DB entries that don't already have a cached thumbnail
+**rebuild:**
+- Generates thumbnails for all DB entries that don't already have a cached thumbnail
 - `--force` regenerates even if thumbnail file exists
 - `--parallel N` for concurrent generation (OpenCV decode + resize)
+- `--match/--filter` to narrow scope
 - Skips entries with no SHA256 hash (shouldn't happen, but defensive)
+
+**clean:**
+- Walks the thumbnail cache directory
+- Removes any `.jpg` file whose stem (SHA256) doesn't match a hash in the DB
+- Removes empty subdirectories afterward
 
 ### `--thumbs` Flag on Scan
 
@@ -139,7 +148,7 @@ The path is derived from the SHA256 hash at output time — no extra DB query ne
 
 ## Cache Management
 
-Orphan thumbnails (from purged DB entries or changed files) are harmless — they're just unused files in the cache. No automatic cleanup for now. A future `phig cache clean` command could prune orphans by cross-referencing the DB.
+Orphan thumbnails (from purged DB entries or changed files) can be cleaned up with `phig thumbs clean`, which cross-references the cache against DB hashes and removes orphans.
 
 ## Implementation
 
@@ -179,20 +188,20 @@ Replace `bool force` in scan options with `ForceOptions force`.
 
 ## Checklist
 
-- [ ] `src/thumbs.h/cpp` — thumbnail generation module
-- [ ] `get_thumb_path()` — derive cache path from SHA256
-- [ ] `generate_thumb()` — resize + encode + write
-- [ ] `thumb_exists()` — check cache
-- [ ] `phig thumbs` command (match/filter/path/force/parallel)
-- [ ] `--thumbs` flag on scan
-- [ ] `--force` granularity rework (ForceOptions struct, parsing)
-- [ ] Progress reporting for thumbs command
-- [ ] Parallel thumbnail generation
-- [ ] Update help text
-- [ ] Tests for thumbnail path derivation
-- [ ] Tests for thumbnail generation (size, format, aspect ratio)
-- [ ] Add thumb_path to porcelain output (search)
-- [ ] Add thumb_path to CSV output (search)
-- [ ] Add thumb_path to JSON output (search)
-- [ ] Separate safety guard into `--ignore-mount-warning` flag
-- [ ] Update AGENTS.md project description
+- [x] `src/thumbs.h/cpp` — thumbnail generation module
+- [x] `get_thumb_path()` — derive cache path from SHA256
+- [x] `generate_thumb()` — resize + encode + write
+- [x] `thumb_exists()` — check cache
+- [x] `phig thumbs` command (match/filter/path/force/parallel)
+- [x] `--thumbs` flag on scan
+- [x] `--force` granularity rework (ForceOptions struct, parsing)
+- [x] Progress reporting for thumbs command
+- [x] Parallel thumbnail generation
+- [x] Update help text
+- [x] Tests for thumbnail path derivation
+- [x] Tests for thumbnail generation (size, format, aspect ratio)
+- [x] Add thumb_path to porcelain output (search)
+- [x] Add thumb_path to CSV output (search)
+- [x] Add thumb_path to JSON output (search)
+- [x] Separate safety guard into `--ignore-mount-warning` flag
+- [x] Update AGENTS.md project description

@@ -6,6 +6,7 @@
 #include "filters.h"
 #include "faces.h"
 #include "models.h"
+#include "thumbs.h"
 
 #include <algorithm>
 #include <chrono>
@@ -76,12 +77,16 @@ void print_usage() {
               << "  phig face identify <name>          Label all matching faces in DB\n"
               << "  phig face rebuild [--match] [--filter] [--parallel N]  Re-detect all faces\n"
               << "  phig face list                     List known people\n"
+              << "  phig thumbs rebuild [flags]  Generate missing thumbnails\n"
+              << "  phig thumbs clean            Remove orphaned thumbnails\n"
               << "  phig models download\n"
               << "\nScan flags:\n"
               << "  --recursive              Scan subdirectories\n"
               << "  --on-error warn|fail     Behavior for unreadable files (default: warn)\n"
-              << "  --force                  Re-hash all files, ignore mtime check\n"
+              << "  --force [what]           Re-process: hash,thumbs,faces,all (default: all)\n"
               << "  --faces                  Detect faces and compute embeddings\n"
+              << "  --thumbs                 Generate thumbnails\n"
+              << "  --ignore-mount-warning   Proceed even if all files are missing\n"
               << "  --parallel N             Number of images to process in parallel (default: auto)\n"
               << "  --db <path>              Database path\n"
               << "\nDuplicates flags:\n"
@@ -127,17 +132,52 @@ void print_usage() {
               << "  --print0                 Null-separated paths\n"
               << "  --format text|csv|json   Output format (default: text)\n"
               << "  --output <path>          Write to file\n"
+              << "  --db <path>              Database path\n"
+              << "\nThumbs rebuild flags:\n"
+              << "  --match <glob>           Only matching files (repeatable)\n"
+              << "  --filter <glob>          Exclude matching files (repeatable)\n"
+              << "  --force                  Regenerate even if thumbnail exists\n"
+              << "  --parallel N             Number of images to process in parallel (default: auto)\n"
               << "  --db <path>              Database path\n";
 }
 
 // ---- Scan command ----
 
+struct ForceOptions {
+    bool hash = false;
+    bool thumbs = false;
+    bool faces = false;
+
+    bool any() const { return hash || thumbs || faces; }
+    void set_all() { hash = thumbs = faces = true; }
+};
+
+ForceOptions parse_force(const std::string& value) {
+    ForceOptions f;
+    if (value.empty()) {
+        f.set_all();
+        return f;
+    }
+    std::istringstream ss(value);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        if (token == "hash") f.hash = true;
+        else if (token == "thumbs") f.thumbs = true;
+        else if (token == "faces") f.faces = true;
+        else if (token == "all") f.set_all();
+        else throw std::runtime_error("Unknown --force value: " + token + " (use hash,thumbs,faces,all)");
+    }
+    return f;
+}
+
 struct ScanOptions {
     std::string directory;
     bool recursive = false;
     bool fail_on_error = false;
-    bool force = false;
+    ForceOptions force;
     bool faces = false;
+    bool thumbs = false;
+    bool ignore_mount_warning = false;
     int parallel = -1;  // -1 = auto
     std::string db_path;
 };
@@ -248,6 +288,7 @@ int cmd_scan(const ScanOptions& opts) {
     std::atomic<size_t> skipped{0};
     std::atomic<size_t> errors{0};
     std::atomic<size_t> face_count{0};
+    std::atomic<size_t> thumb_count{0};
 
     if (!files.empty()) {
     std::atomic<size_t> next_file{0};
@@ -296,10 +337,11 @@ int cmd_scan(const ScanOptions& opts) {
             }
 
             // Check if we should skip (path + mtime match)
-            bool needs_full_process = opts.force;
+            bool needs_full_process = opts.force.hash;
             bool needs_faces_only = false;
+            bool needs_thumbs_only = false;
 
-            if (!opts.force) {
+            if (!opts.force.hash) {
                 std::string mtime;
                 try {
                     mtime = format_time(fs::last_write_time(filepath));
@@ -310,9 +352,20 @@ int cmd_scan(const ScanOptions& opts) {
                 std::lock_guard<std::mutex> lock(db_mutex);
                 auto existing_mtime = db.get_modified_at(canonical);
                 if (existing_mtime && *existing_mtime == mtime) {
-                    // File unchanged — check if we only need faces
-                    if (detector && !db.has_faces(canonical)) {
+                    // File unchanged — check if we need faces or thumbs
+                    bool need_faces = detector && !db.has_faces(canonical);
+                    bool need_thumbs = false;
+                    if (opts.thumbs) {
+                        auto sha = db.get_sha256(canonical);
+                        if (sha && !sha->empty()) {
+                            need_thumbs = opts.force.thumbs || !thumb_exists(*sha);
+                        }
+                    }
+
+                    if (need_faces) {
                         needs_faces_only = true;
+                    } else if (need_thumbs && !need_faces) {
+                        needs_thumbs_only = true;
                     } else {
                         skipped.fetch_add(1);
                         size_t done = processed.load() + skipped.load() + errors.load();
@@ -325,31 +378,70 @@ int cmd_scan(const ScanOptions& opts) {
             }
 
             try {
-                if (needs_faces_only) {
+                if (needs_thumbs_only) {
+                    // Only generate thumbnail — file is unchanged and faces are done
+                    std::string sha;
+                    {
+                        std::lock_guard<std::mutex> lock(db_mutex);
+                        auto s = db.get_sha256(canonical);
+                        if (s) sha = *s;
+                    }
+                    if (!sha.empty()) {
+                        generate_thumb(canonical, sha);
+                        thumb_count.fetch_add(1);
+                    }
+                    processed.fetch_add(1);
+                } else if (needs_faces_only) {
                     // Only decode and detect faces — skip hash/phash/EXIF
                     cv::Mat img = decode_image(canonical);
-                    if (!img.empty() && detector) {
-                        auto faces = detector->detect(img);
-                        if (!faces.empty()) {
-                            std::lock_guard<std::mutex> lock(db_mutex);
-                            // Flush any pending batch first, then insert faces in a transaction
-                            flush_batch();
-                            db.begin_transaction();
-                            int64_t image_id = db.get_image_id(canonical);
-                            if (image_id >= 0) {
-                                for (const auto& face : faces) {
-                                    db.insert_face(image_id, face);
-                                    int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
-                                    db.auto_label_face(face_id, face.embedding);
+                    if (!img.empty()) {
+                        if (detector) {
+                            auto faces = detector->detect(img);
+                            if (!faces.empty()) {
+                                std::lock_guard<std::mutex> lock(db_mutex);
+                                // Flush any pending batch first, then insert faces in a transaction
+                                flush_batch();
+                                db.begin_transaction();
+                                int64_t image_id = db.get_image_id(canonical);
+                                if (image_id >= 0) {
+                                    for (const auto& face : faces) {
+                                        db.insert_face(image_id, face);
+                                        int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
+                                        db.auto_label_face(face_id, face.embedding);
+                                    }
+                                    face_count.fetch_add(faces.size());
                                 }
-                                face_count.fetch_add(faces.size());
+                                db.commit_transaction();
                             }
-                            db.commit_transaction();
+                        }
+                        // Also generate thumbnail if needed
+                        if (opts.thumbs) {
+                            std::string sha;
+                            {
+                                std::lock_guard<std::mutex> lock(db_mutex);
+                                auto s = db.get_sha256(canonical);
+                                if (s) sha = *s;
+                            }
+                            if (!sha.empty() && (opts.force.thumbs || !thumb_exists(sha))) {
+                                generate_thumb(img, sha);
+                                thumb_count.fetch_add(1);
+                            }
                         }
                     }
                     processed.fetch_add(1);
                 } else {
                     auto result = process_file(filepath, detector);
+
+                    // Generate thumbnail from the already-decoded image if requested
+                    if (opts.thumbs && !result.info.sha256.empty()) {
+                        if (opts.force.thumbs || !thumb_exists(result.info.sha256)) {
+                            cv::Mat img = decode_image(canonical);
+                            if (!img.empty()) {
+                                generate_thumb(img, result.info.sha256);
+                                thumb_count.fetch_add(1);
+                            }
+                        }
+                    }
 
                     std::lock_guard<std::mutex> lock(db_mutex);
                     batch.push_back(std::move(result));
@@ -406,11 +498,11 @@ int cmd_scan(const ScanOptions& opts) {
     }
     size_t removed_count = 0;
     if (!removed_paths.empty()) {
-        if (!db_paths.empty() && removed_paths.size() == db_paths.size() && !opts.force) {
+        if (!db_paths.empty() && removed_paths.size() == db_paths.size() && !opts.ignore_mount_warning) {
             std::cerr << "\nWarning: All " << removed_paths.size()
                       << " previously scanned files in this directory are missing.\n"
                       << "This may indicate an unmounted drive or incorrect path.\n"
-                      << "Use --force to remove these entries from the database.\n";
+                      << "Use --ignore-mount-warning to remove these entries from the database.\n";
         } else {
             db.delete_paths(removed_paths);
             removed_count = removed_paths.size();
@@ -427,6 +519,9 @@ int cmd_scan(const ScanOptions& opts) {
               << "  Removed:   " << removed_count << "\n";
     if (opts.faces) {
         std::cout << "  Faces:     " << face_count.load() << "\n";
+    }
+    if (opts.thumbs) {
+        std::cout << "  Thumbs:    " << thumb_count.load() << "\n";
     }
     std::cout << "  Total DB:  " << db.count() << " images\n";
 
@@ -1328,22 +1423,26 @@ int cmd_search(const SearchOptions& opts) {
         for (const auto& img : results) {
             std::string date = get_best_date_str(img);
             std::string camera = json_get(img.exif_json, "Model");
+            std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
             out << img.path << '\t'
                 << img.width << '\t' << img.height << '\t'
                 << img.file_size << '\t'
                 << date << '\t'
-                << camera << '\n';
+                << camera << '\t'
+                << tpath << '\n';
         }
     } else if (opts.format == "csv") {
-        out << "path,filename,width,height,file_size,date,camera,sha256,phash\n";
+        out << "path,filename,width,height,file_size,date,camera,sha256,phash,thumb_path\n";
         for (const auto& img : results) {
             std::string date = get_best_date_str(img);
             std::string camera = json_get(img.exif_json, "Model");
+            std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
             out << "\"" << img.path << "\"," << img.filename << ","
                 << img.width << "," << img.height << ","
                 << img.file_size << "," << date << ","
                 << "\"" << camera << "\"," << img.sha256 << ","
-                << img.phash << "\n";
+                << img.phash << ","
+                << "\"" << tpath << "\"\n";
         }
     } else if (opts.format == "json") {
         out << "{\"results\":[";
@@ -1352,6 +1451,7 @@ int cmd_search(const SearchOptions& opts) {
             const auto& img = results[i];
             std::string date = get_best_date_str(img);
             std::string camera = json_get(img.exif_json, "Model");
+            std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
             out << "{\"path\":\"" << img.path << "\""
                 << ",\"filename\":\"" << img.filename << "\""
                 << ",\"width\":" << img.width
@@ -1360,7 +1460,9 @@ int cmd_search(const SearchOptions& opts) {
                 << ",\"date\":\"" << date << "\""
                 << ",\"camera\":\"" << camera << "\""
                 << ",\"sha256\":\"" << img.sha256 << "\""
-                << ",\"phash\":" << img.phash << "}";
+                << ",\"phash\":" << img.phash
+                << ",\"thumb_path\":\"" << tpath << "\""
+                << "}";
         }
         out << "],\"count\":" << results.size() << "}\n";
     } else {
@@ -1379,6 +1481,185 @@ int cmd_search(const SearchOptions& opts) {
     }
 
     return 0;
+}
+
+// ---- Thumbs command ----
+
+int cmd_thumbs(int argc, char* argv[], const std::string& db_path) {
+    if (argc < 3) {
+        std::cerr << "Usage:\n"
+                  << "  phig thumbs rebuild [flags]   Generate missing thumbnails\n"
+                  << "  phig thumbs clean             Remove orphaned thumbnails\n";
+        return 1;
+    }
+
+    std::string subcmd = argv[2];
+
+    if (subcmd == "rebuild") {
+        std::vector<std::string> matches, filters;
+        bool force = false;
+        int parallel = -1;
+
+        for (int i = 3; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "--match" && i + 1 < argc) {
+                matches.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--filter" && i + 1 < argc) {
+                filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--force") {
+                force = true;
+            } else if (arg == "--parallel" && i + 1 < argc) {
+                parallel = std::stoi(argv[++i]);
+            } else if (arg == "--db") {
+                i++; // already handled
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                return 1;
+            }
+        }
+
+        auto start_time = std::chrono::steady_clock::now();
+
+        Database db(db_path);
+        db.init_schema();
+
+        if (db.count() == 0) {
+            std::cerr << "Database is empty. Run 'phig scan <directory>' first.\n";
+            return 1;
+        }
+
+        auto images = db.get_all_images();
+
+        if (!matches.empty() || !filters.empty()) {
+            images.erase(
+                std::remove_if(images.begin(), images.end(),
+                    [&](const ImageInfo& img) {
+                        return !passes_filters(img.path, matches, filters);
+                    }),
+                images.end());
+        }
+
+        std::cout << "Generating thumbnails for " << images.size() << " images...\n";
+
+        int num_threads;
+        if (parallel > 0) {
+            num_threads = parallel;
+        } else {
+            num_threads = std::max(1u, std::thread::hardware_concurrency());
+        }
+
+        g_interrupted = 0;
+        auto prev_handler = std::signal(SIGINT, sigint_handler);
+
+        std::atomic<size_t> next_img{0};
+        std::atomic<size_t> generated{0};
+        std::atomic<size_t> skipped{0};
+        std::atomic<size_t> errors{0};
+
+        auto worker = [&](int) {
+            while (!g_interrupted) {
+                size_t idx = next_img.fetch_add(1);
+                if (idx >= images.size()) break;
+
+                const auto& img = images[idx];
+                if (img.sha256.empty()) {
+                    skipped.fetch_add(1);
+                    continue;
+                }
+
+                if (!force && thumb_exists(img.sha256)) {
+                    skipped.fetch_add(1);
+                    size_t done = generated.load() + skipped.load() + errors.load();
+                    std::cout << "\r[" << done << "/" << images.size() << "] " << std::flush;
+                    continue;
+                }
+
+                try {
+                    if (generate_thumb(img.path, img.sha256)) {
+                        generated.fetch_add(1);
+                    } else {
+                        errors.fetch_add(1);
+                    }
+                } catch (...) {
+                    errors.fetch_add(1);
+                }
+
+                size_t done = generated.load() + skipped.load() + errors.load();
+                fs::path p(img.path);
+                std::string display = (p.parent_path().filename() / p.filename()).string();
+                std::cout << "\r\033[K[" << done << "/" << images.size() << "] "
+                          << display << std::flush;
+            }
+        };
+
+        std::vector<std::thread> threads;
+        for (int i = 0; i < num_threads; i++) {
+            threads.emplace_back(worker, i);
+        }
+        for (auto& t : threads) t.join();
+
+        std::signal(SIGINT, prev_handler);
+
+        if (g_interrupted) {
+            std::cout << "\n\nInterrupted. Progress saved.\n";
+        }
+
+        auto elapsed = std::chrono::steady_clock::now() - start_time;
+        auto secs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() / 1000.0;
+
+        std::cout << "\n\nDone in " << secs << "s\n"
+                  << "  Generated: " << generated.load() << "\n"
+                  << "  Skipped:   " << skipped.load() << "\n"
+                  << "  Errors:    " << errors.load() << "\n";
+
+        return 0;
+
+    } else if (subcmd == "clean") {
+        Database db(db_path);
+        db.init_schema();
+
+        auto known_hashes = db.get_all_sha256s();
+        std::string cache_dir = get_thumb_cache_dir();
+
+        if (!fs::exists(cache_dir)) {
+            std::cout << "No thumbnail cache directory found.\n";
+            return 0;
+        }
+
+        size_t removed = 0;
+        size_t kept = 0;
+
+        for (auto& entry : fs::recursive_directory_iterator(cache_dir)) {
+            if (!entry.is_regular_file()) continue;
+            // Thumbnail filename is <sha256>.jpg
+            std::string stem = entry.path().stem().string();
+            if (known_hashes.count(stem)) {
+                kept++;
+            } else {
+                fs::remove(entry.path());
+                removed++;
+            }
+        }
+
+        // Remove empty subdirectories
+        for (auto& entry : fs::directory_iterator(cache_dir)) {
+            if (entry.is_directory() && fs::is_empty(entry.path())) {
+                fs::remove(entry.path());
+            }
+        }
+
+        std::cout << "Removed " << removed << " orphaned thumbnails\n"
+                  << "Kept " << kept << " thumbnails\n";
+
+        return 0;
+
+    } else {
+        std::cerr << "Unknown thumbs subcommand: " << subcmd << "\n"
+                  << "Usage:\n"
+                  << "  phig thumbs rebuild [flags]   Generate missing thumbnails\n"
+                  << "  phig thumbs clean             Remove orphaned thumbnails\n";
+        return 1;
+    }
 }
 
 // ---- Face command ----
@@ -1703,9 +1984,21 @@ int main(int argc, char* argv[]) {
             if (arg == "--recursive") {
                 opts.recursive = true;
             } else if (arg == "--force") {
-                opts.force = true;
+                // --force with optional value: --force or --force hash,thumbs
+                if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    auto f = parse_force(argv[++i]);
+                    opts.force.hash = opts.force.hash || f.hash;
+                    opts.force.thumbs = opts.force.thumbs || f.thumbs;
+                    opts.force.faces = opts.force.faces || f.faces;
+                } else {
+                    opts.force.set_all();
+                }
             } else if (arg == "--faces") {
                 opts.faces = true;
+            } else if (arg == "--thumbs") {
+                opts.thumbs = true;
+            } else if (arg == "--ignore-mount-warning") {
+                opts.ignore_mount_warning = true;
             } else if (arg == "--parallel" && i + 1 < argc) {
                 opts.parallel = std::stoi(argv[++i]);
             } else if (arg == "--on-error" && i + 1 < argc) {
@@ -1840,6 +2133,20 @@ int main(int argc, char* argv[]) {
 
         try {
             return cmd_organize(opts);
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
+        }
+    } else if (command == "thumbs") {
+        std::string thumbs_db = default_db_path();
+        for (int i = 2; i < argc; i++) {
+            if (std::string(argv[i]) == "--db" && i + 1 < argc) {
+                thumbs_db = argv[i + 1];
+                break;
+            }
+        }
+        try {
+            return cmd_thumbs(argc, argv, thumbs_db);
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << "\n";
             return 1;

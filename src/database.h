@@ -6,6 +6,7 @@
 #include <string>
 #include <optional>
 #include <vector>
+#include <set>
 #include <array>
 #include <functional>
 
@@ -27,6 +28,9 @@ public:
     // Returns modified_at for a path if it exists in the DB, nullopt otherwise
     std::optional<std::string> get_modified_at(const std::string& path);
 
+    // Returns sha256 for a path if it exists in the DB, nullopt otherwise
+    std::optional<std::string> get_sha256(const std::string& path);
+
     void update_path(const std::string& old_path, const std::string& new_path);
 
     // Returns all paths in the DB that start with the given prefix
@@ -40,6 +44,9 @@ public:
     std::vector<std::string> purge(const std::string& path_prefix, const std::string& glob);
 
     int64_t count();
+
+    // Get all distinct SHA256 hashes in the database
+    std::set<std::string> get_all_sha256s();
 
     // Get all images, optionally filtered by path prefix
     std::vector<ImageInfo> get_all_images(const std::string& path_prefix = "");
