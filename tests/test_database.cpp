@@ -118,6 +118,40 @@ TEST_F(DatabaseTest, UpdatePathWhenDestAlreadyExists) {
     EXPECT_EQ(*db->get_sha256("/dst/photo.jpg"), "sha_source");
 }
 
+TEST_F(DatabaseTest, DeletePathsCascadesTagsAndFaces) {
+    // delete_paths must remove the image row, its cascaded tags (FK ON DELETE
+    // CASCADE, dead unless PRAGMA foreign_keys=ON), and its face vectors in
+    // vec_faces (a vec0 virtual table that FK cascade can never reach).
+    db->insert(make_image("/lib/portrait.jpg", "sha_face"));
+    db->insert(make_image("/lib/keep.jpg", "sha_keep"));
+
+    // Tag both, and add a face + embedding to the one we'll delete.
+    db->set_tag({"/lib/portrait.jpg"}, "vacation", /*add=*/true);
+    db->set_tag({"/lib/keep.jpg"}, "vacation", /*add=*/true);
+
+    FaceInfo face;
+    face.embedding.fill(0.5f);
+    face.x = 1; face.y = 2; face.width = 3; face.height = 4;
+    int64_t img_id = db->get_image_id("/lib/portrait.jpg");
+    ASSERT_GE(img_id, 0);
+    db->insert_face(img_id, face);
+
+    // Sanity: the face is searchable before deletion.
+    EXPECT_FALSE(db->search_faces(face.embedding, /*threshold=*/1.0f, /*limit=*/5).empty());
+
+    db->delete_paths({"/lib/portrait.jpg"});
+
+    // Image row gone; the other image and its tag untouched.
+    EXPECT_FALSE(db->get_modified_at("/lib/portrait.jpg").has_value());
+    EXPECT_TRUE(db->get_modified_at("/lib/keep.jpg").has_value());
+    EXPECT_TRUE(db->get_tags_for_image("/lib/portrait.jpg").empty());   // cascaded away
+    EXPECT_FALSE(db->get_tags_for_image("/lib/keep.jpg").empty());      // untouched
+
+    // The orphaned face vector must be gone — otherwise search returns a hit
+    // that JOINs to a nonexistent face row.
+    EXPECT_TRUE(db->search_faces(face.embedding, /*threshold=*/1.0f, /*limit=*/5).empty());
+}
+
 TEST_F(DatabaseTest, GetPathsWithPrefix) {
     db->insert(make_image("/photos/2024/a.jpg", "sha1"));
     db->insert(make_image("/photos/2024/b.jpg", "sha2"));

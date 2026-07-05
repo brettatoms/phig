@@ -60,6 +60,12 @@ Database::Database(const std::string& path) {
     // Enable WAL mode for better concurrent read/write performance
     exec("PRAGMA journal_mode=WAL");
     exec("PRAGMA synchronous=NORMAL");
+    // Wait (rather than fail instantly with SQLITE_BUSY) when another phig
+    // process holds the single WAL writer lock.
+    sqlite3_busy_timeout(db_, 30000);
+    // Enforce declared FK cascades (faces/image_tags ON DELETE CASCADE). SQLite
+    // defaults foreign_keys OFF per-connection, so this must be set every open.
+    exec("PRAGMA foreign_keys=ON");
 
     // Initialize sqlite-vec extension
     sqlite3_vec_init(db_, nullptr, nullptr);
@@ -474,13 +480,25 @@ void Database::delete_paths(const std::vector<std::string>& paths) {
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
+        exec("ROLLBACK");
         throw std::runtime_error("Failed to prepare delete: " + std::string(sqlite3_errmsg(db_)));
     }
 
     for (const auto& path : paths) {
+        // vec_faces is a vec0 virtual table and cannot be an FK child, so
+        // ON DELETE CASCADE never reaches it — clean it (and faces) explicitly
+        // before dropping the image row. image_tags cascades via foreign_keys.
+        int64_t id = get_image_id(path);
+        if (id >= 0) delete_faces_for_image(id);
+
         sqlite3_reset(stmt);
         sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_step(stmt);
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            exec("ROLLBACK");
+            throw std::runtime_error("Failed to delete path '" + path +
+                                     "': " + std::string(sqlite3_errmsg(db_)));
+        }
     }
 
     sqlite3_finalize(stmt);
