@@ -55,11 +55,64 @@ cmake --install build --prefix ~/.local        # installs to ~/.local/bin/phig
 
 Note: OpenCV's `contrib` modules (specifically `img_hash`) and `objdetect` module are required. On some distributions this is a separate package (e.g., `libopencv-contrib-dev` on Debian/Ubuntu).
 
-## Database
+## Configuration
 
-The database is stored at `~/.local/share/phig/phig.db` by default. Override with `--db <path>` on any command.
+### File locations
 
-The database is designed to be the single source of truth for your image collection — reusable by other tools, a future API, or a GUI.
+phig follows the XDG base directory convention on all platforms (honoring
+`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` when set):
+
+| What | Default location |
+|------|------------------|
+| Database | `~/.local/share/phig/phig.db` |
+| Face-recognition models | `~/.cache/phig/models/` |
+| Thumbnails | `~/.cache/phig/thumbs/` |
+| Config file | `~/.config/phig/config.ini` |
+
+The database is designed to be the single source of truth for your image
+collection — reusable by other tools, a future API, or a GUI.
+
+### Config file
+
+If `~/.config/phig/config.ini` exists it is loaded automatically; point at a
+different file with the global `--config <path>` flag. Values set defaults;
+an explicit CLI flag always overrides the config, which overrides the built-in
+default. Leading `~` in path values is expanded.
+
+```ini
+[paths]
+db = ~/photos/phig.db
+models_dir = ~/.cache/phig/models
+thumbs_dir = ~/.cache/phig/thumbs
+
+[general]
+parallel = 4
+
+[scan]
+recursive = true
+on_error = warn        # warn | fail
+media = all            # image | video | all
+thumbs = false
+faces = false
+
+[organize]
+format = %Y/%m/%original
+
+[duplicates]
+type = all             # exact | near | all
+threshold = 5          # 0-64
+
+[faces]
+threshold = 0.6
+```
+
+Destructive or per-invocation options are deliberately **not** configurable and
+must be given on the command line: `--force`, `--dry-run`, `--on-conflict`,
+`--ignore-mount-warning`, and the selection/query flags (`--match`, `--filter`,
+etc.). Unknown keys produce a warning; invalid values are a hard error.
+
+`phig --help` prints an "Active configuration" summary showing the resolved
+paths and any values your config overrides.
 
 ## Usage
 

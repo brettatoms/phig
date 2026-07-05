@@ -19,16 +19,34 @@ std::string xdg_base(const char* var, const char* home_fallback) {
     return std::string(home) + home_fallback;
 }
 
+std::optional<std::string> g_db_override;
+std::optional<std::string> g_models_override;
+std::optional<std::string> g_thumbs_override;
+
 } // namespace
 
 std::string config_dir() { return xdg_base("XDG_CONFIG_HOME", "/.config") + "/phig"; }
 std::string data_dir() { return xdg_base("XDG_DATA_HOME", "/.local/share") + "/phig"; }
 std::string cache_dir() { return xdg_base("XDG_CACHE_HOME", "/.cache") + "/phig"; }
 
-std::string default_db_path() { return data_dir() + "/phig.db"; }
-std::string models_dir() { return cache_dir() + "/models"; }
-std::string thumbs_dir() { return cache_dir() + "/thumbs"; }
+std::string default_db_path() {
+    return g_db_override ? *g_db_override : data_dir() + "/phig.db";
+}
+std::string models_dir() {
+    return g_models_override ? *g_models_override : cache_dir() + "/models";
+}
+std::string thumbs_dir() {
+    return g_thumbs_override ? *g_thumbs_override : cache_dir() + "/thumbs";
+}
 std::string config_path() { return config_dir() + "/config.ini"; }
+
+void set_path_overrides(const std::optional<std::string>& db,
+                        const std::optional<std::string>& models,
+                        const std::optional<std::string>& thumbs) {
+    g_db_override = db;
+    g_models_override = models;
+    g_thumbs_override = thumbs;
+}
 
 std::string expand_tilde(const std::string& path) {
     if (!path.empty() && path[0] == '~') {

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "thumbs.h"
 #include "hasher.h"
+#include "paths.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -108,6 +109,5 @@ TEST_F(ThumbsTest, GenerateEmptyShaFails) {
 }
 
 TEST_F(ThumbsTest, CacheDirectoryXDG) {
-    std::string dir = get_thumb_cache_dir();
-    EXPECT_EQ(dir, temp_dir + "/phig/thumbs");
+    EXPECT_EQ(thumbs_dir(), temp_dir + "/phig/thumbs");
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 
 // XDG base directories, each returning phig's per-application subdirectory.
@@ -19,3 +20,11 @@ std::string config_path();      // config_dir() + /config.ini
 // Expand a leading ~ to $HOME. Paths not starting with ~ are returned unchanged,
 // as are ~ paths when HOME is unset.
 std::string expand_tilde(const std::string& path);
+
+// Install process-wide path overrides (typically from the config file). When set,
+// default_db_path()/models_dir()/thumbs_dir() return the override instead of the
+// computed XDG path. Pass std::nullopt to leave a given path computed. Called once
+// at startup; also used by tests to reset state.
+void set_path_overrides(const std::optional<std::string>& db,
+                        const std::optional<std::string>& models,
+                        const std::optional<std::string>& thumbs);

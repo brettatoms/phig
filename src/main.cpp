@@ -9,6 +9,7 @@
 #include "thumbs.h"
 #include "metadata.h"
 #include "paths.h"
+#include "config.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1578,7 +1579,7 @@ int cmd_search(const SearchOptions& opts) {
 
 // ---- Thumbs command ----
 
-int cmd_thumbs(int argc, char* argv[], const std::string& db_path) {
+int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_parallel) {
     if (argc < 3) {
         std::cerr << "Usage:\n"
                   << "  phig thumbs rebuild [flags]   Generate missing thumbnails\n"
@@ -1591,7 +1592,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path) {
     if (subcmd == "rebuild") {
         std::vector<std::string> matches, filters;
         bool force = false;
-        int parallel = -1;
+        int parallel = default_parallel;
 
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
@@ -1722,9 +1723,9 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path) {
         db.init_schema();
 
         auto known_hashes = db.get_all_sha256s();
-        std::string cache_dir = get_thumb_cache_dir();
+        std::string thumb_cache = thumbs_dir();
 
-        if (!fs::exists(cache_dir)) {
+        if (!fs::exists(thumb_cache)) {
             std::cout << "No thumbnail cache directory found.\n";
             return 0;
         }
@@ -1732,7 +1733,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path) {
         size_t removed = 0;
         size_t kept = 0;
 
-        for (auto& entry : fs::recursive_directory_iterator(cache_dir)) {
+        for (auto& entry : fs::recursive_directory_iterator(thumb_cache)) {
             if (!entry.is_regular_file()) continue;
             // Thumbnail filename is <sha256>.jpg
             std::string stem = entry.path().stem().string();
@@ -1745,7 +1746,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path) {
         }
 
         // Remove empty subdirectories
-        for (auto& entry : fs::directory_iterator(cache_dir)) {
+        for (auto& entry : fs::directory_iterator(thumb_cache)) {
             if (entry.is_directory() && fs::is_empty(entry.path())) {
                 fs::remove(entry.path());
             }
@@ -1767,7 +1768,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path) {
 
 // ---- Face command ----
 
-int cmd_face(int argc, char* argv[], const std::string& db_path) {
+int cmd_face(int argc, char* argv[], const std::string& db_path, int default_parallel) {
     if (argc < 3) {
         std::cerr << "Usage:\n"
                   << "  phig face name <image> <name>     Name a face from a single-face photo\n"
@@ -1927,7 +1928,7 @@ int cmd_face(int argc, char* argv[], const std::string& db_path) {
     } else if (subcmd == "rebuild") {
         // Parse match/filter flags
         std::vector<std::string> matches, filters;
-        int parallel = -1;
+        int parallel = default_parallel;
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
@@ -2054,7 +2055,68 @@ int cmd_face(int argc, char* argv[], const std::string& db_path) {
 
 // ---- Main ----
 
+// Print the effective configuration (resolved paths + any config overrides),
+// shown at the top of --help output.
+static void print_active_config(const Config& cfg, const std::string& cfg_path, bool loaded) {
+    std::cout << "Active configuration:\n";
+    std::cout << "  config file:  " << cfg_path
+              << (loaded ? "  (loaded)" : "  (not found)") << "\n";
+    std::cout << "  db:           " << default_db_path()
+              << (cfg.db ? "  [config]" : "  (default)") << "\n";
+    std::cout << "  models_dir:   " << models_dir()
+              << (cfg.models_dir ? "  [config]" : "  (default)") << "\n";
+    std::cout << "  thumbs_dir:   " << thumbs_dir()
+              << (cfg.thumbs_dir ? "  [config]" : "  (default)") << "\n";
+
+    // Non-path values are listed only when set in the config file.
+    auto line = [](const char* k, const std::string& v) {
+        std::cout << "  " << k << " = " << v << "  [config]\n";
+    };
+    if (cfg.parallel) line("general.parallel", std::to_string(*cfg.parallel));
+    if (cfg.scan_recursive) line("scan.recursive", *cfg.scan_recursive ? "true" : "false");
+    if (cfg.scan_on_error) line("scan.on_error", *cfg.scan_on_error);
+    if (cfg.scan_media) line("scan.media", *cfg.scan_media);
+    if (cfg.scan_thumbs) line("scan.thumbs", *cfg.scan_thumbs ? "true" : "false");
+    if (cfg.scan_faces) line("scan.faces", *cfg.scan_faces ? "true" : "false");
+    if (cfg.organize_format) line("organize.format", *cfg.organize_format);
+    if (cfg.duplicates_type) line("duplicates.type", *cfg.duplicates_type);
+    if (cfg.duplicates_threshold) line("duplicates.threshold", std::to_string(*cfg.duplicates_threshold));
+    if (cfg.faces_threshold) line("faces.threshold", std::to_string(*cfg.faces_threshold));
+    std::cout << "\n";
+}
+
 int main(int argc, char* argv[]) {
+    // Extract an optional global --config <path> from anywhere in the args, then
+    // continue with it removed so the per-command parsers don't see it.
+    std::string config_file;
+    bool have_config_file = false;
+    std::vector<char*> filtered_args;
+    filtered_args.push_back(argv[0]);
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "--config" && i + 1 < argc) {
+            config_file = argv[++i];
+            have_config_file = true;
+        } else {
+            filtered_args.push_back(argv[i]);
+        }
+    }
+    argv = filtered_args.data();
+    argc = static_cast<int>(filtered_args.size());
+
+    // Load configuration (missing file -> defaults). Install path overrides so
+    // default_db_path()/models_dir()/thumbs_dir() reflect the config everywhere.
+    std::string resolved_cfg_path = have_config_file ? config_file : config_path();
+    Config cfg;
+    try {
+        cfg = load_config(resolved_cfg_path);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
+    set_path_overrides(cfg.db, cfg.models_dir, cfg.thumbs_dir);
+    bool cfg_loaded = fs::exists(resolved_cfg_path);
+
     if (argc < 2) {
         print_usage();
         return 1;
@@ -2063,6 +2125,7 @@ int main(int argc, char* argv[]) {
     std::string command = argv[1];
 
     if (command == "--help" || command == "-h" || command == "help") {
+        print_active_config(cfg, resolved_cfg_path, cfg_loaded);
         print_usage();
         return 0;
     }
@@ -2071,6 +2134,7 @@ int main(int argc, char* argv[]) {
     for (int i = 2; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
+            print_active_config(cfg, resolved_cfg_path, cfg_loaded);
             print_usage();
             return 0;
         }
@@ -2086,6 +2150,13 @@ int main(int argc, char* argv[]) {
         ScanOptions opts;
         opts.directory = argv[2];
         opts.db_path = default_db_path();
+        // Seed from config; CLI flags below override.
+        if (cfg.parallel) opts.parallel = *cfg.parallel;
+        if (cfg.scan_recursive) opts.recursive = *cfg.scan_recursive;
+        if (cfg.scan_thumbs) opts.thumbs = *cfg.scan_thumbs;
+        if (cfg.scan_faces) opts.faces = *cfg.scan_faces;
+        if (cfg.scan_on_error) opts.fail_on_error = (*cfg.scan_on_error == "fail");
+        if (cfg.scan_media) opts.media = (*cfg.scan_media == "all") ? "" : *cfg.scan_media;
 
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
@@ -2146,6 +2217,9 @@ int main(int argc, char* argv[]) {
     } else if (command == "duplicates") {
         DuplicatesOptions opts;
         opts.db_path = default_db_path();
+        // Seed from config; CLI flags below override.
+        if (cfg.duplicates_type) opts.type = *cfg.duplicates_type;
+        if (cfg.duplicates_threshold) opts.threshold = *cfg.duplicates_threshold;
 
         for (int i = 2; i < argc; i++) {
             std::string arg = argv[i];
@@ -2229,6 +2303,8 @@ int main(int argc, char* argv[]) {
         opts.destination = argv[2];
         opts.is_move = (command == "mv");
         opts.db_path = default_db_path();
+        // Seed from config; CLI flags below override.
+        if (cfg.organize_format) opts.format = *cfg.organize_format;
 
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
@@ -2270,7 +2346,7 @@ int main(int argc, char* argv[]) {
             }
         }
         try {
-            return cmd_thumbs(argc, argv, thumbs_db);
+            return cmd_thumbs(argc, argv, thumbs_db, cfg.parallel.value_or(-1));
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << "\n";
             return 1;
@@ -2285,7 +2361,7 @@ int main(int argc, char* argv[]) {
             }
         }
         try {
-            return cmd_face(argc, argv, face_db);
+            return cmd_face(argc, argv, face_db, cfg.parallel.value_or(-1));
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << "\n";
             return 1;
@@ -2310,6 +2386,8 @@ int main(int argc, char* argv[]) {
     } else if (command == "search") {
         SearchOptions opts;
         opts.db_path = default_db_path();
+        // Seed from config; CLI flags below override.
+        if (cfg.faces_threshold) opts.face_threshold = static_cast<float>(*cfg.faces_threshold);
 
         for (int i = 2; i < argc; i++) {
             std::string arg = argv[i];

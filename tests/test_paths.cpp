@@ -2,6 +2,7 @@
 #include "paths.h"
 
 #include <cstdlib>
+#include <optional>
 #include <stdexcept>
 
 // Saves and restores HOME + all three XDG base-dir env vars so each test can
@@ -31,6 +32,8 @@ protected:
         unsetenv("XDG_CONFIG_HOME");
         unsetenv("XDG_DATA_HOME");
         unsetenv("XDG_CACHE_HOME");
+        // No path overrides unless a test sets them.
+        set_path_overrides(std::nullopt, std::nullopt, std::nullopt);
     }
 
     void TearDown() override {
@@ -120,4 +123,26 @@ TEST_F(PathsTest, ExpandTildeLeavesNonTildeUnchanged) {
 
 TEST_F(PathsTest, ExpandTildeOnlyLeadingTilde) {
     EXPECT_EQ(expand_tilde("/x/~/y"), "/x/~/y");
+}
+
+// ---- Path overrides (from config) take precedence over computed paths ----
+
+TEST_F(PathsTest, PathOverridesTakePrecedence) {
+    set_path_overrides("/opt/my.db", "/opt/models", "/opt/thumbs");
+    EXPECT_EQ(default_db_path(), "/opt/my.db");
+    EXPECT_EQ(models_dir(), "/opt/models");
+    EXPECT_EQ(thumbs_dir(), "/opt/thumbs");
+}
+
+TEST_F(PathsTest, UnsetOverridesFallBackToComputed) {
+    set_path_overrides(std::nullopt, std::nullopt, std::nullopt);
+    EXPECT_EQ(default_db_path(), "/home/tester/.local/share/phig/phig.db");
+    EXPECT_EQ(models_dir(), "/home/tester/.cache/phig/models");
+    EXPECT_EQ(thumbs_dir(), "/home/tester/.cache/phig/thumbs");
+}
+
+TEST_F(PathsTest, PartialOverrideOnlyAffectsSetPaths) {
+    set_path_overrides("/opt/only.db", std::nullopt, std::nullopt);
+    EXPECT_EQ(default_db_path(), "/opt/only.db");
+    EXPECT_EQ(models_dir(), "/home/tester/.cache/phig/models");
 }

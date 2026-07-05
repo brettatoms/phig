@@ -31,7 +31,10 @@ add_library(phig-lib STATIC
     src/thumbs.cpp
     src/metadata.cpp
     src/paths.cpp
+    src/config.cpp
     vendor/sqlite-vec/sqlite-vec.c
+    vendor/inih/ini.c
+    vendor/inih/INIReader.cpp
 )
 
 target_include_directories(phig-lib PUBLIC
@@ -43,6 +46,7 @@ target_include_directories(phig-lib PUBLIC
     ${AVUTIL_INCLUDE_DIRS}
     ${SWSCALE_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/vendor/sqlite-vec
+    ${CMAKE_SOURCE_DIR}/vendor/inih
 )
 
 target_link_libraries(phig-lib PUBLIC
@@ -79,6 +83,7 @@ add_executable(phig-tests
     tests/test_thumbs.cpp
     tests/test_video.cpp
     tests/test_paths.cpp
+    tests/test_config.cpp
 )
 
 target_link_libraries(phig-tests PRIVATE

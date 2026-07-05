@@ -1,6 +1,6 @@
 ---
 name: XDG Paths & Config File
-status: planned
+status: completed
 created: 2026-07-05
 description: >
   Centralize base-directory resolution behind XDG conventions (config/data/cache),

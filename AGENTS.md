@@ -51,7 +51,11 @@ phig mv <destination> [--format <string>] [--match <glob>] [--filter <glob>] [--
 phig purge [--match <glob>] [--filter <glob>] [--path <dir>] [--dry-run] [--db <path>]
 ```
 
-Default database location: `~/.local/share/phig/phig.db`
+Paths follow XDG conventions (all resolved in `src/paths.cpp`): database at
+`~/.local/share/phig/phig.db`, models at `~/.cache/phig/models`, thumbnails at
+`~/.cache/phig/thumbs`, config at `~/.config/phig/config.ini`. An optional INI
+config file (parsed in `src/config.cpp` via vendored inih) sets defaults; a global
+`--config <path>` flag overrides its location. Precedence: CLI flag > config > default.
 
 ## Project Structure
 

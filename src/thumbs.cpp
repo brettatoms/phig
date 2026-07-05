@@ -1,5 +1,6 @@
 #include "thumbs.h"
 #include "hasher.h"
+#include "paths.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -12,24 +13,9 @@ namespace fs = std::filesystem;
 static const int THUMB_SIZE = 512;
 static const int JPEG_QUALITY = 80;
 
-std::string get_thumb_cache_dir() {
-    const char* xdg = std::getenv("XDG_CACHE_HOME");
-    std::string base;
-    if (xdg && xdg[0] != '\0') {
-        base = xdg;
-    } else {
-        const char* home = std::getenv("HOME");
-        if (!home) {
-            throw std::runtime_error("Cannot determine home directory");
-        }
-        base = std::string(home) + "/.cache";
-    }
-    return base + "/phig/thumbs";
-}
-
 std::string get_thumb_path(const std::string& sha256) {
     if (sha256.size() < 2) return "";
-    std::string dir = get_thumb_cache_dir();
+    std::string dir = thumbs_dir();
     return dir + "/" + sha256.substr(0, 2) + "/" + sha256 + ".jpg";
 }
 
