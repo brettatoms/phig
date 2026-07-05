@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 
 #include "database.h"
@@ -228,4 +229,68 @@ TEST_F(DatabaseTest, CreatesDatabaseDirectory) {
         EXPECT_EQ(nested_db.count(), 0);
     }
     fs::remove_all(fs::temp_directory_path() / "image-cleanup-test-nested");
+}
+
+// ---- Tags & favorites (plan 011) ----
+
+static bool has_tag(const std::vector<std::string>& tags, const std::string& t) {
+    return std::find(tags.begin(), tags.end(), t) != tags.end();
+}
+
+static int64_t tag_count(const std::vector<std::pair<std::string, int64_t>>& counts,
+                         const std::string& name) {
+    for (const auto& [n, c] : counts) {
+        if (n == name) return c;
+    }
+    return -1;
+}
+
+TEST_F(DatabaseTest, FavoriteTagSeeded) {
+    // The built-in favorite tag exists on a fresh DB, with zero associations.
+    EXPECT_EQ(tag_count(db->get_tag_counts(), "favorite"), 0);
+}
+
+TEST_F(DatabaseTest, SetTagAddsAndQueries) {
+    db->insert(make_image("/t/a.jpg"));
+    EXPECT_EQ(db->set_tag({"/t/a.jpg"}, "vacation", true), 1);
+    auto tags = db->get_tags_for_image("/t/a.jpg");
+    EXPECT_EQ(tags.size(), 1u);
+    EXPECT_TRUE(has_tag(tags, "vacation"));
+}
+
+TEST_F(DatabaseTest, SetTagRemoves) {
+    db->insert(make_image("/t/a.jpg"));
+    db->set_tag({"/t/a.jpg"}, "vacation", true);
+    EXPECT_EQ(db->set_tag({"/t/a.jpg"}, "vacation", false), 1);
+    EXPECT_TRUE(db->get_tags_for_image("/t/a.jpg").empty());
+}
+
+TEST_F(DatabaseTest, SetTagCountsOnlyExistingPaths) {
+    db->insert(make_image("/t/a.jpg", "s1"));
+    db->insert(make_image("/t/b.jpg", "s2"));
+    EXPECT_EQ(db->set_tag({"/t/a.jpg", "/t/b.jpg", "/t/missing.jpg"}, "x", true), 2);
+}
+
+TEST_F(DatabaseTest, SetTagAddIsIdempotent) {
+    db->insert(make_image("/t/a.jpg"));
+    db->set_tag({"/t/a.jpg"}, "x", true);
+    db->set_tag({"/t/a.jpg"}, "x", true);
+    EXPECT_EQ(db->get_tags_for_image("/t/a.jpg").size(), 1u);
+}
+
+TEST_F(DatabaseTest, TagCountsReflectAssociations) {
+    db->insert(make_image("/t/a.jpg", "s1"));
+    db->insert(make_image("/t/b.jpg", "s2"));
+    db->set_tag({"/t/a.jpg", "/t/b.jpg"}, "vacation", true);
+    db->set_tag({"/t/a.jpg"}, "family", true);
+    auto counts = db->get_tag_counts();
+    EXPECT_EQ(tag_count(counts, "vacation"), 2);
+    EXPECT_EQ(tag_count(counts, "family"), 1);
+}
+
+TEST_F(DatabaseTest, FavoriteBehavesLikeATag) {
+    db->insert(make_image("/t/a.jpg"));
+    EXPECT_EQ(db->set_tag({"/t/a.jpg"}, "favorite", true), 1);
+    EXPECT_TRUE(has_tag(db->get_tags_for_image("/t/a.jpg"), "favorite"));
+    EXPECT_EQ(tag_count(db->get_tag_counts(), "favorite"), 1);
 }

@@ -73,6 +73,13 @@ class Database {
     };
     std::vector<ImageInfo> search(const SearchCriteria& criteria);
 
+    // Tags (plan 011). set_tag adds/removes `tag` on the images at the given
+    // paths (auto-creating the tag row on add) and returns the number of
+    // existing images affected. Favorites use the built-in `favorite` tag.
+    int set_tag(const std::vector<std::string>& paths, const std::string& tag, bool add);
+    std::vector<std::string> get_tags_for_image(const std::string& path);
+    std::vector<std::pair<std::string, int64_t>> get_tag_counts();
+
     // Face operations
     void insert_face(int64_t image_id, const FaceInfo& face);
     bool has_faces(const std::string& path);

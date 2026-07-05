@@ -17,11 +17,12 @@
 namespace fs = std::filesystem;
 
 // Schema version this code expects. Bump when adding migrations.
-static const int CURRENT_SCHEMA_VERSION = 2;
+static const int CURRENT_SCHEMA_VERSION = 3;
 
 // migrations[N] upgrades from version N-1 to version N.
 // Version 1 = initial schema, created directly by init_schema().
 // Version 2 = video support (media_type + duration_ms columns).
+// Version 3 = tags/image_tags + gallery column + seeded favorite tag.
 static const std::vector<std::string> migrations = {
     "",  // placeholder for index 0 (no version 0)
     "",  // v1: initial schema, created fresh by init_schema()
@@ -29,6 +30,15 @@ static const std::vector<std::string> migrations = {
     "ALTER TABLE images RENAME COLUMN exif TO metadata;"
     "ALTER TABLE images ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image';"
     "ALTER TABLE images ADD COLUMN duration_ms INTEGER;",
+    // v3: tags & galleries & favorites
+    "CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);"
+    "CREATE TABLE image_tags ("
+    "  image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,"
+    "  tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,"
+    "  PRIMARY KEY (image_id, tag_id));"
+    "INSERT OR IGNORE INTO tags(name) VALUES ('favorite');"
+    "ALTER TABLE images ADD COLUMN gallery TEXT;"
+    "CREATE INDEX idx_gallery ON images(gallery);",
 };
 
 Database::Database(const std::string& path) {
@@ -177,12 +187,29 @@ void Database::init_schema() {
                     height      INTEGER,
                     metadata    TEXT,
                     media_type  TEXT NOT NULL DEFAULT 'image',
-                    duration_ms INTEGER
+                    duration_ms INTEGER,
+                    gallery     TEXT
                 )
             )");
             exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
             exec("CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256)");
             exec("CREATE INDEX IF NOT EXISTS idx_path ON images(path)");
+            exec("CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery)");
+
+            exec(R"(
+                CREATE TABLE IF NOT EXISTS tags (
+                    id   INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE
+                )
+            )");
+            exec(R"(
+                CREATE TABLE IF NOT EXISTS image_tags (
+                    image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                    tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                    PRIMARY KEY (image_id, tag_id)
+                )
+            )");
+            exec("INSERT OR IGNORE INTO tags(name) VALUES ('favorite')");
 
             exec(R"(
                 CREATE TABLE IF NOT EXISTS faces (
@@ -651,6 +678,89 @@ int64_t Database::get_image_id(const std::string& path) {
     }
     sqlite3_finalize(stmt);
     return id;
+}
+
+int Database::set_tag(const std::vector<std::string>& paths, const std::string& tag, bool add) {
+    if (paths.empty()) {
+        return 0;
+    }
+
+    // On add, create the tag if it doesn't exist. Then resolve its id.
+    if (add) {
+        sqlite3_stmt* ins = nullptr;
+        sqlite3_prepare_v2(db_, "INSERT OR IGNORE INTO tags(name) VALUES (?)", -1, &ins, nullptr);
+        sqlite3_bind_text(ins, 1, tag.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(ins);
+        sqlite3_finalize(ins);
+    }
+
+    int64_t tag_id = -1;
+    {
+        sqlite3_stmt* sel = nullptr;
+        sqlite3_prepare_v2(db_, "SELECT id FROM tags WHERE name = ?", -1, &sel, nullptr);
+        sqlite3_bind_text(sel, 1, tag.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(sel) == SQLITE_ROW) {
+            tag_id = sqlite3_column_int64(sel, 0);
+        }
+        sqlite3_finalize(sel);
+    }
+    if (tag_id < 0) {
+        return 0;  // removing a tag that was never created: nothing to do
+    }
+
+    const char* sql = add ? "INSERT OR IGNORE INTO image_tags(image_id, tag_id) VALUES (?, ?)"
+                          : "DELETE FROM image_tags WHERE image_id = ? AND tag_id = ?";
+
+    int affected = 0;
+    exec("BEGIN TRANSACTION");
+    for (const auto& path : paths) {
+        int64_t image_id = get_image_id(path);
+        if (image_id < 0) {
+            continue;  // path not in the DB
+        }
+        sqlite3_stmt* stmt = nullptr;
+        sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+        sqlite3_bind_int64(stmt, 1, image_id);
+        sqlite3_bind_int64(stmt, 2, tag_id);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        affected++;
+    }
+    exec("COMMIT");
+    return affected;
+}
+
+std::vector<std::string> Database::get_tags_for_image(const std::string& path) {
+    std::vector<std::string> tags;
+    const char* sql =
+        "SELECT t.name FROM tags t "
+        "JOIN image_tags it ON it.tag_id = t.id "
+        "JOIN images i ON i.id = it.image_id "
+        "WHERE i.path = ? ORDER BY t.name";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        tags.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+    }
+    sqlite3_finalize(stmt);
+    return tags;
+}
+
+std::vector<std::pair<std::string, int64_t>> Database::get_tag_counts() {
+    std::vector<std::pair<std::string, int64_t>> counts;
+    const char* sql =
+        "SELECT t.name, COUNT(it.image_id) FROM tags t "
+        "LEFT JOIN image_tags it ON it.tag_id = t.id "
+        "GROUP BY t.id ORDER BY t.name";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        std::string name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        counts.emplace_back(std::move(name), sqlite3_column_int64(stmt, 1));
+    }
+    sqlite3_finalize(stmt);
+    return counts;
 }
 
 bool Database::has_faces(const std::string& path) {
