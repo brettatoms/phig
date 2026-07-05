@@ -975,11 +975,13 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
         sql += " AND media_type = ?";
         binds.push_back({c.media, false});
     }
+    // Duration filters: images have NULL duration_ms and always pass, so a
+    // duration bound narrows videos without silently dropping every image.
     if (c.min_duration_ms >= 0) {
-        sql += " AND duration_ms >= " + std::to_string(c.min_duration_ms);
+        sql += " AND (duration_ms IS NULL OR duration_ms >= " + std::to_string(c.min_duration_ms) + ")";
     }
     if (c.max_duration_ms >= 0) {
-        sql += " AND duration_ms <= " + std::to_string(c.max_duration_ms);
+        sql += " AND (duration_ms IS NULL OR duration_ms <= " + std::to_string(c.max_duration_ms) + ")";
     }
 
     sql += " ORDER BY path";

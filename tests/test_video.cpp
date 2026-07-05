@@ -441,17 +441,29 @@ TEST(VideoSearchTest, SearchByDuration) {
     v2.sha256 = "s2"; v2.metadata_json = "{}"; v2.media_type = "video"; v2.duration_ms = 60000;
     db.insert(v2);
 
+    // An image has NULL duration and should pass any duration filter.
+    ImageInfo img;
+    img.path = "/test/photo.jpg"; img.filename = "photo.jpg"; img.extension = "jpg";
+    img.sha256 = "i1"; img.metadata_json = "{}"; img.media_type = "image";
+    db.insert(img);
+
+    auto names = [](const std::vector<ImageInfo>& rs) {
+        std::set<std::string> s;
+        for (const auto& r : rs) s.insert(r.filename);
+        return s;
+    };
+
     Database::SearchCriteria c;
     c.min_duration_ms = 5000;
     auto results = db.search(c);
-    EXPECT_EQ(results.size(), 1);
-    EXPECT_EQ(results[0].filename, "long.mp4");
+    // long.mp4 (>= 5s) plus the image (NULL duration passes); short.mp4 excluded.
+    EXPECT_EQ(names(results), (std::set<std::string>{"long.mp4", "photo.jpg"}));
 
     c = {};
     c.max_duration_ms = 10000;
     results = db.search(c);
-    EXPECT_EQ(results.size(), 1);
-    EXPECT_EQ(results[0].filename, "short.mp4");
+    // short.mp4 (<= 10s) plus the image; long.mp4 excluded.
+    EXPECT_EQ(names(results), (std::set<std::string>{"short.mp4", "photo.jpg"}));
 
     fs::remove(temp);
 }
