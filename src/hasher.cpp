@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <array>
 #include <cstring>
+#include <mutex>
 
 // ---- SHA-256 (minimal implementation, no external dep) ----
 
@@ -85,6 +86,37 @@ std::string sha256_bytes(const uint8_t* data, size_t len) {
     return oss.str();
 }
 
+// RAII guard that redirects the process-global stderr to /dev/null for its
+// lifetime. Because STDERR_FILENO is shared across threads, concurrent scan
+// workers must not overlap save/restore or stderr can be left pointing at
+// /dev/null; a mutex serializes the whole suppressed region.
+class StderrSuppressor {
+public:
+    StderrSuppressor() : lock_(mutex()) {
+        saved_ = dup(STDERR_FILENO);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+    }
+    ~StderrSuppressor() {
+        if (saved_ >= 0) {
+            dup2(saved_, STDERR_FILENO);
+            close(saved_);
+        }
+    }
+    StderrSuppressor(const StderrSuppressor&) = delete;
+    StderrSuppressor& operator=(const StderrSuppressor&) = delete;
+private:
+    static std::mutex& mutex() {
+        static std::mutex m;
+        return m;
+    }
+    std::lock_guard<std::mutex> lock_;
+    int saved_ = -1;
+};
+
 } // anonymous namespace
 
 std::string compute_sha256(const std::string& path) {
@@ -116,21 +148,12 @@ cv::Mat decode_image(const std::string& path) {
             return 0; // don't throw
         }, &cv_warning);
 
-    // Suppress libjpeg's direct stderr output (e.g., "Premature end of JPEG file")
-    // by temporarily redirecting stderr to /dev/null
-    int saved_stderr = dup(STDERR_FILENO);
-    int devnull = open("/dev/null", O_WRONLY);
-    if (devnull >= 0) {
-        dup2(devnull, STDERR_FILENO);
-        close(devnull);
-    }
-
-    cv::Mat img = cv::imread(path, cv::IMREAD_COLOR);
-
-    // Restore stderr
-    if (saved_stderr >= 0) {
-        dup2(saved_stderr, STDERR_FILENO);
-        close(saved_stderr);
+    // Suppress libjpeg's direct stderr output (e.g., "Premature end of JPEG
+    // file") by redirecting stderr to /dev/null for the duration of the read.
+    cv::Mat img;
+    {
+        StderrSuppressor suppress_stderr;
+        img = cv::imread(path, cv::IMREAD_COLOR);
     }
 
     // Restore OpenCV error handler
@@ -169,14 +192,6 @@ PhashResult compute_phash(const std::string& path) {
 }
 
 PhashResult compute_video_phash(const std::string& path) {
-    // Suppress noisy OpenCV/GStreamer stderr warnings during video operations
-    int saved_stderr = dup(STDERR_FILENO);
-    int devnull = open("/dev/null", O_WRONLY);
-    if (devnull >= 0) {
-        dup2(devnull, STDERR_FILENO);
-        close(devnull);
-    }
-
     cv::VideoCapture cap(path);
     bool opened = cap.isOpened();
 
@@ -184,37 +199,35 @@ PhashResult compute_video_phash(const std::string& path) {
     int width = 0, height = 0;
     cv::Mat frame;
 
-    if (opened) {
-        total_frames = cap.get(cv::CAP_PROP_FRAME_COUNT);
-        width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
-        height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
+    {
+        // Suppress noisy OpenCV/GStreamer stderr warnings during decode.
+        StderrSuppressor suppress_stderr;
+        if (opened) {
+            total_frames = cap.get(cv::CAP_PROP_FRAME_COUNT);
+            width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+            height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
 
-        // Try seeking to ~10% of duration to skip black intros
-        if (total_frames > 10) {
-            cap.set(cv::CAP_PROP_POS_FRAMES, total_frames * 0.1);
-            cap.read(frame);
-        }
+            // Try seeking to ~10% of duration to skip black intros
+            if (total_frames > 10) {
+                cap.set(cv::CAP_PROP_POS_FRAMES, total_frames * 0.1);
+                cap.read(frame);
+            }
 
-        // Fallback: scan first 30 frames for a non-black frame
-        if (frame.empty() || cv::mean(frame)[0] < 5.0) {
-            cap.set(cv::CAP_PROP_POS_FRAMES, 0);
-            for (int i = 0; i < 30; i++) {
-                if (!cap.read(frame)) break;
-                if (cv::mean(frame)[0] >= 5.0) break;
+            // Fallback: scan first 30 frames for a non-black frame
+            if (frame.empty() || cv::mean(frame)[0] < 5.0) {
+                cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+                for (int i = 0; i < 30; i++) {
+                    if (!cap.read(frame)) break;
+                    if (cv::mean(frame)[0] >= 5.0) break;
+                }
+            }
+
+            // Last resort: just use whatever frame we have
+            if (frame.empty()) {
+                cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+                cap.read(frame);
             }
         }
-
-        // Last resort: just use whatever frame we have
-        if (frame.empty()) {
-            cap.set(cv::CAP_PROP_POS_FRAMES, 0);
-            cap.read(frame);
-        }
-    }
-
-    // Restore stderr
-    if (saved_stderr >= 0) {
-        dup2(saved_stderr, STDERR_FILENO);
-        close(saved_stderr);
     }
 
     if (!opened) {

@@ -2388,9 +2388,19 @@ int main(int argc, char* argv[]) {
                 }
                 if (opts.media == "all") opts.media = "";
             } else if (arg == "--min-duration" && i + 1 < argc) {
-                opts.min_duration_ms = parse_duration(argv[++i]);
+                try {
+                    opts.min_duration_ms = parse_duration(argv[++i]);
+                } catch (const std::exception& e) {
+                    std::cerr << "Error: invalid --min-duration: " << e.what() << "\n";
+                    return 1;
+                }
             } else if (arg == "--max-duration" && i + 1 < argc) {
-                opts.max_duration_ms = parse_duration(argv[++i]);
+                try {
+                    opts.max_duration_ms = parse_duration(argv[++i]);
+                } catch (const std::exception& e) {
+                    std::cerr << "Error: invalid --max-duration: " << e.what() << "\n";
+                    return 1;
+                }
             } else if (arg == "--output" && i + 1 < argc) {
                 opts.output = argv[++i];
             } else if (arg == "--db" && i + 1 < argc) {
