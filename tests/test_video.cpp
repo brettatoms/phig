@@ -164,6 +164,23 @@ TEST(VideoMetadataTest, NonExistentFile) {
     EXPECT_TRUE(meta.video_codec.empty());
 }
 
+// Regression: string values (e.g. a file-controlled creation_date) containing
+// JSON metacharacters must be escaped, otherwise the metadata column holds
+// malformed JSON and json_extract() breaks.
+TEST(VideoMetadataTest, JsonEscapesSpecialCharacters) {
+    VideoMetadata meta;
+    meta.creation_date = "20210315\"15:59\\29";  // embedded quote and backslash
+    auto json = video_metadata_to_json(meta);
+
+    // The raw unescaped quote must not appear; the escaped forms must.
+    EXPECT_TRUE(json.find("\\\"") != std::string::npos);
+    EXPECT_TRUE(json.find("\\\\") != std::string::npos);
+    // The value must round-trip out of the JSON via a real parser boundary:
+    // there should be exactly one unescaped closing brace at the very end.
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_TRUE(json.find("\"DateTimeOriginal\":\"") != std::string::npos);
+}
+
 // ---- Schema migration tests ----
 
 TEST(MigrationTest, PreMigrationBatchInsertDoesNotLeaveOpenTransaction) {

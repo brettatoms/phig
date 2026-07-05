@@ -10,7 +10,39 @@ extern "C" {
 #include <libavutil/dict.h>
 #include <libavutil/log.h>
 #include <libavutil/mathematics.h>
+#include <libavutil/display.h>
 }
+
+#include <cmath>
+#include <cstdio>
+
+namespace {
+
+// Escape a string for embedding in a JSON string literal.
+std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 10);
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                    out += buf;
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+} // namespace
 
 VideoMetadata extract_video_metadata(const std::string& path) {
     VideoMetadata meta;
@@ -69,11 +101,12 @@ VideoMetadata extract_video_metadata(const std::string& path) {
             }
             if (sd && sd->size >= 9 * sizeof(int32_t)) {
                 const int32_t* matrix = reinterpret_cast<const int32_t*>(sd->data);
-                // av_display_rotation_get equivalent: -atan2(matrix[1], matrix[0]) in degrees
-                double angle = -atan2(static_cast<double>(matrix[3]),
-                                      static_cast<double>(matrix[0])) * 180.0 / M_PI;
-                meta.rotation = static_cast<int>(angle);
-                if (meta.rotation < 0) meta.rotation += 360;
+                double angle = av_display_rotation_get(matrix);
+                if (!std::isnan(angle)) {
+                    meta.rotation = static_cast<int>(std::lround(angle));
+                    meta.rotation %= 360;
+                    if (meta.rotation < 0) meta.rotation += 360;
+                }
             }
         } else if (codecpar->codec_type == AVMEDIA_TYPE_AUDIO && meta.audio_codec.empty()) {
             const AVCodecDescriptor* desc = avcodec_descriptor_get(codecpar->codec_id);
@@ -96,7 +129,7 @@ std::string video_metadata_to_json(const VideoMetadata& meta) {
         if (val.empty()) return;
         if (!first) out << ",";
         first = false;
-        out << "\"" << key << "\":\"" << val << "\"";
+        out << "\"" << key << "\":\"" << json_escape(val) << "\"";
     };
     auto add_int = [&](const char* key, int64_t val) {
         if (val == 0) return;
