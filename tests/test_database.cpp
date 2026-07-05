@@ -1,12 +1,14 @@
 #include <gtest/gtest.h>
+
+#include <filesystem>
+
 #include "database.h"
 #include "types.h"
-#include <filesystem>
 
 namespace fs = std::filesystem;
 
 class DatabaseTest : public ::testing::Test {
-protected:
+   protected:
     std::string db_path;
     std::unique_ptr<Database> db;
 
@@ -40,9 +42,7 @@ protected:
     }
 };
 
-TEST_F(DatabaseTest, EmptyDatabaseCount) {
-    EXPECT_EQ(db->count(), 0);
-}
+TEST_F(DatabaseTest, EmptyDatabaseCount) { EXPECT_EQ(db->count(), 0); }
 
 TEST_F(DatabaseTest, InsertAndCount) {
     db->insert(make_image("/test/a.jpg"));
@@ -73,7 +73,7 @@ TEST_F(DatabaseTest, InsertReplaceOnDuplicatePath) {
 
     img.sha256 = "sha_new";
     db->insert(img);
-    EXPECT_EQ(db->count(), 1); // replaced, not duplicated
+    EXPECT_EQ(db->count(), 1);  // replaced, not duplicated
 }
 
 TEST_F(DatabaseTest, GetModifiedAtExists) {
@@ -163,7 +163,7 @@ TEST_F(DatabaseTest, GetExactDuplicatesWithPrefix) {
 
     auto groups = db->get_exact_duplicates("/folderA/");
     ASSERT_EQ(groups.size(), 1);
-    EXPECT_EQ(groups[0].size(), 2); // only folderA entries
+    EXPECT_EQ(groups[0].size(), 2);  // only folderA entries
 }
 
 TEST_F(DatabaseTest, GetAllImages) {
@@ -220,8 +220,8 @@ TEST_F(DatabaseTest, PurgeNoMatch) {
 }
 
 TEST_F(DatabaseTest, CreatesDatabaseDirectory) {
-    auto nested_path = (fs::temp_directory_path() /
-        "image-cleanup-test-nested" / "sub" / "test.db").string();
+    auto nested_path =
+        (fs::temp_directory_path() / "image-cleanup-test-nested" / "sub" / "test.db").string();
     {
         Database nested_db(nested_path);
         nested_db.init_schema();

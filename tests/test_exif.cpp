@@ -1,14 +1,16 @@
 #include <gtest/gtest.h>
-#include "exif.h"
+
 #include <filesystem>
 #include <fstream>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 
+#include "exif.h"
+
 namespace fs = std::filesystem;
 
 class ExifTest : public ::testing::Test {
-protected:
+   protected:
     std::string test_dir;
 
     void SetUp() override {
@@ -17,9 +19,7 @@ protected:
         fs::create_directories(test_dir);
     }
 
-    void TearDown() override {
-        fs::remove_all(test_dir);
-    }
+    void TearDown() override { fs::remove_all(test_dir); }
 
     std::string create_image(const std::string& name) {
         auto path = (fs::path(test_dir) / name).string();

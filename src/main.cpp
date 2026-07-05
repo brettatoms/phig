@@ -1,36 +1,36 @@
-#include "scanner.h"
-#include "hasher.h"
-#include "exif.h"
-#include "database.h"
-#include "types.h"
-#include "filters.h"
-#include "faces.h"
-#include "models.h"
-#include "thumbs.h"
-#include "metadata.h"
-#include "paths.h"
-#include "config.h"
-#include "version.h"
-
 #include <algorithm>
+#include <atomic>
+#include <bit>
 #include <chrono>
+#include <condition_variable>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <functional>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <queue>
+#include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
-#include <condition_variable>
-#include <atomic>
-#include <fstream>
-#include <sstream>
-#include <set>
-#include <map>
-#include <bit>
-#include <functional>
-#include <csignal>
+
+#include "config.h"
+#include "database.h"
+#include "exif.h"
+#include "faces.h"
+#include "filters.h"
+#include "hasher.h"
+#include "metadata.h"
+#include "models.h"
+#include "paths.h"
+#include "scanner.h"
+#include "thumbs.h"
+#include "types.h"
+#include "version.h"
 
 namespace fs = std::filesystem;
 
@@ -55,85 +55,87 @@ std::string format_time(fs::file_time_type ftime) {
 }
 
 void print_usage() {
-    std::cerr << "Usage:\n"
-              << "  phig scan <directory> [flags]\n"
-              << "  phig duplicates [flags]\n"
-              << "  phig cp <destination> [flags]\n"
-              << "  phig mv <destination> [flags]\n"
-              << "  phig purge [flags]\n"
-              << "  phig search [flags]\n"
-              << "  phig face name <image> <name>     Name a face from a single-face photo\n"
-              << "  phig face identify <name>          Label all matching faces in DB\n"
-              << "  phig face rebuild [--match] [--filter] [--parallel N]  Re-detect all faces\n"
-              << "  phig face list                     List known people\n"
-              << "  phig thumbs rebuild [flags]  Generate missing thumbnails\n"
-              << "  phig thumbs clean            Remove orphaned thumbnails\n"
-              << "  phig models download\n"
-              << "\nScan flags:\n"
-              << "  --recursive              Scan subdirectories\n"
-              << "  --on-error warn|fail     Behavior for unreadable files (default: warn)\n"
-              << "  --force [what]           Re-process: hash,thumbs,faces,all (default: all)\n"
-              << "  --faces                  Detect faces and compute embeddings\n"
-              << "  --thumbs                 Generate thumbnails\n"
-              << "  --ignore-mount-warning   Proceed even if all files are missing\n"
-              << "  --media image|video|all  Restrict to one media type (default: all)\n"
-              << "  --hidden                 Include hidden/temp files and directories (. or ~)\n"
-              << "  --parallel N             Number of images to process in parallel (default: auto)\n"
-              << "  --db <path>              Database path\n"
-              << "\nDuplicates flags:\n"
-              << "  --type exact|near|all    Duplicate type to find (default: all)\n"
-              << "  --threshold [0-64]       Hamming distance for near duplicates (default: 5)\n"
-              << "  --format text|csv|json   Output format (default: text)\n"
-              << "  --output <path>          Write to file instead of stdout\n"
-              << "  --match <glob>           Show groups containing matching files (repeatable, matches path)\n"
-              << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
-              << "  --media image|video|all  Filter by media type (default: all)\n"
-              << "  --db <path>              Database path\n"
-              << "\nCopy/Move flags (cp, mv):\n"
-              << "  --format <string>        Output path format (default: %Y/%m/%original)\n"
-              << "                           Tokens: %Y %m %d %camera %make %original\n"
-              << "  --match <glob>           Only files matching glob (repeatable, matches path)\n"
-              << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
-              << "  --dry-run                Show what would happen without doing it\n"
-              << "  --on-conflict skip|overwrite|rename  (default: skip)\n"
-              << "  --db <path>              Database path\n"
-              << "\nPurge flags:\n"
-              << "  --match <glob>           Remove entries matching glob (repeatable, matches path)\n"
-              << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
-              << "  --dry-run                Show what would be removed\n"
-              << "  --db <path>              Database path\n"
-              << "\nSearch flags:\n"
-              << "  --ext <extension>        Match file extension (e.g., jpg, png, cr2)\n"
-              << "  --after <date>           Files dated after YYYY-MM-DD\n"
-              << "  --before <date>          Files dated before YYYY-MM-DD\n"
-              << "  --camera <string>        Substring match on EXIF camera model\n"
-              << "  --make <string>          Substring match on EXIF camera make\n"
-              << "  --min-size <size>        Minimum file size (e.g., 1000, 5KB, 10MB, 1GB)\n"
-              << "  --max-size <size>        Maximum file size (e.g., 1000, 5KB, 10MB, 1GB)\n"
-              << "  --media image|video|all  Filter by media type (default: all)\n"
-              << "  --min-duration <dur>     Minimum video duration (e.g., 10s, 5m, 1h)\n"
-              << "  --max-duration <dur>     Maximum video duration (e.g., 10s, 5m, 1h)\n"
-              << "  --similar <image-path>   Find visually similar images (by phash)\n"
-              << "  --similar-hash <hex>     Find images similar to this phash\n"
-              << "  --threshold [0-64]       Hamming distance for --similar (default: 5)\n"
-              << "  --face <image-path>      Find images containing this person\n"
-              << "  --face-threshold <float> Distance threshold for face match (default: 0.6)\n"
-              << "  --person <name>          Find images containing a named person\n"
-              << "  --match <glob>           Include filter (repeatable, matches path)\n"
-              << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
-              << "  --limit N                Maximum number of results\n"
-              << "  --count                  Show count of matches only\n"
-              << "  --porcelain              Tab-separated machine output\n"
-              << "  --print0                 Null-separated paths\n"
-              << "  --format text|csv|json   Output format (default: text)\n"
-              << "  --output <path>          Write to file\n"
-              << "  --db <path>              Database path\n"
-              << "\nThumbs rebuild flags:\n"
-              << "  --match <glob>           Only matching files (repeatable)\n"
-              << "  --filter <glob>          Exclude matching files (repeatable)\n"
-              << "  --force                  Regenerate even if thumbnail exists\n"
-              << "  --parallel N             Number of images to process in parallel (default: auto)\n"
-              << "  --db <path>              Database path\n";
+    std::cerr
+        << "Usage:\n"
+        << "  phig scan <directory> [flags]\n"
+        << "  phig duplicates [flags]\n"
+        << "  phig cp <destination> [flags]\n"
+        << "  phig mv <destination> [flags]\n"
+        << "  phig purge [flags]\n"
+        << "  phig search [flags]\n"
+        << "  phig face name <image> <name>     Name a face from a single-face photo\n"
+        << "  phig face identify <name>          Label all matching faces in DB\n"
+        << "  phig face rebuild [--match] [--filter] [--parallel N]  Re-detect all faces\n"
+        << "  phig face list                     List known people\n"
+        << "  phig thumbs rebuild [flags]  Generate missing thumbnails\n"
+        << "  phig thumbs clean            Remove orphaned thumbnails\n"
+        << "  phig models download\n"
+        << "\nScan flags:\n"
+        << "  --recursive              Scan subdirectories\n"
+        << "  --on-error warn|fail     Behavior for unreadable files (default: warn)\n"
+        << "  --force [what]           Re-process: hash,thumbs,faces,all (default: all)\n"
+        << "  --faces                  Detect faces and compute embeddings\n"
+        << "  --thumbs                 Generate thumbnails\n"
+        << "  --ignore-mount-warning   Proceed even if all files are missing\n"
+        << "  --media image|video|all  Restrict to one media type (default: all)\n"
+        << "  --hidden                 Include hidden/temp files and directories (. or ~)\n"
+        << "  --parallel N             Number of images to process in parallel (default: auto)\n"
+        << "  --db <path>              Database path\n"
+        << "\nDuplicates flags:\n"
+        << "  --type exact|near|all    Duplicate type to find (default: all)\n"
+        << "  --threshold [0-64]       Hamming distance for near duplicates (default: 5)\n"
+        << "  --format text|csv|json   Output format (default: text)\n"
+        << "  --output <path>          Write to file instead of stdout\n"
+        << "  --match <glob>           Show groups containing matching files (repeatable, matches "
+           "path)\n"
+        << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
+        << "  --media image|video|all  Filter by media type (default: all)\n"
+        << "  --db <path>              Database path\n"
+        << "\nCopy/Move flags (cp, mv):\n"
+        << "  --format <string>        Output path format (default: %Y/%m/%original)\n"
+        << "                           Tokens: %Y %m %d %camera %make %original\n"
+        << "  --match <glob>           Only files matching glob (repeatable, matches path)\n"
+        << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
+        << "  --dry-run                Show what would happen without doing it\n"
+        << "  --on-conflict skip|overwrite|rename  (default: skip)\n"
+        << "  --db <path>              Database path\n"
+        << "\nPurge flags:\n"
+        << "  --match <glob>           Remove entries matching glob (repeatable, matches path)\n"
+        << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
+        << "  --dry-run                Show what would be removed\n"
+        << "  --db <path>              Database path\n"
+        << "\nSearch flags:\n"
+        << "  --ext <extension>        Match file extension (e.g., jpg, png, cr2)\n"
+        << "  --after <date>           Files dated after YYYY-MM-DD\n"
+        << "  --before <date>          Files dated before YYYY-MM-DD\n"
+        << "  --camera <string>        Substring match on EXIF camera model\n"
+        << "  --make <string>          Substring match on EXIF camera make\n"
+        << "  --min-size <size>        Minimum file size (e.g., 1000, 5KB, 10MB, 1GB)\n"
+        << "  --max-size <size>        Maximum file size (e.g., 1000, 5KB, 10MB, 1GB)\n"
+        << "  --media image|video|all  Filter by media type (default: all)\n"
+        << "  --min-duration <dur>     Minimum video duration (e.g., 10s, 5m, 1h)\n"
+        << "  --max-duration <dur>     Maximum video duration (e.g., 10s, 5m, 1h)\n"
+        << "  --similar <image-path>   Find visually similar images (by phash)\n"
+        << "  --similar-hash <hex>     Find images similar to this phash\n"
+        << "  --threshold [0-64]       Hamming distance for --similar (default: 5)\n"
+        << "  --face <image-path>      Find images containing this person\n"
+        << "  --face-threshold <float> Distance threshold for face match (default: 0.6)\n"
+        << "  --person <name>          Find images containing a named person\n"
+        << "  --match <glob>           Include filter (repeatable, matches path)\n"
+        << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
+        << "  --limit N                Maximum number of results\n"
+        << "  --count                  Show count of matches only\n"
+        << "  --porcelain              Tab-separated machine output\n"
+        << "  --print0                 Null-separated paths\n"
+        << "  --format text|csv|json   Output format (default: text)\n"
+        << "  --output <path>          Write to file\n"
+        << "  --db <path>              Database path\n"
+        << "\nThumbs rebuild flags:\n"
+        << "  --match <glob>           Only matching files (repeatable)\n"
+        << "  --filter <glob>          Exclude matching files (repeatable)\n"
+        << "  --force                  Regenerate even if thumbnail exists\n"
+        << "  --parallel N             Number of images to process in parallel (default: auto)\n"
+        << "  --db <path>              Database path\n";
 }
 
 // ---- Scan command ----
@@ -156,11 +158,17 @@ ForceOptions parse_force(const std::string& value) {
     std::istringstream ss(value);
     std::string token;
     while (std::getline(ss, token, ',')) {
-        if (token == "hash") f.hash = true;
-        else if (token == "thumbs") f.thumbs = true;
-        else if (token == "faces") f.faces = true;
-        else if (token == "all") f.set_all();
-        else throw std::runtime_error("Unknown --force value: " + token + " (use hash,thumbs,faces,all)");
+        if (token == "hash")
+            f.hash = true;
+        else if (token == "thumbs")
+            f.thumbs = true;
+        else if (token == "faces")
+            f.faces = true;
+        else if (token == "all")
+            f.set_all();
+        else
+            throw std::runtime_error("Unknown --force value: " + token +
+                                     " (use hash,thumbs,faces,all)");
     }
     return f;
 }
@@ -195,8 +203,7 @@ ProcessResult process_file(const fs::path& filepath, FaceDetector* face_detector
         info.extension = info.extension.substr(1);
     }
     // Lowercase extension
-    std::transform(info.extension.begin(), info.extension.end(),
-                   info.extension.begin(), ::tolower);
+    std::transform(info.extension.begin(), info.extension.end(), info.extension.begin(), ::tolower);
 
     // File metadata
     auto status = fs::status(filepath);
@@ -268,8 +275,7 @@ int cmd_scan(const ScanOptions& opts) {
         return full;
     };
 
-    std::cout << "Scanning: " << opts.directory
-              << (opts.recursive ? " (recursive)" : "") << "\n";
+    std::cout << "Scanning: " << opts.directory << (opts.recursive ? " (recursive)" : "") << "\n";
     std::cout << "Database: " << opts.db_path << "\n";
 
     // Collect files
@@ -278,12 +284,16 @@ int cmd_scan(const ScanOptions& opts) {
     // Filter by media type if requested
     if (opts.media == "image") {
         files.erase(std::remove_if(files.begin(), files.end(),
-            [](const fs::path& p) { return !is_known_image_extension(p.extension().string()); }),
-            files.end());
+                                   [](const fs::path& p) {
+                                       return !is_known_image_extension(p.extension().string());
+                                   }),
+                    files.end());
     } else if (opts.media == "video") {
         files.erase(std::remove_if(files.begin(), files.end(),
-            [](const fs::path& p) { return !is_known_video_extension(p.extension().string()); }),
-            files.end());
+                                   [](const fs::path& p) {
+                                       return !is_known_video_extension(p.extension().string());
+                                   }),
+                    files.end());
     }
 
     std::cout << "Found " << files.size() << " files\n";
@@ -322,214 +332,220 @@ int cmd_scan(const ScanOptions& opts) {
     std::atomic<size_t> video_count{0};
 
     if (!files.empty()) {
-    std::atomic<size_t> next_file{0};
+        std::atomic<size_t> next_file{0};
 
-    std::mutex db_mutex;
-    std::vector<ProcessResult> batch;
-    const size_t batch_size = 10; // small batches so Ctrl-C loses less work
+        std::mutex db_mutex;
+        std::vector<ProcessResult> batch;
+        const size_t batch_size = 10;  // small batches so Ctrl-C loses less work
 
-    auto flush_batch = [&]() {
-        if (batch.empty()) return;
-        // Insert image metadata
-        std::vector<ImageInfo> infos;
-        for (auto& r : batch) infos.push_back(r.info);
-        db.insert_batch(infos);
+        auto flush_batch = [&]() {
+            if (batch.empty()) return;
+            // Insert image metadata
+            std::vector<ImageInfo> infos;
+            for (auto& r : batch) infos.push_back(r.info);
+            db.insert_batch(infos);
 
-        // Insert faces (need image_id from DB) and auto-label known people
-        for (auto& r : batch) {
-            if (!r.faces.empty()) {
-                int64_t image_id = db.get_image_id(r.info.path);
-                if (image_id >= 0) {
-                    for (const auto& face : r.faces) {
-                        db.insert_face(image_id, face);
-                        int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
-                        db.auto_label_face(face_id, face.embedding);
-                    }
-                    face_count.fetch_add(r.faces.size());
-                }
-            }
-        }
-        batch.clear();
-    };
-
-    auto worker = [&](int thread_id) {
-        FaceDetector* detector = (!face_detectors.empty()) ? face_detectors[thread_id].get() : nullptr;
-        while (!g_interrupted) {
-            size_t idx = next_file.fetch_add(1);
-            if (idx >= files.size()) break;
-
-            const auto& filepath = files[idx];
-            std::string canonical;
-            try {
-                canonical = fs::canonical(filepath).string();
-            } catch (...) {
-                errors.fetch_add(1);
-                continue;
-            }
-
-            // Check if we should skip (path + mtime match)
-            bool needs_full_process = opts.force.hash;
-            bool needs_faces_only = false;
-            bool needs_thumbs_only = false;
-
-            if (!opts.force.hash) {
-                std::string mtime;
-                try {
-                    mtime = format_time(fs::last_write_time(filepath));
-                } catch (...) {
-                    // Can't stat, will fail later
-                }
-
-                std::lock_guard<std::mutex> lock(db_mutex);
-                auto existing_mtime = db.get_modified_at(canonical);
-                if (existing_mtime && *existing_mtime == mtime) {
-                    // File unchanged — check if we need faces or thumbs
-                    bool need_faces = detector && !db.has_faces(canonical);
-                    bool need_thumbs = false;
-                    if (opts.thumbs) {
-                        auto sha = db.get_sha256(canonical);
-                        if (sha && !sha->empty()) {
-                            need_thumbs = opts.force.thumbs || !thumb_exists(*sha);
+            // Insert faces (need image_id from DB) and auto-label known people
+            for (auto& r : batch) {
+                if (!r.faces.empty()) {
+                    int64_t image_id = db.get_image_id(r.info.path);
+                    if (image_id >= 0) {
+                        for (const auto& face : r.faces) {
+                            db.insert_face(image_id, face);
+                            int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
+                            db.auto_label_face(face_id, face.embedding);
                         }
+                        face_count.fetch_add(r.faces.size());
                     }
-
-                    if (need_faces) {
-                        needs_faces_only = true;
-                    } else if (need_thumbs && !need_faces) {
-                        needs_thumbs_only = true;
-                    } else {
-                        skipped.fetch_add(1);
-                        size_t done = processed.load() + skipped.load() + errors.load();
-                        std::cout << "\r[" << done << "/" << files.size() << "] " << std::flush;
-                        continue;
-                    }
-                } else {
-                    needs_full_process = true;
                 }
             }
+            batch.clear();
+        };
 
-            try {
-                if (needs_thumbs_only) {
-                    // Only generate thumbnail — file is unchanged and faces are done
-                    std::string sha;
-                    {
-                        std::lock_guard<std::mutex> lock(db_mutex);
-                        auto s = db.get_sha256(canonical);
-                        if (s) sha = *s;
+        auto worker = [&](int thread_id) {
+            FaceDetector* detector =
+                (!face_detectors.empty()) ? face_detectors[thread_id].get() : nullptr;
+            while (!g_interrupted) {
+                size_t idx = next_file.fetch_add(1);
+                if (idx >= files.size()) break;
+
+                const auto& filepath = files[idx];
+                std::string canonical;
+                try {
+                    canonical = fs::canonical(filepath).string();
+                } catch (...) {
+                    errors.fetch_add(1);
+                    continue;
+                }
+
+                // Check if we should skip (path + mtime match)
+                bool needs_full_process = opts.force.hash;
+                bool needs_faces_only = false;
+                bool needs_thumbs_only = false;
+
+                if (!opts.force.hash) {
+                    std::string mtime;
+                    try {
+                        mtime = format_time(fs::last_write_time(filepath));
+                    } catch (...) {
+                        // Can't stat, will fail later
                     }
-                    if (!sha.empty()) {
-                        generate_thumb(canonical, sha);
-                        thumb_count.fetch_add(1);
+
+                    std::lock_guard<std::mutex> lock(db_mutex);
+                    auto existing_mtime = db.get_modified_at(canonical);
+                    if (existing_mtime && *existing_mtime == mtime) {
+                        // File unchanged — check if we need faces or thumbs
+                        bool need_faces = detector && !db.has_faces(canonical);
+                        bool need_thumbs = false;
+                        if (opts.thumbs) {
+                            auto sha = db.get_sha256(canonical);
+                            if (sha && !sha->empty()) {
+                                need_thumbs = opts.force.thumbs || !thumb_exists(*sha);
+                            }
+                        }
+
+                        if (need_faces) {
+                            needs_faces_only = true;
+                        } else if (need_thumbs && !need_faces) {
+                            needs_thumbs_only = true;
+                        } else {
+                            skipped.fetch_add(1);
+                            size_t done = processed.load() + skipped.load() + errors.load();
+                            std::cout << "\r[" << done << "/" << files.size() << "] " << std::flush;
+                            continue;
+                        }
+                    } else {
+                        needs_full_process = true;
                     }
-                    processed.fetch_add(1);
-                } else if (needs_faces_only) {
-                    // Only decode and detect faces — skip hash/phash/EXIF
-                    cv::Mat img = decode_image(canonical);
-                    if (!img.empty()) {
-                        if (detector) {
-                            auto faces = detector->detect(img);
-                            if (!faces.empty()) {
-                                std::lock_guard<std::mutex> lock(db_mutex);
-                                // Flush any pending batch first, then insert faces in a transaction
-                                flush_batch();
-                                db.begin_transaction();
-                                try {
-                                    int64_t image_id = db.get_image_id(canonical);
-                                    if (image_id >= 0) {
-                                        for (const auto& face : faces) {
-                                            db.insert_face(image_id, face);
-                                            int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
-                                            db.auto_label_face(face_id, face.embedding);
+                }
+
+                try {
+                    if (needs_thumbs_only) {
+                        // Only generate thumbnail — file is unchanged and faces are done
+                        std::string sha;
+                        {
+                            std::lock_guard<std::mutex> lock(db_mutex);
+                            auto s = db.get_sha256(canonical);
+                            if (s) sha = *s;
+                        }
+                        if (!sha.empty()) {
+                            generate_thumb(canonical, sha);
+                            thumb_count.fetch_add(1);
+                        }
+                        processed.fetch_add(1);
+                    } else if (needs_faces_only) {
+                        // Only decode and detect faces — skip hash/phash/EXIF
+                        cv::Mat img = decode_image(canonical);
+                        if (!img.empty()) {
+                            if (detector) {
+                                auto faces = detector->detect(img);
+                                if (!faces.empty()) {
+                                    std::lock_guard<std::mutex> lock(db_mutex);
+                                    // Flush any pending batch first, then insert faces in a
+                                    // transaction
+                                    flush_batch();
+                                    db.begin_transaction();
+                                    try {
+                                        int64_t image_id = db.get_image_id(canonical);
+                                        if (image_id >= 0) {
+                                            for (const auto& face : faces) {
+                                                db.insert_face(image_id, face);
+                                                int64_t face_id =
+                                                    sqlite3_last_insert_rowid(db.db_ptr());
+                                                db.auto_label_face(face_id, face.embedding);
+                                            }
+                                            face_count.fetch_add(faces.size());
                                         }
-                                        face_count.fetch_add(faces.size());
+                                        db.commit_transaction();
+                                    } catch (...) {
+                                        db.rollback_transaction();
+                                        throw;
                                     }
-                                    db.commit_transaction();
-                                } catch (...) {
-                                    db.rollback_transaction();
-                                    throw;
                                 }
                             }
-                        }
-                        // Also generate thumbnail if needed
-                        if (opts.thumbs) {
-                            std::string sha;
-                            {
-                                std::lock_guard<std::mutex> lock(db_mutex);
-                                auto s = db.get_sha256(canonical);
-                                if (s) sha = *s;
-                            }
-                            if (!sha.empty() && (opts.force.thumbs || !thumb_exists(sha))) {
-                                generate_thumb(img, sha);
-                                thumb_count.fetch_add(1);
-                            }
-                        }
-                    }
-                    processed.fetch_add(1);
-                } else {
-                    auto result = process_file(filepath, detector);
-
-                    if (result.info.media_type == "video") {
-                        video_count.fetch_add(1);
-                    }
-
-                    // Generate thumbnail if requested
-                    if (opts.thumbs && !result.info.sha256.empty()) {
-                        if (opts.force.thumbs || !thumb_exists(result.info.sha256)) {
-                            if (result.info.media_type == "video") {
-                                // For videos, extract keyframe for thumbnail
-                                try {
-                                    auto kf = extract_video_keyframe(canonical);
-                                    if (!kf.frame.empty()) {
-                                        generate_thumb(kf.frame, result.info.sha256);
-                                        thumb_count.fetch_add(1);
-                                    }
-                                } catch (...) {}
-                            } else {
-                                cv::Mat img = decode_image(canonical);
-                                if (!img.empty()) {
-                                    generate_thumb(img, result.info.sha256);
+                            // Also generate thumbnail if needed
+                            if (opts.thumbs) {
+                                std::string sha;
+                                {
+                                    std::lock_guard<std::mutex> lock(db_mutex);
+                                    auto s = db.get_sha256(canonical);
+                                    if (s) sha = *s;
+                                }
+                                if (!sha.empty() && (opts.force.thumbs || !thumb_exists(sha))) {
+                                    generate_thumb(img, sha);
                                     thumb_count.fetch_add(1);
                                 }
                             }
                         }
-                    }
+                        processed.fetch_add(1);
+                    } else {
+                        auto result = process_file(filepath, detector);
 
-                    std::lock_guard<std::mutex> lock(db_mutex);
-                    batch.push_back(std::move(result));
-                    if (batch.size() >= batch_size) {
-                        flush_batch();
+                        if (result.info.media_type == "video") {
+                            video_count.fetch_add(1);
+                        }
+
+                        // Generate thumbnail if requested
+                        if (opts.thumbs && !result.info.sha256.empty()) {
+                            if (opts.force.thumbs || !thumb_exists(result.info.sha256)) {
+                                if (result.info.media_type == "video") {
+                                    // For videos, extract keyframe for thumbnail
+                                    try {
+                                        auto kf = extract_video_keyframe(canonical);
+                                        if (!kf.frame.empty()) {
+                                            generate_thumb(kf.frame, result.info.sha256);
+                                            thumb_count.fetch_add(1);
+                                        }
+                                    } catch (...) {
+                                    }
+                                } else {
+                                    cv::Mat img = decode_image(canonical);
+                                    if (!img.empty()) {
+                                        generate_thumb(img, result.info.sha256);
+                                        thumb_count.fetch_add(1);
+                                    }
+                                }
+                            }
+                        }
+
+                        std::lock_guard<std::mutex> lock(db_mutex);
+                        batch.push_back(std::move(result));
+                        if (batch.size() >= batch_size) {
+                            flush_batch();
+                        }
+                        processed.fetch_add(1);
                     }
-                    processed.fetch_add(1);
+                } catch (const std::exception& e) {
+                    errors.fetch_add(1);
+                    // Clear progress line, print warning, then resume progress
+                    std::cout << "\r\033[K" << std::flush;
+                    if (opts.fail_on_error) {
+                        std::cerr << "[error] " << rel_path(filepath) << " -- " << e.what()
+                                  << std::endl;
+                        throw;
+                    } else {
+                        std::cerr << "[warning] " << rel_path(filepath) << " -- " << e.what()
+                                  << std::endl;
+                    }
                 }
-            } catch (const std::exception& e) {
-                errors.fetch_add(1);
-                // Clear progress line, print warning, then resume progress
-                std::cout << "\r\033[K" << std::flush;
-                if (opts.fail_on_error) {
-                    std::cerr << "[error] " << rel_path(filepath) << " -- " << e.what() << std::endl;
-                    throw;
-                } else {
-                    std::cerr << "[warning] " << rel_path(filepath) << " -- " << e.what() << std::endl;
-                }
+
+                size_t done = processed.load() + skipped.load() + errors.load();
+                std::cout << "\r\033[K[" << done << "/" << files.size() << "] "
+                          << rel_path(filepath) << std::flush;
             }
+        };
 
-            size_t done = processed.load() + skipped.load() + errors.load();
-            std::cout << "\r\033[K[" << done << "/" << files.size() << "] "
-                      << rel_path(filepath) << std::flush;
+        std::vector<std::thread> threads;
+        for (int i = 0; i < num_threads; i++) {
+            threads.emplace_back(worker, i);
         }
-    };
+        for (auto& t : threads) {
+            t.join();
+        }
 
-    std::vector<std::thread> threads;
-    for (int i = 0; i < num_threads; i++) {
-        threads.emplace_back(worker, i);
-    }
-    for (auto& t : threads) {
-        t.join();
-    }
-
-    // Flush remaining
-    flush_batch();
-    } // end if (!files.empty())
+        // Flush remaining
+        flush_batch();
+    }  // end if (!files.empty())
 
     // Restore previous signal handler
     std::signal(SIGINT, prev_handler);
@@ -551,7 +567,8 @@ int cmd_scan(const ScanOptions& opts) {
     }
     size_t removed_count = 0;
     if (!removed_paths.empty()) {
-        if (!db_paths.empty() && removed_paths.size() == db_paths.size() && !opts.ignore_mount_warning) {
+        if (!db_paths.empty() && removed_paths.size() == db_paths.size() &&
+            !opts.ignore_mount_warning) {
             std::cerr << "\nWarning: All " << removed_paths.size()
                       << " previously scanned files in this directory are missing.\n"
                       << "This may indicate an unmounted drive or incorrect path.\n"
@@ -567,8 +584,8 @@ int cmd_scan(const ScanOptions& opts) {
 
     size_t image_count = processed.load() - video_count.load();
     std::cout << "\n\nDone in " << secs << "s\n"
-              << "  Processed: " << processed.load()
-              << " (" << image_count << " images, " << video_count.load() << " videos)\n"
+              << "  Processed: " << processed.load() << " (" << image_count << " images, "
+              << video_count.load() << " videos)\n"
               << "  Skipped:   " << skipped.load() << "\n"
               << "  Errors:    " << errors.load() << "\n"
               << "  Removed:   " << removed_count << "\n";
@@ -586,31 +603,27 @@ int cmd_scan(const ScanOptions& opts) {
 // ---- Duplicates command ----
 
 struct DuplicatesOptions {
-    std::string type = "all";      // exact, near, all
-    int threshold = 5;             // hamming distance for near duplicates
-    std::string format = "text";   // text, csv, json
-    std::string output;            // empty = stdout
+    std::string type = "all";     // exact, near, all
+    int threshold = 5;            // hamming distance for near duplicates
+    std::string format = "text";  // text, csv, json
+    std::string output;           // empty = stdout
     std::vector<std::string> matches;
     std::vector<std::string> filters;
-    std::string media;             // "image", "video", or "" (all)
+    std::string media;  // "image", "video", or "" (all)
     std::string db_path;
 };
 
-int hamming_distance(uint64_t a, uint64_t b) {
-    return std::popcount(a ^ b);
-}
+int hamming_distance(uint64_t a, uint64_t b) { return std::popcount(a ^ b); }
 
 struct DuplicateGroup {
-    std::string type; // "exact" or "near"
-    int distance;     // 0 for exact
+    std::string type;  // "exact" or "near"
+    int distance;      // 0 for exact
     std::vector<ImageInfo> images;
 };
 
-std::vector<DuplicateGroup> find_near_duplicates(
-    const std::vector<ImageInfo>& all_images,
-    int threshold,
-    const std::set<std::string>& exact_sha256s)
-{
+std::vector<DuplicateGroup> find_near_duplicates(const std::vector<ImageInfo>& all_images,
+                                                 int threshold,
+                                                 const std::set<std::string>& exact_sha256s) {
     std::vector<DuplicateGroup> groups;
 
     // Union-find to group near duplicates
@@ -627,7 +640,8 @@ std::vector<DuplicateGroup> find_near_duplicates(
     };
 
     auto unite = [&](int a, int b) {
-        a = find(a); b = find(b);
+        a = find(a);
+        b = find(b);
         if (a != b) parent[a] = b;
     };
 
@@ -684,8 +698,7 @@ void output_text(std::ostream& out, const std::vector<DuplicateGroup>& exact,
         for (size_t g = 0; g < near.size(); g++) {
             out << "Group " << (g + 1) << " (" << near[g].images.size() << " files):\n";
             for (const auto& img : near[g].images) {
-                out << "  " << img.path
-                    << " [" << img.width << "x" << img.height << ", "
+                out << "  " << img.path << " [" << img.width << "x" << img.height << ", "
                     << img.file_size << " bytes]\n";
             }
             out << "\n";
@@ -697,10 +710,8 @@ void output_text(std::ostream& out, const std::vector<DuplicateGroup>& exact,
     for (const auto& g : near) near_files += g.images.size();
 
     out << "Summary:\n"
-        << "  Exact duplicate groups: " << exact.size()
-        << " (" << exact_files << " files)\n"
-        << "  Near duplicate groups:  " << near.size()
-        << " (" << near_files << " files)\n";
+        << "  Exact duplicate groups: " << exact.size() << " (" << exact_files << " files)\n"
+        << "  Near duplicate groups:  " << near.size() << " (" << near_files << " files)\n";
 }
 
 void output_csv(std::ostream& out, const std::vector<DuplicateGroup>& exact,
@@ -711,19 +722,17 @@ void output_csv(std::ostream& out, const std::vector<DuplicateGroup>& exact,
     for (const auto& g : exact) {
         group_num++;
         for (const auto& img : g.images) {
-            out << group_num << ",exact,\"" << img.path << "\","
-                << img.filename << "," << img.sha256 << ","
-                << img.phash << "," << img.width << "," << img.height << ","
+            out << group_num << ",exact,\"" << img.path << "\"," << img.filename << ","
+                << img.sha256 << "," << img.phash << "," << img.width << "," << img.height << ","
                 << img.file_size << "\n";
         }
     }
     for (const auto& g : near) {
         group_num++;
         for (const auto& img : g.images) {
-            out << group_num << ",near,\"" << img.path << "\","
-                << img.filename << "," << img.sha256 << ","
-                << img.phash << "," << img.width << "," << img.height << ","
-                << img.file_size << "\n";
+            out << group_num << ",near,\"" << img.path << "\"," << img.filename << "," << img.sha256
+                << "," << img.phash << "," << img.width << "," << img.height << "," << img.file_size
+                << "\n";
         }
     }
 }
@@ -741,10 +750,8 @@ void output_json(std::ostream& out, const std::vector<DuplicateGroup>& exact,
                 out << "{\"path\":\"" << img.path << "\""
                     << ",\"filename\":\"" << img.filename << "\""
                     << ",\"sha256\":\"" << img.sha256 << "\""
-                    << ",\"phash\":" << img.phash
-                    << ",\"width\":" << img.width
-                    << ",\"height\":" << img.height
-                    << ",\"file_size\":" << img.file_size << "}";
+                    << ",\"phash\":" << img.phash << ",\"width\":" << img.width
+                    << ",\"height\":" << img.height << ",\"file_size\":" << img.file_size << "}";
             }
             out << "]}";
         }
@@ -758,11 +765,9 @@ void output_json(std::ostream& out, const std::vector<DuplicateGroup>& exact,
 }
 
 // Filter duplicate groups: keep only groups where at least one file passes filters
-std::vector<DuplicateGroup> filter_groups(
-    const std::vector<DuplicateGroup>& groups,
-    const std::vector<std::string>& matches,
-    const std::vector<std::string>& filters)
-{
+std::vector<DuplicateGroup> filter_groups(const std::vector<DuplicateGroup>& groups,
+                                          const std::vector<std::string>& matches,
+                                          const std::vector<std::string>& filters) {
     if (matches.empty() && filters.empty()) return groups;
 
     std::vector<DuplicateGroup> result;
@@ -808,10 +813,14 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
         exact_groups = filter_groups(exact_groups, opts.matches, opts.filters);
         if (!opts.media.empty()) {
             exact_groups.erase(std::remove_if(exact_groups.begin(), exact_groups.end(),
-                [&](const DuplicateGroup& g) {
-                    return std::none_of(g.images.begin(), g.images.end(),
-                        [&](const ImageInfo& img) { return img.media_type == opts.media; });
-                }), exact_groups.end());
+                                              [&](const DuplicateGroup& g) {
+                                                  return std::none_of(
+                                                      g.images.begin(), g.images.end(),
+                                                      [&](const ImageInfo& img) {
+                                                          return img.media_type == opts.media;
+                                                      });
+                                              }),
+                               exact_groups.end());
         }
     }
 
@@ -823,10 +832,14 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
         near_groups = filter_groups(near_groups, opts.matches, opts.filters);
         if (!opts.media.empty()) {
             near_groups.erase(std::remove_if(near_groups.begin(), near_groups.end(),
-                [&](const DuplicateGroup& g) {
-                    return std::none_of(g.images.begin(), g.images.end(),
-                        [&](const ImageInfo& img) { return img.media_type == opts.media; });
-                }), near_groups.end());
+                                             [&](const DuplicateGroup& g) {
+                                                 return std::none_of(
+                                                     g.images.begin(), g.images.end(),
+                                                     [&](const ImageInfo& img) {
+                                                         return img.media_type == opts.media;
+                                                     });
+                                             }),
+                              near_groups.end());
         }
     }
 
@@ -859,9 +872,9 @@ struct OrganizeOptions {
     std::string format = "%Y/%m/%original";
     std::vector<std::string> matches;
     std::vector<std::string> filters;
-    bool is_move = false;           // true for mv, false for cp
+    bool is_move = false;  // true for mv, false for cp
     bool dry_run = false;
-    std::string on_conflict = "skip"; // skip, overwrite, rename
+    std::string on_conflict = "skip";  // skip, overwrite, rename
     std::string db_path;
 };
 
@@ -926,7 +939,7 @@ DateParts get_best_date(const ImageInfo& img) {
     d = parse_date(img.modified_at);
     if (d.valid) return d;
 
-    return d; // invalid — will go to unsorted
+    return d;  // invalid — will go to unsorted
 }
 
 std::string apply_format(const std::string& fmt, const ImageInfo& img, const DateParts& date) {
@@ -955,7 +968,7 @@ std::string apply_format(const std::string& fmt, const ImageInfo& img, const Dat
                 result += date.valid ? date.day : "unsorted";
                 i += 1;
             } else {
-                result += fmt[i]; // unknown token, keep as-is
+                result += fmt[i];  // unknown token, keep as-is
             }
         } else {
             result += fmt[i];
@@ -968,7 +981,7 @@ fs::path resolve_conflict(const fs::path& dest, const std::string& on_conflict) 
     if (!fs::exists(dest)) return dest;
 
     if (on_conflict == "overwrite") return dest;
-    if (on_conflict == "skip") return ""; // empty = skip
+    if (on_conflict == "skip") return "";  // empty = skip
 
     // rename: append numeric suffix
     auto stem = dest.stem().string();
@@ -979,10 +992,10 @@ fs::path resolve_conflict(const fs::path& dest, const std::string& on_conflict) 
         if (!fs::exists(candidate)) return candidate;
     }
 
-    return ""; // give up
+    return "";  // give up
 }
 
-} // anonymous namespace
+}  // anonymous namespace
 
 int cmd_organize(const OrganizeOptions& opts) {
     Database db(opts.db_path);
@@ -999,12 +1012,12 @@ int cmd_organize(const OrganizeOptions& opts) {
     // Apply match/filter
     bool has_filters = !opts.matches.empty() || !opts.filters.empty();
     if (has_filters) {
-        images.erase(
-            std::remove_if(images.begin(), images.end(),
-                [&](const ImageInfo& img) {
-                    return !passes_filters(img.path, opts.matches, opts.filters);
-                }),
-            images.end());
+        images.erase(std::remove_if(images.begin(), images.end(),
+                                    [&](const ImageInfo& img) {
+                                        return !passes_filters(img.path, opts.matches,
+                                                               opts.filters);
+                                    }),
+                     images.end());
         std::cout << "After match/filter: " << images.size() << " images\n";
     }
 
@@ -1038,20 +1051,23 @@ int cmd_organize(const OrganizeOptions& opts) {
     // Summary
     size_t to_process = 0, to_skip = 0;
     for (const auto& a : actions) {
-        if (a.skipped) to_skip++;
-        else to_process++;
+        if (a.skipped)
+            to_skip++;
+        else
+            to_process++;
     }
 
     std::string verb = opts.is_move ? "Move" : "Copy";
-    std::cout << "\n" << verb << ": " << to_process << " files"
+    std::cout << "\n"
+              << verb << ": " << to_process << " files"
               << ", skip: " << to_skip << " (conflict/exists)\n";
 
     if (opts.dry_run) {
         std::cout << "\n[DRY RUN]\n";
         for (const auto& a : actions) {
             if (a.skipped) {
-                std::cout << "  SKIP " << a.source << " → " << a.dest
-                          << " (" << a.skip_reason << ")\n";
+                std::cout << "  SKIP " << a.source << " → " << a.dest << " (" << a.skip_reason
+                          << ")\n";
             } else {
                 std::cout << "  " << verb << " " << a.source << " → " << a.dest << "\n";
             }
@@ -1080,8 +1096,7 @@ int cmd_organize(const OrganizeOptions& opts) {
 
             std::cout << "\r[" << done << "/" << to_process << "] " << std::flush;
         } catch (const std::exception& e) {
-            std::cerr << "\nError: " << a.source << " → " << a.dest
-                      << ": " << e.what() << "\n";
+            std::cerr << "\nError: " << a.source << " → " << a.dest << ": " << e.what() << "\n";
             errs++;
         }
     }
@@ -1152,15 +1167,15 @@ struct SearchOptions {
     std::string make;
     int64_t min_size = -1;
     int64_t max_size = -1;
-    std::string media;              // "image", "video", or "" (all)
+    std::string media;  // "image", "video", or "" (all)
     int64_t min_duration_ms = -1;
     int64_t max_duration_ms = -1;
-    std::string similar;          // image path for phash similarity
-    std::string similar_hash;     // hex phash string
+    std::string similar;       // image path for phash similarity
+    std::string similar_hash;  // hex phash string
     int threshold = 5;
-    std::string face;             // image path for face similarity search
-    float face_threshold = 0.6;   // dlib recommended threshold
-    std::string person;           // search by named person
+    std::string face;            // image path for face similarity search
+    float face_threshold = 0.6;  // dlib recommended threshold
+    std::string person;          // search by named person
     std::vector<std::string> matches;
     std::vector<std::string> filters;
     int limit = -1;
@@ -1265,15 +1280,19 @@ uint64_t parse_hex_phash(const std::string& hex) {
     uint64_t val = 0;
     for (char c : hex) {
         val <<= 4;
-        if (c >= '0' && c <= '9') val |= (c - '0');
-        else if (c >= 'a' && c <= 'f') val |= (c - 'a' + 10);
-        else if (c >= 'A' && c <= 'F') val |= (c - 'A' + 10);
-        else throw std::runtime_error("Invalid hex character in phash: " + hex);
+        if (c >= '0' && c <= '9')
+            val |= (c - '0');
+        else if (c >= 'a' && c <= 'f')
+            val |= (c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F')
+            val |= (c - 'A' + 10);
+        else
+            throw std::runtime_error("Invalid hex character in phash: " + hex);
     }
     return val;
 }
 
-} // anonymous namespace
+}  // anonymous namespace
 
 int cmd_search(const SearchOptions& opts) {
     Database db(opts.db_path);
@@ -1304,7 +1323,9 @@ int cmd_search(const SearchOptions& opts) {
     // Clean up temp file on exit
     struct TempCleanup {
         std::string path;
-        ~TempCleanup() { if (!path.empty()) fs::remove(path); }
+        ~TempCleanup() {
+            if (!path.empty()) fs::remove(path);
+        }
     } cleanup{temp_file};
 
     if (is_person_search) {
@@ -1323,7 +1344,10 @@ int cmd_search(const SearchOptions& opts) {
         std::ofstream file_out;
         if (!opts.output.empty()) {
             file_out.open(opts.output);
-            if (!file_out) { std::cerr << "Error: cannot open output file\n"; return 1; }
+            if (!file_out) {
+                std::cerr << "Error: cannot open output file\n";
+                return 1;
+            }
         }
         std::ostream& out = opts.output.empty() ? std::cout : file_out;
 
@@ -1369,9 +1393,9 @@ int cmd_search(const SearchOptions& opts) {
 
         // Sort by distance
         std::sort(face_results.begin(), face_results.end(),
-            [](const Database::FaceSearchResult& a, const Database::FaceSearchResult& b) {
-                return a.distance < b.distance;
-            });
+                  [](const Database::FaceSearchResult& a, const Database::FaceSearchResult& b) {
+                      return a.distance < b.distance;
+                  });
 
         if (opts.limit > 0 && static_cast<int>(face_results.size()) > opts.limit) {
             face_results.resize(opts.limit);
@@ -1416,8 +1440,7 @@ int cmd_search(const SearchOptions& opts) {
         } else {
             for (const auto& r : face_results) {
                 out << r.path << "\n"
-                    << "  distance: " << r.distance
-                    << "  face: " << r.face_x << "," << r.face_y
+                    << "  distance: " << r.distance << "  face: " << r.face_x << "," << r.face_y
                     << " " << r.face_w << "x" << r.face_h << "\n\n";
             }
             out << "Found " << face_results.size() << " matching faces\n";
@@ -1451,10 +1474,9 @@ int cmd_search(const SearchOptions& opts) {
         }
 
         // Sort by distance (closest first)
-        std::sort(scored.begin(), scored.end(),
-            [](const ScoredImage& a, const ScoredImage& b) {
-                return a.distance < b.distance;
-            });
+        std::sort(scored.begin(), scored.end(), [](const ScoredImage& a, const ScoredImage& b) {
+            return a.distance < b.distance;
+        });
 
         for (auto& s : scored) {
             results.push_back(std::move(s.info));
@@ -1481,12 +1503,12 @@ int cmd_search(const SearchOptions& opts) {
 
     // Apply match/filter
     if (!opts.matches.empty() || !opts.filters.empty()) {
-        results.erase(
-            std::remove_if(results.begin(), results.end(),
-                [&](const ImageInfo& img) {
-                    return !passes_filters(img.path, opts.matches, opts.filters);
-                }),
-            results.end());
+        results.erase(std::remove_if(results.begin(), results.end(),
+                                     [&](const ImageInfo& img) {
+                                         return !passes_filters(img.path, opts.matches,
+                                                                opts.filters);
+                                     }),
+                      results.end());
     }
 
     // Apply limit (if not already applied in DB)
@@ -1519,12 +1541,8 @@ int cmd_search(const SearchOptions& opts) {
             std::string date = get_best_date_str(img);
             std::string camera = json_get(img.metadata_json, "Model");
             std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
-            out << img.path << '\t'
-                << img.width << '\t' << img.height << '\t'
-                << img.file_size << '\t'
-                << date << '\t'
-                << camera << '\t'
-                << tpath << '\n';
+            out << img.path << '\t' << img.width << '\t' << img.height << '\t' << img.file_size
+                << '\t' << date << '\t' << camera << '\t' << tpath << '\n';
         }
     } else if (opts.format == "csv") {
         out << "path,filename,width,height,file_size,date,camera,sha256,phash,thumb_path\n";
@@ -1532,11 +1550,9 @@ int cmd_search(const SearchOptions& opts) {
             std::string date = get_best_date_str(img);
             std::string camera = json_get(img.metadata_json, "Model");
             std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
-            out << "\"" << img.path << "\"," << img.filename << ","
-                << img.width << "," << img.height << ","
-                << img.file_size << "," << date << ","
-                << "\"" << camera << "\"," << img.sha256 << ","
-                << img.phash << ","
+            out << "\"" << img.path << "\"," << img.filename << "," << img.width << ","
+                << img.height << "," << img.file_size << "," << date << ","
+                << "\"" << camera << "\"," << img.sha256 << "," << img.phash << ","
                 << "\"" << tpath << "\"\n";
         }
     } else if (opts.format == "json") {
@@ -1549,14 +1565,11 @@ int cmd_search(const SearchOptions& opts) {
             std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
             out << "{\"path\":\"" << img.path << "\""
                 << ",\"filename\":\"" << img.filename << "\""
-                << ",\"width\":" << img.width
-                << ",\"height\":" << img.height
-                << ",\"file_size\":" << img.file_size
-                << ",\"date\":\"" << date << "\""
+                << ",\"width\":" << img.width << ",\"height\":" << img.height
+                << ",\"file_size\":" << img.file_size << ",\"date\":\"" << date << "\""
                 << ",\"camera\":\"" << camera << "\""
                 << ",\"sha256\":\"" << img.sha256 << "\""
-                << ",\"phash\":" << img.phash
-                << ",\"thumb_path\":\"" << tpath << "\""
+                << ",\"phash\":" << img.phash << ",\"thumb_path\":\"" << tpath << "\""
                 << "}";
         }
         out << "],\"count\":" << results.size() << "}\n";
@@ -1566,8 +1579,7 @@ int cmd_search(const SearchOptions& opts) {
             std::string date = get_best_date_str(img);
             std::string camera = json_get(img.metadata_json, "Model");
             out << img.path << "\n"
-                << "  " << img.width << "x" << img.height
-                << "  " << format_size(img.file_size)
+                << "  " << img.width << "x" << img.height << "  " << format_size(img.file_size)
                 << "  " << date;
             if (!camera.empty()) out << "  " << camera;
             out << "\n\n";
@@ -1606,7 +1618,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
             } else if (arg == "--parallel" && i + 1 < argc) {
                 parallel = std::stoi(argv[++i]);
             } else if (arg == "--db") {
-                i++; // already handled
+                i++;  // already handled
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 return 1;
@@ -1626,12 +1638,11 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
         auto images = db.get_all_images();
 
         if (!matches.empty() || !filters.empty()) {
-            images.erase(
-                std::remove_if(images.begin(), images.end(),
-                    [&](const ImageInfo& img) {
-                        return !passes_filters(img.path, matches, filters);
-                    }),
-                images.end());
+            images.erase(std::remove_if(images.begin(), images.end(),
+                                        [&](const ImageInfo& img) {
+                                            return !passes_filters(img.path, matches, filters);
+                                        }),
+                         images.end());
         }
 
         std::cout << "Generating thumbnails for " << images.size() << " images...\n";
@@ -1692,8 +1703,8 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
                 size_t done = generated.load() + skipped.load() + errors.load();
                 fs::path p(img.path);
                 std::string display = (p.parent_path().filename() / p.filename()).string();
-                std::cout << "\r\033[K[" << done << "/" << images.size() << "] "
-                          << display << std::flush;
+                std::cout << "\r\033[K[" << done << "/" << images.size() << "] " << display
+                          << std::flush;
             }
         };
 
@@ -1815,7 +1826,8 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         if (face_id < 0) {
             // No matching face in DB — scan this image first
             std::cerr << "No matching face found in the database.\n"
-                      << "Make sure the image (or similar photos) have been scanned with --faces first.\n";
+                      << "Make sure the image (or similar photos) have been scanned with --faces "
+                         "first.\n";
             return 1;
         }
 
@@ -1837,7 +1849,10 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         auto people = db.list_people();
         int64_t person_id = -1;
         for (const auto& p : people) {
-            if (p.name == name) { person_id = p.id; break; }
+            if (p.name == name) {
+                person_id = p.id;
+                break;
+            }
         }
         if (person_id < 0) {
             std::cerr << "Unknown person: " << name << "\n"
@@ -1939,7 +1954,7 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
             } else if (arg == "--parallel" && i + 1 < argc) {
                 parallel = std::stoi(argv[++i]);
             } else if (arg == "--db") {
-                i++; // already handled
+                i++;  // already handled
             }
         }
 
@@ -2014,8 +2029,8 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
 
                 fs::path p(img_info.path);
                 std::string display = (p.parent_path().filename() / p.filename()).string();
-                std::cout << "\r\033[K[" << (idx + 1) << "/" << images.size() << "] "
-                          << display << std::flush;
+                std::cout << "\r\033[K[" << (idx + 1) << "/" << images.size() << "] " << display
+                          << std::flush;
             }
         };
 
@@ -2060,10 +2075,10 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
 // shown at the top of --help output.
 static void print_active_config(const Config& cfg, const std::string& cfg_path, bool loaded) {
     std::cout << "Active configuration:\n";
-    std::cout << "  config file:  " << cfg_path
-              << (loaded ? "  (loaded)" : "  (not found)") << "\n";
-    std::cout << "  db:           " << default_db_path()
-              << (cfg.db ? "  [config]" : "  (default)") << "\n";
+    std::cout << "  config file:  " << cfg_path << (loaded ? "  (loaded)" : "  (not found)")
+              << "\n";
+    std::cout << "  db:           " << default_db_path() << (cfg.db ? "  [config]" : "  (default)")
+              << "\n";
     std::cout << "  models_dir:   " << models_dir()
               << (cfg.models_dir ? "  [config]" : "  (default)") << "\n";
     std::cout << "  thumbs_dir:   " << thumbs_dir()
@@ -2081,7 +2096,8 @@ static void print_active_config(const Config& cfg, const std::string& cfg_path, 
     if (cfg.scan_faces) line("scan.faces", *cfg.scan_faces ? "true" : "false");
     if (cfg.organize_format) line("organize.format", *cfg.organize_format);
     if (cfg.duplicates_type) line("duplicates.type", *cfg.duplicates_type);
-    if (cfg.duplicates_threshold) line("duplicates.threshold", std::to_string(*cfg.duplicates_threshold));
+    if (cfg.duplicates_threshold)
+        line("duplicates.threshold", std::to_string(*cfg.duplicates_threshold));
     if (cfg.faces_threshold) line("faces.threshold", std::to_string(*cfg.faces_threshold));
     std::cout << "\n";
 }
@@ -2328,7 +2344,8 @@ int main(int argc, char* argv[]) {
                 opts.dry_run = true;
             } else if (arg == "--on-conflict" && i + 1 < argc) {
                 opts.on_conflict = argv[++i];
-                if (opts.on_conflict != "skip" && opts.on_conflict != "overwrite" && opts.on_conflict != "rename") {
+                if (opts.on_conflict != "skip" && opts.on_conflict != "overwrite" &&
+                    opts.on_conflict != "rename") {
                     std::cerr << "Error: --on-conflict must be 'skip', 'overwrite', or 'rename'\n";
                     return 1;
                 }

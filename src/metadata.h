@@ -1,7 +1,7 @@
 #pragma once
 
-#include <string>
 #include <cstdint>
+#include <string>
 
 struct VideoMetadata {
     int64_t duration_ms = 0;

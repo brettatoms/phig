@@ -1,12 +1,14 @@
 #include <gtest/gtest.h>
-#include "scanner.h"
+
 #include <filesystem>
 #include <fstream>
+
+#include "scanner.h"
 
 namespace fs = std::filesystem;
 
 class ScannerTest : public ::testing::Test {
-protected:
+   protected:
     std::string test_dir;
 
     void SetUp() override {
@@ -15,9 +17,7 @@ protected:
         fs::create_directories(test_dir);
     }
 
-    void TearDown() override {
-        fs::remove_all(test_dir);
-    }
+    void TearDown() override { fs::remove_all(test_dir); }
 
     void create_file(const std::string& relative_path) {
         auto path = fs::path(test_dir) / relative_path;

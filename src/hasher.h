@@ -1,9 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <opencv2/core.hpp>
 #include <string>
 #include <utility>
-#include <opencv2/core.hpp>
 
 // Compute SHA256 of a file's contents
 std::string compute_sha256(const std::string& path);
@@ -27,7 +27,7 @@ cv::Mat decode_image(const std::string& path);
 // A representative video frame plus the source's reported dimensions
 // (which can differ from the decoded frame after scaling/rotation).
 struct VideoKeyframe {
-    cv::Mat frame;    // empty if extraction failed
+    cv::Mat frame;  // empty if extraction failed
     int width = 0;
     int height = 0;
 };

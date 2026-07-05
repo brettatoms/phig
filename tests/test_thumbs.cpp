@@ -1,17 +1,18 @@
 #include <gtest/gtest.h>
-#include "thumbs.h"
-#include "hasher.h"
-#include "paths.h"
 
+#include <cstdlib>
+#include <filesystem>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
-#include <filesystem>
-#include <cstdlib>
+
+#include "hasher.h"
+#include "paths.h"
+#include "thumbs.h"
 
 namespace fs = std::filesystem;
 
 class ThumbsTest : public ::testing::Test {
-protected:
+   protected:
     std::string orig_cache;
     std::string temp_dir;
 
@@ -100,7 +101,8 @@ TEST_F(ThumbsTest, NoUpscaleSmallImage) {
 
 TEST_F(ThumbsTest, GenerateEmptyMatFails) {
     cv::Mat empty;
-    EXPECT_FALSE(generate_thumb(empty, "abcd1234567890123456789012345678901234567890123456789012345678"));
+    EXPECT_FALSE(
+        generate_thumb(empty, "abcd1234567890123456789012345678901234567890123456789012345678"));
 }
 
 TEST_F(ThumbsTest, GenerateEmptyShaFails) {
@@ -108,6 +110,4 @@ TEST_F(ThumbsTest, GenerateEmptyShaFails) {
     EXPECT_FALSE(generate_thumb(img, ""));
 }
 
-TEST_F(ThumbsTest, CacheDirectoryXDG) {
-    EXPECT_EQ(thumbs_dir(), temp_dir + "/phig/thumbs");
-}
+TEST_F(ThumbsTest, CacheDirectoryXDG) { EXPECT_EQ(thumbs_dir(), temp_dir + "/phig/thumbs"); }

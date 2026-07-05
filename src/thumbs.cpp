@@ -1,12 +1,13 @@
 #include "thumbs.h"
-#include "hasher.h"
-#include "paths.h"
 
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+
+#include "hasher.h"
+#include "paths.h"
 
 namespace fs = std::filesystem;
 

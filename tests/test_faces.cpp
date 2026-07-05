@@ -1,16 +1,18 @@
 #include <gtest/gtest.h>
+
+#include <array>
+#include <filesystem>
+
 #include "database.h"
 #include "faces.h"
 #include "types.h"
-#include <filesystem>
-#include <array>
 
 namespace fs = std::filesystem;
 
 // ---- Database face operations tests ----
 
 class FaceDatabaseTest : public ::testing::Test {
-protected:
+   protected:
     std::string db_path;
     std::unique_ptr<Database> db;
 
@@ -47,7 +49,10 @@ protected:
         for (int i = 0; i < 128; i++) {
             fi.embedding[i] = base_val + (i * 0.01f);
         }
-        fi.x = x; fi.y = y; fi.width = w; fi.height = h;
+        fi.x = x;
+        fi.y = y;
+        fi.width = w;
+        fi.height = h;
         return fi;
     }
 };
@@ -90,19 +95,19 @@ TEST_F(FaceDatabaseTest, GetImageId) {
 TEST_F(FaceDatabaseTest, GetOrCreatePerson) {
     int64_t id1 = db->get_or_create_person("Alice");
     int64_t id2 = db->get_or_create_person("Bob");
-    int64_t id3 = db->get_or_create_person("Alice"); // same as id1
+    int64_t id3 = db->get_or_create_person("Alice");  // same as id1
 
     EXPECT_GE(id1, 0);
     EXPECT_GE(id2, 0);
     EXPECT_NE(id1, id2);
-    EXPECT_EQ(id1, id3); // same person
+    EXPECT_EQ(id1, id3);  // same person
 }
 
 TEST_F(FaceDatabaseTest, SetFacePerson) {
     db->insert(make_image("/test/photo.jpg", "sha1"));
     int64_t image_id = db->get_image_id("/test/photo.jpg");
     db->insert_face(image_id, make_face(0.0f));
-    int64_t face_id = 1; // first face inserted
+    int64_t face_id = 1;  // first face inserted
 
     int64_t person_id = db->get_or_create_person("Alice");
     db->set_face_person(face_id, person_id);
@@ -178,7 +183,7 @@ TEST_F(FaceDatabaseTest, AutoLabelFaceMatch) {
     // Insert a similar face (small distance)
     db->insert(make_image("/test/new.jpg", "sha2"));
     int64_t new_img = db->get_image_id("/test/new.jpg");
-    FaceInfo similar_face = make_face(0.001f); // very close embedding
+    FaceInfo similar_face = make_face(0.001f);  // very close embedding
     db->insert_face(new_img, similar_face);
 
     std::string result = db->auto_label_face(2, similar_face.embedding);
@@ -198,11 +203,11 @@ TEST_F(FaceDatabaseTest, AutoLabelFaceNoMatch) {
     // Insert a very different face
     db->insert(make_image("/test/new.jpg", "sha2"));
     int64_t new_img = db->get_image_id("/test/new.jpg");
-    FaceInfo different_face = make_face(100.0f); // very different embedding
+    FaceInfo different_face = make_face(100.0f);  // very different embedding
     db->insert_face(new_img, different_face);
 
     std::string result = db->auto_label_face(2, different_face.embedding);
-    EXPECT_EQ(result, ""); // no match
+    EXPECT_EQ(result, "");  // no match
 }
 
 TEST_F(FaceDatabaseTest, AutoLabelNoPeople) {
@@ -212,20 +217,25 @@ TEST_F(FaceDatabaseTest, AutoLabelNoPeople) {
     db->insert_face(img, face);
 
     std::string result = db->auto_label_face(1, face.embedding);
-    EXPECT_EQ(result, ""); // no people defined
+    EXPECT_EQ(result, "");  // no people defined
 }
 
 // ---- FaceInfo / embedding_distance tests ----
 
 TEST(EmbeddingTest, DistanceZero) {
     std::array<float, 128> a{}, b{};
-    for (int i = 0; i < 128; i++) { a[i] = b[i] = i * 0.1f; }
+    for (int i = 0; i < 128; i++) {
+        a[i] = b[i] = i * 0.1f;
+    }
     EXPECT_FLOAT_EQ(embedding_distance(a, b), 0.0f);
 }
 
 TEST(EmbeddingTest, DistanceNonZero) {
     std::array<float, 128> a{}, b{};
-    for (int i = 0; i < 128; i++) { a[i] = 0.0f; b[i] = 1.0f; }
+    for (int i = 0; i < 128; i++) {
+        a[i] = 0.0f;
+        b[i] = 1.0f;
+    }
     float dist = embedding_distance(a, b);
     // sqrt(128 * 1^2) = sqrt(128) ≈ 11.31
     EXPECT_NEAR(dist, std::sqrt(128.0f), 0.01f);
@@ -233,6 +243,9 @@ TEST(EmbeddingTest, DistanceNonZero) {
 
 TEST(EmbeddingTest, DistanceSymmetric) {
     std::array<float, 128> a{}, b{};
-    for (int i = 0; i < 128; i++) { a[i] = i * 0.1f; b[i] = i * 0.2f; }
+    for (int i = 0; i < 128; i++) {
+        a[i] = i * 0.1f;
+        b[i] = i * 0.2f;
+    }
     EXPECT_FLOAT_EQ(embedding_distance(a, b), embedding_distance(b, a));
 }

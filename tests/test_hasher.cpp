@@ -1,14 +1,16 @@
 #include <gtest/gtest.h>
-#include "hasher.h"
+
 #include <filesystem>
 #include <fstream>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 
+#include "hasher.h"
+
 namespace fs = std::filesystem;
 
 class HasherTest : public ::testing::Test {
-protected:
+   protected:
     std::string test_dir;
 
     void SetUp() override {
@@ -17,12 +19,9 @@ protected:
         fs::create_directories(test_dir);
     }
 
-    void TearDown() override {
-        fs::remove_all(test_dir);
-    }
+    void TearDown() override { fs::remove_all(test_dir); }
 
-    std::string create_image(const std::string& name, int width, int height,
-                             cv::Scalar color) {
+    std::string create_image(const std::string& name, int width, int height, cv::Scalar color) {
         auto path = (fs::path(test_dir) / name).string();
         cv::Mat img(height, width, CV_8UC3, color);
         cv::imwrite(path, img);
@@ -112,7 +111,7 @@ TEST_F(HasherTest, PhashDifferentSizes) {
     auto h1 = compute_phash(path1).hash;
     auto h2 = compute_phash(path2).hash;
     int distance = std::popcount(h1 ^ h2);
-    EXPECT_LE(distance, 5); // should be very similar
+    EXPECT_LE(distance, 5);  // should be very similar
 }
 
 TEST_F(HasherTest, PhashNonImage) {

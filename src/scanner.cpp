@@ -1,27 +1,79 @@
 #include "scanner.h"
+
 #include <algorithm>
-#include <unordered_set>
 #include <iostream>
+#include <unordered_set>
 
 namespace {
 
 const std::unordered_set<std::string>& known_extensions() {
     static const std::unordered_set<std::string> exts = {
         // Common formats
-        "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp",
+        "jpg",
+        "jpeg",
+        "png",
+        "gif",
+        "bmp",
+        "tiff",
+        "tif",
+        "webp",
         // RAW formats
-        "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2",
-        "dng", "orf", "rw2", "pef", "raf", "raw", "rwl",
-        "3fr", "ari", "bay", "cap", "crw", "dcr", "dcs",
-        "erf", "fff", "iiq", "k25", "kdc", "mdc", "mef",
-        "mos", "mrw", "obm", "ptx", "pxn", "r3d", "srw",
+        "cr2",
+        "cr3",
+        "nef",
+        "nrw",
+        "arw",
+        "srf",
+        "sr2",
+        "dng",
+        "orf",
+        "rw2",
+        "pef",
+        "raf",
+        "raw",
+        "rwl",
+        "3fr",
+        "ari",
+        "bay",
+        "cap",
+        "crw",
+        "dcr",
+        "dcs",
+        "erf",
+        "fff",
+        "iiq",
+        "k25",
+        "kdc",
+        "mdc",
+        "mef",
+        "mos",
+        "mrw",
+        "obm",
+        "ptx",
+        "pxn",
+        "r3d",
+        "srw",
         "x3f",
         // Other image formats
-        "heic", "heif", "avif", "jxl",
-        "ico", "svg", "psd", "xcf",
-        "jp2", "j2k", "jpf", "jpm", "jpx",
-        "pgm", "ppm", "pbm", "pnm",
-        "exr", "hdr",
+        "heic",
+        "heif",
+        "avif",
+        "jxl",
+        "ico",
+        "svg",
+        "psd",
+        "xcf",
+        "jp2",
+        "j2k",
+        "jpf",
+        "jpm",
+        "jpx",
+        "pgm",
+        "ppm",
+        "pbm",
+        "pnm",
+        "exr",
+        "hdr",
     };
     return exts;
 }
@@ -33,13 +85,13 @@ std::string to_lower(std::string s) {
 
 const std::unordered_set<std::string>& known_video_extensions() {
     static const std::unordered_set<std::string> exts = {
-        "mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "flv",
-        "3gp", "mts", "m2ts", "ts", "mpg", "mpeg",
+        "mp4", "mov", "avi", "mkv",  "webm", "m4v", "wmv",
+        "flv", "3gp", "mts", "m2ts", "ts",   "mpg", "mpeg",
     };
     return exts;
 }
 
-} // anonymous namespace
+}  // anonymous namespace
 
 bool is_known_image_extension(const std::string& ext) {
     std::string lower = to_lower(ext);
@@ -73,10 +125,9 @@ bool is_hidden_name(const std::string& name) {
     return !name.empty() && (name[0] == '.' || name[0] == '~');
 }
 
-} // anonymous namespace
+}  // anonymous namespace
 
-std::vector<fs::path> scan_directory(const std::string& dir, bool recursive,
-                                     bool include_hidden) {
+std::vector<fs::path> scan_directory(const std::string& dir, bool recursive, bool include_hidden) {
     std::vector<fs::path> files;
 
     if (!fs::exists(dir)) {
@@ -107,12 +158,12 @@ std::vector<fs::path> scan_directory(const std::string& dir, bool recursive,
         // Iterate manually so hidden directories can be pruned (not descended
         // into). The scan root itself is honored even if hidden, because
         // pruning only applies to directories discovered during the walk.
-        auto it = fs::recursive_directory_iterator(dir,
-                fs::directory_options::skip_permission_denied);
+        auto it =
+            fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied);
         for (auto end = fs::recursive_directory_iterator(); it != end; ++it) {
             const auto& entry = *it;
             if (!include_hidden && entry.is_directory() &&
-                    is_hidden_name(entry.path().filename().string())) {
+                is_hidden_name(entry.path().filename().string())) {
                 it.disable_recursion_pending();
                 continue;
             }

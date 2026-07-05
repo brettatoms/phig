@@ -1,11 +1,11 @@
 #pragma once
 
-#include <cstdint>
-#include <string>
-#include <vector>
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <opencv2/core.hpp>
+#include <string>
+#include <vector>
 
 struct FaceInfo {
     std::array<float, 128> embedding;
@@ -14,7 +14,7 @@ struct FaceInfo {
 
 // Per-thread face detector using OpenCV DNN (YuNet + SFace)
 class FaceDetector {
-public:
+   public:
     FaceDetector();
     ~FaceDetector();
 
@@ -27,7 +27,7 @@ public:
     // Detect faces from file path
     std::vector<FaceInfo> detect(const std::string& image_path);
 
-private:
+   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

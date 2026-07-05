@@ -23,15 +23,13 @@ std::optional<std::string> g_db_override;
 std::optional<std::string> g_models_override;
 std::optional<std::string> g_thumbs_override;
 
-} // namespace
+}  // namespace
 
 std::string config_dir() { return xdg_base("XDG_CONFIG_HOME", "/.config") + "/phig"; }
 std::string data_dir() { return xdg_base("XDG_DATA_HOME", "/.local/share") + "/phig"; }
 std::string cache_dir() { return xdg_base("XDG_CACHE_HOME", "/.cache") + "/phig"; }
 
-std::string default_db_path() {
-    return g_db_override ? *g_db_override : data_dir() + "/phig.db";
-}
+std::string default_db_path() { return g_db_override ? *g_db_override : data_dir() + "/phig.db"; }
 std::string models_dir() {
     return g_models_override ? *g_models_override : cache_dir() + "/models";
 }

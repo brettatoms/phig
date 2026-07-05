@@ -1,11 +1,12 @@
 #include "config.h"
-#include "paths.h"
-#include "INIReader.h"
 
 #include <cctype>
 #include <initializer_list>
 #include <iostream>
 #include <stdexcept>
+
+#include "INIReader.h"
+#include "paths.h"
 
 namespace {
 
@@ -19,14 +20,13 @@ std::string normalize(std::string s) {
     return s;
 }
 
-[[noreturn]] void fail(const std::string& path, const std::string& section,
-                       const std::string& key, const std::string& msg) {
-    throw std::runtime_error("config " + path + ": [" + section + "] " + key +
-                             ": " + msg);
+[[noreturn]] void fail(const std::string& path, const std::string& section, const std::string& key,
+                       const std::string& msg) {
+    throw std::runtime_error("config " + path + ": [" + section + "] " + key + ": " + msg);
 }
 
-int parse_int(const std::string& path, const std::string& sec,
-              const std::string& key, const std::string& val) {
+int parse_int(const std::string& path, const std::string& sec, const std::string& key,
+              const std::string& val) {
     try {
         size_t pos = 0;
         int n = std::stoi(val, &pos);
@@ -37,8 +37,8 @@ int parse_int(const std::string& path, const std::string& sec,
     }
 }
 
-double parse_real(const std::string& path, const std::string& sec,
-                  const std::string& key, const std::string& val) {
+double parse_real(const std::string& path, const std::string& sec, const std::string& key,
+                  const std::string& val) {
     try {
         size_t pos = 0;
         double d = std::stod(val, &pos);
@@ -49,17 +49,16 @@ double parse_real(const std::string& path, const std::string& sec,
     }
 }
 
-bool parse_bool(const std::string& path, const std::string& sec,
-                const std::string& key, const std::string& val) {
+bool parse_bool(const std::string& path, const std::string& sec, const std::string& key,
+                const std::string& val) {
     std::string v = normalize(val);
     if (v == "true" || v == "yes" || v == "on" || v == "1") return true;
     if (v == "false" || v == "no" || v == "off" || v == "0") return false;
     fail(path, sec, key, "expected a boolean (true/false), got '" + val + "'");
 }
 
-std::string parse_enum(const std::string& path, const std::string& sec,
-                       const std::string& key, const std::string& val,
-                       std::initializer_list<const char*> allowed) {
+std::string parse_enum(const std::string& path, const std::string& sec, const std::string& key,
+                       const std::string& val, std::initializer_list<const char*> allowed) {
     std::string v = normalize(val);
     std::string list;
     for (const char* a : allowed) {
@@ -70,7 +69,7 @@ std::string parse_enum(const std::string& path, const std::string& sec,
     fail(path, sec, key, "must be one of {" + list + "}, got '" + val + "'");
 }
 
-} // namespace
+}  // namespace
 
 Config load_config(const std::string& path) {
     Config cfg;
@@ -124,13 +123,14 @@ Config load_config(const std::string& path) {
                 cfg.duplicates_type = parse_enum(path, section, key, val, {"exact", "near", "all"});
             } else if (sec == "duplicates" && k == "threshold") {
                 int n = parse_int(path, section, key, val);
-                if (n < 0 || n > 64) fail(path, section, key, "must be between 0 and 64, got " + val);
+                if (n < 0 || n > 64)
+                    fail(path, section, key, "must be between 0 and 64, got " + val);
                 cfg.duplicates_threshold = n;
             } else if (sec == "faces" && k == "threshold") {
                 cfg.faces_threshold = parse_real(path, section, key, val);
             } else {
-                std::cerr << "Warning: config " << path << ": unknown key [" << section
-                          << "] " << key << " (ignored)\n";
+                std::cerr << "Warning: config " << path << ": unknown key [" << section << "] "
+                          << key << " (ignored)\n";
             }
         }
     }

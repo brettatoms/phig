@@ -1,4 +1,5 @@
 #include "filters.h"
+
 #include <cstdlib>
 
 bool glob_match(const std::string& pattern, const std::string& str) {
@@ -7,7 +8,8 @@ bool glob_match(const std::string& pattern, const std::string& str) {
 
     while (si < str.size()) {
         if (pi < pattern.size() && (pattern[pi] == '?' || pattern[pi] == str[si])) {
-            pi++; si++;
+            pi++;
+            si++;
         } else if (pi < pattern.size() && pattern[pi] == '*') {
             star_p = pi++;
             star_s = si;
@@ -22,8 +24,7 @@ bool glob_match(const std::string& pattern, const std::string& str) {
     return pi == pattern.size();
 }
 
-bool passes_filters(const std::string& filename,
-                    const std::vector<std::string>& matches,
+bool passes_filters(const std::string& filename, const std::vector<std::string>& matches,
                     const std::vector<std::string>& filters) {
     // Filter wins — check exclusions first
     for (const auto& f : filters) {

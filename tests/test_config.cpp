@@ -1,15 +1,16 @@
 #include <gtest/gtest.h>
-#include "config.h"
 
 #include <cstdlib>
-#include <fstream>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
+
+#include "config.h"
 
 namespace fs = std::filesystem;
 
 class ConfigTest : public ::testing::Test {
-protected:
+   protected:
     fs::path dir;
     std::string saved_home;
     bool had_home = false;
@@ -26,7 +27,10 @@ protected:
     }
 
     void TearDown() override {
-        if (had_home) setenv("HOME", saved_home.c_str(), 1); else unsetenv("HOME");
+        if (had_home)
+            setenv("HOME", saved_home.c_str(), 1);
+        else
+            unsetenv("HOME");
         fs::remove_all(dir);
     }
 
@@ -93,7 +97,8 @@ TEST_F(ConfigTest, ExcludedKeyForceThrows) {
 }
 
 TEST_F(ConfigTest, ExcludedKeyOnConflictThrows) {
-    EXPECT_THROW(load_config(write_ini("[organize]\non_conflict = overwrite\n")), std::runtime_error);
+    EXPECT_THROW(load_config(write_ini("[organize]\non_conflict = overwrite\n")),
+                 std::runtime_error);
 }
 
 TEST_F(ConfigTest, ExcludedKeyDryRunThrows) {
@@ -101,7 +106,8 @@ TEST_F(ConfigTest, ExcludedKeyDryRunThrows) {
 }
 
 TEST_F(ConfigTest, ExcludedKeyIgnoreMountWarningThrows) {
-    EXPECT_THROW(load_config(write_ini("[scan]\nignore_mount_warning = true\n")), std::runtime_error);
+    EXPECT_THROW(load_config(write_ini("[scan]\nignore_mount_warning = true\n")),
+                 std::runtime_error);
 }
 
 TEST_F(ConfigTest, InvalidParallelThrows) {

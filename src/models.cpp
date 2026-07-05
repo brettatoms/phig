@@ -1,12 +1,15 @@
 #include "models.h"
-#include "paths.h"
+
+#include <curl/curl.h>
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
-#include <curl/curl.h>
+
+#include "paths.h"
 
 namespace fs = std::filesystem;
 
@@ -56,15 +59,11 @@ bool download_file(const std::string& url, const std::string& dest) {
     return true;
 }
 
-} // anonymous namespace
+}  // anonymous namespace
 
-std::string yunet_model_path() {
-    return models_dir() + "/face_detection_yunet_2023mar.onnx";
-}
+std::string yunet_model_path() { return models_dir() + "/face_detection_yunet_2023mar.onnx"; }
 
-std::string sface_model_path() {
-    return models_dir() + "/face_recognition_sface_2021dec.onnx";
-}
+std::string sface_model_path() { return models_dir() + "/face_recognition_sface_2021dec.onnx"; }
 
 bool face_models_exist() {
     return fs::exists(yunet_model_path()) && fs::exists(sface_model_path());
@@ -80,9 +79,11 @@ bool download_face_models() {
     };
 
     std::vector<ModelFile> models = {
-        {"https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+        {"https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
+         "face_detection_yunet_2023mar.onnx",
          "face_detection_yunet_2023mar.onnx"},
-        {"https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+        {"https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/"
+         "face_recognition_sface_2021dec.onnx",
          "face_recognition_sface_2021dec.onnx"},
     };
 

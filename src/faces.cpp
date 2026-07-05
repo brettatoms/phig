@@ -1,13 +1,13 @@
 #include "faces.h"
-#include "models.h"
-
-#include <opencv2/objdetect/face.hpp>
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
 
 #include <cmath>
-#include <stdexcept>
 #include <mutex>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/objdetect/face.hpp>
+#include <stdexcept>
+
+#include "models.h"
 
 // ---- FaceDetector (per-thread instance) ----
 
@@ -25,11 +25,10 @@ struct FaceDetector::Impl {
                 "Run 'phig models download' to download them.");
         }
 
-        detector = cv::FaceDetectorYN::create(
-            yunet_model_path(), "", cv::Size(320, 320),
-            0.5f,   // score threshold
-            0.3f,   // NMS threshold
-            5000    // top K
+        detector = cv::FaceDetectorYN::create(yunet_model_path(), "", cv::Size(320, 320),
+                                              0.5f,  // score threshold
+                                              0.3f,  // NMS threshold
+                                              5000   // top K
         );
 
         recognizer = cv::FaceRecognizerSF::create(sface_model_path(), "");
@@ -123,12 +122,10 @@ FaceDetector& get_global_detector() {
 
 std::once_flag global_init_flag;
 
-} // anonymous namespace
+}  // anonymous namespace
 
 void preload_face_models() {
-    std::call_once(global_init_flag, []() {
-        get_global_detector();
-    });
+    std::call_once(global_init_flag, []() { get_global_detector(); });
 }
 
 std::vector<FaceInfo> detect_faces(const std::string& image_path) {

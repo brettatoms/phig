@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
-#include "types.h"
-#include "filters.h"
-#include "paths.h"
+
+#include <filesystem>
 #include <string>
 #include <vector>
-#include <filesystem>
+
+#include "filters.h"
+#include "paths.h"
+#include "types.h"
 
 namespace fs = std::filesystem;
 
@@ -84,7 +86,7 @@ std::string apply_format(const std::string& fmt, const ImageInfo& img, const Dat
     return result;
 }
 
-} // namespace organize_helpers
+}  // namespace organize_helpers
 
 using namespace organize_helpers;
 
@@ -135,9 +137,7 @@ TEST(GlobTest, MultipleStars) {
 
 // ---- Filter tests ----
 
-TEST(FilterTest, NoFiltersPassesAll) {
-    EXPECT_TRUE(passes_filters("anything.jpg", {}, {}));
-}
+TEST(FilterTest, NoFiltersPassesAll) { EXPECT_TRUE(passes_filters("anything.jpg", {}, {})); }
 
 TEST(FilterTest, MatchIncludesMatching) {
     EXPECT_TRUE(passes_filters("vacation.jpg", {"vacation*"}, {}));
@@ -175,9 +175,9 @@ TEST(FilterTest, MatchAndFilterTogether) {
     std::vector<std::string> filters = {"thumb_*", "*_small*"};
     EXPECT_TRUE(passes_filters("photo.jpg", matches, filters));
     EXPECT_TRUE(passes_filters("image.png", matches, filters));
-    EXPECT_FALSE(passes_filters("photo.gif", matches, filters));    // not matched
-    EXPECT_FALSE(passes_filters("thumb_photo.jpg", matches, filters)); // filtered
-    EXPECT_FALSE(passes_filters("photo_small.png", matches, filters)); // filtered
+    EXPECT_FALSE(passes_filters("photo.gif", matches, filters));        // not matched
+    EXPECT_FALSE(passes_filters("thumb_photo.jpg", matches, filters));  // filtered
+    EXPECT_FALSE(passes_filters("photo_small.png", matches, filters));  // filtered
 }
 
 TEST(FilterTest, MatchesAgainstFullPath) {
@@ -249,9 +249,7 @@ TEST(DateParseTest, GarbageString) {
 
 // ---- JSON get tests ----
 
-TEST(JsonGetTest, SimpleValue) {
-    EXPECT_EQ(json_get("{\"Make\":\"Canon\"}", "Make"), "Canon");
-}
+TEST(JsonGetTest, SimpleValue) { EXPECT_EQ(json_get("{\"Make\":\"Canon\"}", "Make"), "Canon"); }
 
 TEST(JsonGetTest, MultipleKeys) {
     std::string json = "{\"Make\":\"Canon\",\"Model\":\"EOS R5\"}";
@@ -259,13 +257,9 @@ TEST(JsonGetTest, MultipleKeys) {
     EXPECT_EQ(json_get(json, "Model"), "EOS R5");
 }
 
-TEST(JsonGetTest, MissingKey) {
-    EXPECT_EQ(json_get("{\"Make\":\"Canon\"}", "Model"), "");
-}
+TEST(JsonGetTest, MissingKey) { EXPECT_EQ(json_get("{\"Make\":\"Canon\"}", "Model"), ""); }
 
-TEST(JsonGetTest, EmptyJson) {
-    EXPECT_EQ(json_get("{}", "Make"), "");
-}
+TEST(JsonGetTest, EmptyJson) { EXPECT_EQ(json_get("{}", "Make"), ""); }
 
 // ---- Format string tests ----
 
@@ -320,7 +314,7 @@ TEST(FormatTest, MissingCamera) {
 TEST(FormatTest, InvalidDate) {
     ImageInfo img;
     img.filename = "photo.jpg";
-    DateParts date; // invalid
+    DateParts date;  // invalid
 
     auto result = apply_format("%Y/%m/%original", img, date);
     EXPECT_EQ(result, "unsorted/unsorted/photo.jpg");

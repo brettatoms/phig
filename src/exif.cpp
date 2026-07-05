@@ -1,10 +1,12 @@
 #include "exif.h"
+
 #include <libexif/exif-data.h>
+
+#include <cstring>
 #include <sstream>
 #include <string>
-#include <vector>
 #include <utility>
-#include <cstring>
+#include <vector>
 
 namespace {
 
@@ -14,11 +16,21 @@ std::string json_escape(const std::string& s) {
     out.reserve(s.size() + 10);
     for (char c : s) {
         switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
                     char buf[8];
@@ -48,7 +60,7 @@ void collect_entries(ExifContent* content, void* user_data) {
     }
 }
 
-} // anonymous namespace
+}  // anonymous namespace
 
 std::string extract_exif_json(const std::string& path) {
     ExifData* data = exif_data_new_from_file(path.c_str());
@@ -68,8 +80,8 @@ std::string extract_exif_json(const std::string& path) {
     json << "{";
     for (size_t i = 0; i < entries.size(); i++) {
         if (i > 0) json << ",";
-        json << "\"" << json_escape(entries[i].first) << "\":\""
-             << json_escape(entries[i].second) << "\"";
+        json << "\"" << json_escape(entries[i].first) << "\":\"" << json_escape(entries[i].second)
+             << "\"";
     }
     json << "}";
     return json.str();

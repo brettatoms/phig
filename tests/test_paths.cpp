@@ -1,14 +1,15 @@
 #include <gtest/gtest.h>
-#include "paths.h"
 
 #include <cstdlib>
 #include <optional>
 #include <stdexcept>
 
+#include "paths.h"
+
 // Saves and restores HOME + all three XDG base-dir env vars so each test can
 // set them freely without leaking into other tests.
 class PathsTest : public ::testing::Test {
-protected:
+   protected:
     struct Saved {
         const char* name;
         bool was_set;
@@ -74,9 +75,7 @@ TEST_F(PathsTest, DataDirFallsBackToHome) {
     EXPECT_EQ(data_dir(), "/home/tester/.local/share/phig");
 }
 
-TEST_F(PathsTest, CacheDirFallsBackToHome) {
-    EXPECT_EQ(cache_dir(), "/home/tester/.cache/phig");
-}
+TEST_F(PathsTest, CacheDirFallsBackToHome) { EXPECT_EQ(cache_dir(), "/home/tester/.cache/phig"); }
 
 // ---- Empty-string env vars are treated as unset ----
 
@@ -121,9 +120,7 @@ TEST_F(PathsTest, ExpandTildeLeavesNonTildeUnchanged) {
     EXPECT_EQ(expand_tilde("relative/path"), "relative/path");
 }
 
-TEST_F(PathsTest, ExpandTildeOnlyLeadingTilde) {
-    EXPECT_EQ(expand_tilde("/x/~/y"), "/x/~/y");
-}
+TEST_F(PathsTest, ExpandTildeOnlyLeadingTilde) { EXPECT_EQ(expand_tilde("/x/~/y"), "/x/~/y"); }
 
 // ---- Path overrides (from config) take precedence over computed paths ----
 

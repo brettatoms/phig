@@ -1,9 +1,10 @@
 #include "database.h"
-#include <filesystem>
-#include <stdexcept>
-#include <iostream>
-#include <cstring>
+
 #include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <iostream>
+#include <stdexcept>
 
 #ifndef SQLITE_VEC_STATIC
 #define SQLITE_VEC_STATIC
@@ -22,8 +23,8 @@ static const int CURRENT_SCHEMA_VERSION = 2;
 // Version 1 = initial schema, created directly by init_schema().
 // Version 2 = video support (media_type + duration_ms columns).
 static const std::vector<std::string> migrations = {
-    "", // placeholder for index 0 (no version 0)
-    "", // v1: initial schema, created fresh by init_schema()
+    "",  // placeholder for index 0 (no version 0)
+    "",  // v1: initial schema, created fresh by init_schema()
     // v2: rename exif -> metadata, add video support columns
     "ALTER TABLE images RENAME COLUMN exif TO metadata;"
     "ALTER TABLE images ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image';"
@@ -60,10 +61,10 @@ Database::~Database() {
 
 int Database::get_schema_version() {
     sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_,
-        "SELECT value FROM meta WHERE key = 'schema_version'", -1, &stmt, nullptr);
+    int rc = sqlite3_prepare_v2(db_, "SELECT value FROM meta WHERE key = 'schema_version'", -1,
+                                &stmt, nullptr);
     if (rc != SQLITE_OK) {
-        return 0; // meta table doesn't exist = fresh DB
+        return 0;  // meta table doesn't exist = fresh DB
     }
     rc = sqlite3_step(stmt);
     int version = 0;
@@ -77,11 +78,12 @@ int Database::get_schema_version() {
 void Database::set_schema_version(int version) {
     exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
     sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_,
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
-        -1, &stmt, nullptr);
+    int rc = sqlite3_prepare_v2(
+        db_, "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", -1, &stmt,
+        nullptr);
     if (rc != SQLITE_OK) {
-        throw std::runtime_error("Failed to set schema version: " + std::string(sqlite3_errmsg(db_)));
+        throw std::runtime_error("Failed to set schema version: " +
+                                 std::string(sqlite3_errmsg(db_)));
     }
     sqlite3_bind_int(stmt, 1, version);
     sqlite3_step(stmt);
@@ -92,11 +94,9 @@ void Database::init_schema() {
     int db_version = get_schema_version();
 
     if (db_version > CURRENT_SCHEMA_VERSION) {
-        throw std::runtime_error(
-            "Database schema (v" + std::to_string(db_version) +
-            ") is newer than this version of phig (v" +
-            std::to_string(CURRENT_SCHEMA_VERSION) +
-            "). Please update phig.");
+        throw std::runtime_error("Database schema (v" + std::to_string(db_version) +
+                                 ") is newer than this version of phig (v" +
+                                 std::to_string(CURRENT_SCHEMA_VERSION) + "). Please update phig.");
     }
 
     if (db_version == 0) {
@@ -104,9 +104,9 @@ void Database::init_schema() {
         bool has_images_table = false;
         {
             sqlite3_stmt* stmt;
-            int rc = sqlite3_prepare_v2(db_,
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='images'",
-                -1, &stmt, nullptr);
+            int rc = sqlite3_prepare_v2(
+                db_, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='images'", -1, &stmt,
+                nullptr);
             if (rc == SQLITE_OK) {
                 has_images_table = (sqlite3_step(stmt) == SQLITE_ROW);
                 sqlite3_finalize(stmt);
@@ -147,7 +147,8 @@ void Database::init_schema() {
             // IF NOT EXISTS for ALTER TABLE, so probe first).
             {
                 sqlite3_stmt* stmt;
-                int rc = sqlite3_prepare_v2(db_, "SELECT person_id FROM faces LIMIT 0", -1, &stmt, nullptr);
+                int rc = sqlite3_prepare_v2(db_, "SELECT person_id FROM faces LIMIT 0", -1, &stmt,
+                                            nullptr);
                 if (rc != SQLITE_OK) {
                     exec("ALTER TABLE faces ADD COLUMN person_id INTEGER REFERENCES people(id)");
                 } else {
@@ -299,7 +300,8 @@ void Database::insert_copy(const std::string& source_path, const std::string& de
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare insert_copy: " + std::string(sqlite3_errmsg(db_)));
+        throw std::runtime_error("Failed to prepare insert_copy: " +
+                                 std::string(sqlite3_errmsg(db_)));
     }
 
     fs::path dp(dest_path);
@@ -315,17 +317,11 @@ void Database::insert_copy(const std::string& source_path, const std::string& de
     }
 }
 
-void Database::begin_transaction() {
-    exec("BEGIN TRANSACTION");
-}
+void Database::begin_transaction() { exec("BEGIN TRANSACTION"); }
 
-void Database::commit_transaction() {
-    exec("COMMIT");
-}
+void Database::commit_transaction() { exec("COMMIT"); }
 
-void Database::rollback_transaction() {
-    exec("ROLLBACK");
-}
+void Database::rollback_transaction() { exec("ROLLBACK"); }
 
 std::optional<std::string> Database::get_modified_at(const std::string& path) {
     const char* sql = "SELECT modified_at FROM images WHERE path = ?";
@@ -447,10 +443,15 @@ std::vector<std::string> Database::purge(const std::string& path_prefix, const s
         // Convert glob to SQL LIKE: * -> %, ? -> _
         std::string like_pattern;
         for (char c : glob) {
-            if (c == '*') like_pattern += '%';
-            else if (c == '?') like_pattern += '_';
-            else if (c == '%' || c == '_') { like_pattern += '\\'; like_pattern += c; }
-            else like_pattern += c;
+            if (c == '*')
+                like_pattern += '%';
+            else if (c == '?')
+                like_pattern += '_';
+            else if (c == '%' || c == '_') {
+                like_pattern += '\\';
+                like_pattern += c;
+            } else
+                like_pattern += c;
         }
         sql += " AND filename LIKE ? ESCAPE '\\'";
     }
@@ -468,10 +469,15 @@ std::vector<std::string> Database::purge(const std::string& path_prefix, const s
     if (!glob.empty()) {
         std::string like_pattern;
         for (char c : glob) {
-            if (c == '*') like_pattern += '%';
-            else if (c == '?') like_pattern += '_';
-            else if (c == '%' || c == '_') { like_pattern += '\\'; like_pattern += c; }
-            else like_pattern += c;
+            if (c == '*')
+                like_pattern += '%';
+            else if (c == '?')
+                like_pattern += '_';
+            else if (c == '%' || c == '_') {
+                like_pattern += '\\';
+                like_pattern += c;
+            } else
+                like_pattern += c;
         }
         sqlite3_bind_text(stmt, bind_idx++, like_pattern.c_str(), -1, SQLITE_TRANSIENT);
     }
@@ -505,7 +511,8 @@ int64_t Database::count() {
 }
 
 std::set<std::string> Database::get_all_sha256s() {
-    const char* sql = "SELECT DISTINCT sha256 FROM images WHERE sha256 IS NOT NULL AND sha256 != ''";
+    const char* sql =
+        "SELECT DISTINCT sha256 FROM images WHERE sha256 IS NOT NULL AND sha256 != ''";
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
@@ -522,7 +529,9 @@ std::set<std::string> Database::get_all_sha256s() {
 }
 
 std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) {
-    std::string sql = "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms FROM images";
+    std::string sql =
+        "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, "
+        "width, height, metadata, media_type, duration_ms FROM images";
     if (!path_prefix.empty()) {
         sql += " WHERE path LIKE ? || '%'";
     }
@@ -618,7 +627,7 @@ std::vector<std::vector<ImageInfo>> Database::get_exact_duplicates(const std::st
 
     // Group by sha256
     std::vector<std::vector<ImageInfo>> groups;
-    for (size_t i = 0; i < flat.size(); ) {
+    for (size_t i = 0; i < flat.size();) {
         size_t j = i;
         while (j < flat.size() && flat[j].sha256 == flat[i].sha256) j++;
         groups.emplace_back(flat.begin() + i, flat.begin() + j);
@@ -665,7 +674,8 @@ bool Database::has_faces(const std::string& path) {
 
 void Database::delete_faces_for_image(int64_t image_id) {
     // Delete from vec_faces first (references face ids)
-    const char* vec_sql = "DELETE FROM vec_faces WHERE face_id IN (SELECT id FROM faces WHERE image_id = ?)";
+    const char* vec_sql =
+        "DELETE FROM vec_faces WHERE face_id IN (SELECT id FROM faces WHERE image_id = ?)";
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, vec_sql, -1, &stmt, nullptr);
     if (rc == SQLITE_OK) {
@@ -693,7 +703,8 @@ void Database::insert_face(int64_t image_id, const FaceInfo& face) {
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare face insert: " + std::string(sqlite3_errmsg(db_)));
+        throw std::runtime_error("Failed to prepare face insert: " +
+                                 std::string(sqlite3_errmsg(db_)));
     }
 
     sqlite3_bind_int64(stmt, 1, image_id);
@@ -716,7 +727,8 @@ void Database::insert_face(int64_t image_id, const FaceInfo& face) {
     const char* vec_sql = "INSERT INTO vec_faces(face_id, embedding) VALUES (?, ?)";
     rc = sqlite3_prepare_v2(db_, vec_sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare vec insert: " + std::string(sqlite3_errmsg(db_)));
+        throw std::runtime_error("Failed to prepare vec insert: " +
+                                 std::string(sqlite3_errmsg(db_)));
     }
 
     sqlite3_bind_int64(stmt, 1, face_id);
@@ -731,7 +743,6 @@ void Database::insert_face(int64_t image_id, const FaceInfo& face) {
 
 std::vector<Database::FaceSearchResult> Database::search_faces(
     const std::array<float, 128>& embedding, float threshold, int limit) {
-
     const char* sql = R"(
         SELECT f.id, i.path, v.distance, f.x, f.y, f.width, f.height
         FROM vec_faces v
@@ -744,7 +755,8 @@ std::vector<Database::FaceSearchResult> Database::search_faces(
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare face search: " + std::string(sqlite3_errmsg(db_)));
+        throw std::runtime_error("Failed to prepare face search: " +
+                                 std::string(sqlite3_errmsg(db_)));
     }
 
     sqlite3_bind_blob(stmt, 1, embedding.data(), 128 * sizeof(float), SQLITE_TRANSIENT);
@@ -824,7 +836,8 @@ int64_t Database::find_closest_face(const std::array<float, 128>& embedding, flo
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare face query: " + std::string(sqlite3_errmsg(db_)));
+        throw std::runtime_error("Failed to prepare face query: " +
+                                 std::string(sqlite3_errmsg(db_)));
     }
     sqlite3_bind_blob(stmt, 1, embedding.data(), 128 * sizeof(float), SQLITE_TRANSIENT);
     rc = sqlite3_step(stmt);
@@ -892,7 +905,7 @@ std::vector<std::string> Database::get_images_for_person(const std::string& name
 }
 
 std::string Database::auto_label_face(int64_t face_id, const std::array<float, 128>& embedding,
-                                       float threshold) {
+                                      float threshold) {
     // Get all reference embeddings from named faces
     const char* sql = R"(
         SELECT f.embedding, p.id, p.name
@@ -937,8 +950,10 @@ std::string Database::auto_label_face(int64_t face_id, const std::array<float, 1
 }
 
 std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
-    std::string sql = "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms FROM images WHERE 1=1";
-    std::vector<std::pair<std::string, bool>> binds; // {value, is_int}
+    std::string sql =
+        "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, "
+        "width, height, metadata, media_type, duration_ms FROM images WHERE 1=1";
+    std::vector<std::pair<std::string, bool>> binds;  // {value, is_int}
 
     if (!c.extension.empty()) {
         sql += " AND LOWER(extension) = LOWER(?)";
@@ -947,14 +962,24 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
     if (!c.after.empty()) {
         // Compare against best available date
         std::string meta_date = c.after;
-        if (meta_date.size() >= 10) { meta_date[4] = ':'; meta_date[7] = ':'; }
-        sql += " AND COALESCE(json_extract(metadata, '$.DateTimeOriginal'), json_extract(metadata, '$.DateTimeDigitized'), modified_at) >= ?";
+        if (meta_date.size() >= 10) {
+            meta_date[4] = ':';
+            meta_date[7] = ':';
+        }
+        sql +=
+            " AND COALESCE(json_extract(metadata, '$.DateTimeOriginal'), json_extract(metadata, "
+            "'$.DateTimeDigitized'), modified_at) >= ?";
         binds.push_back({meta_date, false});
     }
     if (!c.before.empty()) {
         std::string meta_date = c.before;
-        if (meta_date.size() >= 10) { meta_date[4] = ':'; meta_date[7] = ':'; }
-        sql += " AND COALESCE(json_extract(metadata, '$.DateTimeOriginal'), json_extract(metadata, '$.DateTimeDigitized'), modified_at) <= ?";
+        if (meta_date.size() >= 10) {
+            meta_date[4] = ':';
+            meta_date[7] = ':';
+        }
+        sql +=
+            " AND COALESCE(json_extract(metadata, '$.DateTimeOriginal'), json_extract(metadata, "
+            "'$.DateTimeDigitized'), modified_at) <= ?";
         binds.push_back({meta_date, false});
     }
     if (!c.camera.empty()) {
@@ -978,10 +1003,12 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
     // Duration filters: images have NULL duration_ms and always pass, so a
     // duration bound narrows videos without silently dropping every image.
     if (c.min_duration_ms >= 0) {
-        sql += " AND (duration_ms IS NULL OR duration_ms >= " + std::to_string(c.min_duration_ms) + ")";
+        sql += " AND (duration_ms IS NULL OR duration_ms >= " + std::to_string(c.min_duration_ms) +
+               ")";
     }
     if (c.max_duration_ms >= 0) {
-        sql += " AND (duration_ms IS NULL OR duration_ms <= " + std::to_string(c.max_duration_ms) + ")";
+        sql += " AND (duration_ms IS NULL OR duration_ms <= " + std::to_string(c.max_duration_ms) +
+               ")";
     }
 
     sql += " ORDER BY path";

@@ -1,16 +1,17 @@
 #include "metadata.h"
 
-#include <sstream>
-#include <unistd.h>
 #include <fcntl.h>
+#include <unistd.h>
+
+#include <sstream>
 
 extern "C" {
-#include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
 #include <libavutil/dict.h>
+#include <libavutil/display.h>
 #include <libavutil/log.h>
 #include <libavutil/mathematics.h>
-#include <libavutil/display.h>
 }
 
 #include <cmath>
@@ -24,11 +25,21 @@ std::string json_escape(const std::string& s) {
     out.reserve(s.size() + 10);
     for (char c : s) {
         switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
                     char buf[8];
@@ -42,7 +53,7 @@ std::string json_escape(const std::string& s) {
     return out;
 }
 
-} // namespace
+}  // namespace
 
 VideoMetadata extract_video_metadata(const std::string& path) {
     VideoMetadata meta;

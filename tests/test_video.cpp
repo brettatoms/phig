@@ -1,15 +1,16 @@
 #include <gtest/gtest.h>
-#include "scanner.h"
-#include "hasher.h"
-#include "metadata.h"
-#include "database.h"
-#include "faces.h"
-#include "types.h"
+#include <sqlite3.h>
 
 #include <filesystem>
 #include <fstream>
 #include <set>
-#include <sqlite3.h>
+
+#include "database.h"
+#include "faces.h"
+#include "hasher.h"
+#include "metadata.h"
+#include "scanner.h"
+#include "types.h"
 
 namespace fs = std::filesystem;
 
@@ -249,8 +250,12 @@ TEST(MigrationTest, PreMigrationBatchInsertDoesNotLeaveOpenTransaction) {
 
     // Insert a video too
     ImageInfo vid;
-    vid.path = "/test/clip.mp4"; vid.filename = "clip.mp4"; vid.extension = "mp4";
-    vid.sha256 = "vidsha"; vid.media_type = "video"; vid.duration_ms = 3000;
+    vid.path = "/test/clip.mp4";
+    vid.filename = "clip.mp4";
+    vid.extension = "mp4";
+    vid.sha256 = "vidsha";
+    vid.media_type = "video";
+    vid.duration_ms = 3000;
     vid.metadata_json = "{\"video_codec\":\"h264\"}";
     db.insert_batch({vid});
 
@@ -279,25 +284,33 @@ TEST(MigrationTest, TransactionRecoveryOnBatchError) {
 
     // Insert a valid entry
     ImageInfo good;
-    good.path = "/test/a.jpg"; good.filename = "a.jpg"; good.extension = "jpg";
-    good.sha256 = "aaa"; good.metadata_json = "{}"; good.media_type = "image";
+    good.path = "/test/a.jpg";
+    good.filename = "a.jpg";
+    good.extension = "jpg";
+    good.sha256 = "aaa";
+    good.metadata_json = "{}";
+    good.media_type = "image";
     db.insert(good);
 
     // Try a batch with a duplicate path (INSERT OR REPLACE should work, but
     // let's instead trigger a real error by using a bad batch)
     // Actually, INSERT OR REPLACE won't fail. Let's simulate by directly
     // testing that after a failed transaction, the next one works.
-    
+
     // Start a transaction manually and don't commit
     db.begin_transaction();
     db.rollback_transaction();
-    
+
     // This should work fine — no leftover transaction
     ImageInfo good2;
-    good2.path = "/test/b.jpg"; good2.filename = "b.jpg"; good2.extension = "jpg";
-    good2.sha256 = "bbb"; good2.metadata_json = "{}"; good2.media_type = "image";
+    good2.path = "/test/b.jpg";
+    good2.filename = "b.jpg";
+    good2.extension = "jpg";
+    good2.sha256 = "bbb";
+    good2.metadata_json = "{}";
+    good2.media_type = "image";
     db.insert_batch({good2});
-    
+
     EXPECT_EQ(db.count(), 2);
     fs::remove(temp);
 }
@@ -338,8 +351,12 @@ TEST(MigrationTest, PreExistingDatabaseGetsMigrated) {
 
         // Should be able to insert a video now
         ImageInfo vid;
-        vid.path = "/new/clip.mp4"; vid.filename = "clip.mp4"; vid.extension = "mp4";
-        vid.sha256 = "def"; vid.media_type = "video"; vid.duration_ms = 5000;
+        vid.path = "/new/clip.mp4";
+        vid.filename = "clip.mp4";
+        vid.extension = "mp4";
+        vid.sha256 = "def";
+        vid.media_type = "video";
+        vid.duration_ms = 5000;
         vid.metadata_json = "{}";
         db.insert(vid);
 
@@ -412,12 +429,21 @@ TEST(VideoSearchTest, SearchByMediaType) {
     db.init_schema();
 
     ImageInfo img;
-    img.path = "/test/photo.jpg"; img.filename = "photo.jpg"; img.extension = "jpg";
-    img.sha256 = "aaa"; img.metadata_json = "{}"; img.media_type = "image";
+    img.path = "/test/photo.jpg";
+    img.filename = "photo.jpg";
+    img.extension = "jpg";
+    img.sha256 = "aaa";
+    img.metadata_json = "{}";
+    img.media_type = "image";
     db.insert(img);
 
-    img.path = "/test/clip.mp4"; img.filename = "clip.mp4"; img.extension = "mp4";
-    img.sha256 = "bbb"; img.metadata_json = "{}"; img.media_type = "video"; img.duration_ms = 5000;
+    img.path = "/test/clip.mp4";
+    img.filename = "clip.mp4";
+    img.extension = "mp4";
+    img.sha256 = "bbb";
+    img.metadata_json = "{}";
+    img.media_type = "video";
+    img.duration_ms = 5000;
     db.insert(img);
 
     Database::SearchCriteria c;
@@ -446,19 +472,33 @@ TEST(VideoSearchTest, SearchByDuration) {
     db.init_schema();
 
     ImageInfo v1;
-    v1.path = "/test/short.mp4"; v1.filename = "short.mp4"; v1.extension = "mp4";
-    v1.sha256 = "s1"; v1.metadata_json = "{}"; v1.media_type = "video"; v1.duration_ms = 3000;
+    v1.path = "/test/short.mp4";
+    v1.filename = "short.mp4";
+    v1.extension = "mp4";
+    v1.sha256 = "s1";
+    v1.metadata_json = "{}";
+    v1.media_type = "video";
+    v1.duration_ms = 3000;
     db.insert(v1);
 
     ImageInfo v2;
-    v2.path = "/test/long.mp4"; v2.filename = "long.mp4"; v2.extension = "mp4";
-    v2.sha256 = "s2"; v2.metadata_json = "{}"; v2.media_type = "video"; v2.duration_ms = 60000;
+    v2.path = "/test/long.mp4";
+    v2.filename = "long.mp4";
+    v2.extension = "mp4";
+    v2.sha256 = "s2";
+    v2.metadata_json = "{}";
+    v2.media_type = "video";
+    v2.duration_ms = 60000;
     db.insert(v2);
 
     // An image has NULL duration and should pass any duration filter.
     ImageInfo img;
-    img.path = "/test/photo.jpg"; img.filename = "photo.jpg"; img.extension = "jpg";
-    img.sha256 = "i1"; img.metadata_json = "{}"; img.media_type = "image";
+    img.path = "/test/photo.jpg";
+    img.filename = "photo.jpg";
+    img.extension = "jpg";
+    img.sha256 = "i1";
+    img.metadata_json = "{}";
+    img.media_type = "image";
     db.insert(img);
 
     auto names = [](const std::vector<ImageInfo>& rs) {
@@ -494,13 +534,23 @@ TEST(VideoSearchTest, ExactDuplicatesPopulateMediaTypeAndDuration) {
 
     // Two video files sharing one SHA256 => one exact-duplicate group.
     ImageInfo a;
-    a.path = "/test/a.mp4"; a.filename = "a.mp4"; a.extension = "mp4";
-    a.sha256 = "dup"; a.metadata_json = "{}"; a.media_type = "video"; a.duration_ms = 5000;
+    a.path = "/test/a.mp4";
+    a.filename = "a.mp4";
+    a.extension = "mp4";
+    a.sha256 = "dup";
+    a.metadata_json = "{}";
+    a.media_type = "video";
+    a.duration_ms = 5000;
     db.insert(a);
 
     ImageInfo b;
-    b.path = "/test/b.mp4"; b.filename = "b.mp4"; b.extension = "mp4";
-    b.sha256 = "dup"; b.metadata_json = "{}"; b.media_type = "video"; b.duration_ms = 5000;
+    b.path = "/test/b.mp4";
+    b.filename = "b.mp4";
+    b.extension = "mp4";
+    b.sha256 = "dup";
+    b.metadata_json = "{}";
+    b.media_type = "video";
+    b.duration_ms = 5000;
     db.insert(b);
 
     auto groups = db.get_exact_duplicates();
@@ -551,7 +601,10 @@ TEST(MigrationTest, PreFaceRecognitionDatabaseGetsFaceSchema) {
     db.init_schema();
 
     // people table must now exist (list_people would throw otherwise).
-    EXPECT_NO_THROW({ auto people = db.list_people(); (void)people; });
+    EXPECT_NO_THROW({
+        auto people = db.list_people();
+        (void)people;
+    });
 
     // faces.person_id and vec_faces must now exist: inserting a face and
     // creating a person both exercise the repaired schema.
@@ -560,7 +613,10 @@ TEST(MigrationTest, PreFaceRecognitionDatabaseGetsFaceSchema) {
 
     FaceInfo face;
     face.embedding.fill(0.1f);
-    face.x = 0; face.y = 0; face.width = 10; face.height = 10;
+    face.x = 0;
+    face.y = 0;
+    face.width = 10;
+    face.height = 10;
     EXPECT_NO_THROW(db.insert_face(image_id, face));
 
     int64_t person_id = db.get_or_create_person("Alice");

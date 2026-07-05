@@ -1,17 +1,19 @@
 #pragma once
 
-#include "types.h"
-#include "faces.h"
 #include <sqlite3.h>
-#include <string>
-#include <optional>
-#include <vector>
-#include <set>
+
 #include <array>
 #include <functional>
+#include <optional>
+#include <set>
+#include <string>
+#include <vector>
+
+#include "faces.h"
+#include "types.h"
 
 class Database {
-public:
+   public:
     explicit Database(const std::string& path);
     ~Database();
 
@@ -58,13 +60,13 @@ public:
     // Search with multiple criteria
     struct SearchCriteria {
         std::string extension;
-        std::string after;           // YYYY-MM-DD
-        std::string before;          // YYYY-MM-DD
-        std::string camera;          // substring match on EXIF Model
-        std::string make;            // substring match on EXIF Make
+        std::string after;   // YYYY-MM-DD
+        std::string before;  // YYYY-MM-DD
+        std::string camera;  // substring match on EXIF Model
+        std::string make;    // substring match on EXIF Make
         int64_t min_size = -1;
         int64_t max_size = -1;
-        std::string media;           // "image", "video", or "" (all)
+        std::string media;  // "image", "video", or "" (all)
         int64_t min_duration_ms = -1;
         int64_t max_duration_ms = -1;
         int limit = -1;
@@ -83,7 +85,7 @@ public:
         int face_x, face_y, face_w, face_h;
     };
     std::vector<FaceSearchResult> search_faces(const std::array<float, 128>& embedding,
-                                                float threshold, int limit);
+                                               float threshold, int limit);
 
     // People / face naming
     int64_t get_or_create_person(const std::string& name);
@@ -102,12 +104,12 @@ public:
 
     // Auto-label a face if it matches any known person (returns person name or empty)
     std::string auto_label_face(int64_t face_id, const std::array<float, 128>& embedding,
-                                 float threshold = 0.6);
+                                float threshold = 0.6);
 
     // Raw handle for advanced queries
     sqlite3* db_ptr() { return db_; }
 
-private:
+   private:
     sqlite3* db_ = nullptr;
     void exec(const std::string& sql);
     int get_schema_version();

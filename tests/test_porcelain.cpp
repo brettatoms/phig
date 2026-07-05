@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
-#include "database.h"
-#include "types.h"
+
 #include <filesystem>
 #include <sstream>
-#include <vector>
 #include <string>
+#include <vector>
+
+#include "database.h"
+#include "types.h"
 
 // These tests verify the porcelain output format by testing the underlying
 // data structures and format logic. The actual porcelain output is produced
@@ -23,7 +25,7 @@
 namespace fs = std::filesystem;
 
 class PorcelainTest : public ::testing::Test {
-protected:
+   protected:
     std::string db_path;
     std::unique_ptr<Database> db;
 
@@ -39,8 +41,8 @@ protected:
         fs::remove(db_path);
     }
 
-    ImageInfo make_image(const std::string& path, const std::string& sha = "abc",
-                         int w = 640, int h = 480, int64_t size = 1000) {
+    ImageInfo make_image(const std::string& path, const std::string& sha = "abc", int w = 640,
+                         int h = 480, int64_t size = 1000) {
         ImageInfo info;
         info.path = path;
         info.filename = fs::path(path).filename().string();
@@ -72,19 +74,17 @@ TEST_F(PorcelainTest, RegularSearchFormat) {
     std::ostringstream out;
 
     // This must match the format in main.cpp cmd_search porcelain output
-    std::string date = "2024:01:15"; // from DateTimeOriginal
-    std::string camera = "TestCam";  // from Model
-    out << r.path << '\t'
-        << r.width << '\t' << r.height << '\t'
-        << r.file_size << '\t'
-        << date << '\t'
-        << camera << '\n';
+    std::string date = "2024:01:15";  // from DateTimeOriginal
+    std::string camera = "TestCam";   // from Model
+    out << r.path << '\t' << r.width << '\t' << r.height << '\t' << r.file_size << '\t' << date
+        << '\t' << camera << '\n';
 
     std::string line = out.str();
 
     // Verify tab-separated with exactly 6 fields
     int tab_count = 0;
-    for (char c : line) if (c == '\t') tab_count++;
+    for (char c : line)
+        if (c == '\t') tab_count++;
     EXPECT_EQ(tab_count, 5) << "Regular porcelain must have exactly 5 tabs (6 fields)";
 
     // Verify field order by parsing
@@ -107,22 +107,21 @@ TEST_F(PorcelainTest, RegularSearchFormat) {
 
 TEST_F(PorcelainTest, RegularSearchEmptyCamera) {
     auto img = make_image("/photos/no_cam.jpg", "sha1");
-    img.metadata_json = "{}"; // no camera
+    img.metadata_json = "{}";  // no camera
     db->insert(img);
 
     auto results = db->get_all_images();
     const auto& r = results[0];
 
     std::ostringstream out;
-    out << r.path << '\t'
-        << r.width << '\t' << r.height << '\t'
-        << r.file_size << '\t'
+    out << r.path << '\t' << r.width << '\t' << r.height << '\t' << r.file_size << '\t'
         << "2024-01-15" << '\t'  // fallback to modified_at
         << "" << '\n';           // empty camera
 
     std::string line = out.str();
     int tab_count = 0;
-    for (char c : line) if (c == '\t') tab_count++;
+    for (char c : line)
+        if (c == '\t') tab_count++;
     EXPECT_EQ(tab_count, 5) << "Must still have 5 tabs even with empty camera";
 }
 
@@ -138,7 +137,8 @@ TEST_F(PorcelainTest, FaceSearchFormat) {
 
     std::string line = out.str();
     int tab_count = 0;
-    for (char c : line) if (c == '\t') tab_count++;
+    for (char c : line)
+        if (c == '\t') tab_count++;
     EXPECT_EQ(tab_count, 1) << "Face porcelain must have exactly 1 tab (2 fields)";
 
     std::istringstream iss(line);
@@ -161,7 +161,8 @@ TEST_F(PorcelainTest, PersonSearchFormat) {
 
     std::string line = out.str();
     int tab_count = 0;
-    for (char c : line) if (c == '\t') tab_count++;
+    for (char c : line)
+        if (c == '\t') tab_count++;
     EXPECT_EQ(tab_count, 0) << "Person porcelain must have no tabs (path only)";
     EXPECT_EQ(line, "/photos/person.jpg\n");
 }
@@ -175,7 +176,7 @@ TEST_F(PorcelainTest, Print0Format) {
     out << "/photos/b.jpg" << '\0';
 
     std::string data = out.str();
-    EXPECT_EQ(data.size(), 28u); // two paths + two null bytes
+    EXPECT_EQ(data.size(), 28u);  // two paths + two null bytes
     EXPECT_EQ(data[13], '\0');
     EXPECT_EQ(data[27], '\0');
 }
@@ -194,14 +195,13 @@ TEST_F(PorcelainTest, RegularSearchFieldCountIs6) {
     const int EXPECTED_TABS = EXPECTED_FIELDS - 1;
 
     std::ostringstream out;
-    out << "/path" << '\t' << "640" << '\t' << "480" << '\t'
-        << "1000" << '\t' << "2024-01-15" << '\t' << "Canon" << '\t'
-        << "/cache/thumbs/ab/abcdef.jpg" << '\n';
+    out << "/path" << '\t' << "640" << '\t' << "480" << '\t' << "1000" << '\t' << "2024-01-15"
+        << '\t' << "Canon" << '\t' << "/cache/thumbs/ab/abcdef.jpg" << '\n';
 
     std::string line = out.str();
     int tabs = 0;
-    for (char c : line) if (c == '\t') tabs++;
-    EXPECT_EQ(tabs, EXPECTED_TABS)
-        << "Porcelain field count changed! This is a breaking change. "
-        << "If intentional, bump the porcelain version.";
+    for (char c : line)
+        if (c == '\t') tabs++;
+    EXPECT_EQ(tabs, EXPECTED_TABS) << "Porcelain field count changed! This is a breaking change. "
+                                   << "If intentional, bump the porcelain version.";
 }

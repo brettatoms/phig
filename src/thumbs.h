@@ -1,8 +1,8 @@
 #pragma once
 
-#include <string>
 #include <filesystem>
 #include <opencv2/core.hpp>
+#include <string>
 
 // Derive the thumbnail cache path from a SHA256 hash
 // e.g. ~/.cache/phig/thumbs/ab/ab3f7c9e...d4e2.jpg
