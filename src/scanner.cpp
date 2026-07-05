@@ -62,7 +62,17 @@ bool is_known_media_extension(const std::string& ext) {
     return is_known_image_extension(ext) || is_known_video_extension(ext);
 }
 
-std::vector<fs::path> scan_directory(const std::string& dir, bool recursive) {
+namespace {
+
+// A hidden or temp name: dotfiles/dotdirs and editor/sync temp files.
+bool is_hidden_name(const std::string& name) {
+    return !name.empty() && (name[0] == '.' || name[0] == '~');
+}
+
+} // anonymous namespace
+
+std::vector<fs::path> scan_directory(const std::string& dir, bool recursive,
+                                     bool include_hidden) {
     std::vector<fs::path> files;
 
     if (!fs::exists(dir)) {
@@ -79,8 +89,9 @@ std::vector<fs::path> scan_directory(const std::string& dir, bool recursive) {
         const auto& path = entry.path();
         std::string filename = path.filename().string();
 
-        // Skip macOS resource fork files
-        if (filename.starts_with("._")) return;
+        // Skip hidden/temp files unless explicitly included. This also
+        // covers macOS resource forks (._*) and sync temp files (.pending-*).
+        if (!include_hidden && is_hidden_name(filename)) return;
 
         // Skip files without a known media extension
         if (!is_known_media_extension(path.extension().string())) return;
@@ -89,8 +100,18 @@ std::vector<fs::path> scan_directory(const std::string& dir, bool recursive) {
     };
 
     if (recursive) {
-        for (const auto& entry : fs::recursive_directory_iterator(dir,
-                fs::directory_options::skip_permission_denied)) {
+        // Iterate manually so hidden directories can be pruned (not descended
+        // into). The scan root itself is honored even if hidden, because
+        // pruning only applies to directories discovered during the walk.
+        auto it = fs::recursive_directory_iterator(dir,
+                fs::directory_options::skip_permission_denied);
+        for (auto end = fs::recursive_directory_iterator(); it != end; ++it) {
+            const auto& entry = *it;
+            if (!include_hidden && entry.is_directory() &&
+                    is_hidden_name(entry.path().filename().string())) {
+                it.disable_recursion_pending();
+                continue;
+            }
             collect(entry);
         }
     } else {

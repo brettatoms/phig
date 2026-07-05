@@ -32,7 +32,7 @@ cmake --build build && ./build/phig-tests
 
 ```bash
 # Scan a directory into the database
-phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--images-only] [--videos-only] [--ignore-mount-warning] [--on-error warn|fail] [--db <path>]
+phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--db <path>]
 
 # Generate thumbnails
 phig thumbs rebuild [--match <glob>] [--filter <glob>] [--force] [--parallel N] [--db <path>]

@@ -17,4 +17,8 @@ bool is_known_media_extension(const std::string& ext);
 
 // Collects file paths from a directory, optionally recursive.
 // Only includes files with known media extensions (images + videos).
-std::vector<fs::path> scan_directory(const std::string& dir, bool recursive);
+// Hidden and temp entries (names starting with '.' or '~') are skipped
+// unless include_hidden is true; hidden directories are not descended into.
+// The scan root is always honored even if it is itself hidden.
+std::vector<fs::path> scan_directory(const std::string& dir, bool recursive,
+                                     bool include_hidden = false);

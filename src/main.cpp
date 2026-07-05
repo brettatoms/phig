@@ -90,8 +90,8 @@ void print_usage() {
               << "  --faces                  Detect faces and compute embeddings\n"
               << "  --thumbs                 Generate thumbnails\n"
               << "  --ignore-mount-warning   Proceed even if all files are missing\n"
-              << "  --images-only            Only scan image files\n"
-              << "  --videos-only            Only scan video files\n"
+              << "  --media image|video|all  Restrict to one media type (default: all)\n"
+              << "  --hidden                 Include hidden/temp files and directories (. or ~)\n"
               << "  --parallel N             Number of images to process in parallel (default: auto)\n"
               << "  --db <path>              Database path\n"
               << "\nDuplicates flags:\n"
@@ -187,8 +187,8 @@ struct ScanOptions {
     bool faces = false;
     bool thumbs = false;
     bool ignore_mount_warning = false;
-    bool images_only = false;
-    bool videos_only = false;
+    std::string media;  // "", "image", or "video" ("" = all)
+    bool include_hidden = false;
     int parallel = -1;  // -1 = auto
     std::string db_path;
 };
@@ -287,14 +287,14 @@ int cmd_scan(const ScanOptions& opts) {
     std::cout << "Database: " << opts.db_path << "\n";
 
     // Collect files
-    auto files = scan_directory(opts.directory, opts.recursive);
+    auto files = scan_directory(opts.directory, opts.recursive, opts.include_hidden);
 
     // Filter by media type if requested
-    if (opts.images_only) {
+    if (opts.media == "image") {
         files.erase(std::remove_if(files.begin(), files.end(),
             [](const fs::path& p) { return !is_known_image_extension(p.extension().string()); }),
             files.end());
-    } else if (opts.videos_only) {
+    } else if (opts.media == "video") {
         files.erase(std::remove_if(files.begin(), files.end(),
             [](const fs::path& p) { return !is_known_video_extension(p.extension().string()); }),
             files.end());
@@ -2135,10 +2135,15 @@ int main(int argc, char* argv[]) {
                 opts.thumbs = true;
             } else if (arg == "--ignore-mount-warning") {
                 opts.ignore_mount_warning = true;
-            } else if (arg == "--images-only") {
-                opts.images_only = true;
-            } else if (arg == "--videos-only") {
-                opts.videos_only = true;
+            } else if (arg == "--media" && i + 1 < argc) {
+                opts.media = argv[++i];
+                if (opts.media != "image" && opts.media != "video" && opts.media != "all") {
+                    std::cerr << "Error: --media must be 'image', 'video', or 'all'\n";
+                    return 1;
+                }
+                if (opts.media == "all") opts.media = "";
+            } else if (arg == "--hidden") {
+                opts.include_hidden = true;
             } else if (arg == "--parallel" && i + 1 < argc) {
                 opts.parallel = std::stoi(argv[++i]);
             } else if (arg == "--on-error" && i + 1 < argc) {

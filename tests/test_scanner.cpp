@@ -67,6 +67,45 @@ TEST_F(ScannerTest, SkipsMacResourceForks) {
     EXPECT_EQ(files.size(), 1);
 }
 
+TEST_F(ScannerTest, SkipsHiddenAndTempFiles) {
+    create_file("photo.jpg");
+    create_file(".hidden.jpg");
+    create_file("~temp.jpg");
+    create_file(".pending-123-video.mp4");  // sync temp file
+    auto files = scan_directory(test_dir, false);
+    EXPECT_EQ(files.size(), 1);
+}
+
+TEST_F(ScannerTest, IncludeHiddenReincludesFiles) {
+    create_file("photo.jpg");
+    create_file(".hidden.jpg");
+    create_file("~temp.jpg");
+    auto files = scan_directory(test_dir, false, /*include_hidden=*/true);
+    EXPECT_EQ(files.size(), 3);
+}
+
+TEST_F(ScannerTest, RecursiveSkipsHiddenDirectories) {
+    create_file("photo.jpg");
+    create_file(".thumbnails/cached.jpg");
+    create_file("~tmp/scratch.png");
+    auto files = scan_directory(test_dir, true);
+    EXPECT_EQ(files.size(), 1);
+
+    // With --hidden, files under hidden dirs are included.
+    auto all = scan_directory(test_dir, true, /*include_hidden=*/true);
+    EXPECT_EQ(all.size(), 3);
+}
+
+TEST_F(ScannerTest, HiddenScanRootIsHonored) {
+    // A hidden directory named explicitly as the scan root must be scanned,
+    // even without --hidden.
+    create_file(".album/photo.jpg");
+    create_file(".album/other.png");
+    auto root = (fs::path(test_dir) / ".album").string();
+    auto files = scan_directory(root, true);
+    EXPECT_EQ(files.size(), 2);
+}
+
 TEST_F(ScannerTest, NonRecursiveSkipsSubdirs) {
     create_file("photo.jpg");
     create_file("subdir/nested.jpg");
