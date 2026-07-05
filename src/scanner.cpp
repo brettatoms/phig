@@ -65,6 +65,10 @@ bool is_known_media_extension(const std::string& ext) {
 namespace {
 
 // A hidden or temp name: dotfiles/dotdirs and editor/sync temp files.
+// This matches a single path component's literal name, not a shell path:
+// a leading '~' means a filename that actually begins with a tilde (e.g. a
+// '~tmp' temp dir), never '~/...' home-directory expansion, which the shell
+// resolves before phig sees the argument.
 bool is_hidden_name(const std::string& name) {
     return !name.empty() && (name[0] == '.' || name[0] == '~');
 }
