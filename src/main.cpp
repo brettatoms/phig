@@ -9,8 +9,6 @@
 #include "thumbs.h"
 #include "metadata.h"
 
-#include <opencv2/videoio.hpp>
-
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -492,16 +490,10 @@ int cmd_scan(const ScanOptions& opts) {
                             if (result.info.media_type == "video") {
                                 // For videos, extract keyframe for thumbnail
                                 try {
-                                    cv::VideoCapture cap(canonical);
-                                    if (cap.isOpened()) {
-                                        double total = cap.get(cv::CAP_PROP_FRAME_COUNT);
-                                        if (total > 10) cap.set(cv::CAP_PROP_POS_FRAMES, total * 0.1);
-                                        cv::Mat frame;
-                                        cap.read(frame);
-                                        if (!frame.empty()) {
-                                            generate_thumb(frame, result.info.sha256);
-                                            thumb_count.fetch_add(1);
-                                        }
+                                    auto kf = extract_video_keyframe(canonical);
+                                    if (!kf.frame.empty()) {
+                                        generate_thumb(kf.frame, result.info.sha256);
+                                        thumb_count.fetch_add(1);
                                     }
                                 } catch (...) {}
                             } else {
@@ -1693,15 +1685,9 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path) {
                     bool ok = false;
                     if (img.media_type == "video") {
                         // Extract keyframe for video thumbnail
-                        cv::VideoCapture cap(img.path);
-                        if (cap.isOpened()) {
-                            double total = cap.get(cv::CAP_PROP_FRAME_COUNT);
-                            if (total > 10) cap.set(cv::CAP_PROP_POS_FRAMES, total * 0.1);
-                            cv::Mat frame;
-                            cap.read(frame);
-                            if (!frame.empty()) {
-                                ok = generate_thumb(frame, img.sha256);
-                            }
+                        auto kf = extract_video_keyframe(img.path);
+                        if (!kf.frame.empty()) {
+                            ok = generate_thumb(kf.frame, img.sha256);
                         }
                     } else {
                         ok = generate_thumb(img.path, img.sha256);

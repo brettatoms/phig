@@ -24,6 +24,19 @@ PhashResult compute_phash(const cv::Mat& img);
 // Decode an image file, returns empty Mat on failure
 cv::Mat decode_image(const std::string& path);
 
+// A representative video frame plus the source's reported dimensions
+// (which can differ from the decoded frame after scaling/rotation).
+struct VideoKeyframe {
+    cv::Mat frame;    // empty if extraction failed
+    int width = 0;
+    int height = 0;
+};
+
+// Extract a representative keyframe from a video: seeks to ~10% of duration
+// to skip black intros, falls back to the first non-black frame, then to
+// whatever frame is available. Returns an empty frame if the video cannot be
+// opened or decoded. Used for both phash and thumbnails.
+VideoKeyframe extract_video_keyframe(const std::string& path);
+
 // Compute phash from a video file by extracting a representative keyframe.
-// Seeks to ~10% of duration; falls back to first non-black frame.
 PhashResult compute_video_phash(const std::string& path);

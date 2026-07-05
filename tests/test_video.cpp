@@ -102,6 +102,20 @@ TEST(VideoPhashTest, MultipleFormats) {
     EXPECT_EQ(mkv.width, 160);
 }
 
+TEST(VideoPhashTest, ExtractKeyframe) {
+    auto kf = extract_video_keyframe("tests/data/test_blue.mp4");
+    EXPECT_FALSE(kf.frame.empty());
+    EXPECT_EQ(kf.width, 160);
+    EXPECT_EQ(kf.height, 120);
+}
+
+TEST(VideoPhashTest, ExtractKeyframeNonExistent) {
+    auto kf = extract_video_keyframe("/nonexistent/video.mp4");
+    EXPECT_TRUE(kf.frame.empty());
+    EXPECT_EQ(kf.width, 0);
+    EXPECT_EQ(kf.height, 0);
+}
+
 // ---- Video metadata tests ----
 
 TEST(VideoMetadataTest, ExtractsDuration) {
