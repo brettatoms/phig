@@ -763,6 +763,64 @@ std::vector<std::pair<std::string, int64_t>> Database::get_tag_counts() {
     return counts;
 }
 
+int Database::set_gallery(const std::vector<std::string>& paths, const std::string& gallery,
+                          bool no_overwrite) {
+    if (paths.empty()) {
+        return 0;
+    }
+    const char* sql = no_overwrite
+                          ? "UPDATE images SET gallery = ? WHERE path = ? AND gallery IS NULL"
+                          : "UPDATE images SET gallery = ? WHERE path = ?";
+    int affected = 0;
+    exec("BEGIN TRANSACTION");
+    for (const auto& path : paths) {
+        sqlite3_stmt* stmt = nullptr;
+        sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+        sqlite3_bind_text(stmt, 1, gallery.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        affected += sqlite3_changes(db_);
+    }
+    exec("COMMIT");
+    return affected;
+}
+
+int Database::clear_gallery(const std::vector<std::string>& paths) {
+    if (paths.empty()) {
+        return 0;
+    }
+    int affected = 0;
+    exec("BEGIN TRANSACTION");
+    for (const auto& path : paths) {
+        sqlite3_stmt* stmt = nullptr;
+        sqlite3_prepare_v2(
+            db_, "UPDATE images SET gallery = NULL WHERE path = ? AND gallery IS NOT NULL", -1,
+            &stmt, nullptr);
+        sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        affected += sqlite3_changes(db_);
+    }
+    exec("COMMIT");
+    return affected;
+}
+
+std::vector<std::pair<std::string, int64_t>> Database::get_gallery_counts() {
+    std::vector<std::pair<std::string, int64_t>> counts;
+    const char* sql =
+        "SELECT gallery, COUNT(*) FROM images WHERE gallery IS NOT NULL "
+        "GROUP BY gallery ORDER BY gallery";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        std::string name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        counts.emplace_back(std::move(name), sqlite3_column_int64(stmt, 1));
+    }
+    sqlite3_finalize(stmt);
+    return counts;
+}
+
 bool Database::has_faces(const std::string& path) {
     int64_t image_id = get_image_id(path);
     if (image_id < 0) return false;
@@ -1119,6 +1177,22 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
     if (c.max_duration_ms >= 0) {
         sql += " AND (duration_ms IS NULL OR duration_ms <= " + std::to_string(c.max_duration_ms) +
                ")";
+    }
+    if (!c.gallery.empty()) {
+        sql += " AND gallery = ?";
+        binds.push_back({c.gallery, false});
+    }
+    if (!c.tags.empty()) {
+        // Image must have ALL requested tags (AND semantics).
+        sql +=
+            " AND id IN (SELECT it.image_id FROM image_tags it "
+            "JOIN tags t ON t.id = it.tag_id WHERE t.name IN (";
+        for (size_t i = 0; i < c.tags.size(); i++) {
+            sql += (i == 0) ? "?" : ",?";
+            binds.push_back({c.tags[i], false});
+        }
+        sql += ") GROUP BY it.image_id HAVING COUNT(DISTINCT t.id) = " +
+               std::to_string(c.tags.size()) + ")";
     }
 
     sql += " ORDER BY path";

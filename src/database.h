@@ -69,6 +69,8 @@ class Database {
         std::string media;  // "image", "video", or "" (all)
         int64_t min_duration_ms = -1;
         int64_t max_duration_ms = -1;
+        std::vector<std::string> tags;  // image must have ALL of these tags
+        std::string gallery;            // exact gallery match
         int limit = -1;
     };
     std::vector<ImageInfo> search(const SearchCriteria& criteria);
@@ -79,6 +81,14 @@ class Database {
     int set_tag(const std::vector<std::string>& paths, const std::string& tag, bool add);
     std::vector<std::string> get_tags_for_image(const std::string& path);
     std::vector<std::pair<std::string, int64_t>> get_tag_counts();
+
+    // Galleries (plan 011): at most one per image, stored as a column. set_gallery
+    // returns the number of images updated; with no_overwrite it skips images that
+    // already have a gallery. clear_gallery returns the number cleared.
+    int set_gallery(const std::vector<std::string>& paths, const std::string& gallery,
+                    bool no_overwrite);
+    int clear_gallery(const std::vector<std::string>& paths);
+    std::vector<std::pair<std::string, int64_t>> get_gallery_counts();
 
     // Face operations
     void insert_face(int64_t image_id, const FaceInfo& face);

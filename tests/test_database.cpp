@@ -294,3 +294,90 @@ TEST_F(DatabaseTest, FavoriteBehavesLikeATag) {
     EXPECT_TRUE(has_tag(db->get_tags_for_image("/t/a.jpg"), "favorite"));
     EXPECT_EQ(tag_count(db->get_tag_counts(), "favorite"), 1);
 }
+
+// ---- Galleries & tag/gallery search (plan 011, stage 2) ----
+
+TEST_F(DatabaseTest, SetGalleryAndSearch) {
+    db->insert(make_image("/g/a.jpg", "s1"));
+    db->insert(make_image("/g/b.jpg", "s2"));
+    EXPECT_EQ(db->set_gallery({"/g/a.jpg"}, "Italy 2024", false), 1);
+    Database::SearchCriteria c;
+    c.gallery = "Italy 2024";
+    auto r = db->search(c);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].path, "/g/a.jpg");
+}
+
+TEST_F(DatabaseTest, GalleryNoOverwriteSkips) {
+    db->insert(make_image("/g/a.jpg"));
+    db->set_gallery({"/g/a.jpg"}, "Italy", false);
+    EXPECT_EQ(db->set_gallery({"/g/a.jpg"}, "France", true), 0);  // skipped
+    Database::SearchCriteria c;
+    c.gallery = "France";
+    EXPECT_TRUE(db->search(c).empty());
+    c.gallery = "Italy";
+    EXPECT_EQ(db->search(c).size(), 1u);
+}
+
+TEST_F(DatabaseTest, GalleryOverwritesByDefault) {
+    db->insert(make_image("/g/a.jpg"));
+    db->set_gallery({"/g/a.jpg"}, "Italy", false);
+    EXPECT_EQ(db->set_gallery({"/g/a.jpg"}, "France", false), 1);
+    Database::SearchCriteria c;
+    c.gallery = "France";
+    EXPECT_EQ(db->search(c).size(), 1u);
+}
+
+TEST_F(DatabaseTest, ClearGallery) {
+    db->insert(make_image("/g/a.jpg"));
+    db->set_gallery({"/g/a.jpg"}, "Italy", false);
+    EXPECT_EQ(db->clear_gallery({"/g/a.jpg"}), 1);
+    Database::SearchCriteria c;
+    c.gallery = "Italy";
+    EXPECT_TRUE(db->search(c).empty());
+}
+
+TEST_F(DatabaseTest, GalleryCounts) {
+    db->insert(make_image("/g/a.jpg", "s1"));
+    db->insert(make_image("/g/b.jpg", "s2"));
+    db->insert(make_image("/g/c.jpg", "s3"));
+    db->set_gallery({"/g/a.jpg", "/g/b.jpg"}, "Italy", false);
+    db->set_gallery({"/g/c.jpg"}, "France", false);
+    auto counts = db->get_gallery_counts();
+    EXPECT_EQ(tag_count(counts, "Italy"), 2);
+    EXPECT_EQ(tag_count(counts, "France"), 1);
+}
+
+TEST_F(DatabaseTest, SearchByTag) {
+    db->insert(make_image("/s/a.jpg", "s1"));
+    db->insert(make_image("/s/b.jpg", "s2"));
+    db->set_tag({"/s/a.jpg"}, "vacation", true);
+    Database::SearchCriteria c;
+    c.tags = {"vacation"};
+    auto r = db->search(c);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].path, "/s/a.jpg");
+}
+
+TEST_F(DatabaseTest, SearchByMultipleTagsAnd) {
+    db->insert(make_image("/s/a.jpg", "s1"));
+    db->insert(make_image("/s/b.jpg", "s2"));
+    db->set_tag({"/s/a.jpg", "/s/b.jpg"}, "vacation", true);
+    db->set_tag({"/s/a.jpg"}, "family", true);
+    Database::SearchCriteria c;
+    c.tags = {"vacation", "family"};
+    auto r = db->search(c);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].path, "/s/a.jpg");
+}
+
+TEST_F(DatabaseTest, SearchByFavoriteTag) {
+    db->insert(make_image("/s/a.jpg", "s1"));
+    db->insert(make_image("/s/b.jpg", "s2"));
+    db->set_tag({"/s/b.jpg"}, "favorite", true);
+    Database::SearchCriteria c;
+    c.tags = {"favorite"};
+    auto r = db->search(c);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].path, "/s/b.jpg");
+}
