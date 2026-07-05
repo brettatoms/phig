@@ -94,6 +94,11 @@ tests/
 See `plans/000-INDEX.md` for the plan index and `plans/` for detailed plans.
 
 **Plan rules:**
+- All plans, specs, and designs live in `plans/` as numbered `NNN-name.md` files with the
+  established frontmatter (`name`, `status`, `created`, `description`). Do NOT create a
+  `docs/`, `docs/superpowers/specs/`, or any other parallel plan/spec layout — this
+  `plans/` directory is the single source of truth.
+- When writing a new plan, use the next number in sequence and add a row to `plans/000-INDEX.md`.
 - Completed plans should not be edited unless the user explicitly asks. It's fine to add cross-references to other plans.
 - Changes to completed features get a new plan rather than editing the original.
 - Always write a plan and get approval before implementing.
