@@ -70,6 +70,12 @@ void print_usage() {
         << "  phig face list                     List known people\n"
         << "  phig thumbs rebuild [flags]  Generate missing thumbnails\n"
         << "  phig thumbs clean            Remove orphaned thumbnails\n"
+        << "  phig tag add|remove <tag> [--match|--filter|--path]   Tag images\n"
+        << "  phig tag list                                         List tags and counts\n"
+        << "  phig gallery set <name>|clear [--match|--filter|--path]  Assign/clear gallery\n"
+        << "  phig gallery list                                     List galleries and counts\n"
+        << "  phig fav add|remove [--match|--filter|--path]         Favorite images\n"
+        << "  phig fav list [output flags]                          List favorites\n"
         << "  phig models download\n"
         << "\nScan flags:\n"
         << "  --recursive              Scan subdirectories\n"
@@ -91,10 +97,11 @@ void print_usage() {
            "path)\n"
         << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --media image|video|all  Filter by media type (default: all)\n"
+        << "  --fav                    Only groups containing a favorite\n"
         << "  --db <path>              Database path\n"
         << "\nCopy/Move flags (cp, mv):\n"
         << "  --format <string>        Output path format (default: %Y/%m/%original)\n"
-        << "                           Tokens: %Y %m %d %camera %make %original\n"
+        << "                           Tokens: %Y %m %d %camera %make %gallery %fav %original\n"
         << "  --match <glob>           Only files matching glob (repeatable, matches path)\n"
         << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --dry-run                Show what would happen without doing it\n"
@@ -122,6 +129,9 @@ void print_usage() {
         << "  --face <image-path>      Find images containing this person\n"
         << "  --face-threshold <float> Distance threshold for face match (default: 0.6)\n"
         << "  --person <name>          Find images containing a named person\n"
+        << "  --tag <name>             Images with this tag (repeatable, all must match)\n"
+        << "  --gallery <name>         Images in this gallery\n"
+        << "  --fav                    Favorited images (alias for --tag favorite)\n"
         << "  --match <glob>           Include filter (repeatable, matches path)\n"
         << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --limit N                Maximum number of results\n"
@@ -608,6 +618,7 @@ struct DuplicatesOptions {
     std::vector<std::string> matches;
     std::vector<std::string> filters;
     std::string media;  // "image", "video", or "" (all)
+    bool fav = false;   // only groups containing at least one favorite
     std::string db_path;
 };
 
@@ -841,6 +852,29 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
         }
     }
 
+    // Keep only groups containing at least one favorited image.
+    if (opts.fav) {
+        Database::SearchCriteria fc;
+        fc.tags = {"favorite"};
+        std::set<std::string> fav_paths;
+        for (const auto& img : db.search(fc)) {
+            fav_paths.insert(img.path);
+        }
+        auto keep_favorited = [&](std::vector<DuplicateGroup>& groups) {
+            groups.erase(std::remove_if(groups.begin(), groups.end(),
+                                        [&](const DuplicateGroup& g) {
+                                            return std::none_of(
+                                                g.images.begin(), g.images.end(),
+                                                [&](const ImageInfo& img) {
+                                                    return fav_paths.count(img.path) > 0;
+                                                });
+                                        }),
+                         groups.end());
+        };
+        keep_favorited(exact_groups);
+        keep_favorited(near_groups);
+    }
+
     // Output
     std::ofstream file_out;
     if (!opts.output.empty()) {
@@ -956,6 +990,12 @@ std::string apply_format(const std::string& fmt, const ImageInfo& img, const Dat
                 std::string make = json_get(img.metadata_json, "Make");
                 result += make.empty() ? "unknown-make" : make;
                 i += 4;
+            } else if (fmt.substr(i, 8) == "%gallery") {
+                result += img.gallery.empty() ? "no-gallery" : img.gallery;
+                i += 7;
+            } else if (fmt.substr(i, 4) == "%fav") {
+                result += img.favorite ? "favorites" : "unfavorited";
+                i += 3;
             } else if (fmt[i + 1] == 'Y') {
                 result += date.valid ? date.year : "unsorted";
                 i += 1;
@@ -1175,9 +1215,11 @@ struct SearchOptions {
     std::string similar;       // image path for phash similarity
     std::string similar_hash;  // hex phash string
     int threshold = 5;
-    std::string face;            // image path for face similarity search
-    float face_threshold = 0.6;  // dlib recommended threshold
-    std::string person;          // search by named person
+    std::string face;               // image path for face similarity search
+    float face_threshold = 0.6;     // dlib recommended threshold
+    std::string person;             // search by named person
+    std::vector<std::string> tags;  // must have ALL these tags
+    std::string gallery;            // exact gallery match
     std::vector<std::string> matches;
     std::vector<std::string> filters;
     int limit = -1;
@@ -1496,6 +1538,8 @@ int cmd_search(const SearchOptions& opts) {
         criteria.media = opts.media;
         criteria.min_duration_ms = opts.min_duration_ms;
         criteria.max_duration_ms = opts.max_duration_ms;
+        criteria.tags = opts.tags;
+        criteria.gallery = opts.gallery;
         // Don't apply limit in DB if we also need match/filter (apply after)
         if (opts.matches.empty() && opts.filters.empty()) {
             criteria.limit = opts.limit;
@@ -2210,6 +2254,85 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path) {
     return 1;
 }
 
+// Favorites are the built-in `favorite` tag; these commands are ergonomic sugar.
+int cmd_fav(int argc, char* argv[], const std::string& db_path) {
+    if (argc < 3) {
+        std::cerr
+            << "Usage:\n"
+            << "  phig fav add [--match|--filter|--path]\n"
+            << "  phig fav remove [--match|--filter|--path]\n"
+            << "  phig fav list [--match|--filter] [--format|--porcelain|--print0|--output]\n";
+        return 1;
+    }
+    std::string subcmd = argv[2];
+
+    if (subcmd == "add" || subcmd == "remove") {
+        std::string path_prefix;
+        std::vector<std::string> matches, filters;
+        for (int i = 3; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "--match" && i + 1 < argc) {
+                matches.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--filter" && i + 1 < argc) {
+                filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--path" && i + 1 < argc) {
+                path_prefix = expand_tilde(argv[++i]);
+            } else if (arg == "--db" && i + 1 < argc) {
+                i++;  // resolved by caller
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                return 1;
+            }
+        }
+        if (matches.empty() && path_prefix.empty()) {
+            std::cerr << "Error: fav " << subcmd << " requires --match or --path\n";
+            return 1;
+        }
+        Database db(db_path);
+        db.init_schema();
+        int n = db.set_tag(select_paths(db, path_prefix, matches, filters), "favorite",
+                           subcmd == "add");
+        std::cout << (subcmd == "add" ? "Favorited " : "Unfavorited ") << n << " images\n";
+        return 0;
+    }
+
+    if (subcmd == "list") {
+        // Delegate to search on the favorite tag so all output modes are reused.
+        SearchOptions opts;
+        opts.db_path = db_path;
+        opts.tags.push_back("favorite");
+        for (int i = 3; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "--match" && i + 1 < argc) {
+                opts.matches.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--filter" && i + 1 < argc) {
+                opts.filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--limit" && i + 1 < argc) {
+                opts.limit = std::stoi(argv[++i]);
+            } else if (arg == "--count") {
+                opts.count_only = true;
+            } else if (arg == "--porcelain") {
+                opts.porcelain = true;
+            } else if (arg == "--print0") {
+                opts.print0 = true;
+            } else if (arg == "--format" && i + 1 < argc) {
+                opts.format = argv[++i];
+            } else if (arg == "--output" && i + 1 < argc) {
+                opts.output = argv[++i];
+            } else if (arg == "--db" && i + 1 < argc) {
+                i++;  // resolved by caller
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                return 1;
+            }
+        }
+        return cmd_search(opts);
+    }
+
+    std::cerr << "Unknown fav subcommand: " << subcmd << "\n";
+    return 1;
+}
+
 // Print the effective configuration (resolved paths + any config overrides),
 // shown at the top of --help output.
 static void print_active_config(const Config& cfg, const std::string& cfg_path, bool loaded) {
@@ -2415,6 +2538,8 @@ int main(int argc, char* argv[]) {
                     return 1;
                 }
                 if (opts.media == "all") opts.media = "";
+            } else if (arg == "--fav") {
+                opts.fav = true;
             } else if (arg == "--db" && i + 1 < argc) {
                 opts.db_path = argv[++i];
             } else {
@@ -2517,7 +2642,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: " << e.what() << "\n";
             return 1;
         }
-    } else if (command == "tag" || command == "gallery") {
+    } else if (command == "tag" || command == "gallery" || command == "fav") {
         std::string db_path = default_db_path();
         for (int i = 2; i < argc; i++) {
             if (std::string(argv[i]) == "--db" && i + 1 < argc) {
@@ -2526,8 +2651,9 @@ int main(int argc, char* argv[]) {
             }
         }
         try {
-            return command == "tag" ? cmd_tag(argc, argv, db_path)
-                                    : cmd_gallery(argc, argv, db_path);
+            if (command == "tag") return cmd_tag(argc, argv, db_path);
+            if (command == "gallery") return cmd_gallery(argc, argv, db_path);
+            return cmd_fav(argc, argv, db_path);
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << "\n";
             return 1;
@@ -2598,6 +2724,12 @@ int main(int argc, char* argv[]) {
                 opts.face_threshold = std::stof(argv[++i]);
             } else if (arg == "--person" && i + 1 < argc) {
                 opts.person = argv[++i];
+            } else if (arg == "--tag" && i + 1 < argc) {
+                opts.tags.push_back(argv[++i]);
+            } else if (arg == "--gallery" && i + 1 < argc) {
+                opts.gallery = argv[++i];
+            } else if (arg == "--fav") {
+                opts.tags.push_back("favorite");
             } else if (arg == "--match" && i + 1 < argc) {
                 opts.matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--filter" && i + 1 < argc) {

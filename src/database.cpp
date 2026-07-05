@@ -558,7 +558,9 @@ std::set<std::string> Database::get_all_sha256s() {
 std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) {
     std::string sql =
         "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, "
-        "width, height, metadata, media_type, duration_ms FROM images";
+        "width, height, metadata, media_type, duration_ms, gallery, "
+        "EXISTS(SELECT 1 FROM image_tags it JOIN tags t ON t.id = it.tag_id "
+        "WHERE it.image_id = images.id AND t.name = 'favorite') FROM images";
     if (!path_prefix.empty()) {
         sql += " WHERE path LIKE ? || '%'";
     }
@@ -592,6 +594,8 @@ std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) 
         info.metadata_json = text(10);
         info.media_type = text(11);
         info.duration_ms = sqlite3_column_int64(stmt, 12);
+        info.gallery = text(13);
+        info.favorite = sqlite3_column_int(stmt, 14) != 0;
         results.push_back(std::move(info));
     }
 

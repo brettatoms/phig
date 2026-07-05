@@ -17,4 +17,6 @@ struct ImageInfo {
     std::string metadata_json;
     std::string media_type = "image";  // "image" or "video"
     int64_t duration_ms = 0;           // video duration, 0 for images
+    std::string gallery;               // gallery name, empty if none
+    bool favorite = false;             // has the built-in favorite tag
 };

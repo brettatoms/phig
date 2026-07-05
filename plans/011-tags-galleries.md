@@ -1,6 +1,6 @@
 ---
 name: Tags, Galleries & Favorites
-status: planned
+status: completed
 created: 2026-03-28
 description: >
   Tag images with user-defined labels (N per image) and assign galleries
@@ -205,15 +205,16 @@ Helps find favorited photos that still have duplicates taking up space.
 
 ## Checklist
 
-- [ ] Schema migration (tags, image_tags, gallery column, seed `favorite`)
-- [ ] `phig tag add` / `tag remove` (report counts) / `tag list`
-- [ ] `phig gallery set` (with `--no-overwrite`) / `gallery clear` / `gallery list`
-- [ ] `phig fav add` / `fav remove` / `fav list` (sugar over `favorite` tag)
-- [ ] `favorite` tag seeded + protected from deletion
-- [ ] Search integration (`--tag`, `--gallery`, `--fav`)
-- [ ] Duplicates `--fav`
-- [ ] Organize format tokens `%gallery`, `%fav`
-- [ ] Tests (tags CRUD, gallery, favorites-as-tag, protection, search/organize)
+- [x] Schema migration (tags, image_tags, gallery column, seed `favorite`)
+- [x] `phig tag add` / `tag remove` (report counts) / `tag list`
+- [x] `phig gallery set` (with `--no-overwrite`) / `gallery clear` / `gallery list`
+- [x] `phig fav add` / `fav remove` / `fav list` (sugar over `favorite` tag)
+- [x] `favorite` tag seeded + protected from deletion (no delete-tag path exists)
+- [x] Search integration (`--tag`, `--gallery`, `--fav`)
+- [x] Duplicates `--fav`
+- [x] Organize format tokens `%gallery`, `%fav`
+- [x] Tests (tags CRUD, gallery, favorites-as-tag, search; organize tokens verified
+      via the binary)
 
 ## Cross-References
 

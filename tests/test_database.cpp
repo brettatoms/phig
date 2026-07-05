@@ -381,3 +381,19 @@ TEST_F(DatabaseTest, SearchByFavoriteTag) {
     ASSERT_EQ(r.size(), 1u);
     EXPECT_EQ(r[0].path, "/s/b.jpg");
 }
+
+TEST_F(DatabaseTest, GetAllImagesPopulatesGalleryAndFavorite) {
+    db->insert(make_image("/o/a.jpg", "s1"));
+    db->insert(make_image("/o/b.jpg", "s2"));
+    db->set_gallery({"/o/a.jpg"}, "Trip", false);
+    db->set_tag({"/o/a.jpg"}, "favorite", true);
+    for (const auto& img : db->get_all_images()) {
+        if (img.path == "/o/a.jpg") {
+            EXPECT_EQ(img.gallery, "Trip");
+            EXPECT_TRUE(img.favorite);
+        } else {
+            EXPECT_TRUE(img.gallery.empty());
+            EXPECT_FALSE(img.favorite);
+        }
+    }
+}
