@@ -38,7 +38,7 @@ protected:
         info.phash = 0;
         info.width = 640;
         info.height = 480;
-        info.exif_json = "{}";
+        info.metadata_json = "{}";
         return info;
     }
 

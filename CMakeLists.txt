@@ -9,11 +9,15 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc img_hash objdetect)
+find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc img_hash objdetect videoio)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(EXIF REQUIRED libexif)
 find_package(SQLite3 REQUIRED)
 find_package(CURL REQUIRED)
+pkg_check_modules(AVFORMAT REQUIRED libavformat)
+pkg_check_modules(AVCODEC REQUIRED libavcodec)
+pkg_check_modules(AVUTIL REQUIRED libavutil)
+pkg_check_modules(SWSCALE REQUIRED libswscale)
 
 # ---- Shared library (compiled once, used by binary + tests) ----
 add_library(phig-lib STATIC
@@ -25,6 +29,7 @@ add_library(phig-lib STATIC
     src/faces.cpp
     src/models.cpp
     src/thumbs.cpp
+    src/metadata.cpp
     vendor/sqlite-vec/sqlite-vec.c
 )
 
@@ -32,12 +37,20 @@ target_include_directories(phig-lib PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${OpenCV_INCLUDE_DIRS}
     ${EXIF_INCLUDE_DIRS}
+    ${AVFORMAT_INCLUDE_DIRS}
+    ${AVCODEC_INCLUDE_DIRS}
+    ${AVUTIL_INCLUDE_DIRS}
+    ${SWSCALE_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/vendor/sqlite-vec
 )
 
 target_link_libraries(phig-lib PUBLIC
     ${OpenCV_LIBS}
     ${EXIF_LIBRARIES}
+    ${AVFORMAT_LIBRARIES}
+    ${AVCODEC_LIBRARIES}
+    ${AVUTIL_LIBRARIES}
+    ${SWSCALE_LIBRARIES}
     SQLite::SQLite3
     CURL::libcurl
     pthread
@@ -63,6 +76,7 @@ add_executable(phig-tests
     tests/test_faces.cpp
     tests/test_porcelain.cpp
     tests/test_thumbs.cpp
+    tests/test_video.cpp
 )
 
 target_link_libraries(phig-tests PRIVATE

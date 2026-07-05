@@ -31,6 +31,14 @@ std::string to_lower(std::string s) {
     return s;
 }
 
+const std::unordered_set<std::string>& known_video_extensions() {
+    static const std::unordered_set<std::string> exts = {
+        "mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "flv",
+        "3gp", "mts", "m2ts", "ts", "mpg", "mpeg",
+    };
+    return exts;
+}
+
 } // anonymous namespace
 
 bool is_known_image_extension(const std::string& ext) {
@@ -40,6 +48,18 @@ bool is_known_image_extension(const std::string& ext) {
         lower = lower.substr(1);
     }
     return known_extensions().count(lower) > 0;
+}
+
+bool is_known_video_extension(const std::string& ext) {
+    std::string lower = to_lower(ext);
+    if (!lower.empty() && lower[0] == '.') {
+        lower = lower.substr(1);
+    }
+    return known_video_extensions().count(lower) > 0;
+}
+
+bool is_known_media_extension(const std::string& ext) {
+    return is_known_image_extension(ext) || is_known_video_extension(ext);
 }
 
 std::vector<fs::path> scan_directory(const std::string& dir, bool recursive) {
@@ -62,8 +82,8 @@ std::vector<fs::path> scan_directory(const std::string& dir, bool recursive) {
         // Skip macOS resource fork files
         if (filename.starts_with("._")) return;
 
-        // Skip files without a known image extension
-        if (!is_known_image_extension(path.extension().string())) return;
+        // Skip files without a known media extension
+        if (!is_known_media_extension(path.extension().string())) return;
 
         files.push_back(path);
     };

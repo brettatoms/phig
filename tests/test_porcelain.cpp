@@ -52,7 +52,7 @@ protected:
         info.phash = 0;
         info.width = w;
         info.height = h;
-        info.exif_json = "{\"Model\":\"TestCam\",\"DateTimeOriginal\":\"2024:01:15 10:30:00\"}";
+        info.metadata_json = "{\"Model\":\"TestCam\",\"DateTimeOriginal\":\"2024:01:15 10:30:00\"}";
         return info;
     }
 };
@@ -107,7 +107,7 @@ TEST_F(PorcelainTest, RegularSearchFormat) {
 
 TEST_F(PorcelainTest, RegularSearchEmptyCamera) {
     auto img = make_image("/photos/no_cam.jpg", "sha1");
-    img.exif_json = "{}"; // no camera
+    img.metadata_json = "{}"; // no camera
     db->insert(img);
 
     auto results = db->get_all_images();

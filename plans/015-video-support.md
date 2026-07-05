@@ -1,6 +1,7 @@
 ---
 name: Video Support
-status: planned
+status: completed
+completed: 2026-04-02
 created: 2026-04-01
 description: >
   Extend phig to scan, hash, deduplicate, and organize video files alongside
@@ -15,12 +16,51 @@ description: >
 Support video files as first-class citizens in phig. Videos should be scannable,
 deduplicated (exact and near), searchable, and organizable just like images.
 
-## New Dependency: FFmpeg
+## Design Decisions
 
-**Why:** `libexif` only handles JPEG/TIFF EXIF. Video metadata (creation date,
-GPS, duration, codec, rotation) lives in container atoms (MP4/MOV) or Matroska
-tags. FFmpeg's `libavformat` is the standard library for this and is likely
-already an indirect dependency via OpenCV's VideoCapture backend.
+### Metadata storage
+
+- **Rename `exif` column to `metadata`** — the column stores a JSON blob of
+  descriptive metadata for any media type. "exif" is misleading since PNG has
+  text chunks, WebP has XMP, and videos have container metadata (not EXIF).
+  Since we haven't released, this is a rename in the base schema, not a
+  migration.
+- **Video metadata goes in the JSON blob** — codec, fps, creation date, GPS,
+  rotation, audio codec all live in the `metadata` JSON column, same pattern
+  as image EXIF. SQLite expression indexes (`json_extract`) can be added if
+  query performance requires it.
+- **`media_type` column** — `'image'` or `'video'`, stored as a dedicated
+  column (not in JSON) since it's used in nearly every query for filtering.
+- **`duration_ms` column** — video duration in milliseconds as a dedicated
+  column for indexed search (`--min-duration`/`--max-duration`).
+- No other dedicated columns for video-specific data.
+
+### Schema migration system
+
+- **`meta` table** with key/value rows, stores `schema_version`.
+- **Forward-only migrations** — no down migrations. During development, manually
+  fix or delete the DB if needed.
+- **Version check on startup** — if DB schema version > code version, bail with
+  an error message telling the user to update phig.
+- **Migration array** in code — `migrations[N]` upgrades from version N-1 to N.
+  Fresh DBs create the full schema at latest version directly (no replaying).
+- **Version 1** = current schema (images + faces + people + vec_faces) with
+  `exif` renamed to `metadata`.
+- **Version 2** = video support columns (`media_type`, `duration_ms`).
+
+### Video metadata extraction
+
+- **libavformat** for video metadata (creation date, GPS, duration, codec, fps,
+  rotation). OpenCV VideoCapture doesn't expose container metadata.
+- **OpenCV VideoCapture** for keyframe decoding (phash extraction).
+- **libexif** remains for image EXIF only — no changes.
+
+### Test fixtures
+
+- Small video files (MP4/MOV/MKV, ~5-15KB each) committed to `tests/data/`.
+  Generated with FFmpeg (1 second, solid color, low resolution).
+
+## New Dependency: FFmpeg
 
 **Libraries needed:** `libavformat`, `libavcodec`, `libavutil`, `libswscale`
 
@@ -29,24 +69,17 @@ already an indirect dependency via OpenCV's VideoCapture backend.
 
 ## Schema Changes
 
-Add video-specific columns to the `images` table (or rename to `media`):
+Rename `exif` → `metadata` in base schema (v1).
+
+Add video columns (v2 migration):
 
 ```sql
 ALTER TABLE images ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image';
-  -- 'image' or 'video'
 ALTER TABLE images ADD COLUMN duration_ms INTEGER;
-  -- video duration in milliseconds, NULL for images
-ALTER TABLE images ADD COLUMN video_codec TEXT;
-  -- e.g. 'h264', 'hevc', 'av1', NULL for images
-ALTER TABLE images ADD COLUMN audio_codec TEXT;
-  -- e.g. 'aac', 'opus', NULL for images or silent videos
-ALTER TABLE images ADD COLUMN fps REAL;
-  -- frames per second, NULL for images
 ```
 
-Migration: existing rows get `media_type = 'image'`, other columns NULL.
-The table stays named `images` for backward compatibility (renaming is cosmetic
-and would break every query).
+All other video metadata (codec, fps, audio codec, rotation, creation date,
+GPS) stored in the `metadata` JSON column via `json_extract()`.
 
 ## Scanner Changes
 
@@ -79,12 +112,13 @@ and would break every query).
   - `duration_ms`, `width`, `height`, `video_codec`, `audio_codec`, `fps`,
     `rotation`
   - Creation date, GPS (if present in container metadata)
-  - Returns metadata as a struct; creation date/GPS get folded into the
-    existing `exif_json` field as a JSON blob for consistency
+  - Returns metadata as a struct
+  - Caller serializes to JSON for the `metadata` column
 
 **`src/exif.h/cpp`:**
 
 - No changes. Only called for image files.
+- Code references to `exif_json` renamed to `metadata_json` in ImageInfo.
 
 **`src/main.cpp` scan pipeline:**
 
@@ -100,8 +134,7 @@ and would break every query).
 
 - Picks up video files automatically (no flag needed)
 - Progress output distinguishes images/videos: `Scanned 42 images, 7 videos`
-- `--images-only` / `--videos-only` flags for selective scanning (optional,
-  could defer)
+- `--images-only` / `--videos-only` flags for selective scanning
 
 ### `phig duplicates`
 
@@ -121,44 +154,40 @@ and would break every query).
 - `--similar` works: compares phash of video keyframe
 - Duration-based search: `--min-duration 10s`, `--max-duration 5m` (new)
 
+### `phig thumbs rebuild`
+
+- Generate thumbnails for videos using keyframe extraction (same frame as phash)
+
 ### `phig purge`
 
 - Works as-is — no changes needed
 
-## Implementation Phases
+## Implementation Steps
 
-### Phase 1: Foundation
-
-1. Add FFmpeg to `devenv.nix` and `CMakeLists.txt`
-2. Schema migration (add columns)
-3. Add video extensions to scanner
-4. Implement `compute_video_phash()` using OpenCV VideoCapture
-5. Implement `extract_video_metadata()` using libavformat
-6. Branch `process_file()` on media type
-
-### Phase 2: Commands
-
-7. Update scan progress reporting
-8. Add `--media` filter to duplicates/search
-9. Add duration search to `phig search`
-10. Tests: video scan, video phash, video metadata, duplicates with mixed media
-
-### Phase 3: Polish (optional)
-
-11. `--images-only` / `--videos-only` scan flags
-12. Video thumbnail extraction for `phig thumbs` (see plan 014)
-13. Face detection on video keyframes
+1. Migration system (`meta` table, version check, migration array)
+2. Rename `exif` → `metadata` in schema, `ImageInfo` struct, all code
+3. Add FFmpeg to `devenv.nix` and `CMakeLists.txt`
+4. Video extensions in scanner
+5. `compute_video_phash()` via OpenCV VideoCapture
+6. `extract_video_metadata()` via libavformat (new `src/metadata.h/cpp`)
+7. Schema v2 migration (`media_type`, `duration_ms`)
+8. Update `ImageInfo`/types with video fields + `media_type`
+9. Branch `process_file()` on media type
+10. Command updates (`--media` filter, `--min-duration`/`--max-duration`,
+    progress reporting, `--images-only`/`--videos-only`)
+11. Video thumbnail support in `phig thumbs rebuild`
+12. Test fixtures + tests
 
 ## Testing
 
-- Test videos: small MP4/MOV/MKV files in `tests/data/` (a few seconds each,
-  generated with FFmpeg during test setup or committed as tiny fixtures)
+- Test videos: small MP4/MOV/MKV files (~5-15KB each) committed to
+  `tests/data/`.
 - Test cases:
   - Video extension recognition
   - Video phash extraction (non-zero, deterministic)
   - Video metadata extraction (duration, codec, dimensions)
   - Mixed image+video duplicate detection
-  - Schema migration from image-only DB
+  - Schema migration (version check, forward migration)
   - Organize with mixed media types
 
 ## Risks & Open Questions
@@ -169,12 +198,30 @@ and would break every query).
 - **phash quality for videos:** A single keyframe may not represent the video
   well. Could compute phash from multiple frames and store the "most
   representative" one. Start simple (single frame at 10%), iterate later.
-- **Table rename:** Keeping `images` as the table name with video rows is
-  slightly misleading. Could rename to `media` in a future migration, but
-  it's not worth the churn now.
 - **FFmpeg linking:** Need to verify that Nix's `pkgs.ffmpeg` provides the
   dev headers and pkg-config files. May need `ffmpeg.dev` in
   `CMAKE_PREFIX_PATH`.
+
+## Checklist
+
+- [x] Migration system (meta table, version check, migration array)
+- [x] Rename `exif` → `metadata` in schema and all code
+- [x] Add FFmpeg to devenv.nix and CMakeLists.txt
+- [x] Video extensions in scanner (`is_known_video_extension()`)
+- [x] `compute_video_phash()` via OpenCV VideoCapture
+- [x] `extract_video_metadata()` via libavformat
+- [x] Schema v2 migration (media_type, duration_ms columns)
+- [x] Update ImageInfo/types with media_type, duration_ms
+- [x] Branch process_file() on media type
+- [x] `--media image|video|all` filter on duplicates/search
+- [x] `--min-duration`/`--max-duration` on search
+- [x] `--images-only`/`--videos-only` on scan
+- [x] Scan progress reporting (images vs videos)
+- [x] Video thumbnail support in thumbs rebuild
+- [x] Test fixtures (small MP4/MOV/MKV)
+- [x] Tests for video scan, phash, metadata, migration, mixed duplicates
+- [x] Update help text
+- [x] Update AGENTS.md
 
 ## Cross-References
 

@@ -7,6 +7,9 @@
 #include "faces.h"
 #include "models.h"
 #include "thumbs.h"
+#include "metadata.h"
+
+#include <opencv2/videoio.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -87,6 +90,8 @@ void print_usage() {
               << "  --faces                  Detect faces and compute embeddings\n"
               << "  --thumbs                 Generate thumbnails\n"
               << "  --ignore-mount-warning   Proceed even if all files are missing\n"
+              << "  --images-only            Only scan image files\n"
+              << "  --videos-only            Only scan video files\n"
               << "  --parallel N             Number of images to process in parallel (default: auto)\n"
               << "  --db <path>              Database path\n"
               << "\nDuplicates flags:\n"
@@ -96,6 +101,7 @@ void print_usage() {
               << "  --output <path>          Write to file instead of stdout\n"
               << "  --match <glob>           Show groups containing matching files (repeatable, matches path)\n"
               << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
+              << "  --media image|video|all  Filter by media type (default: all)\n"
               << "  --db <path>              Database path\n"
               << "\nCopy/Move flags (cp, mv):\n"
               << "  --format <string>        Output path format (default: %Y/%m/%original)\n"
@@ -118,6 +124,9 @@ void print_usage() {
               << "  --make <string>          Substring match on EXIF camera make\n"
               << "  --min-size <size>        Minimum file size (e.g., 1000, 5KB, 10MB, 1GB)\n"
               << "  --max-size <size>        Maximum file size (e.g., 1000, 5KB, 10MB, 1GB)\n"
+              << "  --media image|video|all  Filter by media type (default: all)\n"
+              << "  --min-duration <dur>     Minimum video duration (e.g., 10s, 5m, 1h)\n"
+              << "  --max-duration <dur>     Maximum video duration (e.g., 10s, 5m, 1h)\n"
               << "  --similar <image-path>   Find visually similar images (by phash)\n"
               << "  --similar-hash <hex>     Find images similar to this phash\n"
               << "  --threshold [0-64]       Hamming distance for --similar (default: 5)\n"
@@ -178,6 +187,8 @@ struct ScanOptions {
     bool faces = false;
     bool thumbs = false;
     bool ignore_mount_warning = false;
+    bool images_only = false;
+    bool videos_only = false;
     int parallel = -1;  // -1 = auto
     std::string db_path;
 };
@@ -209,25 +220,46 @@ ProcessResult process_file(const fs::path& filepath, FaceDetector* face_detector
     // SHA256
     info.sha256 = compute_sha256(info.path);
 
-    // Decode image once
-    cv::Mat img = decode_image(info.path);
-    if (img.empty()) {
-        throw std::runtime_error("Cannot decode image: " + info.path);
+    bool is_video = is_known_video_extension(info.extension);
+
+    if (is_video) {
+        info.media_type = "video";
+
+        // Video phash from keyframe
+        auto phash_result = compute_video_phash(info.path);
+        info.phash = phash_result.hash;
+        info.width = phash_result.width;
+        info.height = phash_result.height;
+
+        // Video metadata via libavformat
+        auto vmeta = extract_video_metadata(info.path);
+        info.duration_ms = vmeta.duration_ms;
+        info.metadata_json = video_metadata_to_json(vmeta);
+
+        // No face detection for videos
+    } else {
+        info.media_type = "image";
+
+        // Decode image once
+        cv::Mat img = decode_image(info.path);
+        if (img.empty()) {
+            throw std::runtime_error("Cannot decode image: " + info.path);
+        }
+
+        // Phash from decoded image
+        auto phash_result = compute_phash(img);
+        info.phash = phash_result.hash;
+        info.width = phash_result.width;
+        info.height = phash_result.height;
+
+        // Face detection from same decoded image (no re-decode)
+        if (face_detector) {
+            result.faces = face_detector->detect(img);
+        }
+
+        // EXIF / image metadata
+        info.metadata_json = extract_exif_json(info.path);
     }
-
-    // Phash from decoded image
-    auto phash_result = compute_phash(img);
-    info.phash = phash_result.hash;
-    info.width = phash_result.width;
-    info.height = phash_result.height;
-
-    // Face detection from same decoded image (no re-decode)
-    if (face_detector) {
-        result.faces = face_detector->detect(img);
-    }
-
-    // EXIF
-    info.exif_json = extract_exif_json(info.path);
 
     return result;
 }
@@ -256,6 +288,18 @@ int cmd_scan(const ScanOptions& opts) {
 
     // Collect files
     auto files = scan_directory(opts.directory, opts.recursive);
+
+    // Filter by media type if requested
+    if (opts.images_only) {
+        files.erase(std::remove_if(files.begin(), files.end(),
+            [](const fs::path& p) { return !is_known_image_extension(p.extension().string()); }),
+            files.end());
+    } else if (opts.videos_only) {
+        files.erase(std::remove_if(files.begin(), files.end(),
+            [](const fs::path& p) { return !is_known_video_extension(p.extension().string()); }),
+            files.end());
+    }
+
     std::cout << "Found " << files.size() << " files\n";
 
     // Determine thread count
@@ -289,6 +333,7 @@ int cmd_scan(const ScanOptions& opts) {
     std::atomic<size_t> errors{0};
     std::atomic<size_t> face_count{0};
     std::atomic<size_t> thumb_count{0};
+    std::atomic<size_t> video_count{0};
 
     if (!files.empty()) {
     std::atomic<size_t> next_file{0};
@@ -402,16 +447,21 @@ int cmd_scan(const ScanOptions& opts) {
                                 // Flush any pending batch first, then insert faces in a transaction
                                 flush_batch();
                                 db.begin_transaction();
-                                int64_t image_id = db.get_image_id(canonical);
-                                if (image_id >= 0) {
-                                    for (const auto& face : faces) {
-                                        db.insert_face(image_id, face);
-                                        int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
-                                        db.auto_label_face(face_id, face.embedding);
+                                try {
+                                    int64_t image_id = db.get_image_id(canonical);
+                                    if (image_id >= 0) {
+                                        for (const auto& face : faces) {
+                                            db.insert_face(image_id, face);
+                                            int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
+                                            db.auto_label_face(face_id, face.embedding);
+                                        }
+                                        face_count.fetch_add(faces.size());
                                     }
-                                    face_count.fetch_add(faces.size());
+                                    db.commit_transaction();
+                                } catch (...) {
+                                    db.rollback_transaction();
+                                    throw;
                                 }
-                                db.commit_transaction();
                             }
                         }
                         // Also generate thumbnail if needed
@@ -432,13 +482,34 @@ int cmd_scan(const ScanOptions& opts) {
                 } else {
                     auto result = process_file(filepath, detector);
 
-                    // Generate thumbnail from the already-decoded image if requested
+                    if (result.info.media_type == "video") {
+                        video_count.fetch_add(1);
+                    }
+
+                    // Generate thumbnail if requested
                     if (opts.thumbs && !result.info.sha256.empty()) {
                         if (opts.force.thumbs || !thumb_exists(result.info.sha256)) {
-                            cv::Mat img = decode_image(canonical);
-                            if (!img.empty()) {
-                                generate_thumb(img, result.info.sha256);
-                                thumb_count.fetch_add(1);
+                            if (result.info.media_type == "video") {
+                                // For videos, extract keyframe for thumbnail
+                                try {
+                                    cv::VideoCapture cap(canonical);
+                                    if (cap.isOpened()) {
+                                        double total = cap.get(cv::CAP_PROP_FRAME_COUNT);
+                                        if (total > 10) cap.set(cv::CAP_PROP_POS_FRAMES, total * 0.1);
+                                        cv::Mat frame;
+                                        cap.read(frame);
+                                        if (!frame.empty()) {
+                                            generate_thumb(frame, result.info.sha256);
+                                            thumb_count.fetch_add(1);
+                                        }
+                                    }
+                                } catch (...) {}
+                            } else {
+                                cv::Mat img = decode_image(canonical);
+                                if (!img.empty()) {
+                                    generate_thumb(img, result.info.sha256);
+                                    thumb_count.fetch_add(1);
+                                }
                             }
                         }
                     }
@@ -452,11 +523,13 @@ int cmd_scan(const ScanOptions& opts) {
                 }
             } catch (const std::exception& e) {
                 errors.fetch_add(1);
+                // Clear progress line, print warning, then resume progress
+                std::cout << "\r\033[K" << std::flush;
                 if (opts.fail_on_error) {
-                    std::cerr << "\n[error] " << rel_path(filepath) << " -- " << e.what() << "\n";
+                    std::cerr << "[error] " << rel_path(filepath) << " -- " << e.what() << std::endl;
                     throw;
                 } else {
-                    std::cerr << "\n[warning] " << rel_path(filepath) << " -- " << e.what() << "\n";
+                    std::cerr << "[warning] " << rel_path(filepath) << " -- " << e.what() << std::endl;
                 }
             }
 
@@ -512,8 +585,10 @@ int cmd_scan(const ScanOptions& opts) {
     auto elapsed = std::chrono::steady_clock::now() - start_time;
     auto secs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() / 1000.0;
 
+    size_t image_count = processed.load() - video_count.load();
     std::cout << "\n\nDone in " << secs << "s\n"
-              << "  Processed: " << processed.load() << "\n"
+              << "  Processed: " << processed.load()
+              << " (" << image_count << " images, " << video_count.load() << " videos)\n"
               << "  Skipped:   " << skipped.load() << "\n"
               << "  Errors:    " << errors.load() << "\n"
               << "  Removed:   " << removed_count << "\n";
@@ -523,7 +598,7 @@ int cmd_scan(const ScanOptions& opts) {
     if (opts.thumbs) {
         std::cout << "  Thumbs:    " << thumb_count.load() << "\n";
     }
-    std::cout << "  Total DB:  " << db.count() << " images\n";
+    std::cout << "  Total DB:  " << db.count() << " entries\n";
 
     return 0;
 }
@@ -537,6 +612,7 @@ struct DuplicatesOptions {
     std::string output;            // empty = stdout
     std::vector<std::string> matches;
     std::vector<std::string> filters;
+    std::string media;             // "image", "video", or "" (all)
     std::string db_path;
 };
 
@@ -750,6 +826,13 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
             exact_groups.push_back(std::move(dg));
         }
         exact_groups = filter_groups(exact_groups, opts.matches, opts.filters);
+        if (!opts.media.empty()) {
+            exact_groups.erase(std::remove_if(exact_groups.begin(), exact_groups.end(),
+                [&](const DuplicateGroup& g) {
+                    return std::none_of(g.images.begin(), g.images.end(),
+                        [&](const ImageInfo& img) { return img.media_type == opts.media; });
+                }), exact_groups.end());
+        }
     }
 
     std::vector<DuplicateGroup> near_groups;
@@ -758,6 +841,13 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
         std::cerr << "Comparing " << all_images.size() << " images for near duplicates...\n";
         near_groups = find_near_duplicates(all_images, opts.threshold, exact_sha256s);
         near_groups = filter_groups(near_groups, opts.matches, opts.filters);
+        if (!opts.media.empty()) {
+            near_groups.erase(std::remove_if(near_groups.begin(), near_groups.end(),
+                [&](const DuplicateGroup& g) {
+                    return std::none_of(g.images.begin(), g.images.end(),
+                        [&](const ImageInfo& img) { return img.media_type == opts.media; });
+                }), near_groups.end());
+        }
     }
 
     // Output
@@ -843,12 +933,12 @@ std::string json_get(const std::string& json, const std::string& key) {
 
 DateParts get_best_date(const ImageInfo& img) {
     // 1. EXIF DateTimeOriginal
-    std::string dt = json_get(img.exif_json, "DateTimeOriginal");
+    std::string dt = json_get(img.metadata_json, "DateTimeOriginal");
     DateParts d = parse_date(dt);
     if (d.valid) return d;
 
     // 2. EXIF CreateDate / DateTimeDigitized
-    dt = json_get(img.exif_json, "DateTimeDigitized");
+    dt = json_get(img.metadata_json, "DateTimeDigitized");
     d = parse_date(dt);
     if (d.valid) return d;
 
@@ -868,11 +958,11 @@ std::string apply_format(const std::string& fmt, const ImageInfo& img, const Dat
                 result += img.filename;
                 i += 8;
             } else if (fmt.substr(i, 7) == "%camera") {
-                std::string cam = json_get(img.exif_json, "Model");
+                std::string cam = json_get(img.metadata_json, "Model");
                 result += cam.empty() ? "unknown-camera" : cam;
                 i += 6;
             } else if (fmt.substr(i, 5) == "%make") {
-                std::string make = json_get(img.exif_json, "Make");
+                std::string make = json_get(img.metadata_json, "Make");
                 result += make.empty() ? "unknown-make" : make;
                 i += 4;
             } else if (fmt[i + 1] == 'Y') {
@@ -1082,6 +1172,9 @@ struct SearchOptions {
     std::string make;
     int64_t min_size = -1;
     int64_t max_size = -1;
+    std::string media;              // "image", "video", or "" (all)
+    int64_t min_duration_ms = -1;
+    int64_t max_duration_ms = -1;
     std::string similar;          // image path for phash similarity
     std::string similar_hash;     // hex phash string
     int threshold = 5;
@@ -1116,12 +1209,12 @@ std::string format_size(int64_t bytes) {
 
 std::string get_best_date_str(const ImageInfo& img) {
     // Try EXIF DateTimeOriginal
-    std::string dt = json_get(img.exif_json, "DateTimeOriginal");
+    std::string dt = json_get(img.metadata_json, "DateTimeOriginal");
     if (!dt.empty() && dt.size() >= 10 && dt.substr(0, 4) != "0000" && dt.substr(0, 4) != "1970") {
         return dt.substr(0, 10);
     }
     // Try DateTimeDigitized
-    dt = json_get(img.exif_json, "DateTimeDigitized");
+    dt = json_get(img.metadata_json, "DateTimeDigitized");
     if (!dt.empty() && dt.size() >= 10 && dt.substr(0, 4) != "0000" && dt.substr(0, 4) != "1970") {
         return dt.substr(0, 10);
     }
@@ -1151,6 +1244,25 @@ int64_t parse_size(const std::string& s) {
     if (suffix == "g" || suffix == "gb") return static_cast<int64_t>(num * 1024 * 1024 * 1024);
 
     throw std::runtime_error("Unknown size suffix: " + suffix + " (use B, KB, MB, GB)");
+}
+
+// Parse a duration string like "10s", "5m", "1h", "1.5m" into milliseconds
+int64_t parse_duration(const std::string& s) {
+    if (s.empty()) throw std::runtime_error("Empty duration value");
+
+    size_t i = 0;
+    while (i < s.size() && (std::isdigit(s[i]) || s[i] == '.')) i++;
+
+    double num = std::stod(s.substr(0, i));
+    std::string suffix = s.substr(i);
+    for (auto& c : suffix) c = std::tolower(c);
+
+    if (suffix.empty() || suffix == "ms") return static_cast<int64_t>(num);
+    if (suffix == "s") return static_cast<int64_t>(num * 1000);
+    if (suffix == "m") return static_cast<int64_t>(num * 60 * 1000);
+    if (suffix == "h") return static_cast<int64_t>(num * 3600 * 1000);
+
+    throw std::runtime_error("Unknown duration suffix: " + suffix + " (use ms, s, m, h)");
 }
 
 // Read stdin to a temp file, return the path. Caller should delete when done.
@@ -1377,6 +1489,9 @@ int cmd_search(const SearchOptions& opts) {
         criteria.make = opts.make;
         criteria.min_size = opts.min_size;
         criteria.max_size = opts.max_size;
+        criteria.media = opts.media;
+        criteria.min_duration_ms = opts.min_duration_ms;
+        criteria.max_duration_ms = opts.max_duration_ms;
         // Don't apply limit in DB if we also need match/filter (apply after)
         if (opts.matches.empty() && opts.filters.empty()) {
             criteria.limit = opts.limit;
@@ -1422,7 +1537,7 @@ int cmd_search(const SearchOptions& opts) {
     } else if (opts.porcelain) {
         for (const auto& img : results) {
             std::string date = get_best_date_str(img);
-            std::string camera = json_get(img.exif_json, "Model");
+            std::string camera = json_get(img.metadata_json, "Model");
             std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
             out << img.path << '\t'
                 << img.width << '\t' << img.height << '\t'
@@ -1435,7 +1550,7 @@ int cmd_search(const SearchOptions& opts) {
         out << "path,filename,width,height,file_size,date,camera,sha256,phash,thumb_path\n";
         for (const auto& img : results) {
             std::string date = get_best_date_str(img);
-            std::string camera = json_get(img.exif_json, "Model");
+            std::string camera = json_get(img.metadata_json, "Model");
             std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
             out << "\"" << img.path << "\"," << img.filename << ","
                 << img.width << "," << img.height << ","
@@ -1450,7 +1565,7 @@ int cmd_search(const SearchOptions& opts) {
             if (i > 0) out << ",";
             const auto& img = results[i];
             std::string date = get_best_date_str(img);
-            std::string camera = json_get(img.exif_json, "Model");
+            std::string camera = json_get(img.metadata_json, "Model");
             std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
             out << "{\"path\":\"" << img.path << "\""
                 << ",\"filename\":\"" << img.filename << "\""
@@ -1469,7 +1584,7 @@ int cmd_search(const SearchOptions& opts) {
         // Human-readable
         for (const auto& img : results) {
             std::string date = get_best_date_str(img);
-            std::string camera = json_get(img.exif_json, "Model");
+            std::string camera = json_get(img.metadata_json, "Model");
             out << img.path << "\n"
                 << "  " << img.width << "x" << img.height
                 << "  " << format_size(img.file_size)
@@ -1575,7 +1690,23 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path) {
                 }
 
                 try {
-                    if (generate_thumb(img.path, img.sha256)) {
+                    bool ok = false;
+                    if (img.media_type == "video") {
+                        // Extract keyframe for video thumbnail
+                        cv::VideoCapture cap(img.path);
+                        if (cap.isOpened()) {
+                            double total = cap.get(cv::CAP_PROP_FRAME_COUNT);
+                            if (total > 10) cap.set(cv::CAP_PROP_POS_FRAMES, total * 0.1);
+                            cv::Mat frame;
+                            cap.read(frame);
+                            if (!frame.empty()) {
+                                ok = generate_thumb(frame, img.sha256);
+                            }
+                        }
+                    } else {
+                        ok = generate_thumb(img.path, img.sha256);
+                    }
+                    if (ok) {
                         generated.fetch_add(1);
                     } else {
                         errors.fetch_add(1);
@@ -1892,13 +2023,18 @@ int cmd_face(int argc, char* argv[], const std::string& db_path) {
                     if (image_id >= 0) {
                         db.delete_faces_for_image(image_id);
                         db.begin_transaction();
-                        for (const auto& face : faces) {
-                            db.insert_face(image_id, face);
-                            int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
-                            db.auto_label_face(face_id, face.embedding);
+                        try {
+                            for (const auto& face : faces) {
+                                db.insert_face(image_id, face);
+                                int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
+                                db.auto_label_face(face_id, face.embedding);
+                            }
+                            db.commit_transaction();
+                            total_faces.fetch_add(faces.size());
+                        } catch (...) {
+                            db.rollback_transaction();
+                            throw;
                         }
-                        db.commit_transaction();
-                        total_faces.fetch_add(faces.size());
                     }
                 }
 
@@ -1999,6 +2135,10 @@ int main(int argc, char* argv[]) {
                 opts.thumbs = true;
             } else if (arg == "--ignore-mount-warning") {
                 opts.ignore_mount_warning = true;
+            } else if (arg == "--images-only") {
+                opts.images_only = true;
+            } else if (arg == "--videos-only") {
+                opts.videos_only = true;
             } else if (arg == "--parallel" && i + 1 < argc) {
                 opts.parallel = std::stoi(argv[++i]);
             } else if (arg == "--on-error" && i + 1 < argc) {
@@ -2052,6 +2192,13 @@ int main(int argc, char* argv[]) {
                 opts.matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--filter" && i + 1 < argc) {
                 opts.filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--media" && i + 1 < argc) {
+                opts.media = argv[++i];
+                if (opts.media != "image" && opts.media != "video" && opts.media != "all") {
+                    std::cerr << "Error: --media must be 'image', 'video', or 'all'\n";
+                    return 1;
+                }
+                if (opts.media == "all") opts.media = "";
             } else if (arg == "--db" && i + 1 < argc) {
                 opts.db_path = argv[++i];
             } else {
@@ -2233,6 +2380,17 @@ int main(int argc, char* argv[]) {
                     std::cerr << "Error: --format must be 'text', 'csv', or 'json'\n";
                     return 1;
                 }
+            } else if (arg == "--media" && i + 1 < argc) {
+                opts.media = argv[++i];
+                if (opts.media != "image" && opts.media != "video" && opts.media != "all") {
+                    std::cerr << "Error: --media must be 'image', 'video', or 'all'\n";
+                    return 1;
+                }
+                if (opts.media == "all") opts.media = "";
+            } else if (arg == "--min-duration" && i + 1 < argc) {
+                opts.min_duration_ms = parse_duration(argv[++i]);
+            } else if (arg == "--max-duration" && i + 1 < argc) {
+                opts.max_duration_ms = parse_duration(argv[++i]);
             } else if (arg == "--output" && i + 1 < argc) {
                 opts.output = argv[++i];
             } else if (arg == "--db" && i + 1 < argc) {

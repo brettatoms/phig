@@ -11,12 +11,14 @@
     pkgs.pkg-config
     pkgs.gtest
     pkgs.curl
+    pkgs.ffmpeg-headless
   ];
 
   env.CMAKE_PREFIX_PATH = lib.makeSearchPath "" [
     pkgs.opencv4
     pkgs.libexif
     pkgs.sqlite.dev
+    pkgs.ffmpeg-headless.dev
   ];
 
   enterShell = ''

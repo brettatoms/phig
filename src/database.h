@@ -24,6 +24,7 @@ public:
     void insert_copy(const std::string& source_path, const std::string& dest_path);
     void begin_transaction();
     void commit_transaction();
+    void rollback_transaction();
 
     // Returns modified_at for a path if it exists in the DB, nullopt otherwise
     std::optional<std::string> get_modified_at(const std::string& path);
@@ -63,6 +64,9 @@ public:
         std::string make;            // substring match on EXIF Make
         int64_t min_size = -1;
         int64_t max_size = -1;
+        std::string media;           // "image", "video", or "" (all)
+        int64_t min_duration_ms = -1;
+        int64_t max_duration_ms = -1;
         int limit = -1;
     };
     std::vector<ImageInfo> search(const SearchCriteria& criteria);
@@ -106,4 +110,6 @@ public:
 private:
     sqlite3* db_ = nullptr;
     void exec(const std::string& sql);
+    int get_schema_version();
+    void set_schema_version(int version);
 };

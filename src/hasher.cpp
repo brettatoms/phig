@@ -4,6 +4,7 @@
 #include <opencv2/core/utility.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/img_hash.hpp>
+#include <opencv2/videoio.hpp>
 #include <iostream>
 #include <unistd.h>
 #include <fcntl.h>
@@ -165,4 +166,70 @@ PhashResult compute_phash(const std::string& path) {
         throw std::runtime_error("Cannot decode image: " + path);
     }
     return compute_phash(img);
+}
+
+PhashResult compute_video_phash(const std::string& path) {
+    // Suppress noisy OpenCV/GStreamer stderr warnings during video operations
+    int saved_stderr = dup(STDERR_FILENO);
+    int devnull = open("/dev/null", O_WRONLY);
+    if (devnull >= 0) {
+        dup2(devnull, STDERR_FILENO);
+        close(devnull);
+    }
+
+    cv::VideoCapture cap(path);
+    bool opened = cap.isOpened();
+
+    double total_frames = 0;
+    int width = 0, height = 0;
+    cv::Mat frame;
+
+    if (opened) {
+        total_frames = cap.get(cv::CAP_PROP_FRAME_COUNT);
+        width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+        height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
+
+        // Try seeking to ~10% of duration to skip black intros
+        if (total_frames > 10) {
+            cap.set(cv::CAP_PROP_POS_FRAMES, total_frames * 0.1);
+            cap.read(frame);
+        }
+
+        // Fallback: scan first 30 frames for a non-black frame
+        if (frame.empty() || cv::mean(frame)[0] < 5.0) {
+            cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+            for (int i = 0; i < 30; i++) {
+                if (!cap.read(frame)) break;
+                if (cv::mean(frame)[0] >= 5.0) break;
+            }
+        }
+
+        // Last resort: just use whatever frame we have
+        if (frame.empty()) {
+            cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+            cap.read(frame);
+        }
+    }
+
+    // Restore stderr
+    if (saved_stderr >= 0) {
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
+    }
+
+    if (!opened) {
+        throw std::runtime_error("Cannot open video: " + path);
+    }
+
+    if (frame.empty()) {
+        throw std::runtime_error("Cannot extract frame from video: " + path);
+    }
+
+    auto result = compute_phash(frame);
+    // Use video dimensions rather than frame dimensions (which may differ after decode)
+    if (width > 0 && height > 0) {
+        result.width = width;
+        result.height = height;
+    }
+    return result;
 }

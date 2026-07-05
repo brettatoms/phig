@@ -7,7 +7,7 @@ An image management power tool. CLI-first tool to scan image directories, build 
 - **Language:** C++20
 - **Build:** CMake
 - **Dev environment:** devenv + direnv (Nix)
-- **Dependencies:** OpenCV (image decode + phash), libexif (EXIF extraction), SQLite (database), GoogleTest (tests)
+- **Dependencies:** OpenCV (image decode + phash + video keyframes), libexif (EXIF extraction), FFmpeg/libavformat (video metadata), SQLite (database), GoogleTest (tests)
 
 ## Building
 
@@ -26,13 +26,13 @@ Binary: `./build/phig`
 cmake --build build && ./build/phig-tests
 ```
 
-116 tests across 13 suites: scanner, hasher (SHA256 + phash), exif, database, glob, filters (match/filter precedence), date parsing, JSON helpers, format strings, face DB operations, embedding distance.
+139 tests across 19 suites: scanner, hasher (SHA256 + phash), exif, database, glob, filters (match/filter precedence), date parsing, JSON helpers, format strings, face DB operations, embedding distance, thumbnails, video extensions, video phash, video metadata, migrations, video search.
 
 ## CLI Commands
 
 ```bash
 # Scan a directory into the database
-phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--ignore-mount-warning] [--on-error warn|fail] [--db <path>]
+phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--images-only] [--videos-only] [--ignore-mount-warning] [--on-error warn|fail] [--db <path>]
 
 # Generate thumbnails
 phig thumbs rebuild [--match <glob>] [--filter <glob>] [--force] [--parallel N] [--db <path>]
@@ -64,6 +64,7 @@ src/
 ├── database.h/cpp    SQLite schema, CRUD, queries
 ├── filters.h/cpp     Glob matching, match/filter logic
 ├── thumbs.h/cpp      Thumbnail generation (512px JPEG, SHA256-keyed cache)
+├── metadata.h/cpp    Video metadata extraction via libavformat
 └── types.h           ImageInfo struct
 tests/
 ├── test_scanner.cpp
@@ -81,6 +82,9 @@ tests/
 - **Granular --force** — `--force` accepts `hash,thumbs,faces,all` (comma-separated or repeated). Bare `--force` = all.
 - **Safety guard on scan** — warns if all DB entries for a directory are missing (possible unmounted drive). Requires `--ignore-mount-warning` to proceed with deletion.
 - **Thumbnails** — 512px JPEG cached in `~/.cache/phig/thumbs/` keyed by SHA256. Deduplicates naturally.
+- **Video support** — scans video files (MP4/MOV/MKV/AVI/WebM etc.), extracts keyframe phash via OpenCV VideoCapture, metadata via libavformat. Videos stored with `media_type = 'video'`, searchable/filterable.
+- **Schema migrations** — `meta` table tracks schema version. Forward-only migrations. Version check on startup bails if DB is newer than code.
+- **`exif` column renamed to `metadata`** — stores JSON blob for any media type (EXIF for images, container metadata for videos).
 - **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.
 - **Match/filter system** — `--match` includes (repeatable), `--filter` excludes (repeatable), filter wins on overlap.
 - **Duplicates compare against full DB** — `--match` filters which groups to show, not which files to compare.

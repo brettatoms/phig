@@ -15,6 +15,21 @@
 
 namespace fs = std::filesystem;
 
+// Schema version this code expects. Bump when adding migrations.
+static const int CURRENT_SCHEMA_VERSION = 2;
+
+// migrations[N] upgrades from version N-1 to version N.
+// Version 1 = initial schema, created directly by init_schema().
+// Version 2 = video support (media_type + duration_ms columns).
+static const std::vector<std::string> migrations = {
+    "", // placeholder for index 0 (no version 0)
+    "", // v1: initial schema, created fresh by init_schema()
+    // v2: rename exif -> metadata, add video support columns
+    "ALTER TABLE images RENAME COLUMN exif TO metadata;"
+    "ALTER TABLE images ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image';"
+    "ALTER TABLE images ADD COLUMN duration_ms INTEGER;",
+};
+
 Database::Database(const std::string& path) {
     // Ensure parent directory exists
     fs::path db_path(path);
@@ -43,75 +58,189 @@ Database::~Database() {
     }
 }
 
+int Database::get_schema_version() {
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_,
+        "SELECT value FROM meta WHERE key = 'schema_version'", -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return 0; // meta table doesn't exist = fresh DB
+    }
+    rc = sqlite3_step(stmt);
+    int version = 0;
+    if (rc == SQLITE_ROW) {
+        version = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return version;
+}
+
+void Database::set_schema_version(int version) {
+    exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_,
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+        -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        throw std::runtime_error("Failed to set schema version: " + std::string(sqlite3_errmsg(db_)));
+    }
+    sqlite3_bind_int(stmt, 1, version);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
 void Database::init_schema() {
-    exec(R"(
-        CREATE TABLE IF NOT EXISTS images (
-            id          INTEGER PRIMARY KEY,
-            path        TEXT NOT NULL UNIQUE,
-            filename    TEXT NOT NULL,
-            extension   TEXT NOT NULL,
-            file_size   INTEGER NOT NULL,
-            created_at  TEXT,
-            modified_at TEXT,
-            sha256      TEXT NOT NULL,
-            phash       INTEGER NOT NULL,
-            width       INTEGER,
-            height      INTEGER,
-            exif        TEXT
-        )
-    )");
-    exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
-    exec("CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256)");
-    exec("CREATE INDEX IF NOT EXISTS idx_path ON images(path)");
+    int db_version = get_schema_version();
 
-    // Face recognition tables
-    exec(R"(
-        CREATE TABLE IF NOT EXISTS faces (
-            id          INTEGER PRIMARY KEY,
-            image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-            embedding   BLOB NOT NULL,
-            x           INTEGER,
-            y           INTEGER,
-            width       INTEGER,
-            height      INTEGER
-        )
-    )");
-    exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
+    if (db_version > CURRENT_SCHEMA_VERSION) {
+        throw std::runtime_error(
+            "Database schema (v" + std::to_string(db_version) +
+            ") is newer than this version of phig (v" +
+            std::to_string(CURRENT_SCHEMA_VERSION) +
+            "). Please update phig.");
+    }
 
-    // People table for named faces
-    exec(R"(
-        CREATE TABLE IF NOT EXISTS people (
-            id   INTEGER PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE
-        )
-    )");
+    if (db_version == 0) {
+        // Check if this is a pre-migration DB (has images table but no meta table)
+        bool has_images_table = false;
+        {
+            sqlite3_stmt* stmt;
+            int rc = sqlite3_prepare_v2(db_,
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='images'",
+                -1, &stmt, nullptr);
+            if (rc == SQLITE_OK) {
+                has_images_table = (sqlite3_step(stmt) == SQLITE_ROW);
+                sqlite3_finalize(stmt);
+            }
+        }
 
-    // Add person_id to faces if not exists
-    // SQLite doesn't have IF NOT EXISTS for ALTER TABLE, so check first
-    {
-        sqlite3_stmt* stmt;
-        int rc = sqlite3_prepare_v2(db_, "SELECT person_id FROM faces LIMIT 0", -1, &stmt, nullptr);
-        if (rc != SQLITE_OK) {
-            exec("ALTER TABLE faces ADD COLUMN person_id INTEGER REFERENCES people(id)");
+        if (has_images_table) {
+            // Pre-migration DB — set version to 1, then run migrations forward.
+            // Re-establish the face-recognition schema that the old init_schema
+            // used to guarantee on every startup, in case the existing DB
+            // predates it (idempotent — safe if already present).
+            exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+            exec(R"(
+                CREATE TABLE IF NOT EXISTS faces (
+                    id          INTEGER PRIMARY KEY,
+                    image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                    embedding   BLOB NOT NULL,
+                    x           INTEGER,
+                    y           INTEGER,
+                    width       INTEGER,
+                    height      INTEGER
+                )
+            )");
+            exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
+            exec(R"(
+                CREATE TABLE IF NOT EXISTS people (
+                    id   INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE
+                )
+            )");
+            exec(R"(
+                CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
+                    face_id INTEGER PRIMARY KEY,
+                    embedding float[128]
+                )
+            )");
+            // Add person_id to faces if not present (SQLite lacks
+            // IF NOT EXISTS for ALTER TABLE, so probe first).
+            {
+                sqlite3_stmt* stmt;
+                int rc = sqlite3_prepare_v2(db_, "SELECT person_id FROM faces LIMIT 0", -1, &stmt, nullptr);
+                if (rc != SQLITE_OK) {
+                    exec("ALTER TABLE faces ADD COLUMN person_id INTEGER REFERENCES people(id)");
+                } else {
+                    sqlite3_finalize(stmt);
+                }
+            }
+            set_schema_version(1);
+            db_version = 1;
+            // Fall through to migration path below
         } else {
-            sqlite3_finalize(stmt);
+            // Truly fresh database — create full schema at latest version
+            exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+
+            exec(R"(
+                CREATE TABLE IF NOT EXISTS images (
+                    id          INTEGER PRIMARY KEY,
+                    path        TEXT NOT NULL UNIQUE,
+                    filename    TEXT NOT NULL,
+                    extension   TEXT NOT NULL,
+                    file_size   INTEGER NOT NULL,
+                    created_at  TEXT,
+                    modified_at TEXT,
+                    sha256      TEXT NOT NULL,
+                    phash       INTEGER NOT NULL,
+                    width       INTEGER,
+                    height      INTEGER,
+                    metadata    TEXT,
+                    media_type  TEXT NOT NULL DEFAULT 'image',
+                    duration_ms INTEGER
+                )
+            )");
+            exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
+            exec("CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256)");
+            exec("CREATE INDEX IF NOT EXISTS idx_path ON images(path)");
+
+            exec(R"(
+                CREATE TABLE IF NOT EXISTS faces (
+                    id          INTEGER PRIMARY KEY,
+                    image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                    embedding   BLOB NOT NULL,
+                    x           INTEGER,
+                    y           INTEGER,
+                    width       INTEGER,
+                    height      INTEGER,
+                    person_id   INTEGER REFERENCES people(id)
+                )
+            )");
+            exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
+
+            exec(R"(
+                CREATE TABLE IF NOT EXISTS people (
+                    id   INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE
+                )
+            )");
+
+            exec(R"(
+                CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
+                    face_id INTEGER PRIMARY KEY,
+                    embedding float[128]
+                )
+            )");
+
+            set_schema_version(CURRENT_SCHEMA_VERSION);
         }
     }
 
-    // sqlite-vec virtual table for fast KNN
-    exec(R"(
-        CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
-            face_id INTEGER PRIMARY KEY,
-            embedding float[128]
-        )
-    )");
+    if (db_version > 0 && db_version < CURRENT_SCHEMA_VERSION) {
+        // Run pending migrations
+        for (int v = db_version + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
+            if (!migrations[v].empty()) {
+                exec("BEGIN TRANSACTION");
+                try {
+                    exec(migrations[v]);
+                    set_schema_version(v);
+                    exec("COMMIT");
+                } catch (...) {
+                    exec("ROLLBACK");
+                    throw;
+                }
+            } else {
+                set_schema_version(v);
+            }
+        }
+    }
+    // else: db_version == CURRENT_SCHEMA_VERSION, nothing to do
 }
 
 void Database::insert(const ImageInfo& info) {
     const char* sql = R"(
         INSERT OR REPLACE INTO images
-            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, exif)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt;
@@ -130,7 +259,13 @@ void Database::insert(const ImageInfo& info) {
     sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(info.phash));
     sqlite3_bind_int(stmt, 9, info.width);
     sqlite3_bind_int(stmt, 10, info.height);
-    sqlite3_bind_text(stmt, 11, info.exif_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 11, info.metadata_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 12, info.media_type.c_str(), -1, SQLITE_TRANSIENT);
+    if (info.duration_ms > 0) {
+        sqlite3_bind_int64(stmt, 13, info.duration_ms);
+    } else {
+        sqlite3_bind_null(stmt, 13);
+    }
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -142,17 +277,22 @@ void Database::insert(const ImageInfo& info) {
 
 void Database::insert_batch(const std::vector<ImageInfo>& infos) {
     exec("BEGIN TRANSACTION");
-    for (const auto& info : infos) {
-        insert(info);
+    try {
+        for (const auto& info : infos) {
+            insert(info);
+        }
+        exec("COMMIT");
+    } catch (...) {
+        exec("ROLLBACK");
+        throw;
     }
-    exec("COMMIT");
 }
 
 void Database::insert_copy(const std::string& source_path, const std::string& dest_path) {
     const char* sql = R"(
         INSERT OR REPLACE INTO images
-            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, exif)
-        SELECT ?, ?, extension, file_size, created_at, modified_at, sha256, phash, width, height, exif
+            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms)
+        SELECT ?, ?, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms
         FROM images WHERE path = ?
     )";
 
@@ -181,6 +321,10 @@ void Database::begin_transaction() {
 
 void Database::commit_transaction() {
     exec("COMMIT");
+}
+
+void Database::rollback_transaction() {
+    exec("ROLLBACK");
 }
 
 std::optional<std::string> Database::get_modified_at(const std::string& path) {
@@ -378,7 +522,7 @@ std::set<std::string> Database::get_all_sha256s() {
 }
 
 std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) {
-    std::string sql = "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, exif FROM images";
+    std::string sql = "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms FROM images";
     if (!path_prefix.empty()) {
         sql += " WHERE path LIKE ? || '%'";
     }
@@ -409,7 +553,9 @@ std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) 
         info.phash = static_cast<uint64_t>(sqlite3_column_int64(stmt, 7));
         info.width = sqlite3_column_int(stmt, 8);
         info.height = sqlite3_column_int(stmt, 9);
-        info.exif_json = text(10);
+        info.metadata_json = text(10);
+        info.media_type = text(11);
+        info.duration_ms = sqlite3_column_int64(stmt, 12);
         results.push_back(std::move(info));
     }
 
@@ -421,14 +567,14 @@ std::vector<std::vector<ImageInfo>> Database::get_exact_duplicates(const std::st
     std::string sql;
     if (path_prefix.empty()) {
         sql = R"(
-            SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, exif
+            SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms
             FROM images
             WHERE sha256 IN (SELECT sha256 FROM images GROUP BY sha256 HAVING COUNT(*) > 1)
             ORDER BY sha256, path
         )";
     } else {
         sql = R"(
-            SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, exif
+            SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms
             FROM images
             WHERE path LIKE ? || '%'
               AND sha256 IN (SELECT sha256 FROM images WHERE path LIKE ? || '%' GROUP BY sha256 HAVING COUNT(*) > 1)
@@ -463,7 +609,9 @@ std::vector<std::vector<ImageInfo>> Database::get_exact_duplicates(const std::st
         info.phash = static_cast<uint64_t>(sqlite3_column_int64(stmt, 7));
         info.width = sqlite3_column_int(stmt, 8);
         info.height = sqlite3_column_int(stmt, 9);
-        info.exif_json = text(10);
+        info.metadata_json = text(10);
+        info.media_type = text(11);
+        info.duration_ms = sqlite3_column_int64(stmt, 12);
         flat.push_back(std::move(info));
     }
     sqlite3_finalize(stmt);
@@ -789,7 +937,7 @@ std::string Database::auto_label_face(int64_t face_id, const std::array<float, 1
 }
 
 std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
-    std::string sql = "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, exif FROM images WHERE 1=1";
+    std::string sql = "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms FROM images WHERE 1=1";
     std::vector<std::pair<std::string, bool>> binds; // {value, is_int}
 
     if (!c.extension.empty()) {
@@ -798,23 +946,23 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
     }
     if (!c.after.empty()) {
         // Compare against best available date
-        std::string exif_date = c.after;
-        if (exif_date.size() >= 10) { exif_date[4] = ':'; exif_date[7] = ':'; }
-        sql += " AND COALESCE(json_extract(exif, '$.DateTimeOriginal'), json_extract(exif, '$.DateTimeDigitized'), modified_at) >= ?";
-        binds.push_back({exif_date, false});
+        std::string meta_date = c.after;
+        if (meta_date.size() >= 10) { meta_date[4] = ':'; meta_date[7] = ':'; }
+        sql += " AND COALESCE(json_extract(metadata, '$.DateTimeOriginal'), json_extract(metadata, '$.DateTimeDigitized'), modified_at) >= ?";
+        binds.push_back({meta_date, false});
     }
     if (!c.before.empty()) {
-        std::string exif_date = c.before;
-        if (exif_date.size() >= 10) { exif_date[4] = ':'; exif_date[7] = ':'; }
-        sql += " AND COALESCE(json_extract(exif, '$.DateTimeOriginal'), json_extract(exif, '$.DateTimeDigitized'), modified_at) <= ?";
-        binds.push_back({exif_date, false});
+        std::string meta_date = c.before;
+        if (meta_date.size() >= 10) { meta_date[4] = ':'; meta_date[7] = ':'; }
+        sql += " AND COALESCE(json_extract(metadata, '$.DateTimeOriginal'), json_extract(metadata, '$.DateTimeDigitized'), modified_at) <= ?";
+        binds.push_back({meta_date, false});
     }
     if (!c.camera.empty()) {
-        sql += " AND json_extract(exif, '$.Model') LIKE '%' || ? || '%'";
+        sql += " AND json_extract(metadata, '$.Model') LIKE '%' || ? || '%'";
         binds.push_back({c.camera, false});
     }
     if (!c.make.empty()) {
-        sql += " AND json_extract(exif, '$.Make') LIKE '%' || ? || '%'";
+        sql += " AND json_extract(metadata, '$.Make') LIKE '%' || ? || '%'";
         binds.push_back({c.make, false});
     }
     if (c.min_size >= 0) {
@@ -822,6 +970,16 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
     }
     if (c.max_size >= 0) {
         sql += " AND file_size <= " + std::to_string(c.max_size);
+    }
+    if (!c.media.empty()) {
+        sql += " AND media_type = ?";
+        binds.push_back({c.media, false});
+    }
+    if (c.min_duration_ms >= 0) {
+        sql += " AND duration_ms >= " + std::to_string(c.min_duration_ms);
+    }
+    if (c.max_duration_ms >= 0) {
+        sql += " AND duration_ms <= " + std::to_string(c.max_duration_ms);
     }
 
     sql += " ORDER BY path";
@@ -857,7 +1015,9 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
         info.phash = static_cast<uint64_t>(sqlite3_column_int64(stmt, 7));
         info.width = sqlite3_column_int(stmt, 8);
         info.height = sqlite3_column_int(stmt, 9);
-        info.exif_json = text(10);
+        info.metadata_json = text(10);
+        info.media_type = text(11);
+        info.duration_ms = sqlite3_column_int64(stmt, 12);
         results.push_back(std::move(info));
     }
 

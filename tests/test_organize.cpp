@@ -57,11 +57,11 @@ std::string apply_format(const std::string& fmt, const ImageInfo& img, const Dat
                 result += img.filename;
                 i += 8;
             } else if (fmt.substr(i, 7) == "%camera") {
-                std::string cam = json_get(img.exif_json, "Model");
+                std::string cam = json_get(img.metadata_json, "Model");
                 result += cam.empty() ? "unknown-camera" : cam;
                 i += 6;
             } else if (fmt.substr(i, 5) == "%make") {
-                std::string make = json_get(img.exif_json, "Make");
+                std::string make = json_get(img.metadata_json, "Make");
                 result += make.empty() ? "unknown-make" : make;
                 i += 4;
             } else if (fmt[i + 1] == 'Y') {
@@ -289,7 +289,7 @@ TEST(FormatTest, FullDateFormat) {
 TEST(FormatTest, CameraFormat) {
     ImageInfo img;
     img.filename = "photo.jpg";
-    img.exif_json = "{\"Model\":\"EOS R5\",\"Make\":\"Canon\"}";
+    img.metadata_json = "{\"Model\":\"EOS R5\",\"Make\":\"Canon\"}";
     DateParts date{.year = "2023", .month = "08", .day = "15", .valid = true};
 
     auto result = apply_format("%Y/%m/%camera/%original", img, date);
@@ -299,7 +299,7 @@ TEST(FormatTest, CameraFormat) {
 TEST(FormatTest, MakeFormat) {
     ImageInfo img;
     img.filename = "photo.jpg";
-    img.exif_json = "{\"Make\":\"Canon\"}";
+    img.metadata_json = "{\"Make\":\"Canon\"}";
     DateParts date{.year = "2023", .month = "08", .valid = true};
 
     auto result = apply_format("%Y/%make/%original", img, date);
@@ -309,7 +309,7 @@ TEST(FormatTest, MakeFormat) {
 TEST(FormatTest, MissingCamera) {
     ImageInfo img;
     img.filename = "photo.jpg";
-    img.exif_json = "{}";
+    img.metadata_json = "{}";
     DateParts date{.year = "2023", .month = "08", .valid = true};
 
     auto result = apply_format("%camera/%original", img, date);

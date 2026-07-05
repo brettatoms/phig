@@ -14,5 +14,7 @@ struct ImageInfo {
     uint64_t phash = 0;
     int width = 0;
     int height = 0;
-    std::string exif_json;
+    std::string metadata_json;
+    std::string media_type = "image";  // "image" or "video"
+    int64_t duration_ms = 0;           // video duration, 0 for images
 };
