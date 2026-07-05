@@ -28,6 +28,22 @@ cmake --build build && ./build/phig-tests
 
 Coverage: scanner, hasher (SHA256 + phash), exif, database, glob, filters (match/filter precedence), date parsing, JSON helpers, format strings, face DB operations, embedding distance, thumbnails, video extensions, video phash, video metadata, migrations, video search.
 
+## Linting & CI
+
+- **Formatting:** clang-format, Google style / 4-space / 100-col (`.clang-format`).
+  Applies to `src/` and `tests/`; `vendor/` is excluded. Check with
+  `clang-format --dry-run --Werror <files>`.
+- **Warnings:** first-party code builds with `-Wall -Wextra`; configure with
+  `-DPHIG_WERROR=ON` to make them fatal (CI does). Vendored code (`vendor/`) is a
+  separate `phig-vendor` target without these flags.
+- **clang-tidy:** high-signal set in `.clang-tidy` (bugprone/performance/analyzer,
+  noisy checks disabled). Run locally via `./scripts/clang-tidy.sh` — the wrapper
+  injects g++'s libstdc++ header dirs so the Nix clang-tidy can find `<string>` etc.
+  CI runs `run-clang-tidy` directly on its system toolchain.
+- **CI:** `.github/workflows/ci.yml` builds + tests on ubuntu-latest and
+  macos-latest (with `-DPHIG_WERROR=ON`) and runs the lint gate. GitHub Actions are
+  pinned to full commit SHAs.
+
 ## CLI Commands
 
 ```bash

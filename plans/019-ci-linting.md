@@ -137,16 +137,35 @@ The exact enabled/disabled list is refined during the cleanup pass; the intent i
   `PHIG_WERROR` (warnings don't break local dev).
 - clang-tidy reports zero findings under the curated set after cleanup.
 
+## Deviations from the original draft
+
+- **Style:** chose **Google + 4-space + 100-col** (not LLVM 2-space) — 4-space
+  matches the existing code and is the smaller reformat.
+- **clang-tidy set narrowed to high-signal:** the drafted broad set (`cppcoreguidelines-*`,
+  full `readability-*`/`modernize-*`) produced ~340 mostly-stylistic findings. Kept
+  `bugprone-*` + `clang-analyzer-*` + `performance-*`, and disabled noisy/idiomatic
+  checks: `easily-swappable-parameters`, `branch-clone`, `narrowing-conversions`,
+  `empty-catch`, `exception-escape`, `clang-analyzer-deadcode.DeadStores`.
+- **Vendored code split** into a separate `phig-vendor` target so `-Werror` and
+  clang-tidy apply only to first-party code.
+- **`scripts/clang-tidy.sh`** added: the Nix `clang-tidy` can't find libstdc++
+  headers, so the wrapper injects g++'s C++ header dirs at runtime. CI runs
+  `run-clang-tidy` directly (system toolchain).
+- **`gtest_discover_tests` WORKING_DIRECTORY** set to the source root so `ctest`
+  resolves the video tests' `tests/data/` relative paths.
+- **Actions pinned to full commit SHAs** (`actions/checkout` v4.3.1), least-privilege
+  `permissions: contents: read`, and `concurrency` cancellation.
+
 ## Checklist
 
-- [ ] Confirm plan 018 `img_hash` removal has landed (CI build prerequisite)
-- [ ] Add `.clang-format` (LLVM, ColumnLimit 100)
-- [ ] One-time repo-wide reformat commit (src + tests; exclude vendor/)
-- [ ] Add `.clang-tidy` curated check set
-- [ ] clang-tidy cleanup pass to reach green
-- [ ] CMake `PHIG_WERROR` option + `-Wall -Wextra`
-- [ ] `.github/workflows/ci.yml` — test matrix (ubuntu + macOS)
-- [ ] Workflow lint job (clang-format + clang-tidy)
-- [ ] Verify green on a PR
-- [ ] AGENTS.md "Development" note (format/lint/CI)
-- [ ] Optional README CI badge
+- [x] Confirm plan 018 `img_hash` removal has landed (CI build prerequisite)
+- [x] Add `.clang-format` (Google, 4-space, 100-col)
+- [x] One-time repo-wide reformat commit (src + tests; exclude vendor/)
+- [x] Add `.clang-tidy` high-signal check set
+- [x] clang-tidy cleanup pass to reach green (0 findings)
+- [x] CMake `PHIG_WERROR` option + `-Wall -Wextra` (vendored code isolated)
+- [x] `.github/workflows/ci.yml` — test matrix (ubuntu + macOS)
+- [x] Workflow lint job (clang-format + clang-tidy)
+- [ ] Verify green on a PR (pending push)
+- [x] AGENTS.md "Linting & CI" note (format/lint/CI)
+- [ ] Optional README CI badge (skipped for now)

@@ -99,7 +99,7 @@ std::vector<FaceInfo> FaceDetector::detect(const cv::Mat& img) {
         fi.width = static_cast<int>(embed_faces.at<float>(i, 2));
         fi.height = static_cast<int>(embed_faces.at<float>(i, 3));
 
-        results.push_back(std::move(fi));
+        results.push_back(fi);
     }
 
     return results;

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -206,7 +207,6 @@ ProcessResult process_file(const fs::path& filepath, FaceDetector* face_detector
     std::transform(info.extension.begin(), info.extension.end(), info.extension.begin(), ::tolower);
 
     // File metadata
-    auto status = fs::status(filepath);
     info.file_size = fs::file_size(filepath);
     info.modified_at = format_time(fs::last_write_time(filepath));
 
@@ -342,6 +342,7 @@ int cmd_scan(const ScanOptions& opts) {
             if (batch.empty()) return;
             // Insert image metadata
             std::vector<ImageInfo> infos;
+            infos.reserve(batch.size());
             for (auto& r : batch) infos.push_back(r.info);
             db.insert_batch(infos);
 
@@ -379,7 +380,6 @@ int cmd_scan(const ScanOptions& opts) {
                 }
 
                 // Check if we should skip (path + mtime match)
-                bool needs_full_process = opts.force.hash;
                 bool needs_faces_only = false;
                 bool needs_thumbs_only = false;
 
@@ -414,8 +414,6 @@ int cmd_scan(const ScanOptions& opts) {
                             std::cout << "\r[" << done << "/" << files.size() << "] " << std::flush;
                             continue;
                         }
-                    } else {
-                        needs_full_process = true;
                     }
                 }
 
@@ -520,12 +518,11 @@ int cmd_scan(const ScanOptions& opts) {
                     // Clear progress line, print warning, then resume progress
                     std::cout << "\r\033[K" << std::flush;
                     if (opts.fail_on_error) {
-                        std::cerr << "[error] " << rel_path(filepath) << " -- " << e.what()
-                                  << std::endl;
+                        std::cerr << "[error] " << rel_path(filepath) << " -- " << e.what() << '\n';
                         throw;
                     } else {
                         std::cerr << "[warning] " << rel_path(filepath) << " -- " << e.what()
-                                  << std::endl;
+                                  << '\n';
                     }
                 }
 
@@ -536,6 +533,7 @@ int cmd_scan(const ScanOptions& opts) {
         };
 
         std::vector<std::thread> threads;
+        threads.reserve(num_threads);
         for (int i = 0; i < num_threads; i++) {
             threads.emplace_back(worker, i);
         }
@@ -988,7 +986,11 @@ fs::path resolve_conflict(const fs::path& dest, const std::string& on_conflict) 
     auto ext = dest.extension().string();
     auto parent = dest.parent_path();
     for (int i = 1; i < 10000; i++) {
-        auto candidate = parent / (stem + "_" + std::to_string(i) + ext);
+        std::string name = stem;
+        name += "_";
+        name += std::to_string(i);
+        name += ext;
+        auto candidate = parent / name;
         if (!fs::exists(candidate)) return candidate;
     }
 
@@ -1190,7 +1192,7 @@ struct SearchOptions {
 namespace {
 
 std::string format_size(int64_t bytes) {
-    if (bytes >= 1024 * 1024) {
+    if (bytes >= static_cast<int64_t>(1024 * 1024)) {
         char buf[32];
         snprintf(buf, sizeof(buf), "%.1fMB", bytes / (1024.0 * 1024.0));
         return buf;
@@ -1709,6 +1711,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
         };
 
         std::vector<std::thread> threads;
+        threads.reserve(num_threads);
         for (int i = 0; i < num_threads; i++) {
             threads.emplace_back(worker, i);
         }
@@ -1899,18 +1902,8 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         }
         sqlite3_finalize(stmt);
 
-        // For each reference embedding, find all matching faces and label them
+        // Scan all untagged faces and check each against the reference embeddings.
         size_t labeled = 0;
-        for (const auto& ref_emb : ref_embeddings) {
-            auto matches = db.search_faces(ref_emb, 0.6, 1000);
-            for (const auto& match : matches) {
-                // Find the face_id for this match and label it
-                int64_t fid = db.find_closest_face(ref_emb, 0.6);
-                // Actually we need all matching face IDs — let's query directly
-            }
-        }
-
-        // Simpler approach: scan all untagged faces and check against references
         const char* untagged_sql = "SELECT id, embedding FROM faces WHERE person_id IS NULL";
         rc = sqlite3_prepare_v2(db.db_ptr(), untagged_sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) {
@@ -1987,6 +1980,7 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         // Create per-thread detectors
         std::cout << "Loading face recognition models (" << num_threads << " instances)...\n";
         std::vector<std::unique_ptr<FaceDetector>> detectors;
+        detectors.reserve(num_threads);
         for (int i = 0; i < num_threads; i++) {
             detectors.push_back(std::make_unique<FaceDetector>());
         }
@@ -2038,6 +2032,7 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         auto prev_handler = std::signal(SIGINT, sigint_handler);
 
         std::vector<std::thread> threads;
+        threads.reserve(num_threads);
         for (int i = 0; i < num_threads; i++) {
             threads.emplace_back(worker, i);
         }

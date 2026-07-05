@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: CI only needs to read the repo.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build & test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Pinned to a full commit SHA (supply-chain hardening); comment tracks the tag.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
+            libgtest-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config opencv sqlite libexif ffmpeg googletest
+
+      - name: Configure
+        run: cmake -B build -DPHIG_WERROR=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  lint:
+    name: lint (clang-format + clang-tidy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install tooling and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-format clang-tidy build-essential cmake pkg-config \
+            libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
+            libgtest-dev
+
+      - name: clang-format
+        run: |
+          find src tests -maxdepth 1 -type f \( -name '*.cpp' -o -name '*.h' \) \
+            -print0 | xargs -0 clang-format --dry-run --Werror
+
+      - name: Configure (generate compile_commands.json + version.h)
+        run: cmake -B build
+
+      # Ubuntu's clang-tidy uses the system toolchain, so it finds standard and
+      # third-party headers directly (no need for the local Nix -isystem wrapper).
+      - name: clang-tidy
+        run: run-clang-tidy -quiet -p build 'src/.*\.(cpp|h)$'

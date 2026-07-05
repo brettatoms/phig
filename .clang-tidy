@@ -1,0 +1,13 @@
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-branch-clone,
+  -bugprone-narrowing-conversions,
+  -bugprone-empty-catch,
+  -bugprone-exception-escape,
+  clang-analyzer-*,
+  -clang-analyzer-deadcode.DeadStores,
+  performance-*
+WarningsAsErrors: '*'
+HeaderFilterRegex: '^src/'

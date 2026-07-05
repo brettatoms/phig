@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -52,9 +53,10 @@ std::string sha256_bytes(const uint8_t* data, size_t len) {
     for (size_t offset = 0; offset < padded_len; offset += 64) {
         uint32_t w[64];
         for (int i = 0; i < 16; i++) {
-            w[i] = (uint32_t(msg[offset + i * 4]) << 24) |
-                   (uint32_t(msg[offset + i * 4 + 1]) << 16) |
-                   (uint32_t(msg[offset + i * 4 + 2]) << 8) | uint32_t(msg[offset + i * 4 + 3]);
+            w[i] = (uint32_t(msg[offset + static_cast<size_t>(i * 4)]) << 24) |
+                   (uint32_t(msg[offset + static_cast<size_t>(i * 4) + 1]) << 16) |
+                   (uint32_t(msg[offset + static_cast<size_t>(i * 4) + 2]) << 8) |
+                   uint32_t(msg[offset + static_cast<size_t>(i * 4) + 3]);
         }
         for (int i = 16; i < 64; i++) {
             uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
@@ -151,9 +153,8 @@ cv::Mat decode_image(const std::string& path) {
     // Suppress OpenCV's internal warnings (e.g., "Invalid SOS parameters")
     // and re-emit them with the filename for context
     std::string cv_warning;
-    auto prev_handler = cv::redirectError(
-        [](int status, const char* func_name, const char* err_msg, const char* file_name, int line,
-           void* userdata) -> int {
+    cv::redirectError(
+        [](int, const char*, const char* err_msg, const char*, int, void* userdata) -> int {
             auto* warn = static_cast<std::string*>(userdata);
             *warn = err_msg ? err_msg : "unknown error";
             return 0;  // don't throw
@@ -172,7 +173,7 @@ cv::Mat decode_image(const std::string& path) {
     cv::redirectError(nullptr);
 
     if (!cv_warning.empty()) {
-        std::cerr << "\n[warning] " << path << " -- " << cv_warning << std::endl;
+        std::cerr << "\n[warning] " << path << " -- " << cv_warning << '\n';
     }
 
     return img;
