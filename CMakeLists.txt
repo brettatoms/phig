@@ -81,6 +81,16 @@ target_link_libraries(phig-lib PUBLIC
     pthread
 )
 
+# pkg-config libs (libexif, ffmpeg) aren't always in a default linker path —
+# e.g. Homebrew's /opt/homebrew/lib on macOS — so add their -L dirs explicitly.
+target_link_directories(phig-lib PUBLIC
+    ${EXIF_LIBRARY_DIRS}
+    ${AVFORMAT_LIBRARY_DIRS}
+    ${AVCODEC_LIBRARY_DIRS}
+    ${AVUTIL_LIBRARY_DIRS}
+    ${SWSCALE_LIBRARY_DIRS}
+)
+
 target_compile_options(phig-lib PRIVATE ${PHIG_WARNINGS})
 
 # ---- Binary ----
