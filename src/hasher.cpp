@@ -216,6 +216,36 @@ PhashResult compute_phash(const cv::Mat& img) {
     return PhashResult{hash_val, img.cols, img.rows};
 }
 
+double compute_blur_score(const cv::Mat& img) {
+    if (img.empty()) {
+        return 0.0;
+    }
+
+    cv::Mat gray;
+    if (img.channels() == 1) {
+        gray = img;
+    } else {
+        cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
+    }
+
+    // Downscale (only shrink) to a fixed longest edge so the sharpness score is
+    // comparable across image resolutions.
+    const int max_edge = 512;
+    int longest = gray.cols > gray.rows ? gray.cols : gray.rows;
+    if (longest > max_edge) {
+        double scale = static_cast<double>(max_edge) / longest;
+        cv::resize(gray, gray, cv::Size(), scale, scale, cv::INTER_AREA);
+    }
+
+    // Sharpness = variance of the Laplacian (second derivative).
+    cv::Mat laplacian;
+    cv::Laplacian(gray, laplacian, CV_64F);
+    cv::Scalar mean;
+    cv::Scalar stddev;
+    cv::meanStdDev(laplacian, mean, stddev);
+    return stddev[0] * stddev[0];
+}
+
 PhashResult compute_phash(const std::string& path) {
     cv::Mat img = decode_image(path);
     if (img.empty()) {

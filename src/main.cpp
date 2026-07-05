@@ -132,6 +132,9 @@ void print_usage() {
         << "  --tag <name>             Images with this tag (repeatable, all must match)\n"
         << "  --gallery <name>         Images in this gallery\n"
         << "  --fav                    Favorited images (alias for --tag favorite)\n"
+        << "  --blurry                 Low-sharpness images (blur_score <= 100)\n"
+        << "  --min-sharpness <n>      Only images with blur_score >= n\n"
+        << "  --max-sharpness <n>      Only images with blur_score <= n\n"
         << "  --match <glob>           Include filter (repeatable, matches path)\n"
         << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --limit N                Maximum number of results\n"
@@ -254,6 +257,9 @@ ProcessResult process_file(const fs::path& filepath, FaceDetector* face_detector
         info.phash = phash_result.hash;
         info.width = phash_result.width;
         info.height = phash_result.height;
+
+        // Sharpness score (essentially free on the already-decoded image).
+        info.blur_score = compute_blur_score(img);
 
         // Face detection from same decoded image (no re-decode)
         if (face_detector) {
@@ -1220,6 +1226,8 @@ struct SearchOptions {
     std::string person;             // search by named person
     std::vector<std::string> tags;  // must have ALL these tags
     std::string gallery;            // exact gallery match
+    double min_sharpness = -1;      // blur_score >= this
+    double max_sharpness = -1;      // blur_score <= this
     std::vector<std::string> matches;
     std::vector<std::string> filters;
     int limit = -1;
@@ -1540,6 +1548,8 @@ int cmd_search(const SearchOptions& opts) {
         criteria.max_duration_ms = opts.max_duration_ms;
         criteria.tags = opts.tags;
         criteria.gallery = opts.gallery;
+        criteria.min_sharpness = opts.min_sharpness;
+        criteria.max_sharpness = opts.max_sharpness;
         // Don't apply limit in DB if we also need match/filter (apply after)
         if (opts.matches.empty() && opts.filters.empty()) {
             criteria.limit = opts.limit;
@@ -2730,6 +2740,12 @@ int main(int argc, char* argv[]) {
                 opts.gallery = argv[++i];
             } else if (arg == "--fav") {
                 opts.tags.push_back("favorite");
+            } else if (arg == "--min-sharpness" && i + 1 < argc) {
+                opts.min_sharpness = std::stod(argv[++i]);
+            } else if (arg == "--max-sharpness" && i + 1 < argc) {
+                opts.max_sharpness = std::stod(argv[++i]);
+            } else if (arg == "--blurry") {
+                if (opts.max_sharpness < 0) opts.max_sharpness = 100.0;  // rough default
             } else if (arg == "--match" && i + 1 < argc) {
                 opts.matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--filter" && i + 1 < argc) {

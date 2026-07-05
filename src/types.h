@@ -19,4 +19,5 @@ struct ImageInfo {
     int64_t duration_ms = 0;           // video duration, 0 for images
     std::string gallery;               // gallery name, empty if none
     bool favorite = false;             // has the built-in favorite tag
+    double blur_score = -1.0;          // sharpness (Laplacian variance); -1 = not computed
 };

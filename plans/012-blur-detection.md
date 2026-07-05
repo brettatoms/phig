@@ -1,6 +1,6 @@
 ---
 name: Blur Detection
-status: planned
+status: completed
 created: 2026-03-28
 description: >
   Compute a blur/sharpness score for each image during scan using Laplacian
@@ -62,21 +62,26 @@ phig search --blurry --path ~/Photos/Vacation
 phig purge --match <blurry files>
 ```
 
-## Open Questions
+## Decisions (resolved during implementation)
 
-- What default threshold for `--blurry`? Needs testing on real photo collections.
-- **Resolution normalization:** A 4K image will naturally produce higher Laplacian variance than a 640x480 image of the same scene. Options to make scores comparable across resolutions:
-  - *Downscale first:* Resize to a fixed size (e.g., 512x512) before computing. Scores are directly comparable.
-  - *Normalize at query time:* Store the raw score and scale by dimensions (e.g., `blur_score / (width * height)`) during search. Simpler storage, dimensions already in DB.
-  - *Store raw, ignore the issue:* Most photo collections are from similar devices, so resolution variance may be small in practice.
-  - Not yet decided which approach to use.
-- Should there be a `--sort sharpness` flag on search to rank results?
+- **Resolution normalization:** downscale (only shrink) to a 512px longest edge
+  before computing the Laplacian variance, so scores are comparable across image
+  sizes without fabricating detail on small images by upscaling.
+- **`--blurry` default:** `blur_score <= 100` — a rough guideline (the plan's
+  "< 100 very blurry"). `--min-sharpness`/`--max-sharpness` give precise control.
+- **Unscored images:** `blur_score` is nullable; images scanned before this feature
+  read back as `-1` and are excluded from sharpness filters until re-scanned
+  (`phig scan --force hash`).
+
+## Still open (future)
+
+- A `--sort sharpness` flag to rank search results was not added; deferred.
 
 ## Checklist
 
-- [ ] Add `blur_score` column to schema (with migration for existing DBs)
-- [ ] Compute Laplacian variance in `hasher.cpp` alongside phash (already-decoded image)
-- [ ] Store in database during scan
-- [ ] Add `blur_score` to `ImageInfo` struct
-- [ ] Search integration (`--blurry`, `--min-sharpness`, `--max-sharpness`)
-- [ ] Tests for blur score computation
+- [x] Add `blur_score` column to schema (v4 migration + fresh path)
+- [x] Compute Laplacian variance in `hasher.cpp` alongside phash (already-decoded image)
+- [x] Store in database during scan (insert + insert_copy carry it)
+- [x] Add `blur_score` to `ImageInfo` struct
+- [x] Search integration (`--blurry`, `--min-sharpness`, `--max-sharpness`)
+- [x] Tests for blur score computation + sharpness search + round-trip

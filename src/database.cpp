@@ -17,7 +17,7 @@
 namespace fs = std::filesystem;
 
 // Schema version this code expects. Bump when adding migrations.
-static const int CURRENT_SCHEMA_VERSION = 3;
+static const int CURRENT_SCHEMA_VERSION = 4;
 
 // migrations[N] upgrades from version N-1 to version N.
 // Version 1 = initial schema, created directly by init_schema().
@@ -27,18 +27,20 @@ static const std::vector<std::string> migrations = {
     "",  // placeholder for index 0 (no version 0)
     "",  // v1: initial schema, created fresh by init_schema()
     // v2: rename exif -> metadata, add video support columns
-    "ALTER TABLE images RENAME COLUMN exif TO metadata;"
-    "ALTER TABLE images ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image';"
-    "ALTER TABLE images ADD COLUMN duration_ms INTEGER;",
+    R"(ALTER TABLE images RENAME COLUMN exif TO metadata;
+       ALTER TABLE images ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image';
+       ALTER TABLE images ADD COLUMN duration_ms INTEGER;)",
     // v3: tags & galleries & favorites
-    "CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);"
-    "CREATE TABLE image_tags ("
-    "  image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,"
-    "  tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,"
-    "  PRIMARY KEY (image_id, tag_id));"
-    "INSERT OR IGNORE INTO tags(name) VALUES ('favorite');"
-    "ALTER TABLE images ADD COLUMN gallery TEXT;"
-    "CREATE INDEX idx_gallery ON images(gallery);",
+    R"(CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+       CREATE TABLE image_tags (
+         image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+         tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+         PRIMARY KEY (image_id, tag_id));
+       INSERT OR IGNORE INTO tags(name) VALUES ('favorite');
+       ALTER TABLE images ADD COLUMN gallery TEXT;
+       CREATE INDEX idx_gallery ON images(gallery);)",
+    // v4: blur/sharpness score
+    "ALTER TABLE images ADD COLUMN blur_score REAL;",
 };
 
 Database::Database(const std::string& path) {
@@ -188,7 +190,8 @@ void Database::init_schema() {
                     metadata    TEXT,
                     media_type  TEXT NOT NULL DEFAULT 'image',
                     duration_ms INTEGER,
-                    gallery     TEXT
+                    gallery     TEXT,
+                    blur_score  REAL
                 )
             )");
             exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
@@ -267,8 +270,8 @@ void Database::init_schema() {
 void Database::insert(const ImageInfo& info) {
     const char* sql = R"(
         INSERT OR REPLACE INTO images
-            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt;
@@ -293,6 +296,11 @@ void Database::insert(const ImageInfo& info) {
         sqlite3_bind_int64(stmt, 13, info.duration_ms);
     } else {
         sqlite3_bind_null(stmt, 13);
+    }
+    if (info.blur_score >= 0.0) {
+        sqlite3_bind_double(stmt, 14, info.blur_score);
+    } else {
+        sqlite3_bind_null(stmt, 14);
     }
 
     rc = sqlite3_step(stmt);
@@ -319,8 +327,8 @@ void Database::insert_batch(const std::vector<ImageInfo>& infos) {
 void Database::insert_copy(const std::string& source_path, const std::string& dest_path) {
     const char* sql = R"(
         INSERT OR REPLACE INTO images
-            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms)
-        SELECT ?, ?, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms
+            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score)
+        SELECT ?, ?, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score
         FROM images WHERE path = ?
     )";
 
@@ -560,7 +568,7 @@ std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) 
         "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, "
         "width, height, metadata, media_type, duration_ms, gallery, "
         "EXISTS(SELECT 1 FROM image_tags it JOIN tags t ON t.id = it.tag_id "
-        "WHERE it.image_id = images.id AND t.name = 'favorite') FROM images";
+        "WHERE it.image_id = images.id AND t.name = 'favorite'), blur_score FROM images";
     if (!path_prefix.empty()) {
         sql += " WHERE path LIKE ? || '%'";
     }
@@ -596,6 +604,8 @@ std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) 
         info.duration_ms = sqlite3_column_int64(stmt, 12);
         info.gallery = text(13);
         info.favorite = sqlite3_column_int(stmt, 14) != 0;
+        info.blur_score =
+            sqlite3_column_type(stmt, 15) == SQLITE_NULL ? -1.0 : sqlite3_column_double(stmt, 15);
         results.push_back(std::move(info));
     }
 
@@ -1124,7 +1134,7 @@ std::string Database::auto_label_face(int64_t face_id, const std::array<float, 1
 std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
     std::string sql =
         "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, "
-        "width, height, metadata, media_type, duration_ms FROM images WHERE 1=1";
+        "width, height, metadata, media_type, duration_ms, blur_score FROM images WHERE 1=1";
     std::vector<std::pair<std::string, bool>> binds;  // {value, is_int}
 
     if (!c.extension.empty()) {
@@ -1198,6 +1208,13 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
         sql += ") GROUP BY it.image_id HAVING COUNT(DISTINCT t.id) = " +
                std::to_string(c.tags.size()) + ")";
     }
+    // Sharpness bounds (NULL/unscored rows are excluded by the comparison).
+    if (c.min_sharpness >= 0) {
+        sql += " AND blur_score >= " + std::to_string(c.min_sharpness);
+    }
+    if (c.max_sharpness >= 0) {
+        sql += " AND blur_score <= " + std::to_string(c.max_sharpness);
+    }
 
     sql += " ORDER BY path";
 
@@ -1235,6 +1252,8 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
         info.metadata_json = text(10);
         info.media_type = text(11);
         info.duration_ms = sqlite3_column_int64(stmt, 12);
+        info.blur_score =
+            sqlite3_column_type(stmt, 13) == SQLITE_NULL ? -1.0 : sqlite3_column_double(stmt, 13);
         results.push_back(std::move(info));
     }
 

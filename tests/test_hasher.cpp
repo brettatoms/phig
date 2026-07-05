@@ -4,6 +4,7 @@
 #include <fstream>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "hasher.h"
 
@@ -128,4 +129,48 @@ TEST_F(HasherTest, PhashPNG) {
     auto result = compute_phash(path);
     EXPECT_EQ(result.width, 320);
     EXPECT_EQ(result.height, 240);
+}
+
+// ---- Blur / sharpness (plan 012) ----
+
+// A high-contrast checkerboard — many sharp edges.
+static cv::Mat make_checkerboard(int size, int cell) {
+    cv::Mat img(size, size, CV_8UC3, cv::Scalar(0, 0, 0));
+    for (int y = 0; y < size; y += cell) {
+        for (int x = 0; x < size; x += cell) {
+            if (((x / cell) + (y / cell)) % 2 == 0) {
+                cv::rectangle(img, cv::Point(x, y), cv::Point(x + cell, y + cell),
+                              cv::Scalar(255, 255, 255), cv::FILLED);
+            }
+        }
+    }
+    return img;
+}
+
+TEST_F(HasherTest, BlurScoreUniformImageIsLow) {
+    cv::Mat uniform(256, 256, CV_8UC3, cv::Scalar(128, 128, 128));
+    EXPECT_LT(compute_blur_score(uniform), 1.0);  // no edges -> ~0 variance
+}
+
+TEST_F(HasherTest, BlurScoreSharpExceedsBlurred) {
+    cv::Mat sharp = make_checkerboard(256, 16);
+    cv::Mat blurred;
+    cv::GaussianBlur(sharp, blurred, cv::Size(15, 15), 0);
+    EXPECT_GT(compute_blur_score(sharp), compute_blur_score(blurred));
+}
+
+TEST_F(HasherTest, BlurScoreDeterministic) {
+    cv::Mat img = make_checkerboard(256, 16);
+    EXPECT_DOUBLE_EQ(compute_blur_score(img), compute_blur_score(img));
+}
+
+TEST_F(HasherTest, BlurScoreResolutionNormalized) {
+    // The same pattern at two resolutions (both at/above the 512px normalization
+    // threshold) should score similarly, since both downscale to 512 first.
+    cv::Mat base = make_checkerboard(512, 32);
+    cv::Mat large = make_checkerboard(1024, 64);  // same pattern, 2x scale
+    double b = compute_blur_score(base);
+    double l = compute_blur_score(large);
+    EXPECT_GT(b, 0.0);
+    EXPECT_NEAR(b, l, b * 0.5);  // comparable, not orders of magnitude apart
 }

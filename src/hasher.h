@@ -21,6 +21,12 @@ PhashResult compute_phash(const std::string& path);
 // Compute from already-decoded image
 PhashResult compute_phash(const cv::Mat& img);
 
+// Compute a sharpness score (variance of the Laplacian) for an already-decoded
+// image. Higher = sharper; blurry images score low. Resolution-normalized by
+// downscaling to a fixed longest edge first so scores are comparable across
+// image sizes. Returns 0 for an empty image.
+double compute_blur_score(const cv::Mat& img);
+
 // Decode an image file, returns empty Mat on failure
 cv::Mat decode_image(const std::string& path);
 

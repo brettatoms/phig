@@ -71,6 +71,8 @@ class Database {
         int64_t max_duration_ms = -1;
         std::vector<std::string> tags;  // image must have ALL of these tags
         std::string gallery;            // exact gallery match
+        double min_sharpness = -1;      // blur_score >= this
+        double max_sharpness = -1;      // blur_score <= this
         int limit = -1;
     };
     std::vector<ImageInfo> search(const SearchCriteria& criteria);

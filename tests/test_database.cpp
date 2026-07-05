@@ -382,6 +382,43 @@ TEST_F(DatabaseTest, SearchByFavoriteTag) {
     EXPECT_EQ(r[0].path, "/s/b.jpg");
 }
 
+TEST_F(DatabaseTest, BlurScoreRoundTrips) {
+    auto img = make_image("/b/x.jpg");
+    img.blur_score = 123.5;
+    db->insert(img);
+    auto all = db->get_all_images();
+    ASSERT_EQ(all.size(), 1u);
+    EXPECT_DOUBLE_EQ(all[0].blur_score, 123.5);
+}
+
+TEST_F(DatabaseTest, UnscoredImageHasNegativeBlurScore) {
+    db->insert(make_image("/b/x.jpg"));  // make_image leaves blur_score = -1
+    auto all = db->get_all_images();
+    ASSERT_EQ(all.size(), 1u);
+    EXPECT_LT(all[0].blur_score, 0.0);  // stored NULL -> read back as -1
+}
+
+TEST_F(DatabaseTest, SearchBySharpness) {
+    auto sharp = make_image("/b/sharp.jpg", "s1");
+    sharp.blur_score = 800;
+    auto blurry = make_image("/b/blurry.jpg", "s2");
+    blurry.blur_score = 50;
+    db->insert(sharp);
+    db->insert(blurry);
+
+    Database::SearchCriteria hi;
+    hi.min_sharpness = 500;
+    auto r = db->search(hi);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].path, "/b/sharp.jpg");
+
+    Database::SearchCriteria lo;
+    lo.max_sharpness = 100;
+    auto r2 = db->search(lo);
+    ASSERT_EQ(r2.size(), 1u);
+    EXPECT_EQ(r2[0].path, "/b/blurry.jpg");
+}
+
 TEST_F(DatabaseTest, GetAllImagesPopulatesGalleryAndFavorite) {
     db->insert(make_image("/o/a.jpg", "s1"));
     db->insert(make_image("/o/b.jpg", "s2"));
