@@ -1,6 +1,6 @@
 ---
 name: CI & Linting
-status: planned
+status: completed
 created: 2026-07-05
 description: >
   Add GitHub Actions CI that builds and runs the test suite on ubuntu-latest and
@@ -166,6 +166,6 @@ The exact enabled/disabled list is refined during the cleanup pass; the intent i
 - [x] CMake `PHIG_WERROR` option + `-Wall -Wextra` (vendored code isolated)
 - [x] `.github/workflows/ci.yml` — test matrix (ubuntu + macOS)
 - [x] Workflow lint job (clang-format + clang-tidy)
-- [ ] Verify green on a PR (pending push)
+- [x] Verify green on master push (all 3 jobs pass)
 - [x] AGENTS.md "Linting & CI" note (format/lint/CI)
 - [ ] Optional README CI badge (skipped for now)
