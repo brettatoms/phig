@@ -13,3 +13,6 @@ devenv.local.yaml
 # Build
 build/
 compile_commands.json
+
+# clangd index cache
+.cache/

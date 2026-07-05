@@ -2,9 +2,6 @@
 
 #include <string>
 
-// Returns the directory where models are stored (~/.local/share/phig/models/)
-std::string models_dir();
-
 // Returns true if face recognition models are downloaded
 bool face_models_exist();
 

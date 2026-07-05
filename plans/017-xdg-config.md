@@ -6,7 +6,7 @@ description: >
   Centralize base-directory resolution behind XDG conventions (config/data/cache),
   move face-model downloads from data to cache, and add an INI config file
   (vendored inih) that can set default paths and safe command defaults. Config-aware
-  --help. One-time migration of existing models into the cache directory.
+  --help. Models simply relocate to the cache dir (no shipped migration code).
 ---
 
 # XDG Paths & Config File
@@ -174,13 +174,14 @@ Active configuration:
 - Each value the config overrides is listed and marked `[config, default: <builtin>]`.
 - Values not touched by config are omitted (core paths show `(default)`).
 
-### Models migration (one-time move)
+### No automatic models migration
 
-On startup, if `data_dir()/phig/models` contains model files and
-`cache_dir()/phig/models` does not, move them and log a single line
-(`migrated face models to cache directory`). Use `std::filesystem::rename`, with a
-copy-then-delete fallback if source and destination are on different filesystems.
-After the move the old directory is gone; no dual-path lookup logic remains.
+Earlier drafts included a one-time startup move of models from the old data-dir
+location to the cache. This is dropped: phig has no released users, and the sole
+current user has no models in the old location. `models_dir()` simply points at the
+cache now, so a fresh `phig models download` writes there directly. Any pre-existing
+models can be relocated with a one-off `mv` outside the program — no shipped
+migration code.
 
 ## Implementation
 
@@ -190,7 +191,6 @@ After the move the old directory is gone; no dual-path lookup logic remains.
   - `std::string config_dir()`, `data_dir()`, `cache_dir()`
   - `std::string default_db_path()`, `models_dir()`, `thumbs_dir()`, `config_path()`
   - `std::string expand_tilde(const std::string&)` (moved from `filters.cpp`)
-  - `void migrate_models_to_cache()` (one-time move)
 - `src/config.h` / `src/config.cpp`:
   - `struct Config` — optional-valued fields for each recognized key
   - `Config load_config(const std::string& path)` — returns defaults when absent,
@@ -202,7 +202,7 @@ After the move the old directory is gone; no dual-path lookup logic remains.
 - `src/main.cpp`:
   - Remove local `default_db_path()`; use `paths.h`
   - Parse global `--config <path>` before subcommand dispatch
-  - Call `migrate_models_to_cache()` and load config at startup
+  - Load config at startup
   - Seed each command's `opts` from `Config` before applying CLI flags
   - Add "Active configuration" section to `print_usage()`
 - `src/models.cpp`:
@@ -251,8 +251,6 @@ isolated by setting `XDG_*` env vars and/or `--config` to temp dirs.
   (warn + ignore), excluded-key rejection
   (`ignore_mount_warning`/`force`/`dry_run`/`on_conflict`), out-of-range/invalid values
 - Precedence: flag beats config beats default (per command)
-- Migration: move when old present + new absent; no-op when new present; no-op when
-  old absent
 
 ## Checklist
 
@@ -268,7 +266,6 @@ isolated by setting `XDG_*` env vars and/or `--config` to temp dirs.
 - [ ] Warn-and-ignore unknown keys
 - [ ] Global `--config <path>` flag parsed before subcommand
 - [ ] Seed each command's opts from config, then apply CLI flags (precedence)
-- [ ] `migrate_models_to_cache()` one-time move (rename + cross-fs fallback)
 - [ ] `models_dir()` points at cache; downloads land in cache
 - [ ] "Active configuration" section in `print_usage()`
 - [ ] CMakeLists: add new sources + inih + include dir
@@ -276,6 +273,5 @@ isolated by setting `XDG_*` env vars and/or `--config` to temp dirs.
 - [ ] Tests: `~` expansion
 - [ ] Tests: config parse (valid/absent/malformed/unknown/excluded/invalid)
 - [ ] Tests: precedence (flag > config > default)
-- [ ] Tests: models migration move logic
 - [ ] README: document XDG paths, model cache, config format
 - [ ] Update AGENTS.md project description (paths + config)

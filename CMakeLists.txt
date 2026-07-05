@@ -30,6 +30,7 @@ add_library(phig-lib STATIC
     src/models.cpp
     src/thumbs.cpp
     src/metadata.cpp
+    src/paths.cpp
     vendor/sqlite-vec/sqlite-vec.c
 )
 
@@ -77,6 +78,7 @@ add_executable(phig-tests
     tests/test_porcelain.cpp
     tests/test_thumbs.cpp
     tests/test_video.cpp
+    tests/test_paths.cpp
 )
 
 target_link_libraries(phig-tests PRIVATE

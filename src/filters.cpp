@@ -22,16 +22,6 @@ bool glob_match(const std::string& pattern, const std::string& str) {
     return pi == pattern.size();
 }
 
-std::string expand_tilde(const std::string& pattern) {
-    if (!pattern.empty() && pattern[0] == '~') {
-        const char* home = std::getenv("HOME");
-        if (home) {
-            return std::string(home) + pattern.substr(1);
-        }
-    }
-    return pattern;
-}
-
 bool passes_filters(const std::string& filename,
                     const std::vector<std::string>& matches,
                     const std::vector<std::string>& filters) {

@@ -1,4 +1,5 @@
 #include "models.h"
+#include "paths.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -56,21 +57,6 @@ bool download_file(const std::string& url, const std::string& dest) {
 }
 
 } // anonymous namespace
-
-std::string models_dir() {
-    const char* xdg = std::getenv("XDG_DATA_HOME");
-    std::string base;
-    if (xdg && xdg[0] != '\0') {
-        base = xdg;
-    } else {
-        const char* home = std::getenv("HOME");
-        if (!home) {
-            throw std::runtime_error("Cannot determine home directory");
-        }
-        base = std::string(home) + "/.local/share";
-    }
-    return base + "/phig/models";
-}
 
 std::string yunet_model_path() {
     return models_dir() + "/face_detection_yunet_2023mar.onnx";

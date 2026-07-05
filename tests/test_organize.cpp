@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "types.h"
 #include "filters.h"
+#include "paths.h"
 #include <string>
 #include <vector>
 #include <filesystem>

@@ -8,6 +8,7 @@
 #include "models.h"
 #include "thumbs.h"
 #include "metadata.h"
+#include "paths.h"
 
 #include <algorithm>
 #include <chrono>
@@ -36,21 +37,6 @@ static volatile std::sig_atomic_t g_interrupted = 0;
 static void sigint_handler(int) { g_interrupted = 1; }
 
 // ---- Helpers ----
-
-std::string default_db_path() {
-    const char* xdg = std::getenv("XDG_DATA_HOME");
-    std::string base;
-    if (xdg && xdg[0] != '\0') {
-        base = xdg;
-    } else {
-        const char* home = std::getenv("HOME");
-        if (!home) {
-            throw std::runtime_error("Cannot determine home directory");
-        }
-        base = std::string(home) + "/.local/share";
-    }
-    return base + "/phig/phig.db";
-}
 
 std::string format_time(fs::file_time_type ftime) {
     // Portable conversion: compute offset between file_clock and system_clock
