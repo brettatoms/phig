@@ -26,7 +26,7 @@ Binary: `./build/phig`
 cmake --build build && ./build/phig-tests
 ```
 
-139 tests across 19 suites: scanner, hasher (SHA256 + phash), exif, database, glob, filters (match/filter precedence), date parsing, JSON helpers, format strings, face DB operations, embedding distance, thumbnails, video extensions, video phash, video metadata, migrations, video search.
+Coverage: scanner, hasher (SHA256 + phash), exif, database, glob, filters (match/filter precedence), date parsing, JSON helpers, format strings, face DB operations, embedding distance, thumbnails, video extensions, video phash, video metadata, migrations, video search.
 
 ## CLI Commands
 
