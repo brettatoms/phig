@@ -101,6 +101,23 @@ TEST_F(DatabaseTest, UpdatePath) {
     EXPECT_EQ(db->count(), 1);
 }
 
+TEST_F(DatabaseTest, UpdatePathWhenDestAlreadyExists) {
+    // A row already tracks the destination (e.g. it was scanned in a prior run).
+    // Moving another file onto that path must not hit UNIQUE(path); the stale
+    // dest row is dropped and the source row is repointed.
+    db->insert(make_image("/src/photo.jpg", "sha_source"));
+    db->insert(make_image("/dst/photo.jpg", "sha_stale_dest"));
+    EXPECT_EQ(db->count(), 2);
+
+    EXPECT_NO_THROW(db->update_path("/src/photo.jpg", "/dst/photo.jpg"));
+
+    // One row survives, at the dest, describing the file just moved in.
+    EXPECT_EQ(db->count(), 1);
+    EXPECT_FALSE(db->get_modified_at("/src/photo.jpg").has_value());
+    EXPECT_TRUE(db->get_modified_at("/dst/photo.jpg").has_value());
+    EXPECT_EQ(*db->get_sha256("/dst/photo.jpg"), "sha_source");
+}
+
 TEST_F(DatabaseTest, GetPathsWithPrefix) {
     db->insert(make_image("/photos/2024/a.jpg", "sha1"));
     db->insert(make_image("/photos/2024/b.jpg", "sha2"));

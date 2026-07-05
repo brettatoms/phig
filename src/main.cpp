@@ -1021,28 +1021,6 @@ std::string apply_format(const std::string& fmt, const ImageInfo& img, const Dat
     return result;
 }
 
-fs::path resolve_conflict(const fs::path& dest, const std::string& on_conflict) {
-    if (!fs::exists(dest)) return dest;
-
-    if (on_conflict == "overwrite") return dest;
-    if (on_conflict == "skip") return "";  // empty = skip
-
-    // rename: append numeric suffix
-    auto stem = dest.stem().string();
-    auto ext = dest.extension().string();
-    auto parent = dest.parent_path();
-    for (int i = 1; i < 10000; i++) {
-        std::string name = stem;
-        name += "_";
-        name += std::to_string(i);
-        name += ext;
-        auto candidate = parent / name;
-        if (!fs::exists(candidate)) return candidate;
-    }
-
-    return "";  // give up
-}
-
 }  // anonymous namespace
 
 int cmd_organize(const OrganizeOptions& opts) {
@@ -1077,13 +1055,14 @@ int cmd_organize(const OrganizeOptions& opts) {
         std::string skip_reason;
     };
     std::vector<Action> actions;
+    std::set<std::string> claimed;  // dest paths chosen this run, to catch intra-run collisions
 
     for (const auto& img : images) {
         DateParts date = get_best_date(img);
         std::string rel_path = apply_format(opts.format, img, date);
         fs::path dest = fs::path(opts.destination) / rel_path;
 
-        auto resolved = resolve_conflict(dest, opts.on_conflict);
+        auto resolved = resolve_conflict(dest.string(), opts.on_conflict, claimed);
         Action act;
         act.source = img.path;
         if (resolved.empty()) {
@@ -1129,13 +1108,12 @@ int cmd_organize(const OrganizeOptions& opts) {
         if (a.skipped) continue;
 
         try {
-            fs::create_directories(a.dest.parent_path());
-
             if (opts.is_move) {
-                fs::rename(a.source, a.dest);
+                move_file(a.source, a.dest.string());
                 // Update DB — file has moved
                 db.update_path(a.source, a.dest.string());
             } else {
+                fs::create_directories(a.dest.parent_path());
                 fs::copy_file(a.source, a.dest, fs::copy_options::overwrite_existing);
                 // Track the copy in the DB
                 db.insert_copy(a.source, a.dest.string());

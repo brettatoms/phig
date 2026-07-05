@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <set>
 #include <string>
 
 // XDG base directories, each returning phig's per-application subdirectory.
@@ -20,6 +21,21 @@ std::string config_path();      // config_dir() + /config.ini
 // Expand a leading ~ to $HOME. Paths not starting with ~ are returned unchanged,
 // as are ~ paths when HOME is unset.
 std::string expand_tilde(const std::string& path);
+
+// Move a file from source to dest, creating dest's parent directories. Uses
+// rename(2) on the fast path; when source and dest are on different filesystems
+// (rename fails with EXDEV) falls back to copy-then-remove. Overwrites an
+// existing dest. Throws std::filesystem_error on failure.
+void move_file(const std::string& source, const std::string& dest);
+
+// Resolve a destination path against the on_conflict policy ("skip",
+// "overwrite", or "rename"). A path conflicts if it exists on disk OR is already
+// present in `claimed` (destinations chosen by earlier files in the same run) —
+// this catches two source files that resolve to the same destination within one
+// batch, not just collisions with pre-existing files. Returns the resolved path
+// (added to `claimed`), or an empty path meaning "skip this file".
+std::string resolve_conflict(const std::string& dest, const std::string& on_conflict,
+                             std::set<std::string>& claimed);
 
 // Install process-wide path overrides (typically from the config file). When set,
 // default_db_path()/models_dir()/thumbs_dir() return the override instead of the

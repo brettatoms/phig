@@ -1,10 +1,18 @@
 #include <gtest/gtest.h>
 
+#include <sys/stat.h>
+
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <optional>
+#include <set>
 #include <stdexcept>
+#include <string>
 
 #include "paths.h"
+
+namespace fs = std::filesystem;
 
 // Saves and restores HOME + all three XDG base-dir env vars so each test can
 // set them freely without leaking into other tests.
@@ -142,4 +150,183 @@ TEST_F(PathsTest, PartialOverrideOnlyAffectsSetPaths) {
     set_path_overrides("/opt/only.db", std::nullopt, std::nullopt);
     EXPECT_EQ(default_db_path(), "/opt/only.db");
     EXPECT_EQ(models_dir(), "/home/tester/.cache/phig/models");
+}
+
+// ---- move_file ----
+
+class MoveFileTest : public ::testing::Test {
+   protected:
+    fs::path dir;
+
+    void SetUp() override {
+        dir = fs::temp_directory_path() / "phig-move-test";
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+    }
+    void TearDown() override { fs::remove_all(dir); }
+
+    static void write_file(const fs::path& p, const std::string& contents) {
+        std::ofstream o(p);
+        o << contents;
+    }
+    static std::string read_file(const fs::path& p) {
+        std::ifstream in(p);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }
+    // Device id of the filesystem holding p, or its parent if p doesn't exist.
+    static dev_t device_of(const fs::path& p) {
+        struct stat st{};
+        if (stat(p.c_str(), &st) != 0) stat(p.parent_path().c_str(), &st);
+        return st.st_dev;
+    }
+};
+
+TEST_F(MoveFileTest, SameFilesystemMove) {
+    fs::path src = dir / "a.txt", dst = dir / "b.txt";
+    write_file(src, "hello");
+
+    move_file(src.string(), dst.string());
+
+    EXPECT_FALSE(fs::exists(src));
+    ASSERT_TRUE(fs::exists(dst));
+    EXPECT_EQ(read_file(dst), "hello");
+}
+
+TEST_F(MoveFileTest, CreatesDestinationParents) {
+    fs::path src = dir / "a.txt", dst = dir / "nested/deep/b.txt";
+    write_file(src, "data");
+
+    move_file(src.string(), dst.string());
+
+    ASSERT_TRUE(fs::exists(dst));
+    EXPECT_EQ(read_file(dst), "data");
+}
+
+TEST_F(MoveFileTest, OverwritesExistingDestination) {
+    fs::path src = dir / "a.txt", dst = dir / "b.txt";
+    write_file(src, "new");
+    write_file(dst, "old");
+
+    move_file(src.string(), dst.string());
+
+    ASSERT_TRUE(fs::exists(dst));
+    EXPECT_EQ(read_file(dst), "new");
+    EXPECT_FALSE(fs::exists(src));
+}
+
+TEST_F(MoveFileTest, MissingSourceThrows) {
+    fs::path src = dir / "does-not-exist.txt", dst = dir / "b.txt";
+    EXPECT_THROW(move_file(src.string(), dst.string()), fs::filesystem_error);
+}
+
+// Genuine cross-device move: source on the system temp fs, dest on /dev/shm.
+// rename(2) fails with EXDEV here, exercising the copy+remove fallback. Skipped
+// when /dev/shm is unavailable or happens to be the same filesystem.
+TEST_F(MoveFileTest, CrossDeviceFallsBackToCopyRemove) {
+    fs::path shm = "/dev/shm";
+    if (!fs::exists(shm) || device_of(dir) == device_of(shm)) {
+        GTEST_SKIP() << "no distinct second filesystem available for EXDEV test";
+    }
+    fs::path shm_dir = shm / "phig-move-test";
+    fs::remove_all(shm_dir);
+
+    fs::path src = dir / "a.txt";
+    fs::path dst = shm_dir / "sub/b.txt";
+    write_file(src, "cross-device");
+
+    move_file(src.string(), dst.string());
+
+    EXPECT_FALSE(fs::exists(src));
+    ASSERT_TRUE(fs::exists(dst));
+    EXPECT_EQ(read_file(dst), "cross-device");
+
+    fs::remove_all(shm_dir);
+}
+
+// ---- resolve_conflict ----
+
+class ResolveConflictTest : public ::testing::Test {
+   protected:
+    fs::path dir;
+
+    void SetUp() override {
+        dir = fs::temp_directory_path() / "phig-conflict-test";
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+    }
+    void TearDown() override { fs::remove_all(dir); }
+
+    void touch(const fs::path& p) { std::ofstream o(p); }
+};
+
+TEST_F(ResolveConflictTest, NoConflictReturnsDestAndClaims) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "a.jpg";
+    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed), dst.string());
+    EXPECT_EQ(claimed.count(dst.string()), 1u);
+}
+
+TEST_F(ResolveConflictTest, SkipReturnsEmptyWhenFileExists) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "a.jpg";
+    touch(dst);
+    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed), "");
+}
+
+TEST_F(ResolveConflictTest, OverwriteReturnsDestWhenFileExists) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "a.jpg";
+    touch(dst);
+    EXPECT_EQ(resolve_conflict(dst.string(), "overwrite", claimed), dst.string());
+}
+
+TEST_F(ResolveConflictTest, RenameAppendsSuffixWhenFileExists) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "a.jpg";
+    touch(dst);
+    EXPECT_EQ(resolve_conflict(dst.string(), "rename", claimed), (dir / "a_1.jpg").string());
+}
+
+TEST_F(ResolveConflictTest, RenameSkipsAlreadyExistingSuffixes) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "a.jpg";
+    touch(dst);
+    touch(dir / "a_1.jpg");
+    touch(dir / "a_2.jpg");
+    EXPECT_EQ(resolve_conflict(dst.string(), "rename", claimed), (dir / "a_3.jpg").string());
+}
+
+// The bug: two source files resolving to the same destination in one run.
+// Neither exists on disk at planning time, so only the `claimed` set catches it.
+TEST_F(ResolveConflictTest, IntraRunCollisionRenameKeepsBoth) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "a.jpg";  // nothing on disk yet
+
+    std::string first = resolve_conflict(dst.string(), "rename", claimed);
+    std::string second = resolve_conflict(dst.string(), "rename", claimed);
+
+    EXPECT_EQ(first, dst.string());
+    EXPECT_EQ(second, (dir / "a_1.jpg").string());
+    EXPECT_NE(first, second);  // both survive — no clobber
+}
+
+TEST_F(ResolveConflictTest, IntraRunCollisionSkipDropsSecond) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "a.jpg";
+
+    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed), dst.string());
+    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed), "");  // second skipped
+}
+
+// Even with overwrite, two DISTINCT sources on one path within a run must not
+// clobber each other — the second is renamed so both files survive.
+TEST_F(ResolveConflictTest, IntraRunCollisionOverwriteRenamesSecond) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "a.jpg";
+
+    std::string first = resolve_conflict(dst.string(), "overwrite", claimed);
+    std::string second = resolve_conflict(dst.string(), "overwrite", claimed);
+
+    EXPECT_EQ(first, dst.string());
+    EXPECT_EQ(second, (dir / "a_1.jpg").string());
 }

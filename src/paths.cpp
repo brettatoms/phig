@@ -1,7 +1,9 @@
 #include "paths.h"
 
 #include <cstdlib>
+#include <filesystem>
 #include <stdexcept>
+#include <system_error>
 
 namespace {
 
@@ -54,4 +56,62 @@ std::string expand_tilde(const std::string& path) {
         }
     }
     return path;
+}
+
+void move_file(const std::string& source, const std::string& dest) {
+    namespace fs = std::filesystem;
+    fs::path src(source), dst(dest);
+    fs::create_directories(dst.parent_path());
+
+    std::error_code ec;
+    fs::rename(src, dst, ec);
+    if (ec == std::errc::cross_device_link) {
+        // Source and dest are on different filesystems; rename(2) can't cross a
+        // device boundary. Fall back to copy+remove.
+        fs::copy_file(src, dst, fs::copy_options::overwrite_existing);
+        fs::remove(src);
+    } else if (ec) {
+        throw fs::filesystem_error("cannot rename", src, dst, ec);
+    }
+}
+
+std::string resolve_conflict(const std::string& dest, const std::string& on_conflict,
+                             std::set<std::string>& claimed) {
+    namespace fs = std::filesystem;
+    auto taken = [&](const fs::path& p) {
+        return fs::exists(p) || claimed.count(p.string()) > 0;
+    };
+
+    fs::path d(dest);
+    if (!taken(d)) {
+        claimed.insert(d.string());
+        return d.string();
+    }
+
+    if (on_conflict == "overwrite") {
+        // Caller asked to overwrite existing files, but two sources landing on
+        // the same path within one run would still clobber each other. Only
+        // reuse the path when it isn't already claimed this run; otherwise fall
+        // through to renaming so both files survive.
+        if (claimed.count(d.string()) == 0) {
+            claimed.insert(d.string());
+            return d.string();
+        }
+    } else if (on_conflict == "skip") {
+        return "";  // empty = skip
+    }
+
+    // rename: append numeric suffix until we find a free name
+    auto stem = d.stem().string();
+    auto ext = d.extension().string();
+    auto parent = d.parent_path();
+    for (int i = 1; i < 10000; i++) {
+        fs::path candidate = parent / (stem + "_" + std::to_string(i) + ext);
+        if (!taken(candidate)) {
+            claimed.insert(candidate.string());
+            return candidate.string();
+        }
+    }
+
+    return "";  // give up
 }

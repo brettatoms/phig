@@ -405,24 +405,43 @@ std::optional<std::string> Database::get_sha256(const std::string& path) {
 }
 
 void Database::update_path(const std::string& old_path, const std::string& new_path) {
-    const char* sql = "UPDATE images SET path = ?, filename = ? WHERE path = ?";
-    sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare update: " + std::string(sqlite3_errmsg(db_)));
+    // The file has just been moved to new_path, overwriting whatever was there.
+    // If a row already tracks new_path (e.g. it was scanned in a prior run), that
+    // row is now stale: drop it first so repointing old_path doesn't hit the
+    // UNIQUE(path) constraint. Do both in one transaction so it's all-or-nothing.
+    exec("BEGIN TRANSACTION");
+
+    auto fail = [&](const std::string& what) {
+        exec("ROLLBACK");
+        throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
+    };
+
+    {
+        const char* del = "DELETE FROM images WHERE path = ?";
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(db_, del, -1, &stmt, nullptr) != SQLITE_OK)
+            fail("Failed to prepare delete");
+        sqlite3_bind_text(stmt, 1, new_path.c_str(), -1, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        if (rc != SQLITE_DONE) fail("Failed to clear existing dest row");
     }
 
-    fs::path p(new_path);
-    sqlite3_bind_text(stmt, 1, new_path.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, p.filename().c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, old_path.c_str(), -1, SQLITE_TRANSIENT);
-
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-
-    if (rc != SQLITE_DONE) {
-        throw std::runtime_error("Failed to update path: " + std::string(sqlite3_errmsg(db_)));
+    {
+        const char* upd = "UPDATE images SET path = ?, filename = ? WHERE path = ?";
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(db_, upd, -1, &stmt, nullptr) != SQLITE_OK)
+            fail("Failed to prepare update");
+        fs::path p(new_path);
+        sqlite3_bind_text(stmt, 1, new_path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, p.filename().c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, old_path.c_str(), -1, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        if (rc != SQLITE_DONE) fail("Failed to update path");
     }
+
+    exec("COMMIT");
 }
 
 std::vector<std::string> Database::get_paths_with_prefix(const std::string& prefix) {
