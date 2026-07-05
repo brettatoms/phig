@@ -2066,6 +2066,150 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
 
 // ---- Main ----
 
+// Resolve the images selected by an optional --path prefix plus match/filter
+// globs into a list of paths, reusing the shared filter logic.
+static std::vector<std::string> select_paths(Database& db, const std::string& path_prefix,
+                                             const std::vector<std::string>& matches,
+                                             const std::vector<std::string>& filters) {
+    std::vector<std::string> paths;
+    for (const auto& img : db.get_all_images(path_prefix)) {
+        if (passes_filters(img.path, matches, filters)) {
+            paths.push_back(img.path);
+        }
+    }
+    return paths;
+}
+
+int cmd_tag(int argc, char* argv[], const std::string& db_path) {
+    if (argc < 3) {
+        std::cerr << "Usage:\n"
+                  << "  phig tag add <tag> [--match|--filter|--path]\n"
+                  << "  phig tag remove <tag> [--match|--filter|--path]\n"
+                  << "  phig tag list\n";
+        return 1;
+    }
+    std::string subcmd = argv[2];
+
+    if (subcmd == "list") {
+        Database db(db_path);
+        db.init_schema();
+        for (const auto& [name, count] : db.get_tag_counts()) {
+            std::cout << name << " (" << count << ")\n";
+        }
+        return 0;
+    }
+
+    if (subcmd == "add" || subcmd == "remove") {
+        if (argc < 4 || argv[3][0] == '-') {
+            std::cerr << "Error: tag " << subcmd << " requires a <tag> argument\n";
+            return 1;
+        }
+        std::string tag = argv[3];
+        std::string path_prefix;
+        std::vector<std::string> matches, filters;
+        for (int i = 4; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "--match" && i + 1 < argc) {
+                matches.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--filter" && i + 1 < argc) {
+                filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--path" && i + 1 < argc) {
+                path_prefix = expand_tilde(argv[++i]);
+            } else if (arg == "--db" && i + 1 < argc) {
+                i++;  // resolved by caller
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                return 1;
+            }
+        }
+        if (matches.empty() && path_prefix.empty()) {
+            std::cerr << "Error: tag " << subcmd << " requires --match or --path\n";
+            return 1;
+        }
+        Database db(db_path);
+        db.init_schema();
+        int n = db.set_tag(select_paths(db, path_prefix, matches, filters), tag, subcmd == "add");
+        std::cout << (subcmd == "add" ? "Tagged " : "Untagged ") << n << " images (" << tag
+                  << ")\n";
+        return 0;
+    }
+
+    std::cerr << "Unknown tag subcommand: " << subcmd << "\n";
+    return 1;
+}
+
+int cmd_gallery(int argc, char* argv[], const std::string& db_path) {
+    if (argc < 3) {
+        std::cerr << "Usage:\n"
+                  << "  phig gallery set <name> [--match|--filter|--path] [--no-overwrite]\n"
+                  << "  phig gallery clear [--match|--filter|--path]\n"
+                  << "  phig gallery list\n";
+        return 1;
+    }
+    std::string subcmd = argv[2];
+
+    if (subcmd == "list") {
+        Database db(db_path);
+        db.init_schema();
+        for (const auto& [name, count] : db.get_gallery_counts()) {
+            std::cout << name << " (" << count << ")\n";
+        }
+        return 0;
+    }
+
+    if (subcmd == "set" || subcmd == "clear") {
+        bool is_set = subcmd == "set";
+        std::string gallery;
+        int first_flag = 3;
+        if (is_set) {
+            if (argc < 4 || argv[3][0] == '-') {
+                std::cerr << "Error: gallery set requires a <name> argument\n";
+                return 1;
+            }
+            gallery = argv[3];
+            first_flag = 4;
+        }
+        std::string path_prefix;
+        std::vector<std::string> matches, filters;
+        bool no_overwrite = false;
+        for (int i = first_flag; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "--match" && i + 1 < argc) {
+                matches.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--filter" && i + 1 < argc) {
+                filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--path" && i + 1 < argc) {
+                path_prefix = expand_tilde(argv[++i]);
+            } else if (arg == "--no-overwrite" && is_set) {
+                no_overwrite = true;
+            } else if (arg == "--db" && i + 1 < argc) {
+                i++;  // resolved by caller
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                return 1;
+            }
+        }
+        if (matches.empty() && path_prefix.empty()) {
+            std::cerr << "Error: gallery " << subcmd << " requires --match or --path\n";
+            return 1;
+        }
+        Database db(db_path);
+        db.init_schema();
+        auto paths = select_paths(db, path_prefix, matches, filters);
+        if (is_set) {
+            int n = db.set_gallery(paths, gallery, no_overwrite);
+            std::cout << "Set gallery '" << gallery << "' on " << n << " images\n";
+        } else {
+            int n = db.clear_gallery(paths);
+            std::cout << "Cleared gallery on " << n << " images\n";
+        }
+        return 0;
+    }
+
+    std::cerr << "Unknown gallery subcommand: " << subcmd << "\n";
+    return 1;
+}
+
 // Print the effective configuration (resolved paths + any config overrides),
 // shown at the top of --help output.
 static void print_active_config(const Config& cfg, const std::string& cfg_path, bool loaded) {
@@ -2369,6 +2513,21 @@ int main(int argc, char* argv[]) {
         }
         try {
             return cmd_thumbs(argc, argv, thumbs_db, cfg.parallel.value_or(-1));
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
+        }
+    } else if (command == "tag" || command == "gallery") {
+        std::string db_path = default_db_path();
+        for (int i = 2; i < argc; i++) {
+            if (std::string(argv[i]) == "--db" && i + 1 < argc) {
+                db_path = argv[i + 1];
+                break;
+            }
+        }
+        try {
+            return command == "tag" ? cmd_tag(argc, argv, db_path)
+                                    : cmd_gallery(argc, argv, db_path);
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << "\n";
             return 1;
