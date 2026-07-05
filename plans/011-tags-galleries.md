@@ -1,17 +1,22 @@
 ---
-name: Tags & Galleries
+name: Tags, Galleries & Favorites
 status: planned
 created: 2026-03-28
 description: >
   Tag images with user-defined labels (N per image) and assign galleries
-  (1 per image). Searchable via the search command.
+  (1 per image). Favorites are a protected built-in tag with convenience
+  commands. All searchable and usable as filters/format tokens.
 ---
 
-# Tags & Galleries
+# Tags, Galleries & Favorites
 
 ## Goal
 
-Allow users to annotate images with tags (many per image) and galleries (one per image). Both are searchable and usable as filters across commands.
+Allow users to annotate images with tags (many per image) and galleries (one per
+image), both searchable and usable as filters across commands. Favorites are
+implemented as a single protected built-in tag (`favorite`) with ergonomic
+`phig fav` commands, rather than a separate mechanism — one annotation system, no
+duplication. (Supersedes plan 016, which used a standalone boolean column.)
 
 ## Schema
 
@@ -27,13 +32,30 @@ CREATE TABLE image_tags (
     PRIMARY KEY (image_id, tag_id)
 );
 
+-- Favorites are just a built-in tag, seeded so it always exists.
+INSERT OR IGNORE INTO tags(name) VALUES ('favorite');
+
 -- Gallery is a simple column on the images table (0 or 1 per image)
 ALTER TABLE images ADD COLUMN gallery TEXT;
 
 CREATE INDEX idx_gallery ON images(gallery);
 ```
 
-Tags use a junction table since images can have many tags. Galleries are a single column since an image has at most one.
+Tags use a junction table since images can have many tags. Galleries are a single
+column since an image has at most one.
+
+### Tag lifecycle
+
+- Tags are created on first `tag add <name>` and **persist** — they are not
+  garbage-collected when their last image association is removed. This keeps
+  `tag list` stable and avoids surprising vocabulary changes.
+- The `favorite` tag is **seeded at migration and protected**: it always exists
+  and cannot be deleted from the vocabulary, so `--fav`/`%fav` always have a
+  stable referent even when zero images are favorited. Removing `favorite` from an
+  individual image (unfavoriting) is of course allowed — that is not "deleting the
+  tag".
+- This plan adds no `tag delete`/`tag rename` command; if one is added later, it
+  must refuse to delete `favorite`.
 
 ## CLI
 
@@ -65,6 +87,8 @@ phig tag remove vacation --match "IMG_20230815_001.jpg"
 phig tag list                    # list all tags and their counts
 ```
 
+`tag add`/`tag remove` report how many images were affected.
+
 ### Galleries
 
 ```
@@ -93,45 +117,107 @@ phig gallery clear --match "IMG_20230815_001.jpg"
 phig gallery list                  # list all galleries and their counts
 ```
 
+### Favorites (convenience layer over the `favorite` tag)
+
+`phig fav` is ergonomic sugar; each command is exactly a tag operation on the
+built-in `favorite` tag (so `phig fav add X` ≡ `phig tag add favorite X`).
+
+```
+phig fav add [flags]        # == tag add favorite
+phig fav remove [flags]     # == tag remove favorite
+phig fav list [flags]       # favorited images, with search-style output
+  --match/--filter/--path   Selection flags (same as tag commands)
+  --format text|csv|json    (fav list) output format
+  --porcelain / --print0    (fav list) machine output
+  --output <path>           (fav list) write to file
+  --db <path>
+```
+
+Examples:
+```bash
+phig fav add --path ~/Photos/Best
+phig fav remove --match "IMG_20230815_003.jpg"
+phig fav list --print0 | xargs -0 open
+```
+
+`fav add`/`fav remove` report counts ("Favorited 12 images"). `fav list` lists
+favorited images using the same output modes as `phig search`.
+
 ## Search Integration
 
-Both tags and galleries should be searchable via the search command (plan 008):
+Tags, galleries, and favorites are all searchable via the search command
+(plan 008):
 
 ```bash
 phig search --tag vacation
 phig search --tag vacation --tag family     # images with both tags
 phig search --gallery "Italy 2024"
-phig search --tag family --after 2023-01-01
+phig search --fav                            # == --tag favorite
+phig search --fav --camera "EOS R5"
 ```
+
+`--fav` is an alias for `--tag favorite`.
 
 ## Organize Integration
 
-Galleries could be used as a format token in organize:
-
 ```bash
-phig organize ~/Organized --format "%gallery/%Y/%m/%original"
-# → Italy 2024/2024/07/IMG_1234.jpg
+phig cp ~/Organized --format "%gallery/%Y/%m/%original"
+# → Italy 2024/2024/07/IMG_1234.jpg   (no gallery → "no-gallery")
+
+phig cp ~/Organized --format "%fav/%Y/%m/%original"
+# → favorites/2024/07/IMG_1234.jpg
+# → unfavorited/2024/07/IMG_5678.jpg
 ```
 
-Images without a gallery would use `unsorted` or `no-gallery` as the folder name.
+- `%gallery` → the image's gallery, or `no-gallery`.
+- `%fav` → `favorites` if the image has the `favorite` tag, else `unfavorited`.
+- A general `%tag` token is intentionally omitted (images can have many tags).
+
+## Duplicates Integration
+
+```bash
+phig duplicates --fav    # only duplicate groups where at least one is favorited
+```
+
+Helps find favorited photos that still have duplicates taking up space.
 
 ## Open Questions
 
-- Should `phig tag add` report how many images were tagged?
-- Should there be a `phig tag rename` command?
-- Should `phig gallery set` report how many images were updated vs skipped (with `--no-overwrite`)?
-- Should tags/galleries be included in the porcelain output of search?
-- Should `%tag` be a format token for organize? (Tricky since images can have multiple tags)
+- Should there be a `phig tag rename` command? (If so, `favorite` is not renamable.)
+- Should tags/galleries appear in the porcelain output of search?
+- Should `tag list` show the built-in `favorite` tag inline, or is that noise?
+  (Leaning: show it — it's a normal tag.)
+
+## Implementation
+
+### Database
+- Migration: `tags`, `image_tags` tables, `gallery` column, seed `favorite` tag.
+- `set_tag(paths, tag, bool add)` bulk add/remove; auto-create tag row on add.
+- `get_tag_counts()`, `get_gallery_counts()`, `set_gallery(...)`, `clear_gallery(...)`.
+- Search criteria: `tags` (AND semantics), `gallery`; `--fav` maps to `tags=[favorite]`.
+- Guard: reject deletion of the `favorite` tag if a tag-delete path is ever added.
+
+### CLI (main.cpp)
+- `phig tag add|remove|list`, `phig gallery set|clear|list`, `phig fav add|remove|list`.
+- `fav` subcommands delegate to the tag code path with `tag = "favorite"`.
+- `--tag` (repeatable), `--gallery`, `--fav` on search; `--fav` on duplicates.
+- `%gallery`, `%fav` format tokens.
 
 ## Checklist
 
-- [ ] Schema migration (tags table, image_tags table, gallery column)
-- [ ] `phig tag add` command
-- [ ] `phig tag remove` command
-- [ ] `phig tag list` command
-- [ ] `phig gallery set` command (with `--no-overwrite`)
-- [ ] `phig gallery clear` command
-- [ ] `phig gallery list` command
-- [ ] Search integration (`--tag`, `--gallery`)
-- [ ] Organize format token `%gallery`
-- [ ] Tests
+- [ ] Schema migration (tags, image_tags, gallery column, seed `favorite`)
+- [ ] `phig tag add` / `tag remove` (report counts) / `tag list`
+- [ ] `phig gallery set` (with `--no-overwrite`) / `gallery clear` / `gallery list`
+- [ ] `phig fav add` / `fav remove` / `fav list` (sugar over `favorite` tag)
+- [ ] `favorite` tag seeded + protected from deletion
+- [ ] Search integration (`--tag`, `--gallery`, `--fav`)
+- [ ] Duplicates `--fav`
+- [ ] Organize format tokens `%gallery`, `%fav`
+- [ ] Tests (tags CRUD, gallery, favorites-as-tag, protection, search/organize)
+
+## Cross-References
+
+- [008-search.md](008-search.md) — search command (`--tag`, `--gallery`, `--fav`)
+- [003-organize.md](003-organize.md) — format tokens (`%gallery`, `%fav`)
+- [016-favorites.md](016-favorites.md) — **superseded by this plan** (favorites are
+  now a protected built-in tag, not a standalone boolean column)
