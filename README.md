@@ -30,17 +30,25 @@ The binary is at `./build/phig`. It links against Nix store libraries and is int
 
 ### With system packages (distribution)
 
-Install dependencies with your system package manager:
+phig builds against stock system libraries — OpenCV (core modules only; no
+`contrib` needed), SQLite3, libexif, libcurl, and FFmpeg. Install the dependencies
+with your package manager:
 
 ```bash
-# Arch Linux
-sudo pacman -S opencv libexif sqlite cmake base-devel
-
 # Debian / Ubuntu
-sudo apt install libopencv-dev libopencv-contrib-dev libexif-dev libsqlite3-dev cmake g++
+sudo apt install build-essential cmake pkg-config libopencv-dev libsqlite3-dev \
+    libexif-dev libcurl4-openssl-dev libavformat-dev libavcodec-dev \
+    libavutil-dev libswscale-dev libgtest-dev
+
+# Fedora
+sudo dnf install gcc-c++ cmake make pkgconf-pkg-config opencv-devel sqlite-devel \
+    libexif-devel libcurl-devel ffmpeg-free-devel gtest-devel
+
+# Arch Linux
+sudo pacman -S base-devel cmake opencv sqlite libexif curl ffmpeg gtest
 
 # macOS (Homebrew)
-brew install opencv libexif sqlite cmake
+brew install cmake pkg-config opencv sqlite libexif ffmpeg googletest
 ```
 
 Then build and install:
@@ -53,7 +61,13 @@ sudo cmake --install build                     # installs to /usr/local/bin/phig
 cmake --install build --prefix ~/.local        # installs to ~/.local/bin/phig
 ```
 
-Note: OpenCV's `contrib` modules (specifically `img_hash`) and `objdetect` module are required. On some distributions this is a separate package (e.g., `libopencv-contrib-dev` on Debian/Ubuntu).
+Notes:
+- **OpenCV** ≥ 4.5 for core features; face recognition (the YuNet/SFace models)
+  needs ≥ 4.7. Only core modules are used — no `opencv_contrib`.
+- **FFmpeg on Fedora**: the official repos ship `ffmpeg-free-devel`, which is
+  sufficient. The fully-featured `ffmpeg-devel` lives in the third-party RPM Fusion
+  repo; you only need it if `ffmpeg-free-devel` is missing a codec you require.
+- Check your build with `phig --version`.
 
 ## Configuration
 

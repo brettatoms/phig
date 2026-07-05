@@ -3,7 +3,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/core/utility.hpp>
 #include <opencv2/imgcodecs.hpp>
-#include <opencv2/img_hash.hpp>
+#include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 #include <iostream>
 #include <unistd.h>
@@ -171,13 +171,33 @@ PhashResult compute_phash(const cv::Mat& img) {
         throw std::runtime_error("Cannot compute phash: empty image");
     }
 
-    auto hasher = cv::img_hash::PHash::create();
-    cv::Mat hash_mat;
-    hasher->compute(img, hash_mat);
+    // Perceptual hash (pHash) using only core OpenCV (no opencv_contrib):
+    // grayscale -> 32x32 -> DCT -> top-left 8x8 low-frequency block ->
+    // threshold each coefficient against the block mean -> 64-bit hash.
+    cv::Mat gray;
+    if (img.channels() == 1) {
+        gray = img;
+    } else {
+        cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
+    }
+
+    cv::Mat small;
+    cv::resize(gray, small, cv::Size(32, 32), 0, 0, cv::INTER_AREA);
+
+    cv::Mat floats;
+    small.convertTo(floats, CV_32F);
+
+    cv::Mat freq;
+    cv::dct(floats, freq);
+
+    cv::Mat block = freq(cv::Rect(0, 0, 8, 8)).clone();
+    double mean = cv::mean(block)[0];
 
     uint64_t hash_val = 0;
-    for (int i = 0; i < 8; i++) {
-        hash_val |= static_cast<uint64_t>(hash_mat.at<uint8_t>(0, i)) << (i * 8);
+    for (int i = 0; i < 64; i++) {
+        if (block.at<float>(i / 8, i % 8) > mean) {
+            hash_val |= (uint64_t(1) << i);
+        }
     }
 
     return PhashResult{hash_val, img.cols, img.rows};

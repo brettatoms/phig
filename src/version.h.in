@@ -1,0 +1,4 @@
+#pragma once
+
+// Generated from version.h.in by CMake configure_file.
+#define PHIG_VERSION "@PROJECT_VERSION@"

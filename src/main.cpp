@@ -10,6 +10,7 @@
 #include "metadata.h"
 #include "paths.h"
 #include "config.h"
+#include "version.h"
 
 #include <algorithm>
 #include <chrono>
@@ -2103,6 +2104,15 @@ int main(int argc, char* argv[]) {
     }
     argv = filtered_args.data();
     argc = static_cast<int>(filtered_args.size());
+
+    // --version works regardless of config state.
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "--version" || a == "-v") {
+            std::cout << "phig " << PHIG_VERSION << "\n";
+            return 0;
+        }
+    }
 
     // Load configuration (missing file -> defaults). Install path overrides so
     // default_db_path()/models_dir()/thumbs_dir() reflect the config everywhere.
