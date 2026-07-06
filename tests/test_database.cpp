@@ -556,7 +556,8 @@ TEST_F(DatabaseTest, V5TablesExist) {
     auto has_table = [&](const char* name) {
         sqlite3_stmt* stmt = nullptr;
         sqlite3_prepare_v2(db->db_ptr(),
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", -1, &stmt, nullptr);
+                           "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", -1, &stmt,
+                           nullptr);
         sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
         bool found = (sqlite3_step(stmt) == SQLITE_ROW);
         sqlite3_finalize(stmt);
@@ -568,16 +569,18 @@ TEST_F(DatabaseTest, V5TablesExist) {
 
 TEST_F(DatabaseTest, MigratesV4ToV5) {
     // Simulate an older DB by stamping version 4 and dropping v5 tables.
-    sqlite3_exec(db->db_ptr(), "DROP TABLE IF EXISTS operation_entries;"
-                               "DROP TABLE IF EXISTS operations;"
-                               "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','4');",
+    sqlite3_exec(db->db_ptr(),
+                 "DROP TABLE IF EXISTS operation_entries;"
+                 "DROP TABLE IF EXISTS operations;"
+                 "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','4');",
                  nullptr, nullptr, nullptr);
-    db.reset();                                    // close
-    db = std::make_unique<Database>(db_path);      // reopen
-    db->init_schema();                             // should run v5 migration
+    db.reset();                                // close
+    db = std::make_unique<Database>(db_path);  // reopen
+    db->init_schema();                         // should run v5 migration
     sqlite3_stmt* stmt = nullptr;
     sqlite3_prepare_v2(db->db_ptr(),
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'", -1, &stmt, nullptr);
+                       "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'", -1,
+                       &stmt, nullptr);
     bool found = (sqlite3_step(stmt) == SQLITE_ROW);
     sqlite3_finalize(stmt);
     EXPECT_TRUE(found);
@@ -592,7 +595,8 @@ TEST_F(DatabaseTest, LogOperationRoundTrip) {
 
     sqlite3_stmt* s = nullptr;
     sqlite3_prepare_v2(db->db_ptr(),
-        "SELECT command, status, entry_count FROM operations WHERE id=?", -1, &s, nullptr);
+                       "SELECT command, status, entry_count FROM operations WHERE id=?", -1, &s,
+                       nullptr);
     sqlite3_bind_int64(s, 1, op);
     ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)), "mv");
@@ -601,7 +605,8 @@ TEST_F(DatabaseTest, LogOperationRoundTrip) {
     sqlite3_finalize(s);
 
     sqlite3_prepare_v2(db->db_ptr(),
-        "SELECT COUNT(*) FROM operation_entries WHERE op_id=? AND kind='move'", -1, &s, nullptr);
+                       "SELECT COUNT(*) FROM operation_entries WHERE op_id=? AND kind='move'", -1,
+                       &s, nullptr);
     sqlite3_bind_int64(s, 1, op);
     ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
     EXPECT_EQ(sqlite3_column_int(s, 0), 2);
@@ -656,7 +661,8 @@ TEST_F(DatabaseTest, PurgeLogsRestorableSnapshot) {
 
     sqlite3_stmt* s = nullptr;
     sqlite3_prepare_v2(db->db_ptr(),
-        "SELECT kind, src, restore_json FROM operation_entries WHERE op_id=?", -1, &s, nullptr);
+                       "SELECT kind, src, restore_json FROM operation_entries WHERE op_id=?", -1,
+                       &s, nullptr);
     sqlite3_bind_int64(s, 1, op);
     ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)), "purge_row");
@@ -665,4 +671,46 @@ TEST_F(DatabaseTest, PurgeLogsRestorableSnapshot) {
     EXPECT_NE(restore.find("shaA"), std::string::npos);
     EXPECT_NE(restore.find("/x/a.jpg"), std::string::npos);
     sqlite3_finalize(s);
+}
+
+TEST_F(DatabaseTest, LogPruneAlwaysKeepsNewestOperation) {
+    // A single operation larger than the cap must not delete itself — the
+    // just-recorded run must remain rollback-able (review [2]).
+    int64_t op = db->log_begin_operation("mv", "big", "2026-07-06T00:00:00Z");
+    for (int i = 0; i < 5; i++) db->log_add_entry(op, {"move", "/s", "/d", ""});
+    db->log_finish_operation(op, "completed");
+
+    db->log_prune(2);  // cap below this op's 5 entries
+
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(), "SELECT COUNT(*) FROM operations", -1, &s, nullptr);
+    sqlite3_step(s);
+    EXPECT_EQ(sqlite3_column_int(s, 0), 1);  // newest op survives
+    sqlite3_finalize(s);
+}
+
+TEST_F(DatabaseTest, PurgeSnapshotMarksOmittedFaces) {
+    db->insert(make_image("/x/a.jpg", "shaA"));
+    int64_t id = db->get_image_id("/x/a.jpg");
+    ASSERT_GE(id, 0);
+    FaceInfo f{};
+    f.embedding.fill(0.1f);
+    f.x = 1;
+    f.y = 2;
+    f.width = 3;
+    f.height = 4;
+    db->insert_face(id, f);
+
+    int64_t op = db->log_begin_operation("purge", "phig purge", "2026-07-06T00:00:00Z");
+    db->delete_paths_logged({"/x/a.jpg"}, op);
+    db->log_finish_operation(op, "completed");
+
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(), "SELECT restore_json FROM operation_entries WHERE op_id=?", -1,
+                       &s, nullptr);
+    sqlite3_bind_int64(s, 1, op);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
+    std::string restore = reinterpret_cast<const char*>(sqlite3_column_text(s, 0));
+    sqlite3_finalize(s);
+    EXPECT_NE(restore.find("_faces_omitted"), std::string::npos);
 }

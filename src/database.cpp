@@ -507,38 +507,46 @@ void Database::log_prune(int max_entries) {
         throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
     };
 
-    auto total_entries = [&]() -> int64_t {
+    // Walk operations newest-first, accumulating their entry counts. Keep the
+    // newest operations that fit under the cap; everything older is pruned in one
+    // bulk DELETE (entries cascade via the operation_entries FK). Two invariants:
+    //   - ALWAYS keep the newest operation, even if it alone exceeds the cap — the
+    //     just-recorded run must never delete its own rollback record (review [2]).
+    //   - Single pass + single delete, so pruning is O(n), not O(n^2) (review [8]).
+    int64_t cutoff = -1;  // delete operations with id <= cutoff; -1 = delete none
+    {
         sqlite3_stmt* s = nullptr;
-        if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM operation_entries", -1, &s, nullptr) !=
-            SQLITE_OK)
-            fail("Failed to prepare entry count");
-        int64_t c = (sqlite3_step(s) == SQLITE_ROW) ? sqlite3_column_int64(s, 0) : 0;
-        sqlite3_finalize(s);
-        return c;
-    };
-
-    // Drop whole operations oldest-first until under the cap. entries cascade via
-    // the operation_entries FK (foreign_keys is ON per-connection).
-    while (total_entries() > max_entries) {
-        sqlite3_stmt* s = nullptr;
-        if (sqlite3_prepare_v2(db_, "SELECT id FROM operations ORDER BY id ASC LIMIT 1", -1, &s,
-                               nullptr) != SQLITE_OK)
-            fail("Failed to prepare oldest-op query");
-        if (sqlite3_step(s) != SQLITE_ROW) {  // no operations left
-            sqlite3_finalize(s);
-            break;
+        if (sqlite3_prepare_v2(db_, "SELECT id, entry_count FROM operations ORDER BY id DESC", -1,
+                               &s, nullptr) != SQLITE_OK)
+            fail("Failed to prepare prune scan");
+        int64_t kept = 0;
+        bool first = true;
+        while (sqlite3_step(s) == SQLITE_ROW) {
+            int64_t id = sqlite3_column_int64(s, 0);
+            int64_t entries = sqlite3_column_int64(s, 1);
+            // Keep the newest op unconditionally; keep further ops only while they
+            // still fit. The first op that would overflow becomes the cutoff, and
+            // every older op is pruned with it.
+            if (first || kept + entries <= max_entries) {
+                kept += entries;
+                first = false;
+            } else {
+                cutoff = id;
+                break;
+            }
         }
-        int64_t oldest = sqlite3_column_int64(s, 0);
         sqlite3_finalize(s);
+    }
 
+    if (cutoff >= 0) {
         sqlite3_stmt* d = nullptr;
-        if (sqlite3_prepare_v2(db_, "DELETE FROM operations WHERE id = ?", -1, &d, nullptr) !=
+        if (sqlite3_prepare_v2(db_, "DELETE FROM operations WHERE id <= ?", -1, &d, nullptr) !=
             SQLITE_OK)
             fail("Failed to prepare op delete");
-        sqlite3_bind_int64(d, 1, oldest);
+        sqlite3_bind_int64(d, 1, cutoff);
         int rc = sqlite3_step(d);
         sqlite3_finalize(d);
-        if (rc != SQLITE_DONE) fail("Failed to prune operation");
+        if (rc != SQLITE_DONE) fail("Failed to prune operations");
     }
 
     exec("COMMIT");
@@ -773,8 +781,25 @@ int Database::delete_paths_logged(const std::vector<std::string>& paths, int64_t
                     restore += "\"";
                 }
             }
-            restore += "}";
             sqlite3_finalize(s);
+
+            // The snapshot captures only the images row, not the image's faces /
+            // vec_faces embeddings (deleted below). Record how many faces are lost
+            // so a future undo can honestly report the row is only partially
+            // restorable rather than silently dropping face data (review [4]).
+            int64_t fid = get_image_id(path);
+            int64_t face_count = 0;
+            if (fid >= 0) {
+                sqlite3_stmt* fs = nullptr;
+                if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM faces WHERE image_id = ?", -1,
+                                       &fs, nullptr) == SQLITE_OK) {
+                    sqlite3_bind_int64(fs, 1, fid);
+                    if (sqlite3_step(fs) == SQLITE_ROW) face_count = sqlite3_column_int64(fs, 0);
+                    sqlite3_finalize(fs);
+                }
+            }
+            if (face_count > 0) restore += ",\"_faces_omitted\":" + std::to_string(face_count);
+            restore += "}";
         }
 
         // vec_faces / faces are not reachable by cascade from a vec0 table; clear

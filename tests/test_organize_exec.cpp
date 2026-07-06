@@ -204,3 +204,35 @@ TEST_F(OrganizeExecTest, LogsEntryWhenOpIdProvided) {
     EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)), "copy");
     sqlite3_finalize(s);
 }
+
+TEST_F(OrganizeExecTest, NoOpSelfMoveDoesNothingAndLogsNothing) {
+    fs::path src = dir / "src" / "a.jpg";
+    write_file(src, "AAA");
+    insert_row(src.string());
+    int64_t op = db->log_begin_operation("mv", "phig mv", "2026-07-06T00:00:00Z");
+
+    // dest == source: a file already at its target path.
+    execute_organize_action(*db, src.string(), src.string(), /*is_move=*/true, op);
+    db->log_finish_operation(op, "completed");
+
+    EXPECT_TRUE(fs::exists(src));
+    EXPECT_EQ(read_file(src), "AAA");
+    // No entry logged for a no-op.
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(), "SELECT COUNT(*) FROM operation_entries WHERE op_id=?", -1, &s,
+                       nullptr);
+    sqlite3_bind_int64(s, 1, op);
+    sqlite3_step(s);
+    EXPECT_EQ(sqlite3_column_int(s, 0), 0);
+    sqlite3_finalize(s);
+}
+
+TEST_F(OrganizeExecTest, NoOpSelfCopyDoesNotCorruptFile) {
+    fs::path src = dir / "src" / "a.jpg";
+    write_file(src, "AAA");
+    insert_row(src.string());
+    // dest == source on a copy must not back-up-then-copy the file onto itself.
+    execute_organize_action(*db, src.string(), src.string(), /*is_move=*/false, /*op_id=*/0);
+    EXPECT_TRUE(fs::exists(src));
+    EXPECT_EQ(read_file(src), "AAA");
+}

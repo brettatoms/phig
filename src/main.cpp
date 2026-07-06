@@ -1095,14 +1095,18 @@ int cmd_organize(const OrganizeOptions& opts) {
         std::string rel_path = apply_format(opts.format, img, date);
         fs::path dest = fs::path(opts.destination) / rel_path;
 
-        // Protect: (a) another image's source file in this batch, and (b) a real
-        // file on disk that the DB does not track (audit #4) — clobbering either
-        // is silent data loss the DB can't warn about.
+        // Protect: (a) another image's source file in this batch, and (b) ANY
+        // other real file on disk — tracked or not. Clobbering an untracked file
+        // is silent data loss (audit #4); clobbering a tracked file destroys a
+        // real image the DB still knows about and, with logging on, cascades its
+        // faces/tags away with nothing in the log to restore them (plan 020
+        // review). Overwriting only ever lands on a genuinely free path; existing
+        // files are renamed around, so mv/cp never destroy irreplaceable bytes.
         const std::string& self_source = img.path;
         auto is_protected = [&](const std::string& path) -> bool {
-            if (path != self_source && batch_sources.count(path)) return true;
-            if (fs::exists(path) && path != self_source && !db.get_sha256(path).has_value())
-                return true;
+            if (path == self_source) return false;
+            if (batch_sources.count(path)) return true;
+            if (fs::exists(path)) return true;
             return false;
         };
 
@@ -1267,7 +1271,21 @@ int cmd_purge(const PurgeOptions& opts) {
     int64_t op_id = 0;
     const bool logging = opts.log_enabled;
     if (logging) op_id = db.log_begin_operation("purge", opts.argv_str, iso_utc_now());
-    int removed = db.delete_paths_logged(matched, op_id);
+    int removed = 0;
+    try {
+        removed = db.delete_paths_logged(matched, op_id);
+    } catch (...) {
+        // delete_paths_logged rolls back its own transaction, but the operation
+        // row was autocommitted by log_begin_operation. Mark it so it doesn't
+        // linger as a stuck 'in_progress' row (review [6]); best-effort.
+        if (logging) {
+            try {
+                db.log_finish_operation(op_id, "interrupted");
+            } catch (...) {
+            }
+        }
+        throw;
+    }
     if (logging) {
         // Purge has no file-boundary interruption to track — it always completes.
         db.log_finish_operation(op_id, "completed");

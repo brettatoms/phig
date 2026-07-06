@@ -1,5 +1,6 @@
 #include "organize_exec.h"
 
+#include <cstdio>
 #include <filesystem>
 #include <stdexcept>
 #include <system_error>
@@ -11,6 +12,12 @@ namespace fs = std::filesystem;
 void execute_organize_action(Database& db, const std::string& source, const std::string& dest,
                              bool is_move, int64_t op_id) {
     const bool logging = op_id > 0;
+
+    // No-op: destination resolves to the source itself (e.g. re-organizing a file
+    // already at its target path). Touch nothing and log nothing — moving/copying
+    // a file onto itself and recording a self-move entry would be meaningless and,
+    // for copy, would corrupt the file via a backup-then-copy of itself.
+    if (source == dest) return;
 
     if (is_move) {
         move_file(source, dest);
@@ -42,10 +49,11 @@ void execute_organize_action(Database& db, const std::string& source, const std:
             throw;  // move-back succeeded — rethrow the original DB failure
         }
     } else {
-        // Copy to disk atomically. On the overwrite path we may land on a
-        // pre-existing file; back it up first (a same-dir rename — no byte copy)
-        // so a DB failure can restore it instead of leaving an orphan or
-        // destroying the prior file (plan 020, option B).
+        // Copy to disk atomically. cmd_organize protects every existing on-disk
+        // path, so in normal use dest does not exist here. As defense-in-depth for
+        // any caller that does target an existing file, back it up first (a
+        // same-dir rename — no byte copy) so a DB failure can restore it instead
+        // of leaving an orphan or destroying the prior file (plan 020, option B).
         bool had_existing = fs::exists(dest);
         std::string backup;
         if (had_existing) {
@@ -64,16 +72,34 @@ void execute_organize_action(Database& db, const std::string& source, const std:
                 throw;
             }
         } catch (...) {
-            // Undo the disk change: restore the prior file if we backed one up,
-            // otherwise remove the copy we just made.
+            // Undo the disk change: remove the copy we made, then restore the
+            // prior file if we backed one up. A failed restore is NOT swallowed —
+            // it means the original now sits only at the backup path, which the
+            // user must know about, so surface it as the thrown error.
             std::error_code ec;
             fs::remove(dest, ec);
-            if (had_existing) fs::rename(backup, dest, ec);
-            throw;
+            if (had_existing) {
+                std::error_code rec;
+                fs::rename(backup, dest, rec);
+                if (rec) {
+                    throw std::runtime_error("copy failed AND could not restore " + dest +
+                                             " from backup " + backup + ": " + rec.message() +
+                                             " (the original file is at the backup path; move it "
+                                             "back manually)");
+                }
+            }
+            throw;  // restore (if any) succeeded — rethrow the original failure
         }
         if (had_existing) {
             std::error_code ec;
             fs::remove(backup, ec);  // success — drop the backup
+            if (ec) {
+                // Non-fatal: the copy succeeded and is committed. Surface the
+                // leftover so the user can clean it up rather than silently
+                // accumulating hidden .phig-bak files.
+                std::fprintf(stderr, "Warning: left backup file %s in place (%s)\n", backup.c_str(),
+                             ec.message().c_str());
+            }
         }
     }
 }
