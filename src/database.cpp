@@ -471,6 +471,52 @@ void Database::log_finish_operation(int64_t op_id, const std::string& status) {
     step_write_or_throw(db_, stmt, "Failed to finish operation");
 }
 
+void Database::log_prune(int max_entries) {
+    if (max_entries <= 0) return;  // unlimited
+
+    exec("BEGIN TRANSACTION");
+    auto fail = [&](const std::string& what) {
+        exec("ROLLBACK");
+        throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
+    };
+
+    auto total_entries = [&]() -> int64_t {
+        sqlite3_stmt* s = nullptr;
+        if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM operation_entries", -1, &s, nullptr) !=
+            SQLITE_OK)
+            fail("Failed to prepare entry count");
+        int64_t c = (sqlite3_step(s) == SQLITE_ROW) ? sqlite3_column_int64(s, 0) : 0;
+        sqlite3_finalize(s);
+        return c;
+    };
+
+    // Drop whole operations oldest-first until under the cap. entries cascade via
+    // the operation_entries FK (foreign_keys is ON per-connection).
+    while (total_entries() > max_entries) {
+        sqlite3_stmt* s = nullptr;
+        if (sqlite3_prepare_v2(db_, "SELECT id FROM operations ORDER BY id ASC LIMIT 1", -1, &s,
+                               nullptr) != SQLITE_OK)
+            fail("Failed to prepare oldest-op query");
+        if (sqlite3_step(s) != SQLITE_ROW) {  // no operations left
+            sqlite3_finalize(s);
+            break;
+        }
+        int64_t oldest = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+
+        sqlite3_stmt* d = nullptr;
+        if (sqlite3_prepare_v2(db_, "DELETE FROM operations WHERE id = ?", -1, &d, nullptr) !=
+            SQLITE_OK)
+            fail("Failed to prepare op delete");
+        sqlite3_bind_int64(d, 1, oldest);
+        int rc = sqlite3_step(d);
+        sqlite3_finalize(d);
+        if (rc != SQLITE_DONE) fail("Failed to prune operation");
+    }
+
+    exec("COMMIT");
+}
+
 void Database::begin_transaction() { exec("BEGIN TRANSACTION"); }
 
 void Database::commit_transaction() { exec("COMMIT"); }

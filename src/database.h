@@ -42,6 +42,10 @@ class Database {
     void log_add_entry(int64_t op_id, const OperationEntry& entry);
     // Set the operation's terminal status ("completed" | "interrupted").
     void log_finish_operation(int64_t op_id, const std::string& status);
+    // Delete whole operations oldest-first (by id) until the total number of
+    // operation_entries rows is <= max_entries. No-op if max_entries <= 0
+    // (unlimited) or already under the cap. Runs in its own transaction.
+    void log_prune(int max_entries);
 
     void begin_transaction();
     void commit_transaction();

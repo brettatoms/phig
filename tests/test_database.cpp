@@ -607,3 +607,41 @@ TEST_F(DatabaseTest, LogOperationRoundTrip) {
     EXPECT_EQ(sqlite3_column_int(s, 0), 2);
     sqlite3_finalize(s);
 }
+
+TEST_F(DatabaseTest, LogPruneDropsOldestWholeOperations) {
+    auto make_op = [&](const char* tag, int n) {
+        int64_t op = db->log_begin_operation("mv", tag, "2026-07-06T00:00:00Z");
+        for (int i = 0; i < n; i++) db->log_add_entry(op, {"move", "/s", "/d", ""});
+        db->log_finish_operation(op, "completed");
+        return op;
+    };
+    int64_t op1 = make_op("op1", 3);
+    int64_t op2 = make_op("op2", 3);  // total 6 entries
+
+    db->log_prune(4);  // drop whole op1 (3) -> 3 entries left, under 4
+
+    auto count = [&](const char* sql, int64_t bind) {
+        sqlite3_stmt* s = nullptr;
+        sqlite3_prepare_v2(db->db_ptr(), sql, -1, &s, nullptr);
+        if (bind) sqlite3_bind_int64(s, 1, bind);
+        sqlite3_step(s);
+        int c = sqlite3_column_int(s, 0);
+        sqlite3_finalize(s);
+        return c;
+    };
+    EXPECT_EQ(count("SELECT COUNT(*) FROM operation_entries", 0), 3);
+    EXPECT_EQ(count("SELECT COUNT(*) FROM operations WHERE id=?", op1), 0);
+    EXPECT_EQ(count("SELECT COUNT(*) FROM operations WHERE id=?", op2), 1);
+}
+
+TEST_F(DatabaseTest, LogPruneUnlimitedIsNoOp) {
+    int64_t op = db->log_begin_operation("mv", "x", "2026-07-06T00:00:00Z");
+    db->log_add_entry(op, {"move", "/s", "/d", ""});
+    db->log_finish_operation(op, "completed");
+    db->log_prune(0);  // 0 = unlimited
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(), "SELECT COUNT(*) FROM operations", -1, &s, nullptr);
+    sqlite3_step(s);
+    EXPECT_EQ(sqlite3_column_int(s, 0), 1);
+    sqlite3_finalize(s);
+}
