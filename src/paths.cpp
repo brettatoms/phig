@@ -93,6 +93,19 @@ std::filesystem::path temp_sibling(const std::filesystem::path& dest) {
 }
 }  // namespace
 
+std::string unique_backup_path(const std::string& dest) {
+    // Same pid+counter scheme as temp_sibling so a backup name can never collide
+    // with a stale backup from a prior crashed run, a concurrent phig process, or
+    // a real file the user happens to own. Distinct suffix so it's identifiable.
+    namespace fs = std::filesystem;
+    static unsigned long counter = 0;
+    fs::path d(dest);
+    std::string name = "." + d.filename().string() + ".phig-bak." +
+                       std::to_string(static_cast<long>(getpid())) + "." +
+                       std::to_string(counter++);
+    return (d.parent_path() / name).string();
+}
+
 void atomic_copy_file(const std::string& source, const std::string& dest) {
     namespace fs = std::filesystem;
     fs::path dst(dest);

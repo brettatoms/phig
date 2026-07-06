@@ -55,6 +55,7 @@ add_library(phig-lib STATIC
     src/metadata.cpp
     src/paths.cpp
     src/config.cpp
+    src/organize_exec.cpp
 )
 
 target_include_directories(phig-lib PUBLIC
@@ -115,6 +116,7 @@ add_executable(phig-tests
     tests/test_video.cpp
     tests/test_paths.cpp
     tests/test_config.cpp
+    tests/test_organize_exec.cpp
 )
 
 target_link_libraries(phig-tests PRIVATE

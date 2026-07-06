@@ -31,6 +31,7 @@
 #include "hasher.h"
 #include "metadata.h"
 #include "models.h"
+#include "organize_exec.h"
 #include "paths.h"
 #include "scanner.h"
 #include "thumbs.h"
@@ -1164,70 +1165,10 @@ int cmd_organize(const OrganizeOptions& opts) {
         if (a.skipped) continue;
 
         try {
-            if (opts.is_move) {
-                move_file(a.source, a.dest.string());
-                // Update DB — file has moved. Commit the path change and the log
-                // entry together so disk and DB (incl. the log) never disagree.
-                // If it fails after the file has already moved, compensate by
-                // moving it back so the row still matches the source on disk.
-                try {
-                    db.begin_transaction();
-                    try {
-                        db.update_path_in_txn(a.source, a.dest.string());
-                        if (logging)
-                            db.log_add_entry(op_id, {"move", a.source, a.dest.string(), ""});
-                        db.commit_transaction();
-                    } catch (...) {
-                        db.rollback_transaction();
-                        throw;
-                    }
-                } catch (...) {
-                    try {
-                        move_file(a.dest.string(), a.source);
-                    } catch (const std::exception& back) {
-                        std::cerr << "\nWarning: DB update failed AND could not move " << a.dest
-                                  << " back to " << a.source << ": " << back.what()
-                                  << "\n  File is at the destination but the database still lists"
-                                     " the source; rescan to reconcile.\n";
-                    }
-                    throw;  // report the original DB failure below
-                }
-            } else {
-                // Copy to disk atomically. On the overwrite path we may land on a
-                // pre-existing file; back it up first (a same-dir rename — no byte
-                // copy) so a DB failure can restore it instead of leaving an
-                // orphan or destroying the prior file (plan 020, option B).
-                const std::string& dst = a.dest.string();
-                bool had_existing = fs::exists(dst);
-                std::string backup;
-                if (had_existing) {
-                    backup = dst + ".phig-bak";
-                    fs::rename(dst, backup);
-                }
-                try {
-                    atomic_copy_file(a.source, dst);
-                    db.begin_transaction();
-                    try {
-                        db.insert_copy(a.source, dst);
-                        if (logging) db.log_add_entry(op_id, {"copy", a.source, dst, ""});
-                        db.commit_transaction();
-                    } catch (...) {
-                        db.rollback_transaction();
-                        throw;
-                    }
-                } catch (...) {
-                    // Undo the disk change: restore the prior file if we backed
-                    // one up, otherwise remove the copy we just made.
-                    std::error_code ec;
-                    fs::remove(dst, ec);
-                    if (had_existing) fs::rename(backup, dst, ec);
-                    throw;
-                }
-                if (had_existing) {
-                    std::error_code ec;
-                    fs::remove(backup, ec);  // success — drop the backup
-                }
-            }
+            // Disk op + DB update + optional log entry, committed together with
+            // on-failure compensation so disk and DB never disagree (plan 020).
+            execute_organize_action(db, a.source, a.dest.string(), opts.is_move,
+                                    logging ? op_id : 0);
             done++;
 
             std::cout << "\r[" << done << "/" << to_process << "] " << std::flush;

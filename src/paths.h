@@ -36,6 +36,12 @@ void move_file(const std::string& source, const std::string& dest);
 // truncates an existing dest. Creates dest's parent dirs. Throws on failure.
 void atomic_copy_file(const std::string& source, const std::string& dest);
 
+// A unique sibling path for temporarily backing up an existing file before an
+// overwrite (pid + per-process counter, like the atomic-copy temp names), so the
+// backup can never clobber a stale backup, a concurrent process's file, or a
+// real file. Does not create anything — just returns the path.
+std::string unique_backup_path(const std::string& dest);
+
 // Write `size` bytes atomically to dest via temp-then-rename (see above).
 // Returns false on any I/O error (temp is removed); true once dest holds the
 // complete bytes. Creates dest's parent dirs.
