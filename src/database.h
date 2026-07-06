@@ -24,6 +24,25 @@ class Database {
     void insert(const ImageInfo& info);
     void insert_batch(const std::vector<ImageInfo>& infos);
     void insert_copy(const std::string& source_path, const std::string& dest_path);
+
+    // ---- Activity log (plan 020) ----
+    // One operation_entries row: an inverse-able record of a single file change.
+    struct OperationEntry {
+        std::string kind;          // "move" | "copy" | "purge_row"
+        std::string src;
+        std::string dst;           // "" when N/A (purge)
+        std::string restore_json;  // "" unless kind == "purge_row"
+    };
+    // Open an operation row; returns its id. `argv` is the full invocation,
+    // `ts` an ISO-8601 UTC timestamp supplied by the caller.
+    int64_t log_begin_operation(const std::string& command, const std::string& argv,
+                                const std::string& ts);
+    // Append one entry to an open operation (bumps entry_count). Both writes run
+    // in the CURRENT transaction — the caller owns BEGIN/COMMIT.
+    void log_add_entry(int64_t op_id, const OperationEntry& entry);
+    // Set the operation's terminal status ("completed" | "interrupted").
+    void log_finish_operation(int64_t op_id, const std::string& status);
+
     void begin_transaction();
     void commit_transaction();
     void rollback_transaction();

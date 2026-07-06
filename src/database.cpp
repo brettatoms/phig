@@ -411,6 +411,66 @@ void Database::insert_copy(const std::string& source_path, const std::string& de
     }
 }
 
+int64_t Database::log_begin_operation(const std::string& command, const std::string& argv,
+                                      const std::string& ts) {
+    const char* sql =
+        "INSERT INTO operations (ts, command, argv, status, entry_count) "
+        "VALUES (?, ?, ?, 'in_progress', 0)";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Failed to prepare log_begin_operation: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    sqlite3_bind_text(stmt, 1, ts.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, command.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, argv.c_str(), -1, SQLITE_TRANSIENT);
+    step_write_or_throw(db_, stmt, "Failed to insert operation");
+    return sqlite3_last_insert_rowid(db_);
+}
+
+void Database::log_add_entry(int64_t op_id, const OperationEntry& entry) {
+    {
+        const char* sql =
+            "INSERT INTO operation_entries (op_id, kind, src, dst, restore_json) "
+            "VALUES (?, ?, ?, ?, ?)";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Failed to prepare log_add_entry: " +
+                                     std::string(sqlite3_errmsg(db_)));
+        sqlite3_bind_int64(stmt, 1, op_id);
+        sqlite3_bind_text(stmt, 2, entry.kind.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, entry.src.c_str(), -1, SQLITE_TRANSIENT);
+        if (entry.dst.empty())
+            sqlite3_bind_null(stmt, 4);
+        else
+            sqlite3_bind_text(stmt, 4, entry.dst.c_str(), -1, SQLITE_TRANSIENT);
+        if (entry.restore_json.empty())
+            sqlite3_bind_null(stmt, 5);
+        else
+            sqlite3_bind_text(stmt, 5, entry.restore_json.c_str(), -1, SQLITE_TRANSIENT);
+        step_write_or_throw(db_, stmt, "Failed to insert operation entry");
+    }
+    {
+        const char* sql = "UPDATE operations SET entry_count = entry_count + 1 WHERE id = ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Failed to prepare entry_count bump: " +
+                                     std::string(sqlite3_errmsg(db_)));
+        sqlite3_bind_int64(stmt, 1, op_id);
+        step_write_or_throw(db_, stmt, "Failed to bump entry_count");
+    }
+}
+
+void Database::log_finish_operation(int64_t op_id, const std::string& status) {
+    const char* sql = "UPDATE operations SET status = ? WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Failed to prepare log_finish_operation: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    sqlite3_bind_text(stmt, 1, status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, op_id);
+    step_write_or_throw(db_, stmt, "Failed to finish operation");
+}
+
 void Database::begin_transaction() { exec("BEGIN TRANSACTION"); }
 
 void Database::commit_transaction() { exec("COMMIT"); }

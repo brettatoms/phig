@@ -582,3 +582,28 @@ TEST_F(DatabaseTest, MigratesV4ToV5) {
     sqlite3_finalize(stmt);
     EXPECT_TRUE(found);
 }
+
+TEST_F(DatabaseTest, LogOperationRoundTrip) {
+    int64_t op = db->log_begin_operation("mv", "phig mv /dest", "2026-07-06T00:00:00Z");
+    EXPECT_GT(op, 0);
+    db->log_add_entry(op, {"move", "/a.jpg", "/dest/a.jpg", ""});
+    db->log_add_entry(op, {"move", "/b.jpg", "/dest/b.jpg", ""});
+    db->log_finish_operation(op, "completed");
+
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(),
+        "SELECT command, status, entry_count FROM operations WHERE id=?", -1, &s, nullptr);
+    sqlite3_bind_int64(s, 1, op);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)), "mv");
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(s, 1)), "completed");
+    EXPECT_EQ(sqlite3_column_int(s, 2), 2);
+    sqlite3_finalize(s);
+
+    sqlite3_prepare_v2(db->db_ptr(),
+        "SELECT COUNT(*) FROM operation_entries WHERE op_id=? AND kind='move'", -1, &s, nullptr);
+    sqlite3_bind_int64(s, 1, op);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(s, 0), 2);
+    sqlite3_finalize(s);
+}
