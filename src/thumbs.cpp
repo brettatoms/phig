@@ -68,3 +68,16 @@ bool generate_thumb(const std::string& image_path, const std::string& sha256) {
     if (img.empty()) return false;
     return generate_thumb(img, sha256);
 }
+
+bool is_thumbnail_filename(const std::string& filename) {
+    // Exactly "<64 lowercase hex>.jpg".
+    static const std::string ext = ".jpg";
+    if (filename.size() != 64 + ext.size()) return false;
+    if (filename.compare(64, ext.size(), ext) != 0) return false;
+    for (size_t i = 0; i < 64; i++) {
+        char c = filename[i];
+        bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        if (!hex) return false;
+    }
+    return true;
+}

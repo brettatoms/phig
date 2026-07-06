@@ -1647,7 +1647,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
     if (argc < 3) {
         std::cerr << "Usage:\n"
                   << "  phig thumbs rebuild [flags]   Generate missing thumbnails\n"
-                  << "  phig thumbs clean             Remove orphaned thumbnails\n";
+                  << "  phig thumbs clean [--dry-run] Remove orphaned thumbnails\n";
         return 1;
     }
 
@@ -1783,6 +1783,19 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
         return 0;
 
     } else if (subcmd == "clean") {
+        bool dry_run = false;
+        for (int i = 3; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "--dry-run") {
+                dry_run = true;
+            } else if (arg == "--db") {
+                i++;  // already handled
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                return 1;
+            }
+        }
+
         Database db(db_path);
         db.init_schema();
 
@@ -1796,28 +1809,48 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
 
         size_t removed = 0;
         size_t kept = 0;
+        size_t skipped_foreign = 0;  // files that don't match the thumbnail contract
 
         for (auto& entry : fs::recursive_directory_iterator(thumb_cache)) {
             if (!entry.is_regular_file()) continue;
-            // Thumbnail filename is <sha256>.jpg
+
+            // Only ever touch files that match phig's thumbnail naming contract
+            // (<64-hex-sha256>.jpg). Anything else in the cache dir — user files,
+            // other apps' data if the dir is misconfigured — is left untouched.
+            std::string name = entry.path().filename().string();
+            if (!is_thumbnail_filename(name)) {
+                skipped_foreign++;
+                continue;
+            }
+
             std::string stem = entry.path().stem().string();
             if (known_hashes.count(stem)) {
                 kept++;
+            } else if (dry_run) {
+                std::cout << "  would remove " << entry.path().string() << "\n";
+                removed++;
             } else {
                 fs::remove(entry.path());
                 removed++;
             }
         }
 
-        // Remove empty subdirectories
-        for (auto& entry : fs::directory_iterator(thumb_cache)) {
-            if (entry.is_directory() && fs::is_empty(entry.path())) {
-                fs::remove(entry.path());
+        // Remove empty subdirectories (skip in dry-run)
+        if (!dry_run) {
+            for (auto& entry : fs::directory_iterator(thumb_cache)) {
+                if (entry.is_directory() && fs::is_empty(entry.path())) {
+                    fs::remove(entry.path());
+                }
             }
         }
 
-        std::cout << "Removed " << removed << " orphaned thumbnails\n"
+        std::cout << (dry_run ? "Would remove " : "Removed ") << removed
+                  << " orphaned thumbnails\n"
                   << "Kept " << kept << " thumbnails\n";
+        if (skipped_foreign > 0) {
+            std::cout << "Left untouched " << skipped_foreign
+                      << " non-thumbnail files in the cache directory\n";
+        }
 
         return 0;
 
@@ -1825,7 +1858,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
         std::cerr << "Unknown thumbs subcommand: " << subcmd << "\n"
                   << "Usage:\n"
                   << "  phig thumbs rebuild [flags]   Generate missing thumbnails\n"
-                  << "  phig thumbs clean             Remove orphaned thumbnails\n";
+                  << "  phig thumbs clean [--dry-run] Remove orphaned thumbnails\n";
         return 1;
     }
 }

@@ -111,3 +111,24 @@ TEST_F(ThumbsTest, GenerateEmptyShaFails) {
 }
 
 TEST_F(ThumbsTest, CacheDirectoryXDG) { EXPECT_EQ(thumbs_dir(), temp_dir + "/phig/thumbs"); }
+
+// is_thumbnail_filename gates `thumbs clean` deletion: only true thumbnail names
+// may ever be removed, so a misconfigured cache dir holding user data is safe.
+TEST_F(ThumbsTest, ThumbnailNameAcceptsValidSha256Jpg) {
+    std::string valid = std::string(64, 'a') + ".jpg";  // 64 hex + .jpg
+    EXPECT_TRUE(is_thumbnail_filename(valid));
+    EXPECT_TRUE(is_thumbnail_filename("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.jpg"));
+}
+
+TEST_F(ThumbsTest, ThumbnailNameRejectsForeignFiles) {
+    EXPECT_FALSE(is_thumbnail_filename("README.txt"));
+    EXPECT_FALSE(is_thumbnail_filename("vacation.jpg"));                 // not hex, wrong length
+    EXPECT_FALSE(is_thumbnail_filename("important-document.pdf"));
+    EXPECT_FALSE(is_thumbnail_filename(std::string(64, 'a')));           // no extension
+    EXPECT_FALSE(is_thumbnail_filename(std::string(64, 'a') + ".png"));  // wrong extension
+    EXPECT_FALSE(is_thumbnail_filename(std::string(63, 'a') + ".jpg"));  // too short
+    EXPECT_FALSE(is_thumbnail_filename(std::string(65, 'a') + ".jpg"));  // too long
+    EXPECT_FALSE(is_thumbnail_filename(std::string(64, 'A') + ".jpg"));  // uppercase hex rejected
+    EXPECT_FALSE(is_thumbnail_filename(std::string(64, 'g') + ".jpg"));  // 'g' not hex
+    EXPECT_FALSE(is_thumbnail_filename(""));
+}
