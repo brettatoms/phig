@@ -139,3 +139,24 @@ TEST_F(ConfigTest, HyphenatedKeysNormalized) {
     Config c = load_config(write_ini("[scan]\non-error = warn\n"));
     EXPECT_EQ(c.scan_on_error.value(), "warn");
 }
+
+TEST_F(ConfigTest, ParsesLogSection) {
+    std::string p = write_ini("[log]\nenabled = false\nmax_entries = 50\n");
+    Config cfg = load_config(p);
+    ASSERT_TRUE(cfg.log_enabled.has_value());
+    EXPECT_FALSE(*cfg.log_enabled);
+    ASSERT_TRUE(cfg.log_max_entries.has_value());
+    EXPECT_EQ(*cfg.log_max_entries, 50);
+}
+
+TEST_F(ConfigTest, LogDefaultsUnset) {
+    std::string p = write_ini("[general]\nparallel = 4\n");
+    Config cfg = load_config(p);
+    EXPECT_FALSE(cfg.log_enabled.has_value());
+    EXPECT_FALSE(cfg.log_max_entries.has_value());
+}
+
+TEST_F(ConfigTest, RejectsNegativeMaxEntries) {
+    std::string p = write_ini("[log]\nmax_entries = -1\n");
+    EXPECT_THROW(load_config(p), std::runtime_error);
+}

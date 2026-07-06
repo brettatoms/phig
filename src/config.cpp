@@ -128,6 +128,12 @@ Config load_config(const std::string& path) {
                 cfg.duplicates_threshold = n;
             } else if (sec == "faces" && k == "threshold") {
                 cfg.faces_threshold = parse_real(path, section, key, val);
+            } else if (sec == "log" && k == "enabled") {
+                cfg.log_enabled = parse_bool(path, section, key, val);
+            } else if (sec == "log" && k == "max_entries") {
+                int n = parse_int(path, section, key, val);
+                if (n < 0) fail(path, section, key, "must be >= 0, got " + val);
+                cfg.log_max_entries = n;
             } else {
                 std::cerr << "Warning: config " << path << ": unknown key [" << section << "] "
                           << key << " (ignored)\n";
