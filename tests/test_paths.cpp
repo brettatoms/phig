@@ -2,6 +2,7 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -383,6 +384,76 @@ TEST_F(ResolveConflictTest, SelfSourceNotProtected) {
     touch(dst);
     // Caller's predicate returns false for the file's own source (self excluded).
     EXPECT_EQ(resolve_conflict(dst.string(), "overwrite", claimed, no_protect), dst.string());
+}
+
+// ---- paths_safe_to_delete (scan cleanup guard) ----
+
+class SafeToDeleteTest : public ::testing::Test {
+   protected:
+    fs::path root;
+
+    void SetUp() override {
+        root = fs::temp_directory_path() / "phig-safedelete-test";
+        fs::remove_all(root);
+        fs::create_directories(root);
+    }
+    void TearDown() override { fs::remove_all(root); }
+
+    void touch(const fs::path& p) {
+        fs::create_directories(p.parent_path());
+        std::ofstream o(p);
+    }
+    static bool contains(const std::vector<std::string>& v, const std::string& s) {
+        return std::find(v.begin(), v.end(), s) != v.end();
+    }
+};
+
+TEST_F(SafeToDeleteTest, PresentFilesAreNotDeletable) {
+    fs::path a = root / "a.jpg";
+    touch(a);
+    auto del = paths_safe_to_delete({a.string()});
+    EXPECT_TRUE(del.empty());
+}
+
+TEST_F(SafeToDeleteTest, GenuinelyMissingFileWithPresentParentIsDeletable) {
+    // Parent dir exists, file within it is gone -> a real deletion.
+    fs::path missing = root / "album" / "gone.jpg";
+    fs::create_directories(missing.parent_path());  // parent present, file absent
+    auto del = paths_safe_to_delete({missing.string()});
+    ASSERT_EQ(del.size(), 1u);
+    EXPECT_EQ(del[0], missing.string());
+}
+
+TEST_F(SafeToDeleteTest, MissingFileUnderAbsentParentIsKept) {
+    // The whole subtree (parent dir) is gone -> looks like an unmounted mount,
+    // NOT an individual deletion. Must be kept.
+    fs::path under_unmounted = root / "removable" / "2020" / "img.jpg";
+    // Do NOT create the parent dirs.
+    auto del = paths_safe_to_delete({under_unmounted.string()});
+    EXPECT_TRUE(del.empty());
+}
+
+TEST_F(SafeToDeleteTest, PartialUnmountKeepsUnmountedSubtreeDeletesRealMissing) {
+    // The bug scenario: most files present, one subtree unmounted, one file
+    // genuinely deleted from a present directory.
+    fs::path present1 = root / "local" / "a.jpg";
+    fs::path present2 = root / "local" / "b.jpg";
+    touch(present1);
+    touch(present2);
+
+    fs::path real_deleted = root / "local" / "deleted.jpg";  // parent present, file gone
+
+    fs::path unmounted = root / "mnt2020" / "x.jpg";  // parent dir absent
+
+    auto del = paths_safe_to_delete(
+        {present1.string(), present2.string(), real_deleted.string(), unmounted.string()});
+
+    // Only the genuinely-deleted file (present parent) is removed.
+    ASSERT_EQ(del.size(), 1u);
+    EXPECT_TRUE(contains(del, real_deleted.string()));
+    EXPECT_FALSE(contains(del, unmounted.string()));   // unmounted subtree preserved
+    EXPECT_FALSE(contains(del, present1.string()));
+    EXPECT_FALSE(contains(del, present2.string()));
 }
 
 // ---- atomic writes ----

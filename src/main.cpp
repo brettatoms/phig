@@ -573,12 +573,11 @@ int cmd_scan(const ScanOptions& opts) {
     if (scan_prefix.back() != '/') scan_prefix += '/';
 
     auto db_paths = db.get_paths_with_prefix(scan_prefix);
-    std::vector<std::string> removed_paths;
-    for (const auto& p : db_paths) {
-        if (!fs::exists(p)) {
-            removed_paths.push_back(p);
-        }
-    }
+    // Only consider a row deletable when its file is genuinely gone AND its
+    // parent directory still exists — a missing parent (unmounted subtree) or an
+    // errored existence check keeps the row, so a transient mount/permission
+    // problem can't purge metadata for intact files.
+    std::vector<std::string> removed_paths = paths_safe_to_delete(db_paths);
     size_t removed_count = 0;
     if (!removed_paths.empty()) {
         if (!db_paths.empty() && removed_paths.size() == db_paths.size() &&

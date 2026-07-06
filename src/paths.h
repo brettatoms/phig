@@ -4,6 +4,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <vector>
 
 // XDG base directories, each returning phig's per-application subdirectory.
 // Honor the corresponding XDG_* env var when set and non-empty; otherwise fall
@@ -39,6 +40,14 @@ void atomic_copy_file(const std::string& source, const std::string& dest);
 // Returns false on any I/O error (temp is removed); true once dest holds the
 // complete bytes. Creates dest's parent dirs.
 bool atomic_write_file(const std::string& dest, const void* data, size_t size);
+
+// From a set of DB-tracked paths, return the subset that is safe to delete as
+// "no longer on disk". A path is deletable ONLY when the file is genuinely gone
+// AND its parent directory still exists. A missing parent directory means the
+// subtree is unmounted or unreachable (not that the file was deleted), and an
+// existence check that errors (EACCES/EIO) is treated as "unknown, keep" — so a
+// transient mount/permission problem never purges rows for intact files.
+std::vector<std::string> paths_safe_to_delete(const std::vector<std::string>& db_paths);
 
 // Resolve a destination path against the on_conflict policy ("skip",
 // "overwrite", or "rename"). A path conflicts if it exists on disk OR is already
