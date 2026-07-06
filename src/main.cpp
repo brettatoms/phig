@@ -1,3 +1,5 @@
+#include <unistd.h>
+
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -5,6 +7,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -62,7 +65,7 @@ void print_usage() {
         << "  phig duplicates [flags]\n"
         << "  phig cp <destination> [flags]\n"
         << "  phig mv <destination> [flags]\n"
-        << "  phig purge [flags]\n"
+        << "  phig purge [flags]        (--dry-run to preview, --yes for broad purges)\n"
         << "  phig search [flags]\n"
         << "  phig face name <image> <name>     Name a face from a single-face photo\n"
         << "  phig face identify <name>          Label all matching faces in DB\n"
@@ -1181,6 +1184,7 @@ struct PurgeOptions {
     std::vector<std::string> matches;
     std::vector<std::string> filters;
     bool dry_run = false;
+    bool assume_yes = false;  // skip the confirmation prompt for large purges
     std::string db_path;
 };
 
@@ -1215,6 +1219,29 @@ int cmd_purge(const PurgeOptions& opts) {
             std::cout << "  " << p << "\n";
         }
         return 0;
+    }
+
+    // Guard broad purges: deleting a large fraction of the DB (e.g. --match '*')
+    // is easy to do by accident. Require confirmation for such purges unless
+    // --yes was passed. purge removes DB rows only (never files on disk), so a
+    // small purge proceeds without prompting.
+    const size_t total = all_images.size();
+    const bool broad = total > 0 && matched.size() * 2 >= total && matched.size() >= 20;
+    if (broad && !opts.assume_yes) {
+        std::cout << "\nThis will remove " << matched.size() << " of " << total
+                  << " database entries (" << (matched.size() * 100 / total) << "%).\n";
+        if (!::isatty(fileno(stdin))) {
+            std::cerr << "Refusing to purge a large fraction of the database without "
+                         "confirmation.\nRe-run with --yes to proceed, or --dry-run to preview.\n";
+            return 1;
+        }
+        std::cout << "Type 'yes' to proceed: " << std::flush;
+        std::string answer;
+        std::getline(std::cin, answer);
+        if (answer != "yes") {
+            std::cout << "Aborted.\n";
+            return 1;
+        }
     }
 
     db.delete_paths(matched);
@@ -2628,6 +2655,8 @@ int main(int argc, char* argv[]) {
                 opts.filters.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--dry-run") {
                 opts.dry_run = true;
+            } else if (arg == "--yes" || arg == "-y") {
+                opts.assume_yes = true;
             } else if (arg == "--db" && i + 1 < argc) {
                 opts.db_path = argv[++i];
             } else {
