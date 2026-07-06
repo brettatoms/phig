@@ -17,7 +17,7 @@
 namespace fs = std::filesystem;
 
 // Schema version this code expects. Bump when adding migrations.
-static const int CURRENT_SCHEMA_VERSION = 4;
+static const int CURRENT_SCHEMA_VERSION = 5;
 
 // migrations[N] upgrades from version N-1 to version N.
 // Version 1 = initial schema, created directly by init_schema().
@@ -41,6 +41,23 @@ static const std::vector<std::string> migrations = {
        CREATE INDEX idx_gallery ON images(gallery);)",
     // v4: blur/sharpness score
     "ALTER TABLE images ADD COLUMN blur_score REAL;",
+    // v5: activity log (operations + per-file entries) for audit/rollback
+    R"(CREATE TABLE operations (
+         id          INTEGER PRIMARY KEY,
+         ts          TEXT NOT NULL,
+         command     TEXT NOT NULL,
+         argv        TEXT,
+         status      TEXT NOT NULL,
+         undoes_id   INTEGER REFERENCES operations(id),
+         entry_count INTEGER NOT NULL DEFAULT 0);
+       CREATE TABLE operation_entries (
+         id           INTEGER PRIMARY KEY,
+         op_id        INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+         kind         TEXT NOT NULL,
+         src          TEXT,
+         dst          TEXT,
+         restore_json TEXT);
+       CREATE INDEX idx_op_entries ON operation_entries(op_id);)",
 };
 
 namespace {
@@ -260,6 +277,29 @@ void Database::init_schema() {
                     embedding float[128]
                 )
             )");
+
+            exec(R"(
+                CREATE TABLE IF NOT EXISTS operations (
+                    id          INTEGER PRIMARY KEY,
+                    ts          TEXT NOT NULL,
+                    command     TEXT NOT NULL,
+                    argv        TEXT,
+                    status      TEXT NOT NULL,
+                    undoes_id   INTEGER REFERENCES operations(id),
+                    entry_count INTEGER NOT NULL DEFAULT 0
+                )
+            )");
+            exec(R"(
+                CREATE TABLE IF NOT EXISTS operation_entries (
+                    id           INTEGER PRIMARY KEY,
+                    op_id        INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+                    kind         TEXT NOT NULL,
+                    src          TEXT,
+                    dst          TEXT,
+                    restore_json TEXT
+                )
+            )");
+            exec("CREATE INDEX IF NOT EXISTS idx_op_entries ON operation_entries(op_id)");
 
             set_schema_version(CURRENT_SCHEMA_VERSION);
         }

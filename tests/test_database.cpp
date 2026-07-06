@@ -551,3 +551,34 @@ TEST_F(DatabaseTest, GetAllImagesPopulatesGalleryAndFavorite) {
         }
     }
 }
+
+TEST_F(DatabaseTest, V5TablesExist) {
+    auto has_table = [&](const char* name) {
+        sqlite3_stmt* stmt = nullptr;
+        sqlite3_prepare_v2(db->db_ptr(),
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", -1, &stmt, nullptr);
+        sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+        bool found = (sqlite3_step(stmt) == SQLITE_ROW);
+        sqlite3_finalize(stmt);
+        return found;
+    };
+    EXPECT_TRUE(has_table("operations"));
+    EXPECT_TRUE(has_table("operation_entries"));
+}
+
+TEST_F(DatabaseTest, MigratesV4ToV5) {
+    // Simulate an older DB by stamping version 4 and dropping v5 tables.
+    sqlite3_exec(db->db_ptr(), "DROP TABLE IF EXISTS operation_entries;"
+                               "DROP TABLE IF EXISTS operations;"
+                               "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','4');",
+                 nullptr, nullptr, nullptr);
+    db.reset();                                    // close
+    db = std::make_unique<Database>(db_path);      // reopen
+    db->init_schema();                             // should run v5 migration
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(),
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'", -1, &stmt, nullptr);
+    bool found = (sqlite3_step(stmt) == SQLITE_ROW);
+    sqlite3_finalize(stmt);
+    EXPECT_TRUE(found);
+}
