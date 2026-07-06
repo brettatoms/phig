@@ -330,3 +330,88 @@ TEST_F(ResolveConflictTest, IntraRunCollisionOverwriteRenamesSecond) {
     EXPECT_EQ(first, dst.string());
     EXPECT_EQ(second, (dir / "a_1.jpg").string());
 }
+
+// ---- atomic writes ----
+
+class AtomicWriteTest : public ::testing::Test {
+   protected:
+    fs::path dir;
+
+    void SetUp() override {
+        dir = fs::temp_directory_path() / "phig-atomic-test";
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+    }
+    void TearDown() override { fs::remove_all(dir); }
+
+    static void write_file(const fs::path& p, const std::string& c) {
+        std::ofstream o(p, std::ios::binary);
+        o << c;
+    }
+    static std::string read_file(const fs::path& p) {
+        std::ifstream in(p, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }
+    // Any leftover ".phig-tmp" file in the tree — a residue leak.
+    bool has_temp_residue() {
+        for (auto& e : fs::recursive_directory_iterator(dir))
+            if (e.is_regular_file() && e.path().string().find(".phig-tmp") != std::string::npos)
+                return true;
+        return false;
+    }
+};
+
+TEST_F(AtomicWriteTest, WriteFileProducesExactBytes) {
+    fs::path dst = dir / "sub/thumb.jpg";
+    std::string bytes = "\x00\x01JPEGDATA\xff";
+    ASSERT_TRUE(atomic_write_file(dst.string(), bytes.data(), bytes.size()));
+    ASSERT_TRUE(fs::exists(dst));
+    EXPECT_EQ(read_file(dst), bytes);
+    EXPECT_FALSE(has_temp_residue());
+}
+
+TEST_F(AtomicWriteTest, WriteFileToUnwritableDirLeavesNothing) {
+    // Parent path is a regular file, so create_directories/open fails.
+    fs::path blocker = dir / "blocker";
+    write_file(blocker, "x");
+    fs::path dst = blocker / "cant.jpg";  // blocker is a file, not a dir
+    std::string bytes = "data";
+    EXPECT_FALSE(atomic_write_file(dst.string(), bytes.data(), bytes.size()));
+    EXPECT_FALSE(fs::exists(dst));
+    EXPECT_FALSE(has_temp_residue());
+}
+
+TEST_F(AtomicWriteTest, CopyFileSucceedsAndLeavesNoTemp) {
+    fs::path src = dir / "src.bin", dst = dir / "out/dst.bin";
+    write_file(src, "payload-payload");
+    atomic_copy_file(src.string(), dst.string());
+    ASSERT_TRUE(fs::exists(dst));
+    EXPECT_EQ(read_file(dst), "payload-payload");
+    EXPECT_TRUE(fs::exists(src));  // copy, not move
+    EXPECT_FALSE(has_temp_residue());
+}
+
+TEST_F(AtomicWriteTest, CopyFileFailureDoesNotTruncateExistingDest) {
+    // A pre-existing good file at dest must survive if the copy fails, because
+    // the copy goes to a temp and only renames on success — dest is never
+    // opened for truncation. Force failure with a nonexistent source.
+    fs::path dst = dir / "important.jpg";
+    write_file(dst, "ORIGINAL-GOOD-DATA");
+    fs::path missing = dir / "does-not-exist.src";
+
+    EXPECT_THROW(atomic_copy_file(missing.string(), dst.string()), fs::filesystem_error);
+
+    // The original is intact, not truncated or replaced.
+    ASSERT_TRUE(fs::exists(dst));
+    EXPECT_EQ(read_file(dst), "ORIGINAL-GOOD-DATA");
+    EXPECT_FALSE(has_temp_residue());
+}
+
+TEST_F(AtomicWriteTest, CopyFileOverwritesExistingDestOnSuccess) {
+    fs::path src = dir / "new.bin", dst = dir / "old.bin";
+    write_file(src, "NEW");
+    write_file(dst, "OLD-AND-LONGER");
+    atomic_copy_file(src.string(), dst.string());
+    EXPECT_EQ(read_file(dst), "NEW");
+    EXPECT_FALSE(has_temp_residue());
+}

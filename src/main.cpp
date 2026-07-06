@@ -1113,8 +1113,9 @@ int cmd_organize(const OrganizeOptions& opts) {
                 // Update DB — file has moved
                 db.update_path(a.source, a.dest.string());
             } else {
-                fs::create_directories(a.dest.parent_path());
-                fs::copy_file(a.source, a.dest, fs::copy_options::overwrite_existing);
+                // Atomic copy: temp-then-rename so a failed/interrupted copy
+                // never leaves a truncated file or truncates a pre-existing one.
+                atomic_copy_file(a.source, a.dest.string());
                 // Track the copy in the DB
                 db.insert_copy(a.source, a.dest.string());
             }

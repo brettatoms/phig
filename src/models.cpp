@@ -25,15 +25,20 @@ bool download_file(const std::string& url, const std::string& dest) {
     std::cout << "Downloading: " << url << "\n";
     std::cout << "         to: " << dest << "\n";
 
-    std::ofstream file(dest, std::ios::binary);
+    // Download to a temp path and rename into place only on full success, so an
+    // interrupted transfer never leaves a partial model at `dest` that
+    // face_models_exist() would report as present.
+    std::string tmp = dest + ".phig-tmp";
+    std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
     if (!file) {
-        std::cerr << "Error: cannot create file: " << dest << "\n";
+        std::cerr << "Error: cannot create file: " << tmp << "\n";
         return false;
     }
 
     CURL* curl = curl_easy_init();
     if (!curl) {
         std::cerr << "Error: failed to initialize curl\n";
+        fs::remove(tmp);
         return false;
     }
 
@@ -47,11 +52,21 @@ bool download_file(const std::string& url, const std::string& dest) {
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_easy_cleanup(curl);
+    file.flush();
+    bool write_ok = file.good();
     file.close();
 
-    if (res != CURLE_OK || http_code != 200) {
+    if (res != CURLE_OK || http_code != 200 || !write_ok) {
         std::cerr << "Error: download failed (HTTP " << http_code << ")\n";
-        fs::remove(dest);
+        fs::remove(tmp);
+        return false;
+    }
+
+    std::error_code ec;
+    fs::rename(tmp, dest, ec);
+    if (ec) {
+        std::cerr << "Error: could not finalize download: " << ec.message() << "\n";
+        fs::remove(tmp);
         return false;
     }
 

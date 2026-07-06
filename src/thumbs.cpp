@@ -2,7 +2,6 @@
 
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -56,16 +55,12 @@ bool generate_thumb(const cv::Mat& img, const std::string& sha256) {
         return false;
     }
 
-    // Write to cache path
+    // Write to cache path atomically: a crash mid-write must not leave a
+    // truncated thumb that thumb_exists() would treat as valid forever.
     std::string path = get_thumb_path(sha256);
     if (path.empty()) return false;
 
-    fs::create_directories(fs::path(path).parent_path());
-
-    std::ofstream out(path, std::ios::binary);
-    if (!out) return false;
-    out.write(reinterpret_cast<const char*>(buf.data()), buf.size());
-    return out.good();
+    return atomic_write_file(path, buf.data(), buf.size());
 }
 
 bool generate_thumb(const std::string& image_path, const std::string& sha256) {

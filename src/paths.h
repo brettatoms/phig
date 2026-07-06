@@ -28,6 +28,17 @@ std::string expand_tilde(const std::string& path);
 // existing dest. Throws std::filesystem_error on failure.
 void move_file(const std::string& source, const std::string& dest);
 
+// Copy source to dest atomically: copy into a temp file in dest's directory,
+// then rename it into place only after the copy fully succeeds. A crash or
+// error mid-copy leaves the temp behind (best-effort removed) and never
+// truncates an existing dest. Creates dest's parent dirs. Throws on failure.
+void atomic_copy_file(const std::string& source, const std::string& dest);
+
+// Write `size` bytes atomically to dest via temp-then-rename (see above).
+// Returns false on any I/O error (temp is removed); true once dest holds the
+// complete bytes. Creates dest's parent dirs.
+bool atomic_write_file(const std::string& dest, const void* data, size_t size);
+
 // Resolve a destination path against the on_conflict policy ("skip",
 // "overwrite", or "rename"). A path conflicts if it exists on disk OR is already
 // present in `claimed` (destinations chosen by earlier files in the same run) —
