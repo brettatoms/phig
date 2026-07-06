@@ -118,6 +118,17 @@ TEST_F(DatabaseTest, UpdatePathWhenDestAlreadyExists) {
     EXPECT_EQ(*db->get_sha256("/dst/photo.jpg"), "sha_source");
 }
 
+TEST_F(DatabaseTest, SetTagCreatesAndResolvesTag) {
+    // Guards the checked tag-insert write: creating a new tag and applying it
+    // must still succeed (the write result is now verified, not ignored).
+    db->insert(make_image("/lib/x.jpg", "sx"));
+    int affected = db->set_tag({"/lib/x.jpg"}, "sunset", /*add=*/true);
+    EXPECT_EQ(affected, 1);
+    auto tags = db->get_tags_for_image("/lib/x.jpg");
+    ASSERT_EQ(tags.size(), 1u);
+    EXPECT_EQ(tags[0], "sunset");
+}
+
 TEST_F(DatabaseTest, UpdatePathSourceEqualsDestKeepsRow) {
     // A no-op move (old == new) must not delete the row. The DELETE-then-UPDATE
     // path would otherwise drop the row as a "stale dest" and repoint nothing.

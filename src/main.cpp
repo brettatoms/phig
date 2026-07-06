@@ -2136,9 +2136,12 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
                     std::lock_guard<std::mutex> lock(db_mutex);
                     int64_t image_id = db.get_image_id(img_info.path);
                     if (image_id >= 0) {
-                        db.delete_faces_for_image(image_id);
+                        // Delete-then-reinsert must be atomic: if the delete ran
+                        // outside the transaction and we were interrupted before
+                        // commit, the old faces would be gone with no re-detection.
                         db.begin_transaction();
                         try {
+                            db.delete_faces_for_image(image_id);
                             for (const auto& face : faces) {
                                 db.insert_face(image_id, face);
                                 int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());

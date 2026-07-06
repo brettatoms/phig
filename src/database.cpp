@@ -43,6 +43,20 @@ static const std::vector<std::string> migrations = {
     "ALTER TABLE images ADD COLUMN blur_score REAL;",
 };
 
+namespace {
+// Step a prepared DML statement to completion, finalize it, and throw if the
+// step did not report SQLITE_DONE — so a failed write (e.g. SQLITE_BUSY, a
+// constraint violation) surfaces as an error instead of being silently ignored
+// and reported as success. `stmt` is finalized in all paths.
+void step_write_or_throw(sqlite3* db, sqlite3_stmt* stmt, const char* what) {
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error(std::string(what) + ": " + sqlite3_errmsg(db));
+    }
+}
+}  // namespace
+
 Database::Database(const std::string& path) {
     // Ensure parent directory exists
     fs::path db_path(path);
@@ -104,8 +118,7 @@ void Database::set_schema_version(int version) {
                                  std::string(sqlite3_errmsg(db_)));
     }
     sqlite3_bind_int(stmt, 1, version);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+    step_write_or_throw(db_, stmt, "Failed to write schema version");
 }
 
 void Database::init_schema() {
@@ -768,10 +781,13 @@ int Database::set_tag(const std::vector<std::string>& paths, const std::string& 
     // On add, create the tag if it doesn't exist. Then resolve its id.
     if (add) {
         sqlite3_stmt* ins = nullptr;
-        sqlite3_prepare_v2(db_, "INSERT OR IGNORE INTO tags(name) VALUES (?)", -1, &ins, nullptr);
+        if (sqlite3_prepare_v2(db_, "INSERT OR IGNORE INTO tags(name) VALUES (?)", -1, &ins,
+                               nullptr) != SQLITE_OK) {
+            throw std::runtime_error("Failed to prepare tag insert: " +
+                                     std::string(sqlite3_errmsg(db_)));
+        }
         sqlite3_bind_text(ins, 1, tag.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_step(ins);
-        sqlite3_finalize(ins);
+        step_write_or_throw(db_, ins, "Failed to create tag");
     }
 
     int64_t tag_id = -1;
@@ -925,21 +941,21 @@ void Database::delete_faces_for_image(int64_t image_id) {
     const char* vec_sql =
         "DELETE FROM vec_faces WHERE face_id IN (SELECT id FROM faces WHERE image_id = ?)";
     sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, vec_sql, -1, &stmt, nullptr);
-    if (rc == SQLITE_OK) {
-        sqlite3_bind_int64(stmt, 1, image_id);
-        sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
+    if (sqlite3_prepare_v2(db_, vec_sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare vec_faces delete: " +
+                                 std::string(sqlite3_errmsg(db_)));
     }
+    sqlite3_bind_int64(stmt, 1, image_id);
+    step_write_or_throw(db_, stmt, "Failed to delete face vectors");
 
     // Delete from faces
     const char* sql = "DELETE FROM faces WHERE image_id = ?";
-    rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    if (rc == SQLITE_OK) {
-        sqlite3_bind_int64(stmt, 1, image_id);
-        sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare faces delete: " +
+                                 std::string(sqlite3_errmsg(db_)));
     }
+    sqlite3_bind_int64(stmt, 1, image_id);
+    step_write_or_throw(db_, stmt, "Failed to delete faces");
 }
 
 void Database::insert_face(int64_t image_id, const FaceInfo& face) {
