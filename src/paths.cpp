@@ -194,7 +194,11 @@ std::string resolve_conflict(const std::string& dest, const std::string& on_conf
     auto ext = d.extension().string();
     auto parent = d.parent_path();
     for (int i = 1; i < 10000; i++) {
-        fs::path candidate = parent / (stem + "_" + std::to_string(i) + ext);
+        std::string name = stem;
+        name += "_";
+        name += std::to_string(i);
+        name += ext;
+        fs::path candidate = parent / name;
         if (!taken(candidate) && !is_protected(candidate.string())) {
             claimed.insert(candidate.string());
             return candidate.string();
