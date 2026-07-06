@@ -28,7 +28,7 @@ class Database {
     // ---- Activity log (plan 020) ----
     // One operation_entries row: an inverse-able record of a single file change.
     struct OperationEntry {
-        std::string kind;          // "move" | "copy" | "purge_row"
+        std::string kind;  // "move" | "copy" | "purge_row"
         std::string src;
         std::string dst;           // "" when N/A (purge)
         std::string restore_json;  // "" unless kind == "purge_row"

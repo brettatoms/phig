@@ -108,6 +108,11 @@ tests/
 - **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.
 - **Match/filter system** — `--match` includes (repeatable), `--filter` excludes (repeatable), filter wins on overlap.
 - **Duplicates compare against full DB** — `--match` filters which groups to show, not which files to compare.
+- **Activity log** — `mv`/`cp`/`purge` record an operation plus per-file entries in
+  `phig.db` (append-only; undo is a future logged operation). Each entry commits in
+  the same transaction as the DB change it describes. Disable with `[log] enabled =
+  false`; cap size with `[log] max_entries` (default 100000, `0` = unlimited, oldest
+  operations pruned first). `--dry-run` writes nothing.
 
 ## Plans
 

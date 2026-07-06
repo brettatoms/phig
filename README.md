@@ -118,6 +118,10 @@ threshold = 5          # 0-64
 
 [faces]
 threshold = 0.6
+
+[log]
+enabled = true         # record mv/cp/purge in an activity log for audit/rollback
+max_entries = 100000   # cap log size; 0 = unlimited, oldest operations pruned first
 ```
 
 Destructive or per-invocation options are deliberately **not** configurable and

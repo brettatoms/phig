@@ -20,8 +20,9 @@ struct Config {
     std::optional<std::string> duplicates_type;  // "exact" | "near" | "all"
     std::optional<int> duplicates_threshold;     // 0-64
     std::optional<double> faces_threshold;
-    std::optional<bool> log_enabled;     // [log] enabled — default true (unset)
-    std::optional<int> log_max_entries;  // [log] max_entries — default 100000 (unset); 0 = unlimited
+    std::optional<bool> log_enabled;  // [log] enabled — default true (unset)
+    std::optional<int>
+        log_max_entries;  // [log] max_entries — default 100000 (unset); 0 = unlimited
 };
 
 // Load configuration from an INI file at `path`.

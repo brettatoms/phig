@@ -78,12 +78,23 @@ std::string json_escape(const std::string& s) {
     std::string o;
     for (char c : s) {
         switch (c) {
-            case '"': o += "\\\""; break;
-            case '\\': o += "\\\\"; break;
-            case '\n': o += "\\n"; break;
-            case '\r': o += "\\r"; break;
-            case '\t': o += "\\t"; break;
-            default: o += c;
+            case '"':
+                o += "\\\"";
+                break;
+            case '\\':
+                o += "\\\\";
+                break;
+            case '\n':
+                o += "\\n";
+                break;
+            case '\r':
+                o += "\\r";
+                break;
+            case '\t':
+                o += "\\t";
+                break;
+            default:
+                o += c;
         }
     }
     return o;
@@ -724,9 +735,9 @@ int Database::delete_paths_logged(const std::vector<std::string>& paths, int64_t
         throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
     };
 
-    static const char* cols[] = {"path",        "filename",    "extension",   "file_size",
-                                 "created_at",  "modified_at", "sha256",      "phash",
-                                 "width",       "height",      "metadata",    "media_type",
+    static const char* cols[] = {"path",        "filename",    "extension", "file_size",
+                                 "created_at",  "modified_at", "sha256",    "phash",
+                                 "width",       "height",      "metadata",  "media_type",
                                  "duration_ms", "gallery",     "blur_score"};
     const int kNumCols = 15;
 
