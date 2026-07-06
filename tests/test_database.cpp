@@ -184,6 +184,45 @@ TEST_F(DatabaseTest, GetPathsWithPrefix) {
     EXPECT_EQ(paths.size(), 0);
 }
 
+TEST_F(DatabaseTest, GetPathsWithPrefixTreatsUnderscoreLiterally) {
+    // '_' is a LIKE single-char wildcard. Under the old LIKE query, prefix
+    // "/a_b/" would also match "/aXb/". Range comparison treats it literally.
+    db->insert(make_image("/a_b/photo.jpg", "s1"));
+    db->insert(make_image("/aXb/photo.jpg", "s2"));  // sibling that '_' would wrongly match
+    db->insert(make_image("/a_b/more.jpg", "s3"));
+
+    auto paths = db->get_paths_with_prefix("/a_b/");
+    EXPECT_EQ(paths.size(), 2);  // only the two /a_b/ rows, not /aXb/
+    for (const auto& p : paths) EXPECT_NE(p, "/aXb/photo.jpg");
+}
+
+TEST_F(DatabaseTest, GetPathsWithPrefixTreatsPercentLiterally) {
+    // '%' is a LIKE any-run wildcard. Prefix "/50%/" must match only that dir.
+    db->insert(make_image("/50%/a.jpg", "s1"));
+    db->insert(make_image("/50-off/a.jpg", "s2"));
+
+    auto paths = db->get_paths_with_prefix("/50%/");
+    ASSERT_EQ(paths.size(), 1);
+    EXPECT_EQ(paths[0], "/50%/a.jpg");
+}
+
+TEST_F(DatabaseTest, GetPathsWithPrefixBoundaryDoesNotMatchSiblingSharingPrefix) {
+    // "/photos" prefix must not swallow "/photos-backup/"; the range upper bound
+    // stops exactly at the prefix boundary.
+    db->insert(make_image("/photos/a.jpg", "s1"));
+    db->insert(make_image("/photos-backup/a.jpg", "s2"));
+
+    auto paths = db->get_paths_with_prefix("/photos/");
+    ASSERT_EQ(paths.size(), 1);
+    EXPECT_EQ(paths[0], "/photos/a.jpg");
+}
+
+TEST_F(DatabaseTest, GetPathsWithPrefixEmptyReturnsAll) {
+    db->insert(make_image("/x/a.jpg", "s1"));
+    db->insert(make_image("/y/b.jpg", "s2"));
+    EXPECT_EQ(db->get_paths_with_prefix("").size(), 2);
+}
+
 TEST_F(DatabaseTest, DeletePaths) {
     db->insert(make_image("/test/a.jpg", "sha1"));
     db->insert(make_image("/test/b.jpg", "sha2"));

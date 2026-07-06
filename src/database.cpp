@@ -455,15 +455,39 @@ void Database::update_path(const std::string& old_path, const std::string& new_p
     exec("COMMIT");
 }
 
+// Smallest string strictly greater than every string beginning with `prefix`:
+// increment the last byte. Returns nullopt when no finite upper bound exists
+// (empty prefix, or prefix is all 0xFF), meaning "no upper bound".
+static std::optional<std::string> prefix_upper_bound(const std::string& prefix) {
+    std::string upper = prefix;
+    while (!upper.empty()) {
+        auto& last = reinterpret_cast<unsigned char&>(upper.back());
+        if (last != 0xFF) {
+            last++;
+            return upper;
+        }
+        upper.pop_back();  // 0xFF can't be incremented; drop and carry
+    }
+    return std::nullopt;
+}
+
 std::vector<std::string> Database::get_paths_with_prefix(const std::string& prefix) {
-    const char* sql = "SELECT path FROM images WHERE path LIKE ? || '%'";
+    // Range comparison, NOT LIKE: a path prefix can contain '_' or '%' (very
+    // common in real directory names), which LIKE would treat as wildcards and
+    // over-match sibling rows. `path >= prefix AND path < upper` is exact and
+    // still uses the idx_path index.
+    auto upper = prefix_upper_bound(prefix);
+    std::string sql = "SELECT path FROM images WHERE path >= ?";
+    if (upper) sql += " AND path < ?";
+
     sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
         throw std::runtime_error("Failed to prepare query: " + std::string(sqlite3_errmsg(db_)));
     }
 
     sqlite3_bind_text(stmt, 1, prefix.c_str(), -1, SQLITE_TRANSIENT);
+    if (upper) sqlite3_bind_text(stmt, 2, upper->c_str(), -1, SQLITE_TRANSIENT);
 
     std::vector<std::string> paths;
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
