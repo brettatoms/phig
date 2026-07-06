@@ -1143,8 +1143,8 @@ int cmd_organize(const OrganizeOptions& opts) {
                     try {
                         move_file(a.dest.string(), a.source);
                     } catch (const std::exception& back) {
-                        std::cerr << "\nWarning: DB update failed AND could not move "
-                                  << a.dest << " back to " << a.source << ": " << back.what()
+                        std::cerr << "\nWarning: DB update failed AND could not move " << a.dest
+                                  << " back to " << a.source << ": " << back.what()
                                   << "\n  File is at the destination but the database still lists"
                                      " the source; rescan to reconcile.\n";
                     }
@@ -1894,8 +1894,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
             }
         }
 
-        std::cout << (dry_run ? "Would remove " : "Removed ") << removed
-                  << " orphaned thumbnails\n"
+        std::cout << (dry_run ? "Would remove " : "Removed ") << removed << " orphaned thumbnails\n"
                   << "Kept " << kept << " thumbnails\n";
         if (skipped_foreign > 0) {
             std::cout << "Left untouched " << skipped_foreign

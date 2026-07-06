@@ -1,5 +1,4 @@
 #include <gtest/gtest.h>
-
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -347,8 +346,8 @@ TEST_F(ResolveConflictTest, OverwriteDoesNotClobberProtectedSource) {
     auto protect = [&](const std::string& p) { return p == dst.string(); };
 
     std::string r = resolve_conflict(dst.string(), "overwrite", claimed, protect);
-    EXPECT_NE(r, dst.string());                   // did NOT choose the protected path
-    EXPECT_EQ(r, (dir / "IMG_1.jpg").string());   // renamed around it
+    EXPECT_NE(r, dst.string());                  // did NOT choose the protected path
+    EXPECT_EQ(r, (dir / "IMG_1.jpg").string());  // renamed around it
 }
 
 // audit #4: under overwrite, an untracked on-disk file at the dest is protected
@@ -370,9 +369,7 @@ TEST_F(ResolveConflictTest, RenameSkipsProtectedCandidates) {
     fs::path dst = dir / "IMG.jpg";
     touch(dst);
     fs::path taken1 = dir / "IMG_1.jpg";
-    auto protect = [&](const std::string& p) {
-        return p == dst.string() || p == taken1.string();
-    };
+    auto protect = [&](const std::string& p) { return p == dst.string() || p == taken1.string(); };
     EXPECT_EQ(resolve_conflict(dst.string(), "rename", claimed, protect),
               (dir / "IMG_2.jpg").string());
 }
@@ -451,7 +448,7 @@ TEST_F(SafeToDeleteTest, PartialUnmountKeepsUnmountedSubtreeDeletesRealMissing) 
     // Only the genuinely-deleted file (present parent) is removed.
     ASSERT_EQ(del.size(), 1u);
     EXPECT_TRUE(contains(del, real_deleted.string()));
-    EXPECT_FALSE(contains(del, unmounted.string()));   // unmounted subtree preserved
+    EXPECT_FALSE(contains(del, unmounted.string()));  // unmounted subtree preserved
     EXPECT_FALSE(contains(del, present1.string()));
     EXPECT_FALSE(contains(del, present2.string()));
 }

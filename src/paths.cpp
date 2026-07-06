@@ -147,7 +147,7 @@ std::vector<std::string> paths_safe_to_delete(const std::vector<std::string>& db
     for (const auto& p : db_paths) {
         std::error_code ec;
         bool exists = fs::exists(p, ec);
-        if (ec) continue;   // existence check errored (EACCES/EIO) -> keep
+        if (ec) continue;      // existence check errored (EACCES/EIO) -> keep
         if (exists) continue;  // file still there -> keep
 
         // File is gone. Only delete if its parent directory still exists — a
@@ -166,9 +166,7 @@ std::string resolve_conflict(const std::string& dest, const std::string& on_conf
                              std::set<std::string>& claimed,
                              const std::function<bool(const std::string&)>& is_protected) {
     namespace fs = std::filesystem;
-    auto taken = [&](const fs::path& p) {
-        return fs::exists(p) || claimed.count(p.string()) > 0;
-    };
+    auto taken = [&](const fs::path& p) { return fs::exists(p) || claimed.count(p.string()) > 0; };
 
     fs::path d(dest);
     // A free, unprotected path is chosen directly. A protected path (another

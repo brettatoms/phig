@@ -155,7 +155,10 @@ TEST_F(DatabaseTest, DeletePathsCascadesTagsAndFaces) {
 
     FaceInfo face;
     face.embedding.fill(0.5f);
-    face.x = 1; face.y = 2; face.width = 3; face.height = 4;
+    face.x = 1;
+    face.y = 2;
+    face.width = 3;
+    face.height = 4;
     int64_t img_id = db->get_image_id("/lib/portrait.jpg");
     ASSERT_GE(img_id, 0);
     db->insert_face(img_id, face);
@@ -168,8 +171,8 @@ TEST_F(DatabaseTest, DeletePathsCascadesTagsAndFaces) {
     // Image row gone; the other image and its tag untouched.
     EXPECT_FALSE(db->get_modified_at("/lib/portrait.jpg").has_value());
     EXPECT_TRUE(db->get_modified_at("/lib/keep.jpg").has_value());
-    EXPECT_TRUE(db->get_tags_for_image("/lib/portrait.jpg").empty());   // cascaded away
-    EXPECT_FALSE(db->get_tags_for_image("/lib/keep.jpg").empty());      // untouched
+    EXPECT_TRUE(db->get_tags_for_image("/lib/portrait.jpg").empty());  // cascaded away
+    EXPECT_FALSE(db->get_tags_for_image("/lib/keep.jpg").empty());     // untouched
 
     // The orphaned face vector must be gone — otherwise search returns a hit
     // that JOINs to a nonexistent face row.

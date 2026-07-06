@@ -117,12 +117,13 @@ TEST_F(ThumbsTest, CacheDirectoryXDG) { EXPECT_EQ(thumbs_dir(), temp_dir + "/phi
 TEST_F(ThumbsTest, ThumbnailNameAcceptsValidSha256Jpg) {
     std::string valid = std::string(64, 'a') + ".jpg";  // 64 hex + .jpg
     EXPECT_TRUE(is_thumbnail_filename(valid));
-    EXPECT_TRUE(is_thumbnail_filename("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.jpg"));
+    EXPECT_TRUE(is_thumbnail_filename(
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.jpg"));
 }
 
 TEST_F(ThumbsTest, ThumbnailNameRejectsForeignFiles) {
     EXPECT_FALSE(is_thumbnail_filename("README.txt"));
-    EXPECT_FALSE(is_thumbnail_filename("vacation.jpg"));                 // not hex, wrong length
+    EXPECT_FALSE(is_thumbnail_filename("vacation.jpg"));  // not hex, wrong length
     EXPECT_FALSE(is_thumbnail_filename("important-document.pdf"));
     EXPECT_FALSE(is_thumbnail_filename(std::string(64, 'a')));           // no extension
     EXPECT_FALSE(is_thumbnail_filename(std::string(64, 'a') + ".png"));  // wrong extension
