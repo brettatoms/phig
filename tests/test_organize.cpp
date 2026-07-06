@@ -135,6 +135,33 @@ TEST(GlobTest, MultipleStars) {
     EXPECT_FALSE(glob_match("*.*", "noextension"));
 }
 
+TEST(GlobTest, EscapedSpace) {
+    // Shell tab-completion escapes spaces; the backslash reaches the matcher
+    // literally when the arg is single-quoted, and must match a plain space.
+    EXPECT_TRUE(glob_match("Brett\\ s*", "Brett s Samsung"));
+    EXPECT_TRUE(glob_match("a\\ b", "a b"));
+    EXPECT_FALSE(glob_match("a\\ b", "ab"));
+}
+
+TEST(GlobTest, EscapedWildcards) {
+    // Escaped * and ? match the literal characters, not wildcards.
+    EXPECT_TRUE(glob_match("a\\*b", "a*b"));
+    EXPECT_FALSE(glob_match("a\\*b", "axb"));
+    EXPECT_TRUE(glob_match("a\\?b", "a?b"));
+    EXPECT_FALSE(glob_match("a\\?b", "axb"));
+}
+
+TEST(GlobTest, EscapedBackslash) {
+    EXPECT_TRUE(glob_match("a\\\\b", "a\\b"));
+    EXPECT_FALSE(glob_match("a\\\\b", "ab"));
+}
+
+TEST(GlobTest, TrailingBackslash) {
+    // A dangling backslash at end of pattern matches a literal backslash.
+    EXPECT_TRUE(glob_match("a\\", "a\\"));
+    EXPECT_FALSE(glob_match("a\\", "a"));
+}
+
 // ---- Filter tests ----
 
 TEST(FilterTest, NoFiltersPassesAll) { EXPECT_TRUE(passes_filters("anything.jpg", {}, {})); }
