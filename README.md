@@ -1,16 +1,19 @@
 # phig
 
-An image management power tool. Scan directories of images, build a metadata database, detect duplicates, recognize faces, and organize files into a clean folder structure.
+A command-line tool for managing image and video collections. Scan directories, build a metadata database, detect duplicates, recognize faces, and organize files into a folder structure.
 
 ## Features
 
-- **Scan** — recursively scan directories, computing SHA256 + perceptual hashes, extracting EXIF data, and storing everything in SQLite
-- **Duplicates** — find exact copies (same SHA256) and visually similar images (perceptual hash)
-- **Copy/Move** — copy or move images into a structured layout (e.g., `YYYY/MM/`) with configurable format strings, conflict resolution, and dry-run mode
-- **Search** — query the database by filename, date, EXIF data, file size, visual similarity, or face matching
-- **Face Recognition** — detect faces, compute embeddings, name people, and search by person
+- **Scan** — recursively scan directories, computing SHA256 + perceptual hashes, extracting EXIF/container metadata, and storing everything in SQLite. Handles images and video.
+- **Duplicates** — find exact copies (same SHA256) and visually similar files (perceptual hash)
+- **Copy/Move** — copy or move files into a structured layout (e.g., `YYYY/MM/`) with configurable format strings, conflict resolution, and dry-run mode
+- **Search** — query the database by filename, date, EXIF data, file size, video duration, sharpness, tags, gallery, visual similarity, or face
+- **Face recognition** — detect faces, compute embeddings, name people, and search by person
+- **Tags, galleries, favorites** — label files with tags, assign a gallery, mark favorites, and use them in search and organize
+- **Thumbnails** — generate 512px JPEG thumbnails cached by SHA256
+- **Activity log** — record `mv`/`cp`/`purge` in the database for an audit trail
 - **Purge** — remove entries from the database by glob pattern
-- **Match/filter** — repeatable `--match` and `--filter` globs across all commands, matching against full paths, with filter taking precedence
+- **Match/filter** — repeatable `--match` and `--filter` globs across commands, matching against full paths, with filter taking precedence
 
 ## Building
 
@@ -83,8 +86,8 @@ phig follows the XDG base directory convention on all platforms (honoring
 | Thumbnails | `~/.cache/phig/thumbs/` |
 | Config file | `~/.config/phig/config.ini` |
 
-The database is designed to be the single source of truth for your image
-collection — reusable by other tools, a future API, or a GUI.
+The database is the source of truth for your collection; it always reflects the
+current file locations so other tools can read it.
 
 ### Config file
 
@@ -140,10 +143,15 @@ Scan directories to build the image database:
 
 ```bash
 phig scan ~/Photos --recursive
-phig scan ~/Photos --recursive --force          # re-hash everything
+phig scan ~/Photos --recursive --force          # re-process everything
 phig scan ~/Photos --recursive --faces          # also detect faces
+phig scan ~/Photos --recursive --thumbs         # also generate thumbnails
+phig scan ~/Photos --media image                # skip video files
 phig scan ~/Photos --faces --parallel 2         # control parallelism
 ```
+
+Scanning handles images and video. `--force` accepts `hash`, `thumbs`, `faces`,
+or `all` (bare `--force` means all) to re-process only what you name.
 
 ### Finding Duplicates
 
@@ -164,6 +172,18 @@ phig search --after 2023-01-01 --before 2024-01-01
 phig search --camera "iPhone"
 phig search --min-size 5MB
 phig search --match "*/Vacation/*"
+
+# By media type and video duration
+phig search --media video --min-duration 30s --max-duration 5m
+
+# By sharpness (blur detection)
+phig search --blurry                            # blur_score <= 100
+phig search --min-sharpness 500                 # only sharp images
+
+# By tag, gallery, or favorite
+phig search --tag landscape --tag edited        # must have all listed tags
+phig search --gallery "Trip 2024"
+phig search --fav
 
 # Visual similarity (provide a reference image)
 phig search --similar reference.jpg
@@ -224,6 +244,42 @@ phig face rebuild --match "*/2024/*"
 
 New scans with `--faces` automatically label detected faces that match known people.
 
+### Thumbnails
+
+Thumbnails are 512px JPEGs cached under `~/.cache/phig/thumbs/`, keyed by SHA256
+so identical files share one thumbnail.
+
+```bash
+phig thumbs rebuild                             # generate missing thumbnails
+phig thumbs rebuild --match "*/2024/*"          # only for matching files
+phig thumbs clean                               # remove orphaned thumbnails
+```
+
+You can also generate thumbnails during a scan with `phig scan --thumbs`.
+
+### Tags, Galleries, and Favorites
+
+Tag files with any number of labels, assign each file to at most one gallery, and
+mark favorites. All three are searchable (`--tag`, `--gallery`, `--fav`) and
+usable as organize format tokens (`%gallery`, `%fav`).
+
+```bash
+# Tags (any number per file)
+phig tag add landscape --match "*/Nature/*"
+phig tag remove landscape --match "*/City/*"
+phig tag list                                   # tags and counts
+
+# Galleries (one per file)
+phig gallery set "Trip 2024" --match "*/June/*"
+phig gallery clear --match "*/June/*"
+phig gallery list
+
+# Favorites (a built-in tag)
+phig fav add --match "*/Best/*"
+phig fav remove --match "*/Best/*"
+phig fav list
+```
+
 ### Organizing Files
 
 Copy or move images into a structured folder layout:
@@ -238,12 +294,20 @@ phig cp ~/Photos/Organized --format "%Y/%m/%camera/%original"
 # Move with filters
 phig mv ~/Photos/Organized --match "*.jpg" --filter "*_copy*"
 
-# Handle conflicts
-phig cp ~/Photos/Organized --on-conflict rename   # auto-rename duplicates
-phig cp ~/Photos/Organized --on-conflict overwrite
+# Handle conflicts (default: skip)
+phig cp ~/Photos/Organized --on-conflict skip     # skip if the path is taken
+phig cp ~/Photos/Organized --on-conflict rename   # auto-rename around conflicts
 ```
 
-Format tokens: `%Y` (year), `%m` (month), `%d` (day), `%camera` (EXIF model), `%make` (EXIF make), `%original` (original filename).
+Format tokens: `%Y` (year), `%m` (month), `%d` (day), `%camera` (EXIF model), `%make` (EXIF make), `%gallery` (assigned gallery), `%fav` (favorite state), `%original` (original filename).
+
+`--on-conflict overwrite` will not destroy an existing file: if the destination
+path is already taken on disk, it renames around the conflict rather than
+overwriting.
+
+`mv`, `cp`, and `purge` are recorded in an activity log in the database for an
+audit trail. Disable it with `[log] enabled = false`; cap its size with
+`[log] max_entries`.
 
 ### Purging Database Entries
 
