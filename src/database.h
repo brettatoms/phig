@@ -58,6 +58,10 @@ class Database {
     std::optional<std::string> get_sha256(const std::string& path);
 
     void update_path(const std::string& old_path, const std::string& new_path);
+    // Transaction-free core of update_path: assumes a transaction is already
+    // open (caller owns BEGIN/COMMIT). Throws on failure. Lets a caller commit
+    // the path change and a log entry together.
+    void update_path_in_txn(const std::string& old_path, const std::string& new_path);
 
     // Returns all paths in the DB that start with the given prefix
     std::vector<std::string> get_paths_with_prefix(const std::string& prefix);

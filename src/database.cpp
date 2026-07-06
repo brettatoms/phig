@@ -569,7 +569,7 @@ std::optional<std::string> Database::get_sha256(const std::string& path) {
     return result;
 }
 
-void Database::update_path(const std::string& old_path, const std::string& new_path) {
+void Database::update_path_in_txn(const std::string& old_path, const std::string& new_path) {
     // No-op move (source == dest): the DELETE-then-UPDATE below would delete the
     // row (as the "stale dest") and then find nothing to repoint, losing the
     // entry for a file that's still on disk. Nothing to do here.
@@ -578,11 +578,8 @@ void Database::update_path(const std::string& old_path, const std::string& new_p
     // The file has just been moved to new_path, overwriting whatever was there.
     // If a row already tracks new_path (e.g. it was scanned in a prior run), that
     // row is now stale: drop it first so repointing old_path doesn't hit the
-    // UNIQUE(path) constraint. Do both in one transaction so it's all-or-nothing.
-    exec("BEGIN TRANSACTION");
-
+    // UNIQUE(path) constraint. Assumes the caller has opened a transaction.
     auto fail = [&](const std::string& what) {
-        exec("ROLLBACK");
         throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
     };
 
@@ -610,8 +607,18 @@ void Database::update_path(const std::string& old_path, const std::string& new_p
         sqlite3_finalize(stmt);
         if (rc != SQLITE_DONE) fail("Failed to update path");
     }
+}
 
-    exec("COMMIT");
+void Database::update_path(const std::string& old_path, const std::string& new_path) {
+    if (old_path == new_path) return;
+    exec("BEGIN TRANSACTION");
+    try {
+        update_path_in_txn(old_path, new_path);
+        exec("COMMIT");
+    } catch (...) {
+        exec("ROLLBACK");
+        throw;
+    }
 }
 
 // Smallest string strictly greater than every string beginning with `prefix`:

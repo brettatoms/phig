@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstddef>
+#include <ctime>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -41,6 +42,26 @@ namespace fs = std::filesystem;
 // Graceful shutdown on Ctrl-C
 static volatile std::sig_atomic_t g_interrupted = 0;
 static void sigint_handler(int) { g_interrupted = 1; }
+
+// ISO-8601 UTC timestamp for activity-log operation rows (plan 020).
+static std::string iso_utc_now() {
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+    gmtime_r(&t, &tm);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buf;
+}
+
+// Full invocation string, stored on the operation row for the audit trail.
+static std::string join_argv(int argc, char* argv[]) {
+    std::string s;
+    for (int i = 0; i < argc; i++) {
+        if (i) s += ' ';
+        s += argv[i];
+    }
+    return s;
+}
 
 // ---- Helpers ----
 
@@ -916,6 +937,9 @@ struct OrganizeOptions {
     bool dry_run = false;
     std::string on_conflict = "skip";  // skip, overwrite, rename
     std::string db_path;
+    bool log_enabled = true;
+    int log_max_entries = 100000;
+    std::string argv_str;  // full invocation, for the audit trail
 };
 
 namespace {
@@ -1126,6 +1150,14 @@ int cmd_organize(const OrganizeOptions& opts) {
     g_interrupted = 0;
     auto prev_handler = std::signal(SIGINT, sigint_handler);
 
+    // Open a log operation for this run unless logging is disabled. Entries are
+    // appended per file inside the same transaction as each DB change (plan 020).
+    int64_t op_id = 0;
+    const bool logging = opts.log_enabled;
+    if (logging) {
+        op_id = db.log_begin_operation(opts.is_move ? "mv" : "cp", opts.argv_str, iso_utc_now());
+    }
+
     size_t done = 0, errs = 0;
     for (const auto& a : actions) {
         if (g_interrupted) break;
@@ -1134,11 +1166,21 @@ int cmd_organize(const OrganizeOptions& opts) {
         try {
             if (opts.is_move) {
                 move_file(a.source, a.dest.string());
-                // Update DB — file has moved. If this fails after the file has
-                // already moved, compensate by moving it back so disk and DB
-                // stay consistent (the row still points at the source).
+                // Update DB — file has moved. Commit the path change and the log
+                // entry together so disk and DB (incl. the log) never disagree.
+                // If it fails after the file has already moved, compensate by
+                // moving it back so the row still matches the source on disk.
                 try {
-                    db.update_path(a.source, a.dest.string());
+                    db.begin_transaction();
+                    try {
+                        db.update_path_in_txn(a.source, a.dest.string());
+                        if (logging)
+                            db.log_add_entry(op_id, {"move", a.source, a.dest.string(), ""});
+                        db.commit_transaction();
+                    } catch (...) {
+                        db.rollback_transaction();
+                        throw;
+                    }
                 } catch (...) {
                     try {
                         move_file(a.dest.string(), a.source);
@@ -1151,11 +1193,40 @@ int cmd_organize(const OrganizeOptions& opts) {
                     throw;  // report the original DB failure below
                 }
             } else {
-                // Atomic copy: temp-then-rename so a failed/interrupted copy
-                // never leaves a truncated file or truncates a pre-existing one.
-                atomic_copy_file(a.source, a.dest.string());
-                // Track the copy in the DB
-                db.insert_copy(a.source, a.dest.string());
+                // Copy to disk atomically. On the overwrite path we may land on a
+                // pre-existing file; back it up first (a same-dir rename — no byte
+                // copy) so a DB failure can restore it instead of leaving an
+                // orphan or destroying the prior file (plan 020, option B).
+                const std::string& dst = a.dest.string();
+                bool had_existing = fs::exists(dst);
+                std::string backup;
+                if (had_existing) {
+                    backup = dst + ".phig-bak";
+                    fs::rename(dst, backup);
+                }
+                try {
+                    atomic_copy_file(a.source, dst);
+                    db.begin_transaction();
+                    try {
+                        db.insert_copy(a.source, dst);
+                        if (logging) db.log_add_entry(op_id, {"copy", a.source, dst, ""});
+                        db.commit_transaction();
+                    } catch (...) {
+                        db.rollback_transaction();
+                        throw;
+                    }
+                } catch (...) {
+                    // Undo the disk change: restore the prior file if we backed
+                    // one up, otherwise remove the copy we just made.
+                    std::error_code ec;
+                    fs::remove(dst, ec);
+                    if (had_existing) fs::rename(backup, dst, ec);
+                    throw;
+                }
+                if (had_existing) {
+                    std::error_code ec;
+                    fs::remove(backup, ec);  // success — drop the backup
+                }
             }
             done++;
 
@@ -1167,6 +1238,11 @@ int cmd_organize(const OrganizeOptions& opts) {
     }
 
     std::signal(SIGINT, prev_handler);
+
+    if (logging) {
+        db.log_finish_operation(op_id, g_interrupted ? "interrupted" : "completed");
+        db.log_prune(opts.log_max_entries);
+    }
 
     std::cout << "\n\n";
     if (g_interrupted) std::cout << "Interrupted. Stopped at a file boundary.\n";
@@ -2687,6 +2763,9 @@ int main(int argc, char* argv[]) {
         opts.db_path = default_db_path();
         // Seed from config; CLI flags below override.
         if (cfg.organize_format) opts.format = *cfg.organize_format;
+        if (cfg.log_enabled) opts.log_enabled = *cfg.log_enabled;
+        if (cfg.log_max_entries) opts.log_max_entries = *cfg.log_max_entries;
+        opts.argv_str = join_argv(argc, argv);
 
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
