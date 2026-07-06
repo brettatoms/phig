@@ -1118,16 +1118,35 @@ int cmd_organize(const OrganizeOptions& opts) {
         return 0;
     }
 
-    // Execute
+    // Execute. Handle SIGINT so Ctrl-C stops cleanly at a file boundary rather
+    // than killing the process between a move and its DB update.
+    g_interrupted = 0;
+    auto prev_handler = std::signal(SIGINT, sigint_handler);
+
     size_t done = 0, errs = 0;
     for (const auto& a : actions) {
+        if (g_interrupted) break;
         if (a.skipped) continue;
 
         try {
             if (opts.is_move) {
                 move_file(a.source, a.dest.string());
-                // Update DB — file has moved
-                db.update_path(a.source, a.dest.string());
+                // Update DB — file has moved. If this fails after the file has
+                // already moved, compensate by moving it back so disk and DB
+                // stay consistent (the row still points at the source).
+                try {
+                    db.update_path(a.source, a.dest.string());
+                } catch (...) {
+                    try {
+                        move_file(a.dest.string(), a.source);
+                    } catch (const std::exception& back) {
+                        std::cerr << "\nWarning: DB update failed AND could not move "
+                                  << a.dest << " back to " << a.source << ": " << back.what()
+                                  << "\n  File is at the destination but the database still lists"
+                                     " the source; rescan to reconcile.\n";
+                    }
+                    throw;  // report the original DB failure below
+                }
             } else {
                 // Atomic copy: temp-then-rename so a failed/interrupted copy
                 // never leaves a truncated file or truncates a pre-existing one.
@@ -1144,7 +1163,11 @@ int cmd_organize(const OrganizeOptions& opts) {
         }
     }
 
-    std::cout << "\n\nDone.\n"
+    std::signal(SIGINT, prev_handler);
+
+    std::cout << "\n\n";
+    if (g_interrupted) std::cout << "Interrupted. Stopped at a file boundary.\n";
+    std::cout << "Done.\n"
               << "  Done: " << done << "\n"
               << "  Skipped: " << to_skip << "\n"
               << "  Errors: " << errs << "\n";
