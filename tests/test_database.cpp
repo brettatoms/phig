@@ -645,3 +645,24 @@ TEST_F(DatabaseTest, LogPruneUnlimitedIsNoOp) {
     EXPECT_EQ(sqlite3_column_int(s, 0), 1);
     sqlite3_finalize(s);
 }
+
+TEST_F(DatabaseTest, PurgeLogsRestorableSnapshot) {
+    db->insert(make_image("/x/a.jpg", "shaA"));
+    int64_t op = db->log_begin_operation("purge", "phig purge --match *", "2026-07-06T00:00:00Z");
+    int n = db->delete_paths_logged({"/x/a.jpg"}, op);
+    db->log_finish_operation(op, "completed");
+    EXPECT_EQ(n, 1);
+    EXPECT_EQ(db->count(), 0);
+
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(),
+        "SELECT kind, src, restore_json FROM operation_entries WHERE op_id=?", -1, &s, nullptr);
+    sqlite3_bind_int64(s, 1, op);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)), "purge_row");
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(s, 1)), "/x/a.jpg");
+    std::string restore = reinterpret_cast<const char*>(sqlite3_column_text(s, 2));
+    EXPECT_NE(restore.find("shaA"), std::string::npos);
+    EXPECT_NE(restore.find("/x/a.jpg"), std::string::npos);
+    sqlite3_finalize(s);
+}

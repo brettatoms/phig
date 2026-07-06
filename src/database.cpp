@@ -72,6 +72,22 @@ void step_write_or_throw(sqlite3* db, sqlite3_stmt* stmt, const char* what) {
         throw std::runtime_error(std::string(what) + ": " + sqlite3_errmsg(db));
     }
 }
+
+// Escape a string for embedding in the hand-built restore_json snapshot.
+std::string json_escape(const std::string& s) {
+    std::string o;
+    for (char c : s) {
+        switch (c) {
+            case '"': o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n"; break;
+            case '\r': o += "\\r"; break;
+            case '\t': o += "\\t"; break;
+            default: o += c;
+        }
+    }
+    return o;
+}
 }  // namespace
 
 Database::Database(const std::string& path) {
@@ -698,6 +714,78 @@ void Database::delete_paths(const std::vector<std::string>& paths) {
 
     sqlite3_finalize(stmt);
     exec("COMMIT");
+}
+
+int Database::delete_paths_logged(const std::vector<std::string>& paths, int64_t op_id) {
+    if (paths.empty()) return 0;
+    exec("BEGIN TRANSACTION");
+    auto fail = [&](const std::string& what) {
+        exec("ROLLBACK");
+        throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
+    };
+
+    static const char* cols[] = {"path",        "filename",    "extension",   "file_size",
+                                 "created_at",  "modified_at", "sha256",      "phash",
+                                 "width",       "height",      "metadata",    "media_type",
+                                 "duration_ms", "gallery",     "blur_score"};
+    const int kNumCols = 15;
+
+    int deleted = 0;
+    for (const auto& path : paths) {
+        // Snapshot the row (the columns insert/insert_copy carry) for restore.
+        std::string restore;
+        {
+            const char* sel =
+                "SELECT path, filename, extension, file_size, created_at, modified_at, "
+                "sha256, phash, width, height, metadata, media_type, duration_ms, gallery, "
+                "blur_score FROM images WHERE path = ?";
+            sqlite3_stmt* s = nullptr;
+            if (sqlite3_prepare_v2(db_, sel, -1, &s, nullptr) != SQLITE_OK)
+                fail("Failed to prepare snapshot select");
+            sqlite3_bind_text(s, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(s) != SQLITE_ROW) {
+                sqlite3_finalize(s);
+                continue;  // not present — nothing to delete/log
+            }
+            restore = "{";
+            for (int i = 0; i < kNumCols; i++) {
+                if (i) restore += ",";
+                restore += "\"";
+                restore += cols[i];
+                restore += "\":";
+                const unsigned char* txt = sqlite3_column_text(s, i);
+                if (!txt) {
+                    restore += "null";
+                } else {
+                    restore += "\"";
+                    restore += json_escape(reinterpret_cast<const char*>(txt));
+                    restore += "\"";
+                }
+            }
+            restore += "}";
+            sqlite3_finalize(s);
+        }
+
+        // vec_faces / faces are not reachable by cascade from a vec0 table; clear
+        // them explicitly first, mirroring delete_paths.
+        int64_t id = get_image_id(path);
+        if (id >= 0) delete_faces_for_image(id);
+
+        if (op_id > 0) log_add_entry(op_id, {"purge_row", path, "", restore});
+
+        const char* del = "DELETE FROM images WHERE path = ?";
+        sqlite3_stmt* d = nullptr;
+        if (sqlite3_prepare_v2(db_, del, -1, &d, nullptr) != SQLITE_OK)
+            fail("Failed to prepare delete");
+        sqlite3_bind_text(d, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(d);
+        sqlite3_finalize(d);
+        if (rc != SQLITE_DONE) fail("Failed to delete path '" + path + "'");
+        deleted++;
+    }
+
+    exec("COMMIT");
+    return deleted;
 }
 
 std::vector<std::string> Database::purge(const std::string& path_prefix, const std::string& glob) {

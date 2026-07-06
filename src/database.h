@@ -69,6 +69,12 @@ class Database {
     // Delete entries by path
     void delete_paths(const std::vector<std::string>& paths);
 
+    // Delete the given paths and, if op_id > 0, log a 'purge_row' entry per
+    // deleted path whose restore_json snapshots the row's columns for a future
+    // re-insert. All deletes + log writes run in ONE transaction. Returns the
+    // number of rows deleted (missing paths are skipped).
+    int delete_paths_logged(const std::vector<std::string>& paths, int64_t op_id);
+
     // Delete entries matching a path prefix and/or filename glob
     // Returns paths that were deleted
     std::vector<std::string> purge(const std::string& path_prefix, const std::string& glob);

@@ -1262,6 +1262,9 @@ struct PurgeOptions {
     bool dry_run = false;
     bool assume_yes = false;  // skip the confirmation prompt for large purges
     std::string db_path;
+    bool log_enabled = true;
+    int log_max_entries = 100000;
+    std::string argv_str;  // full invocation, for the audit trail
 };
 
 int cmd_purge(const PurgeOptions& opts) {
@@ -1320,8 +1323,16 @@ int cmd_purge(const PurgeOptions& opts) {
         }
     }
 
-    db.delete_paths(matched);
-    std::cout << "Removed " << matched.size() << " entries from database.\n"
+    int64_t op_id = 0;
+    const bool logging = opts.log_enabled;
+    if (logging) op_id = db.log_begin_operation("purge", opts.argv_str, iso_utc_now());
+    int removed = db.delete_paths_logged(matched, op_id);
+    if (logging) {
+        // Purge has no file-boundary interruption to track — it always completes.
+        db.log_finish_operation(op_id, "completed");
+        db.log_prune(opts.log_max_entries);
+    }
+    std::cout << "Removed " << removed << " entries from database.\n"
               << "Total DB: " << db.count() << " images\n";
     return 0;
 }
@@ -2724,6 +2735,9 @@ int main(int argc, char* argv[]) {
     } else if (command == "purge") {
         PurgeOptions opts;
         opts.db_path = default_db_path();
+        if (cfg.log_enabled) opts.log_enabled = *cfg.log_enabled;
+        if (cfg.log_max_entries) opts.log_max_entries = *cfg.log_max_entries;
+        opts.argv_str = join_argv(argc, argv);
 
         for (int i = 2; i < argc; i++) {
             std::string arg = argv[i];
