@@ -1057,12 +1057,29 @@ int cmd_organize(const OrganizeOptions& opts) {
     std::vector<Action> actions;
     std::set<std::string> claimed;  // dest paths chosen this run, to catch intra-run collisions
 
+    // All source paths in this batch. A destination equal to any OTHER image's
+    // source is a real, irreplaceable original that hasn't moved yet — never
+    // overwrite it (audit #1). A file may resolve to its own source (no-op).
+    std::set<std::string> batch_sources;
+    for (const auto& img : images) batch_sources.insert(img.path);
+
     for (const auto& img : images) {
         DateParts date = get_best_date(img);
         std::string rel_path = apply_format(opts.format, img, date);
         fs::path dest = fs::path(opts.destination) / rel_path;
 
-        auto resolved = resolve_conflict(dest.string(), opts.on_conflict, claimed);
+        // Protect: (a) another image's source file in this batch, and (b) a real
+        // file on disk that the DB does not track (audit #4) — clobbering either
+        // is silent data loss the DB can't warn about.
+        const std::string& self_source = img.path;
+        auto is_protected = [&](const std::string& path) -> bool {
+            if (path != self_source && batch_sources.count(path)) return true;
+            if (fs::exists(path) && path != self_source && !db.get_sha256(path).has_value())
+                return true;
+            return false;
+        };
+
+        auto resolved = resolve_conflict(dest.string(), opts.on_conflict, claimed, is_protected);
         Action act;
         act.source = img.path;
         if (resolved.empty()) {

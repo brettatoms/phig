@@ -411,6 +411,11 @@ std::optional<std::string> Database::get_sha256(const std::string& path) {
 }
 
 void Database::update_path(const std::string& old_path, const std::string& new_path) {
+    // No-op move (source == dest): the DELETE-then-UPDATE below would delete the
+    // row (as the "stale dest") and then find nothing to repoint, losing the
+    // entry for a file that's still on disk. Nothing to do here.
+    if (old_path == new_path) return;
+
     // The file has just been moved to new_path, overwriting whatever was there.
     // If a row already tracks new_path (e.g. it was scanned in a prior run), that
     // row is now stale: drop it first so repointing old_path doesn't hit the

@@ -118,6 +118,19 @@ TEST_F(DatabaseTest, UpdatePathWhenDestAlreadyExists) {
     EXPECT_EQ(*db->get_sha256("/dst/photo.jpg"), "sha_source");
 }
 
+TEST_F(DatabaseTest, UpdatePathSourceEqualsDestKeepsRow) {
+    // A no-op move (old == new) must not delete the row. The DELETE-then-UPDATE
+    // path would otherwise drop the row as a "stale dest" and repoint nothing.
+    db->insert(make_image("/lib/photo.jpg", "sha_x"));
+    EXPECT_EQ(db->count(), 1);
+
+    EXPECT_NO_THROW(db->update_path("/lib/photo.jpg", "/lib/photo.jpg"));
+
+    EXPECT_EQ(db->count(), 1);
+    EXPECT_TRUE(db->get_modified_at("/lib/photo.jpg").has_value());
+    EXPECT_EQ(*db->get_sha256("/lib/photo.jpg"), "sha_x");
+}
+
 TEST_F(DatabaseTest, DeletePathsCascadesTagsAndFaces) {
     // delete_paths must remove the image row, its cascaded tags (FK ON DELETE
     // CASCADE, dead unless PRAGMA foreign_keys=ON), and its face vectors in

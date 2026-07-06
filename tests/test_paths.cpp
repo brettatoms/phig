@@ -257,12 +257,15 @@ class ResolveConflictTest : public ::testing::Test {
     void TearDown() override { fs::remove_all(dir); }
 
     void touch(const fs::path& p) { std::ofstream o(p); }
+
+    // Default predicate: nothing is protected.
+    static bool no_protect(const std::string&) { return false; }
 };
 
 TEST_F(ResolveConflictTest, NoConflictReturnsDestAndClaims) {
     std::set<std::string> claimed;
     fs::path dst = dir / "a.jpg";
-    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed), dst.string());
+    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed, no_protect), dst.string());
     EXPECT_EQ(claimed.count(dst.string()), 1u);
 }
 
@@ -270,21 +273,22 @@ TEST_F(ResolveConflictTest, SkipReturnsEmptyWhenFileExists) {
     std::set<std::string> claimed;
     fs::path dst = dir / "a.jpg";
     touch(dst);
-    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed), "");
+    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed, no_protect), "");
 }
 
 TEST_F(ResolveConflictTest, OverwriteReturnsDestWhenFileExists) {
     std::set<std::string> claimed;
     fs::path dst = dir / "a.jpg";
     touch(dst);
-    EXPECT_EQ(resolve_conflict(dst.string(), "overwrite", claimed), dst.string());
+    EXPECT_EQ(resolve_conflict(dst.string(), "overwrite", claimed, no_protect), dst.string());
 }
 
 TEST_F(ResolveConflictTest, RenameAppendsSuffixWhenFileExists) {
     std::set<std::string> claimed;
     fs::path dst = dir / "a.jpg";
     touch(dst);
-    EXPECT_EQ(resolve_conflict(dst.string(), "rename", claimed), (dir / "a_1.jpg").string());
+    EXPECT_EQ(resolve_conflict(dst.string(), "rename", claimed, no_protect),
+              (dir / "a_1.jpg").string());
 }
 
 TEST_F(ResolveConflictTest, RenameSkipsAlreadyExistingSuffixes) {
@@ -293,7 +297,8 @@ TEST_F(ResolveConflictTest, RenameSkipsAlreadyExistingSuffixes) {
     touch(dst);
     touch(dir / "a_1.jpg");
     touch(dir / "a_2.jpg");
-    EXPECT_EQ(resolve_conflict(dst.string(), "rename", claimed), (dir / "a_3.jpg").string());
+    EXPECT_EQ(resolve_conflict(dst.string(), "rename", claimed, no_protect),
+              (dir / "a_3.jpg").string());
 }
 
 // The bug: two source files resolving to the same destination in one run.
@@ -302,8 +307,8 @@ TEST_F(ResolveConflictTest, IntraRunCollisionRenameKeepsBoth) {
     std::set<std::string> claimed;
     fs::path dst = dir / "a.jpg";  // nothing on disk yet
 
-    std::string first = resolve_conflict(dst.string(), "rename", claimed);
-    std::string second = resolve_conflict(dst.string(), "rename", claimed);
+    std::string first = resolve_conflict(dst.string(), "rename", claimed, no_protect);
+    std::string second = resolve_conflict(dst.string(), "rename", claimed, no_protect);
 
     EXPECT_EQ(first, dst.string());
     EXPECT_EQ(second, (dir / "a_1.jpg").string());
@@ -314,8 +319,8 @@ TEST_F(ResolveConflictTest, IntraRunCollisionSkipDropsSecond) {
     std::set<std::string> claimed;
     fs::path dst = dir / "a.jpg";
 
-    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed), dst.string());
-    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed), "");  // second skipped
+    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed, no_protect), dst.string());
+    EXPECT_EQ(resolve_conflict(dst.string(), "skip", claimed, no_protect), "");  // second skipped
 }
 
 // Even with overwrite, two DISTINCT sources on one path within a run must not
@@ -324,11 +329,60 @@ TEST_F(ResolveConflictTest, IntraRunCollisionOverwriteRenamesSecond) {
     std::set<std::string> claimed;
     fs::path dst = dir / "a.jpg";
 
-    std::string first = resolve_conflict(dst.string(), "overwrite", claimed);
-    std::string second = resolve_conflict(dst.string(), "overwrite", claimed);
+    std::string first = resolve_conflict(dst.string(), "overwrite", claimed, no_protect);
+    std::string second = resolve_conflict(dst.string(), "overwrite", claimed, no_protect);
 
     EXPECT_EQ(first, dst.string());
     EXPECT_EQ(second, (dir / "a_1.jpg").string());
+}
+
+// audit #1 (critical): under overwrite, a dest equal to another image's
+// not-yet-moved source is PROTECTED — resolve_conflict must rename around it,
+// never return it, so the original is not clobbered.
+TEST_F(ResolveConflictTest, OverwriteDoesNotClobberProtectedSource) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "IMG.jpg";  // == some other image's source path
+    touch(dst);                      // the original exists on disk
+    auto protect = [&](const std::string& p) { return p == dst.string(); };
+
+    std::string r = resolve_conflict(dst.string(), "overwrite", claimed, protect);
+    EXPECT_NE(r, dst.string());                   // did NOT choose the protected path
+    EXPECT_EQ(r, (dir / "IMG_1.jpg").string());   // renamed around it
+}
+
+// audit #4: under overwrite, an untracked on-disk file at the dest is protected
+// exactly like a source, so it survives.
+TEST_F(ResolveConflictTest, OverwriteDoesNotClobberUntrackedFile) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "untracked.jpg";
+    touch(dst);
+    auto protect = [&](const std::string& p) { return p == dst.string(); };
+
+    EXPECT_EQ(resolve_conflict(dst.string(), "overwrite", claimed, protect),
+              (dir / "untracked_1.jpg").string());
+}
+
+// A protected path even blocks the rename candidates: if IMG_1.jpg is also
+// protected, resolution skips to the next free, unprotected name.
+TEST_F(ResolveConflictTest, RenameSkipsProtectedCandidates) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "IMG.jpg";
+    touch(dst);
+    fs::path taken1 = dir / "IMG_1.jpg";
+    auto protect = [&](const std::string& p) {
+        return p == dst.string() || p == taken1.string();
+    };
+    EXPECT_EQ(resolve_conflict(dst.string(), "rename", claimed, protect),
+              (dir / "IMG_2.jpg").string());
+}
+
+// A file resolving to its OWN source path is not protected against itself.
+TEST_F(ResolveConflictTest, SelfSourceNotProtected) {
+    std::set<std::string> claimed;
+    fs::path dst = dir / "self.jpg";
+    touch(dst);
+    // Caller's predicate returns false for the file's own source (self excluded).
+    EXPECT_EQ(resolve_conflict(dst.string(), "overwrite", claimed, no_protect), dst.string());
 }
 
 // ---- atomic writes ----

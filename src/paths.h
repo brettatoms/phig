@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <set>
 #include <string>
@@ -45,8 +46,15 @@ bool atomic_write_file(const std::string& dest, const void* data, size_t size);
 // this catches two source files that resolve to the same destination within one
 // batch, not just collisions with pre-existing files. Returns the resolved path
 // (added to `claimed`), or an empty path meaning "skip this file".
+//
+// `is_protected(path)` guards paths that must NEVER be overwritten even under
+// the "overwrite" policy — e.g. another image's not-yet-moved source file, or a
+// real file on disk that the database doesn't track. When the resolved dest is
+// protected, "overwrite" falls through to renaming so the protected file
+// survives. Pass a predicate that always returns false to disable the guard.
 std::string resolve_conflict(const std::string& dest, const std::string& on_conflict,
-                             std::set<std::string>& claimed);
+                             std::set<std::string>& claimed,
+                             const std::function<bool(const std::string&)>& is_protected);
 
 // Install process-wide path overrides (typically from the config file). When set,
 // default_db_path()/models_dir()/thumbs_dir() return the override instead of the

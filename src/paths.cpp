@@ -142,24 +142,27 @@ bool atomic_write_file(const std::string& dest, const void* data, size_t size) {
 }
 
 std::string resolve_conflict(const std::string& dest, const std::string& on_conflict,
-                             std::set<std::string>& claimed) {
+                             std::set<std::string>& claimed,
+                             const std::function<bool(const std::string&)>& is_protected) {
     namespace fs = std::filesystem;
     auto taken = [&](const fs::path& p) {
         return fs::exists(p) || claimed.count(p.string()) > 0;
     };
 
     fs::path d(dest);
-    if (!taken(d)) {
+    // A free, unprotected path is chosen directly. A protected path (another
+    // batch source, or an untracked on-disk file) is never chosen even when it
+    // looks "free" of claims — treat it as a conflict and rename around it.
+    if (!taken(d) && !is_protected(d.string())) {
         claimed.insert(d.string());
         return d.string();
     }
 
     if (on_conflict == "overwrite") {
-        // Caller asked to overwrite existing files, but two sources landing on
-        // the same path within one run would still clobber each other. Only
-        // reuse the path when it isn't already claimed this run; otherwise fall
-        // through to renaming so both files survive.
-        if (claimed.count(d.string()) == 0) {
+        // Overwrite existing files, but never clobber a protected path and never
+        // clobber a path already claimed this run (two sources -> one dest).
+        // Both cases fall through to renaming so the other file survives.
+        if (claimed.count(d.string()) == 0 && !is_protected(d.string())) {
             claimed.insert(d.string());
             return d.string();
         }
@@ -173,7 +176,7 @@ std::string resolve_conflict(const std::string& dest, const std::string& on_conf
     auto parent = d.parent_path();
     for (int i = 1; i < 10000; i++) {
         fs::path candidate = parent / (stem + "_" + std::to_string(i) + ext);
-        if (!taken(candidate)) {
+        if (!taken(candidate) && !is_protected(candidate.string())) {
             claimed.insert(candidate.string());
             return candidate.string();
         }
