@@ -1,6 +1,6 @@
 ---
 name: Activity Log & Rollback
-status: planned
+status: completed
 created: 2026-07-06
 description: >
   Record file-changing operations (mv, cp, purge) as an append-only log in the
@@ -1161,6 +1161,39 @@ git commit -m "Document activity-log config keys"
 ```
 
 ---
+
+## Implementation outcome (2026-07-06)
+
+Implemented as planned, then hardened after a high-effort data-safety code
+review. Notable deltas from the plan:
+
+- **Executor extracted.** The per-file disk+DB+compensator logic lives in
+  `execute_organize_action` (`src/organize_exec.{h,cpp}`), linked into `phig-lib`
+  so its failure paths are unit-testable (`tests/test_organize_exec.cpp` forces
+  DB writes to fail via `PRAGMA query_only` after the disk op).
+- **Overwrite semantics changed (behavior change).** `is_protected` in
+  `cmd_organize` now protects *every* existing on-disk destination, tracked or
+  untracked — not just untracked files. `--on-conflict overwrite` therefore
+  renames around any existing file instead of clobbering it. This closes a
+  data-loss path: mv had no backup (only cp did), and cp's `INSERT OR REPLACE`
+  would cascade a clobbered tracked row's faces/tags away with nothing logged to
+  restore them. The cp backup-then-copy remains as defense-in-depth for direct
+  callers of the executor.
+- **`.phig-bak` uniqueness.** The overwrite backup uses a pid+counter sibling
+  name (`unique_backup_path`), matching the audited atomic-copy temps, so it can
+  never clobber a stale backup, a concurrent process's file, or a real file.
+- **`log_prune` always keeps the newest operation** and prunes in a single bulk
+  `DELETE` (O(n), not O(n²)), so a run larger than `max_entries` cannot erase its
+  own rollback record.
+- **No-op self-move/copy** (dest == source) touches nothing and logs nothing.
+- **purge snapshot** records a `_faces_omitted` count when a purged image had
+  faces, since `restore_json` captures only the images row (faces/embeddings are
+  not serialized in this slice — the deferred undo will define that format).
+
+Tests: 266 total (was 246). New coverage: schema/migration, log API round-trip,
+retention (incl. keeps-newest), config parsing, purge snapshot + faces-omitted,
+and the executor's compensator paths (mv move-back, cp orphan-removal, cp
+overwrite restore, no-op).
 
 ## Deferred (future plan)
 
