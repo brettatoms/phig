@@ -1,6 +1,6 @@
 ---
 name: Data-Safety Fixes (2026-07-11 review)
-status: planned
+status: completed
 created: 2026-07-11
 description: >
   Fix the eight mechanical findings from the 2026-07-11 data-safety review:
@@ -1017,6 +1017,35 @@ git commit -m "Create fresh schema in one transaction"
 
 ## Final verification
 
-- [ ] Run the full suite: `direnv exec . cmake --build build && ./build/phig-tests` — all green.
-- [ ] Lint: `clang-format --dry-run --Werror src/*.cpp src/*.h tests/*.cpp` and `./scripts/clang-tidy.sh`.
-- [ ] Update `plans/000-INDEX.md` status for 022 to `completed` and record the outcome at the bottom of this file.
+- [x] Run the full suite: `direnv exec . cmake --build build && ./build/phig-tests` — all green (281 tests).
+- [x] Lint: `clang-format --dry-run --Werror` clean on changed files.
+- [x] Update `plans/000-INDEX.md` status for 022 to `completed` and record the outcome at the bottom of this file.
+
+## Outcome (2026-07-11)
+
+All nine tasks implemented via subagent-driven development, each with real-behavior
+tests and an individual spec+quality review; a final whole-branch review returned
+READY TO MERGE. Full suite: 281 tests passing.
+
+Commits (on `master`):
+
+| Fix | Commit(s) |
+|-----|-----------|
+| #1 upsert preserves tags/gallery/faces; conditional face clear; scan face-insert guard | `405f29a`; `147f0b8` (guard the `needs_faces_only` scan path too — a sibling face-insert loop the first pass missed) |
+| #8 vec_faces cleanup on stale-dest drop (`update_path_in_txn`, `insert_copy`) | `8680018` |
+| #2 no-clobber `move_file` (renameat2 RENAME_NOREPLACE, cross-device fsync) | `5cf122e`; `d83fdd5` (fix copy-failure error reporting; correct docs/header) |
+| #6 fsync copied data before publishing in `atomic_copy_file` | `4af9d75` |
+| #3a logged scan removals with restore snapshots | `a3ecad1`; `ec0008e` (mark op `interrupted` on failure, matching purge — whole-branch review finding) |
+| #4 `cmd_purge` runs `init_schema` (schema-version guard) | `2381523` |
+| #5 range comparison instead of LIKE in `get_all_images` / `get_exact_duplicates` | `20f53aa` |
+| #7 `compute_sha256` throws on short/failed read | `705b55f` |
+| #9 transactional fresh + pre-migration schema creation | `49263f6` |
+
+Notes:
+- Task 3 removed the obsolete `MoveFileTest.OverwritesExistingDestination` test,
+  which asserted the pre-#2 overwrite behavior this plan intentionally reverses
+  (design decision #2). Coverage is preserved by the new no-clobber tests.
+- `Database::purge(prefix, glob)` still uses `LIKE` but is confirmed test-only
+  (production purge filters in C++ via `passes_filters`); left untouched as scoped.
+- A pre-existing clang-tidy finding (`bugprone-throwing-static-initialization` on
+  the `migrations` static array) predates this plan and is out of scope.
