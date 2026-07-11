@@ -1,7 +1,9 @@
 #include "paths.h"
 
+#include <fcntl.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -62,24 +64,6 @@ std::string expand_tilde(const std::string& path) {
     return path;
 }
 
-void move_file(const std::string& source, const std::string& dest) {
-    namespace fs = std::filesystem;
-    fs::path src(source), dst(dest);
-    fs::create_directories(dst.parent_path());
-
-    std::error_code ec;
-    fs::rename(src, dst, ec);
-    if (ec == std::errc::cross_device_link) {
-        // Source and dest are on different filesystems; rename(2) can't cross a
-        // device boundary. Fall back to an atomic copy (temp-then-rename so a
-        // failed/interrupted copy never truncates an existing dest) + remove.
-        atomic_copy_file(source, dest);
-        fs::remove(src);
-    } else if (ec) {
-        throw fs::filesystem_error("cannot rename", src, dst, ec);
-    }
-}
-
 namespace {
 // A temp path in the same directory as dest (so the final rename stays on one
 // filesystem and is atomic). Includes the pid and a per-process counter so
@@ -91,7 +75,98 @@ std::filesystem::path temp_sibling(const std::filesystem::path& dest) {
                        std::to_string(counter++);
     return dest.parent_path() / name;
 }
+
+// Flush a file's bytes to stable storage. Returns false on failure.
+bool fsync_file(const std::filesystem::path& p) {
+    int fd = ::open(p.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+    int rc = ::fsync(fd);
+    ::close(fd);
+    return rc == 0;
+}
+
+// Best-effort: make a completed rename in `dir` durable. Failure is ignored —
+// the data itself was already fsynced.
+void fsync_dir(const std::filesystem::path& dir) {
+    int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY);
+    if (fd >= 0) {
+        ::fsync(fd);
+        ::close(fd);
+    }
+}
+
+// Rename that NEVER overwrites dest. Returns 0 on success or an errno:
+// EEXIST = dest exists, EXDEV = cross-device (caller falls back), other =
+// real failure. Uses the kernel's atomic no-replace rename where available,
+// then a hard-link emulation, then (for filesystems with neither, e.g. FAT)
+// a check-then-rename with a small TOCTOU window — still far safer than a
+// blind rename.
+int rename_noreplace(const char* src, const char* dst) {
+#if defined(__linux__)
+    if (::renameat2(AT_FDCWD, src, AT_FDCWD, dst, RENAME_NOREPLACE) == 0) return 0;
+    if (errno != EINVAL && errno != ENOSYS && errno != ENOTSUP) return errno;
+#elif defined(__APPLE__)
+    if (::renamex_np(src, dst, RENAME_EXCL) == 0) return 0;
+    if (errno != ENOTSUP) return errno;
+#endif
+    if (::link(src, dst) == 0) {
+        if (::unlink(src) != 0) return errno;
+        return 0;
+    }
+    if (errno == EEXIST) return EEXIST;
+    std::error_code ec;
+    if (std::filesystem::exists(dst, ec)) return EEXIST;
+    if (::rename(src, dst) == 0) return 0;
+    return errno;
+}
 }  // namespace
+
+void move_file(const std::string& source, const std::string& dest) {
+    namespace fs = std::filesystem;
+    fs::path src(source), dst(dest);
+    fs::create_directories(dst.parent_path());
+
+    int err = rename_noreplace(source.c_str(), dest.c_str());
+    if (err == 0) return;
+    if (err == EEXIST || err == ENOTEMPTY) {
+        // A file appeared at dest after conflict planning (concurrent phig
+        // run, sync app, ...). Never overwrite it — surface a per-file error.
+        throw fs::filesystem_error("move_file: destination already exists", src, dst,
+                                   std::make_error_code(std::errc::file_exists));
+    }
+    if (err != EXDEV) {
+        throw fs::filesystem_error("cannot rename", src, dst,
+                                   std::error_code(err, std::generic_category()));
+    }
+
+    // Cross-device: copy to a temp sibling of dest, fsync so the bytes are
+    // durable BEFORE the source is unlinked (a power loss must never leave
+    // the only copy truncated), then no-replace rename into place.
+    fs::path tmp = temp_sibling(dst);
+    std::error_code ec;
+    fs::copy_file(src, tmp, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        fs::remove(tmp, ec);
+        throw fs::filesystem_error("move_file: copy failed", src, dst, ec);
+    }
+    if (!fsync_file(tmp)) {
+        fs::remove(tmp, ec);
+        throw fs::filesystem_error("move_file: fsync failed", tmp, dst,
+                                   std::error_code(errno, std::generic_category()));
+    }
+    err = rename_noreplace(tmp.string().c_str(), dest.c_str());
+    if (err != 0) {
+        fs::remove(tmp, ec);
+        if (err == EEXIST) {
+            throw fs::filesystem_error("move_file: destination already exists", src, dst,
+                                       std::make_error_code(std::errc::file_exists));
+        }
+        throw fs::filesystem_error("move_file: rename failed", tmp, dst,
+                                   std::error_code(err, std::generic_category()));
+    }
+    fsync_dir(dst.parent_path());
+    fs::remove(src);
+}
 
 std::string unique_backup_path(const std::string& dest) {
     // Same pid+counter scheme as temp_sibling so a backup name can never collide

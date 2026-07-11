@@ -202,16 +202,36 @@ TEST_F(MoveFileTest, CreatesDestinationParents) {
     EXPECT_EQ(read_file(dst), "data");
 }
 
-TEST_F(MoveFileTest, OverwritesExistingDestination) {
-    fs::path src = dir / "a.txt", dst = dir / "b.txt";
-    write_file(src, "new");
-    write_file(dst, "old");
+TEST_F(MoveFileTest, RefusesToOverwriteExistingDest) {
+    fs::path src = dir / "src.jpg", dst = dir / "dst.jpg";
+    write_file(src, "SOURCE");
+    write_file(dst, "PRECIOUS");
 
-    move_file(src.string(), dst.string());
+    EXPECT_THROW(move_file(src.string(), dst.string()), fs::filesystem_error);
 
-    ASSERT_TRUE(fs::exists(dst));
-    EXPECT_EQ(read_file(dst), "new");
-    EXPECT_FALSE(fs::exists(src));
+    // Both files intact, contents untouched.
+    EXPECT_EQ(read_file(src), "SOURCE");
+    EXPECT_EQ(read_file(dst), "PRECIOUS");
+}
+
+TEST_F(MoveFileTest, CrossDeviceRefusesToOverwriteExistingDest) {
+    fs::path shm = "/dev/shm";
+    if (!fs::exists(shm) || device_of(dir) == device_of(shm)) {
+        GTEST_SKIP() << "no distinct second filesystem available for EXDEV test";
+    }
+    fs::path shm_dir = shm / "phig-move-test";
+    fs::remove_all(shm_dir);
+    fs::create_directories(shm_dir);
+
+    fs::path src = dir / "src.jpg", dst = shm_dir / "dst.jpg";
+    write_file(src, "SOURCE");
+    write_file(dst, "PRECIOUS");
+
+    EXPECT_THROW(move_file(src.string(), dst.string()), fs::filesystem_error);
+    EXPECT_EQ(read_file(src), "SOURCE");
+    EXPECT_EQ(read_file(dst), "PRECIOUS");
+
+    fs::remove_all(shm_dir);
 }
 
 TEST_F(MoveFileTest, MissingSourceThrows) {
