@@ -77,6 +77,83 @@ TEST_F(DatabaseTest, InsertReplaceOnDuplicatePath) {
     EXPECT_EQ(db->count(), 1);  // replaced, not duplicated
 }
 
+static int64_t count_rows(sqlite3* h, const char* sql) {
+    sqlite3_stmt* s = nullptr;
+    if (sqlite3_prepare_v2(h, sql, -1, &s, nullptr) != SQLITE_OK) return -1;
+    int64_t n = (sqlite3_step(s) == SQLITE_ROW) ? sqlite3_column_int64(s, 0) : -1;
+    sqlite3_finalize(s);
+    return n;
+}
+
+TEST_F(DatabaseTest, ReinsertPreservesRowIdAndTags) {
+    db->insert(make_image("/test/a.jpg", "sha1"));
+    int64_t id = db->get_image_id("/test/a.jpg");
+    db->set_tag({"/test/a.jpg"}, "favorite", true);
+
+    auto changed = make_image("/test/a.jpg", "sha2");  // content changed
+    changed.file_size = 2000;
+    db->insert(changed);
+
+    EXPECT_EQ(db->get_image_id("/test/a.jpg"), id);
+    auto tags = db->get_tags_for_image("/test/a.jpg");
+    ASSERT_EQ(tags.size(), 1u);
+    EXPECT_EQ(tags[0], "favorite");
+    // Scalar columns still updated
+    for (const auto& img : db->get_all_images()) {
+        if (img.path == "/test/a.jpg") {
+            EXPECT_EQ(img.sha256, "sha2");
+            EXPECT_EQ(img.file_size, 2000);
+        }
+    }
+}
+
+TEST_F(DatabaseTest, ReinsertPreservesGallery) {
+    db->insert(make_image("/test/a.jpg", "sha1"));
+    db->set_gallery({"/test/a.jpg"}, "summer", false);
+    db->insert(make_image("/test/a.jpg", "sha2"));
+    bool found = false;
+    for (const auto& img : db->get_all_images()) {
+        if (img.path == "/test/a.jpg") {
+            found = true;
+            EXPECT_EQ(img.gallery, "summer");
+        }
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST_F(DatabaseTest, ReinsertSameContentKeepsFaces) {
+    db->insert(make_image("/test/a.jpg", "sha1"));
+    int64_t id = db->get_image_id("/test/a.jpg");
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 1;
+    face.y = 2;
+    face.width = 10;
+    face.height = 10;
+    db->insert_face(id, face);
+
+    db->insert(make_image("/test/a.jpg", "sha1"));  // same bytes (e.g. --force)
+    EXPECT_TRUE(db->has_faces("/test/a.jpg"));
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 1);
+}
+
+TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
+    db->insert(make_image("/test/a.jpg", "sha1"));
+    int64_t id = db->get_image_id("/test/a.jpg");
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 1;
+    face.y = 2;
+    face.width = 10;
+    face.height = 10;
+    db->insert_face(id, face);
+
+    db->insert(make_image("/test/a.jpg", "sha2"));  // content changed
+    EXPECT_FALSE(db->has_faces("/test/a.jpg"));
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM faces"), 0);
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 0);
+}
+
 TEST_F(DatabaseTest, GetModifiedAtExists) {
     auto img = make_image("/test/a.jpg");
     img.modified_at = "2024-06-15T12:00:00Z";

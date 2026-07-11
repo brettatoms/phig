@@ -391,7 +391,13 @@ int cmd_scan(const ScanOptions& opts) {
             for (auto& r : batch) {
                 if (!r.faces.empty()) {
                     int64_t image_id = db.get_image_id(r.info.path);
-                    if (image_id >= 0) {
+                    // Rows whose bytes didn't change kept their existing faces
+                    // (and person labels) through insert(); re-adding this
+                    // run's detections would duplicate them. insert() cleared
+                    // faces when the content changed, so has_faces == false
+                    // means these detections are needed. `face rebuild` is the
+                    // path for forced re-detection.
+                    if (image_id >= 0 && !db.has_faces(r.info.path)) {
                         for (const auto& face : r.faces) {
                             db.insert_face(image_id, face);
                             int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());

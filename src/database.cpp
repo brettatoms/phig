@@ -354,10 +354,49 @@ void Database::init_schema() {
 }
 
 void Database::insert(const ImageInfo& info) {
+    // If the row exists and its content changed, its face data (boxes +
+    // embeddings, incl. vec_faces) describes pixels that no longer exist —
+    // clear it. Unchanged content keeps faces and their person labels.
+    {
+        const char* sel = "SELECT id, sha256 FROM images WHERE path = ?";
+        sqlite3_stmt* s;
+        if (sqlite3_prepare_v2(db_, sel, -1, &s, nullptr) != SQLITE_OK) {
+            throw std::runtime_error("Failed to prepare pre-insert select: " +
+                                     std::string(sqlite3_errmsg(db_)));
+        }
+        sqlite3_bind_text(s, 1, info.path.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            int64_t id = sqlite3_column_int64(s, 0);
+            const char* old_sha = reinterpret_cast<const char*>(sqlite3_column_text(s, 1));
+            bool content_changed = !old_sha || info.sha256 != old_sha;
+            sqlite3_finalize(s);
+            if (content_changed) delete_faces_for_image(id);
+        } else {
+            sqlite3_finalize(s);
+        }
+    }
+
+    // Upsert, NOT INSERT OR REPLACE: REPLACE deletes the row, which (with
+    // foreign_keys=ON) cascades away image_tags and faces and assigns a new
+    // id. DO UPDATE keeps the id — tags survive — and never touches gallery.
     const char* sql = R"(
-        INSERT OR REPLACE INTO images
+        INSERT INTO images
             (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+            filename = excluded.filename,
+            extension = excluded.extension,
+            file_size = excluded.file_size,
+            created_at = excluded.created_at,
+            modified_at = excluded.modified_at,
+            sha256 = excluded.sha256,
+            phash = excluded.phash,
+            width = excluded.width,
+            height = excluded.height,
+            metadata = excluded.metadata,
+            media_type = excluded.media_type,
+            duration_ms = excluded.duration_ms,
+            blur_score = excluded.blur_score
     )";
 
     sqlite3_stmt* stmt;
