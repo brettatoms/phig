@@ -631,7 +631,19 @@ int cmd_scan(const ScanOptions& opts) {
             // with a restorable row snapshot per entry (review #3a).
             if (opts.log_enabled) {
                 int64_t op_id = db.log_begin_operation("scan", opts.argv_str, iso_utc_now());
-                removed_count = db.delete_paths_logged(removed_paths, op_id);
+                try {
+                    removed_count = db.delete_paths_logged(removed_paths, op_id);
+                } catch (...) {
+                    // delete_paths_logged rolls back its own transaction, but the
+                    // operation row was autocommitted by log_begin_operation. Mark
+                    // it so it doesn't linger as a stuck 'in_progress' row, matching
+                    // cmd_purge's guard (review [6]); best-effort.
+                    try {
+                        db.log_finish_operation(op_id, "interrupted");
+                    } catch (...) {
+                    }
+                    throw;
+                }
                 db.log_finish_operation(op_id, "completed");
                 db.log_prune(opts.log_max_entries);
             } else {
