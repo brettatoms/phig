@@ -100,7 +100,9 @@ void fsync_dir(const std::filesystem::path& dir) {
 // real failure. Uses the kernel's atomic no-replace rename where available,
 // then a hard-link emulation, then (for filesystems with neither, e.g. FAT)
 // a check-then-rename with a small TOCTOU window — still far safer than a
-// blind rename.
+// blind rename. renameat2()/RENAME_NOREPLACE are glibc symbols declared in
+// <cstdio> (under _GNU_SOURCE, which g++ defines by default), not <fcntl.h>;
+// <fcntl.h> is included above only for AT_FDCWD/O_DIRECTORY.
 int rename_noreplace(const char* src, const char* dst) {
 #if defined(__linux__)
     if (::renameat2(AT_FDCWD, src, AT_FDCWD, dst, RENAME_NOREPLACE) == 0) return 0;
@@ -146,8 +148,10 @@ void move_file(const std::string& source, const std::string& dest) {
     std::error_code ec;
     fs::copy_file(src, tmp, fs::copy_options::overwrite_existing, ec);
     if (ec) {
-        fs::remove(tmp, ec);
-        throw fs::filesystem_error("move_file: copy failed", src, dst, ec);
+        std::error_code copy_err = ec;
+        std::error_code rm_ec;
+        fs::remove(tmp, rm_ec);
+        throw fs::filesystem_error("move_file: copy failed", src, dst, copy_err);
     }
     if (!fsync_file(tmp)) {
         fs::remove(tmp, ec);

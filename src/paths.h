@@ -24,10 +24,11 @@ std::string config_path();      // config_dir() + /config.ini
 // as are ~ paths when HOME is unset.
 std::string expand_tilde(const std::string& path);
 
-// Move a file from source to dest, creating dest's parent directories. Uses
-// rename(2) on the fast path; when source and dest are on different filesystems
-// (rename fails with EXDEV) falls back to copy-then-remove. Overwrites an
-// existing dest. Throws std::filesystem_error on failure.
+// Move a file from source to dest, creating dest's parent directories. Never
+// overwrites an existing dest — throws std::filesystem_error (errc::file_exists)
+// if dest already exists. Same-device moves use a no-replace rename; cross-device
+// moves (EXDEV) fall back to a fsync'd copy-then-remove. Throws
+// std::filesystem_error on any other failure.
 void move_file(const std::string& source, const std::string& dest);
 
 // Copy source to dest atomically: copy into a temp file in dest's directory,

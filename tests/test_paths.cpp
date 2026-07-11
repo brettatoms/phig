@@ -263,6 +263,41 @@ TEST_F(MoveFileTest, CrossDeviceFallsBackToCopyRemove) {
     fs::remove_all(shm_dir);
 }
 
+// Genuine cross-device move where the copy itself fails (unreadable source),
+// so rename_noreplace returns EXDEV but fs::copy_file then errors. The thrown
+// exception must carry the real copy error, not a clobbered "success" from the
+// temp-file cleanup remove.
+TEST_F(MoveFileTest, CrossDeviceCopyFailureReportsRealError) {
+    fs::path shm = "/dev/shm";
+    if (!fs::exists(shm) || device_of(dir) == device_of(shm)) {
+        GTEST_SKIP() << "no distinct second filesystem available for EXDEV test";
+    }
+    if (geteuid() == 0) {
+        GTEST_SKIP() << "running as root: unreadable-file permission checks don't apply";
+    }
+    fs::path shm_dir = shm / "phig-move-test";
+    fs::remove_all(shm_dir);
+    fs::create_directories(shm_dir);
+
+    fs::path src = dir / "unreadable.jpg";
+    fs::path dst = shm_dir / "dst.jpg";
+    write_file(src, "SOURCE");
+    fs::permissions(src, fs::perms::none);
+
+    bool threw = false;
+    try {
+        move_file(src.string(), dst.string());
+    } catch (const fs::filesystem_error& e) {
+        threw = true;
+        EXPECT_NE(e.code().value(), 0);
+        EXPECT_NE(e.code(), std::error_code());
+    }
+    EXPECT_TRUE(threw);
+
+    fs::permissions(src, fs::perms::owner_all);
+    fs::remove_all(shm_dir);
+}
+
 // ---- resolve_conflict ----
 
 class ResolveConflictTest : public ::testing::Test {
