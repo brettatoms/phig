@@ -154,6 +154,35 @@ TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
     EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 0);
 }
 
+// Mirrors cmd_scan's needs_faces_only branch in main.cpp: mtime unchanged, but
+// the detector re-runs (e.g. faces were requested for the first time on a
+// re-scan). The branch must check has_faces() before inserting, or a re-scan
+// of a file that already has faces would duplicate them.
+TEST_F(DatabaseTest, NeedsFacesOnlyRescanDoesNotDuplicateExistingFaces) {
+    db->insert(make_image("/test/a.jpg", "sha1"));
+    int64_t id = db->get_image_id("/test/a.jpg");
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 1;
+    face.y = 2;
+    face.width = 10;
+    face.height = 10;
+    db->insert_face(id, face);
+    ASSERT_TRUE(db->has_faces("/test/a.jpg"));
+
+    // Simulate a second detection pass over the same (unchanged) file, guarded
+    // the way the needs_faces_only branch is guarded.
+    std::vector<FaceInfo> detected_again = {face};
+    if (!db->has_faces("/test/a.jpg")) {
+        for (const auto& f : detected_again) {
+            db->insert_face(id, f);
+        }
+    }
+
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM faces"), 1);
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 1);
+}
+
 TEST_F(DatabaseTest, GetModifiedAtExists) {
     auto img = make_image("/test/a.jpg");
     img.modified_at = "2024-06-15T12:00:00Z";

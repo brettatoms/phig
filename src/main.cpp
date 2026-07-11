@@ -489,22 +489,26 @@ int cmd_scan(const ScanOptions& opts) {
                                     // Flush any pending batch first, then insert faces in a
                                     // transaction
                                     flush_batch();
-                                    db.begin_transaction();
-                                    try {
-                                        int64_t image_id = db.get_image_id(canonical);
-                                        if (image_id >= 0) {
-                                            for (const auto& face : faces) {
-                                                db.insert_face(image_id, face);
-                                                int64_t face_id =
-                                                    sqlite3_last_insert_rowid(db.db_ptr());
-                                                db.auto_label_face(face_id, face.embedding);
+                                    // Another thread's flush_batch() may have inserted faces
+                                    // for this row already; don't duplicate them.
+                                    if (!db.has_faces(canonical)) {
+                                        db.begin_transaction();
+                                        try {
+                                            int64_t image_id = db.get_image_id(canonical);
+                                            if (image_id >= 0) {
+                                                for (const auto& face : faces) {
+                                                    db.insert_face(image_id, face);
+                                                    int64_t face_id =
+                                                        sqlite3_last_insert_rowid(db.db_ptr());
+                                                    db.auto_label_face(face_id, face.embedding);
+                                                }
+                                                face_count.fetch_add(faces.size());
                                             }
-                                            face_count.fetch_add(faces.size());
+                                            db.commit_transaction();
+                                        } catch (...) {
+                                            db.rollback_transaction();
+                                            throw;
                                         }
-                                        db.commit_transaction();
-                                    } catch (...) {
-                                        db.rollback_transaction();
-                                        throw;
                                     }
                                 }
                             }
