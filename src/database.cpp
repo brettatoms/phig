@@ -450,6 +450,13 @@ void Database::insert_batch(const std::vector<ImageInfo>& infos) {
 }
 
 void Database::insert_copy(const std::string& source_path, const std::string& dest_path) {
+    // Same vec_faces cleanup as update_path_in_txn: the REPLACE below deletes
+    // any stale row tracking dest_path, and FK cascade can't reach vec_faces.
+    {
+        int64_t stale_id = get_image_id(dest_path);
+        if (stale_id >= 0) delete_faces_for_image(stale_id);
+    }
+
     const char* sql = R"(
         INSERT OR REPLACE INTO images
             (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score)
@@ -656,6 +663,13 @@ void Database::update_path_in_txn(const std::string& old_path, const std::string
     auto fail = [&](const std::string& what) {
         throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
     };
+
+    // vec_faces is a vec0 virtual table and unreachable by FK cascade; clear
+    // the stale dest row's face data explicitly before dropping the row.
+    {
+        int64_t stale_id = get_image_id(new_path);
+        if (stale_id >= 0) delete_faces_for_image(stale_id);
+    }
 
     {
         const char* del = "DELETE FROM images WHERE path = ?";

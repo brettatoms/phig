@@ -224,6 +224,44 @@ TEST_F(DatabaseTest, UpdatePathWhenDestAlreadyExists) {
     EXPECT_EQ(*db->get_sha256("/dst/photo.jpg"), "sha_source");
 }
 
+TEST_F(DatabaseTest, UpdatePathOntoStaleDestClearsItsFaces) {
+    // A tracked dest row with a face; its file is about to be replaced by mv.
+    db->insert(make_image("/dst/b.jpg", "shaB"));
+    int64_t dest_id = db->get_image_id("/dst/b.jpg");
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 0;
+    face.y = 0;
+    face.width = 5;
+    face.height = 5;
+    db->insert_face(dest_id, face);
+
+    db->insert(make_image("/src/a.jpg", "shaA"));
+    db->update_path("/src/a.jpg", "/dst/b.jpg");
+
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM faces"), 0);
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 0);
+    EXPECT_EQ(db->count(), 1);
+}
+
+TEST_F(DatabaseTest, InsertCopyOntoStaleDestClearsItsFaces) {
+    db->insert(make_image("/dst/b.jpg", "shaB"));
+    int64_t dest_id = db->get_image_id("/dst/b.jpg");
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 0;
+    face.y = 0;
+    face.width = 5;
+    face.height = 5;
+    db->insert_face(dest_id, face);
+
+    db->insert(make_image("/src/a.jpg", "shaA"));
+    db->insert_copy("/src/a.jpg", "/dst/b.jpg");
+
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM faces"), 0);
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 0);
+}
+
 TEST_F(DatabaseTest, SetTagCreatesAndResolvesTag) {
     // Guards the checked tag-insert write: creating a new tag and applying it
     // must still succeed (the write result is now verified, not ignored).
