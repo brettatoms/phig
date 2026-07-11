@@ -445,6 +445,24 @@ TEST_F(DatabaseTest, GetAllImagesWithPrefix) {
     EXPECT_EQ(filtered.size(), 2);
 }
 
+TEST_F(DatabaseTest, GetAllImagesPrefixTreatsUnderscoreLiterally) {
+    db->insert(make_image("/photos/my_dir/a.jpg", "s1"));
+    db->insert(make_image("/photos/myxdir/b.jpg", "s2"));
+    auto rows = db->get_all_images("/photos/my_dir/");
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].path, "/photos/my_dir/a.jpg");
+}
+
+TEST_F(DatabaseTest, ExactDuplicatesPrefixTreatsUnderscoreLiterally) {
+    db->insert(make_image("/photos/my_dir/a.jpg", "same"));
+    db->insert(make_image("/photos/my_dir/b.jpg", "same"));
+    db->insert(make_image("/photos/myxdir/c.jpg", "same"));
+    db->insert(make_image("/photos/myxdir/d.jpg", "same"));
+    auto groups = db->get_exact_duplicates("/photos/my_dir/");
+    ASSERT_EQ(groups.size(), 1u);
+    EXPECT_EQ(groups[0].size(), 2u);  // only the two files actually under my_dir/
+}
+
 TEST_F(DatabaseTest, PurgeByGlob) {
     db->insert(make_image("/test/vacation1.jpg", "sha1"));
     db->insert(make_image("/test/vacation2.jpg", "sha2"));

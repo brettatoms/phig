@@ -978,8 +978,11 @@ std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) 
         "width, height, metadata, media_type, duration_ms, gallery, "
         "EXISTS(SELECT 1 FROM image_tags it JOIN tags t ON t.id = it.tag_id "
         "WHERE it.image_id = images.id AND t.name = 'favorite'), blur_score FROM images";
+    std::optional<std::string> upper;
     if (!path_prefix.empty()) {
-        sql += " WHERE path LIKE ? || '%'";
+        upper = prefix_upper_bound(path_prefix);
+        sql += " WHERE path >= ?";
+        if (upper) sql += " AND path < ?";
     }
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
@@ -989,6 +992,7 @@ std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) 
 
     if (!path_prefix.empty()) {
         sqlite3_bind_text(stmt, 1, path_prefix.c_str(), -1, SQLITE_TRANSIENT);
+        if (upper) sqlite3_bind_text(stmt, 2, upper->c_str(), -1, SQLITE_TRANSIENT);
     }
 
     std::vector<ImageInfo> results;
@@ -1031,14 +1035,17 @@ std::vector<std::vector<ImageInfo>> Database::get_exact_duplicates(const std::st
             WHERE sha256 IN (SELECT sha256 FROM images GROUP BY sha256 HAVING COUNT(*) > 1)
             ORDER BY sha256, path
         )";
-    } else {
-        sql = R"(
-            SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms
-            FROM images
-            WHERE path LIKE ? || '%'
-              AND sha256 IN (SELECT sha256 FROM images WHERE path LIKE ? || '%' GROUP BY sha256 HAVING COUNT(*) > 1)
-            ORDER BY sha256, path
-        )";
+    }
+    std::optional<std::string> upper;
+    if (!path_prefix.empty()) {
+        upper = prefix_upper_bound(path_prefix);
+        std::string bound = upper ? " AND path < ?" : "";
+        sql =
+            "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, "
+            "phash, width, height, metadata, media_type, duration_ms FROM images "
+            "WHERE path >= ?" +
+            bound + " AND sha256 IN (SELECT sha256 FROM images WHERE path >= ?" + bound +
+            " GROUP BY sha256 HAVING COUNT(*) > 1) ORDER BY sha256, path";
     }
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
@@ -1047,8 +1054,11 @@ std::vector<std::vector<ImageInfo>> Database::get_exact_duplicates(const std::st
     }
 
     if (!path_prefix.empty()) {
-        sqlite3_bind_text(stmt, 1, path_prefix.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, path_prefix.c_str(), -1, SQLITE_TRANSIENT);
+        int i = 1;
+        sqlite3_bind_text(stmt, i++, path_prefix.c_str(), -1, SQLITE_TRANSIENT);
+        if (upper) sqlite3_bind_text(stmt, i++, upper->c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, i++, path_prefix.c_str(), -1, SQLITE_TRANSIENT);
+        if (upper) sqlite3_bind_text(stmt, i++, upper->c_str(), -1, SQLITE_TRANSIENT);
     }
 
     std::vector<ImageInfo> flat;
