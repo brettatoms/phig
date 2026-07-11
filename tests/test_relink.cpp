@@ -1,0 +1,132 @@
+#include <gtest/gtest.h>
+
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <string>
+
+#include "database.h"
+#include "faces.h"
+#include "relink.h"
+#include "types.h"
+
+namespace fs = std::filesystem;
+
+class RelinkTest : public ::testing::Test {
+   protected:
+    fs::path dir;
+    std::string db_path;
+    std::unique_ptr<Database> db;
+
+    void SetUp() override {
+        dir = fs::temp_directory_path() / "phig-relink-test";
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+        db_path = (dir / "t.db").string();
+        db = std::make_unique<Database>(db_path);
+        db->init_schema();
+    }
+
+    void TearDown() override {
+        db.reset();
+        fs::remove_all(dir);
+    }
+
+    // Insert a row; when on_disk, also create the real file it points at.
+    std::string add_row(const std::string& rel, const std::string& sha, bool on_disk) {
+        fs::path p = dir / rel;
+        if (on_disk) {
+            fs::create_directories(p.parent_path());
+            std::ofstream(p) << "bytes-" << sha;
+        }
+        ImageInfo info;
+        info.path = p.string();
+        info.filename = p.filename().string();
+        info.extension = "jpg";
+        info.file_size = 10;
+        info.created_at = "2024-01-01T00:00:00Z";
+        info.modified_at = "2024-01-01T00:00:00Z";
+        info.sha256 = sha;
+        info.phash = 0;
+        info.width = 8;
+        info.height = 8;
+        info.metadata_json = "{}";
+        db->insert(info);
+        return p.string();
+    }
+
+    static int64_t count_rows(sqlite3* h, const std::string& sql) {
+        sqlite3_stmt* s = nullptr;
+        if (sqlite3_prepare_v2(h, sql.c_str(), -1, &s, nullptr) != SQLITE_OK) return -1;
+        int64_t n = (sqlite3_step(s) == SQLITE_ROW) ? sqlite3_column_int64(s, 0) : -1;
+        sqlite3_finalize(s);
+        return n;
+    }
+};
+
+TEST_F(RelinkTest, SingleCandidateTransfersMetadata) {
+    std::string old_path = add_row("old/a.jpg", "sameSha", /*on_disk=*/false);
+    std::string new_path = add_row("new/a.jpg", "sameSha", /*on_disk=*/true);
+    db->set_tag({old_path}, "favorite", true);
+    db->set_gallery({old_path}, "summer", false);
+
+    int n = relink_moved_rows(*db, {old_path}, 0);
+
+    EXPECT_EQ(n, 1);
+    auto tags = db->get_tags_for_image(new_path);
+    ASSERT_EQ(tags.size(), 1u);
+    EXPECT_EQ(tags[0], "favorite");
+    for (const auto& img : db->get_all_images()) {
+        if (img.path == new_path) EXPECT_EQ(img.gallery, "summer");
+    }
+}
+
+TEST_F(RelinkTest, NoCandidateDoesNothing) {
+    std::string old_path = add_row("old/a.jpg", "uniqueSha", false);
+    db->set_tag({old_path}, "favorite", true);
+    EXPECT_EQ(relink_moved_rows(*db, {old_path}, 0), 0);
+}
+
+TEST_F(RelinkTest, AmbiguousCandidatesSkipped) {
+    std::string old_path = add_row("old/a.jpg", "dupSha", false);
+    std::string c1 = add_row("new/a.jpg", "dupSha", true);
+    std::string c2 = add_row("new/b.jpg", "dupSha", true);
+    db->set_tag({old_path}, "favorite", true);
+
+    EXPECT_EQ(relink_moved_rows(*db, {old_path}, 0), 0);
+    EXPECT_TRUE(db->get_tags_for_image(c1).empty());
+    EXPECT_TRUE(db->get_tags_for_image(c2).empty());
+}
+
+TEST_F(RelinkTest, CandidateMissingOnDiskSkipped) {
+    std::string old_path = add_row("old/a.jpg", "sameSha", false);
+    add_row("new/a.jpg", "sameSha", /*on_disk=*/false);  // row exists, file doesn't
+    db->set_tag({old_path}, "favorite", true);
+    EXPECT_EQ(relink_moved_rows(*db, {old_path}, 0), 0);
+}
+
+TEST_F(RelinkTest, MissingCandidateFileDoesNotCountTowardAmbiguity) {
+    // One on-disk candidate + one stale row: still an unambiguous move.
+    std::string old_path = add_row("old/a.jpg", "sameSha", false);
+    std::string target = add_row("new/a.jpg", "sameSha", true);
+    add_row("stale/a.jpg", "sameSha", false);
+    db->set_tag({old_path}, "favorite", true);
+
+    EXPECT_EQ(relink_moved_rows(*db, {old_path}, 0), 1);
+    EXPECT_EQ(db->get_tags_for_image(target).size(), 1u);
+}
+
+TEST_F(RelinkTest, LogsRelinkEntryUnderOperation) {
+    std::string old_path = add_row("old/a.jpg", "sameSha", false);
+    std::string new_path = add_row("new/a.jpg", "sameSha", true);
+    db->set_tag({old_path}, "favorite", true);
+
+    int64_t op_id = db->log_begin_operation("scan", "phig scan test", "2026-07-11T00:00:00Z");
+    EXPECT_EQ(relink_moved_rows(*db, {old_path}, op_id), 1);
+    db->log_finish_operation(op_id, "completed");
+
+    EXPECT_EQ(
+        count_rows(db->db_ptr(), "SELECT COUNT(*) FROM operation_entries WHERE kind = 'relink'"),
+        1);
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM operations WHERE entry_count = 1"), 1);
+}
