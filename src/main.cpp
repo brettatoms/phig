@@ -33,6 +33,7 @@
 #include "models.h"
 #include "organize_exec.h"
 #include "paths.h"
+#include "relink.h"
 #include "scanner.h"
 #include "thumbs.h"
 #include "types.h"
@@ -618,6 +619,7 @@ int cmd_scan(const ScanOptions& opts) {
     // problem can't purge metadata for intact files.
     std::vector<std::string> removed_paths = paths_safe_to_delete(db_paths);
     size_t removed_count = 0;
+    int relinked_count = 0;
     if (!removed_paths.empty()) {
         if (!db_paths.empty() && removed_paths.size() == db_paths.size() &&
             !opts.ignore_mount_warning) {
@@ -632,6 +634,7 @@ int cmd_scan(const ScanOptions& opts) {
             if (opts.log_enabled) {
                 int64_t op_id = db.log_begin_operation("scan", opts.argv_str, iso_utc_now());
                 try {
+                    relinked_count = relink_moved_rows(db, removed_paths, op_id);
                     removed_count = db.delete_paths_logged(removed_paths, op_id);
                 } catch (...) {
                     // delete_paths_logged rolls back its own transaction, but the
@@ -647,6 +650,7 @@ int cmd_scan(const ScanOptions& opts) {
                 db.log_finish_operation(op_id, "completed");
                 db.log_prune(opts.log_max_entries);
             } else {
+                relinked_count = relink_moved_rows(db, removed_paths, 0);
                 db.delete_paths(removed_paths);
                 removed_count = removed_paths.size();
             }
@@ -663,6 +667,10 @@ int cmd_scan(const ScanOptions& opts) {
               << "  Skipped:   " << skipped.load() << "\n"
               << "  Errors:    " << errors.load() << "\n"
               << "  Removed:   " << removed_count << "\n";
+    if (relinked_count > 0) {
+        std::cout << "  Relinked:  " << relinked_count
+                  << " (metadata moved to identical files at new paths)\n";
+    }
     if (opts.faces) {
         std::cout << "  Faces:     " << face_count.load() << "\n";
     }
