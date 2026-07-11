@@ -224,6 +224,9 @@ struct ScanOptions {
     bool include_hidden = false;
     int parallel = -1;  // -1 = auto
     std::string db_path;
+    bool log_enabled = true;
+    int log_max_entries = 100000;
+    std::string argv_str;  // full invocation, for the audit trail
 };
 
 struct ProcessResult {
@@ -623,8 +626,18 @@ int cmd_scan(const ScanOptions& opts) {
                       << "This may indicate an unmounted drive or incorrect path.\n"
                       << "Use --ignore-mount-warning to remove these entries from the database.\n";
         } else {
-            db.delete_paths(removed_paths);
-            removed_count = removed_paths.size();
+            // Removing a row destroys user-authored metadata (tags, gallery,
+            // faces) that a rescan cannot rebuild — record it like purge does,
+            // with a restorable row snapshot per entry (review #3a).
+            if (opts.log_enabled) {
+                int64_t op_id = db.log_begin_operation("scan", opts.argv_str, iso_utc_now());
+                removed_count = db.delete_paths_logged(removed_paths, op_id);
+                db.log_finish_operation(op_id, "completed");
+                db.log_prune(opts.log_max_entries);
+            } else {
+                db.delete_paths(removed_paths);
+                removed_count = removed_paths.size();
+            }
         }
     }
 
@@ -2592,6 +2605,9 @@ int main(int argc, char* argv[]) {
         if (cfg.scan_faces) opts.faces = *cfg.scan_faces;
         if (cfg.scan_on_error) opts.fail_on_error = (*cfg.scan_on_error == "fail");
         if (cfg.scan_media) opts.media = (*cfg.scan_media == "all") ? "" : *cfg.scan_media;
+        if (cfg.log_enabled) opts.log_enabled = *cfg.log_enabled;
+        if (cfg.log_max_entries) opts.log_max_entries = *cfg.log_max_entries;
+        opts.argv_str = join_argv(argc, argv);
 
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
