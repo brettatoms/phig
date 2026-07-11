@@ -149,34 +149,56 @@ std::string compute_sha256(const std::string& path) {
     return sha256_bytes(buffer.data(), buffer.size());
 }
 
-cv::Mat decode_image(const std::string& path) {
-    // Suppress OpenCV's internal warnings (e.g., "Invalid SOS parameters")
-    // and re-emit them with the filename for context
-    std::string cv_warning;
-    cv::redirectError(
-        [](int, const char*, const char* err_msg, const char*, int, void* userdata) -> int {
-            auto* warn = static_cast<std::string*>(userdata);
-            *warn = err_msg ? err_msg : "unknown error";
-            return 0;  // don't throw
-        },
-        &cv_warning);
+namespace {
+
+// OpenCV's error handler is process-global, so it cannot carry a per-call
+// pointer safely across concurrent decoders. Instead we install one handler
+// once and have it record into thread-local storage. OpenCV invokes the
+// handler on the same thread that called imread(), so each decode reads back
+// its own error message with no cross-thread misattribution.
+thread_local std::string t_cv_warning;
+
+void install_cv_error_handler() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        cv::redirectError(
+            [](int, const char*, const char* err_msg, const char*, int, void*) -> int {
+                t_cv_warning = err_msg ? err_msg : "unknown error";
+                return 0;  // don't throw
+            },
+            nullptr);
+    });
+}
+
+}  // namespace
+
+DecodeResult decode_image_with_warning(const std::string& path) {
+    install_cv_error_handler();
+
+    // Suppress OpenCV's internal warnings (e.g., "Invalid SOS parameters") and
+    // capture them for context via the thread-local buffer set by the handler.
+    t_cv_warning.clear();
 
     // Suppress libjpeg's direct stderr output (e.g., "Premature end of JPEG
     // file") by redirecting stderr to /dev/null for the duration of the read.
-    cv::Mat img;
+    DecodeResult result;
     {
         StderrSuppressor suppress_stderr;
-        img = cv::imread(path, cv::IMREAD_COLOR);
+        result.img = cv::imread(path, cv::IMREAD_COLOR);
     }
 
-    // Restore OpenCV error handler
-    cv::redirectError(nullptr);
+    result.warning = t_cv_warning;
+    return result;
+}
 
-    if (!cv_warning.empty()) {
-        std::cerr << "\n[warning] " << path << " -- " << cv_warning << '\n';
+cv::Mat decode_image(const std::string& path) {
+    DecodeResult result = decode_image_with_warning(path);
+    if (!result.warning.empty()) {
+        // Build the whole message and write it in one operation so concurrent
+        // scan workers' warnings don't interleave at newline boundaries.
+        std::cerr << "\n[warning] " + path + " -- " + result.warning + "\n";
     }
-
-    return img;
+    return result.img;
 }
 
 PhashResult compute_phash(const cv::Mat& img) {

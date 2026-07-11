@@ -30,6 +30,15 @@ double compute_blur_score(const cv::Mat& img);
 // Decode an image file, returns empty Mat on failure
 cv::Mat decode_image(const std::string& path);
 
+// Decode an image file, capturing any OpenCV-internal error message for this
+// specific decode. The warning is attributed correctly even when many threads
+// decode concurrently. Empty warning means no OpenCV-internal error.
+struct DecodeResult {
+    cv::Mat img;
+    std::string warning;
+};
+DecodeResult decode_image_with_warning(const std::string& path);
+
 // A representative video frame plus the source's reported dimensions
 // (which can differ from the decoded frame after scaling/rotation).
 struct VideoKeyframe {

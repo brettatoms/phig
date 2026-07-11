@@ -558,12 +558,13 @@ int cmd_scan(const ScanOptions& opts) {
                     errors.fetch_add(1);
                     // Clear progress line, print warning, then resume progress
                     std::cout << "\r\033[K" << std::flush;
+                    // Assemble the whole line so concurrent workers' messages
+                    // don't interleave with each other or the progress line.
                     if (opts.fail_on_error) {
-                        std::cerr << "[error] " << rel_path(filepath) << " -- " << e.what() << '\n';
+                        std::cerr << "[error] " + rel_path(filepath) + " -- " + e.what() + "\n";
                         throw;
                     } else {
-                        std::cerr << "[warning] " << rel_path(filepath) << " -- " << e.what()
-                                  << '\n';
+                        std::cerr << "[warning] " + rel_path(filepath) + " -- " + e.what() + "\n";
                     }
                 }
 

@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <thread>
+#include <vector>
 
 #include "hasher.h"
 
@@ -129,6 +132,64 @@ TEST_F(HasherTest, PhashPNG) {
     auto result = compute_phash(path);
     EXPECT_EQ(result.width, 320);
     EXPECT_EQ(result.height, 240);
+}
+
+// ---- Concurrent warning attribution (imread-issue fix) ----
+
+// A truncated old-style-OJPEG Canon CR2: OpenCV's libtiff path decodes the
+// header, then fails during readData and raises its internal
+// "Internal imread issue" error. This is the one input that reliably routes
+// through cv::redirectError (unlike truncated JPEG/PNG, which only hit
+// libjpeg/libpng's own stderr).
+static const char* kBadCr2 = "tests/data/truncated_ojpeg.cr2";
+
+TEST_F(HasherTest, DecodeWarningReportsInternalIssueForBadCr2) {
+    auto r = decode_image_with_warning(kBadCr2);
+    EXPECT_TRUE(r.img.empty());
+    EXPECT_NE(r.warning.find("Internal imread"), std::string::npos) << r.warning;
+}
+
+TEST_F(HasherTest, DecodeWarningEmptyForGoodImage) {
+    auto path = create_image("good.jpg", 320, 240, cv::Scalar(10, 20, 30));
+    auto r = decode_image_with_warning(path);
+    EXPECT_FALSE(r.img.empty());
+    EXPECT_TRUE(r.warning.empty()) << r.warning;
+}
+
+// The bug: cv::redirectError installs a *process-global* handler, so when many
+// threads decode at once, a warning raised by one thread's bad decode can be
+// captured against another thread's good decode. Each call's warning must
+// belong to that call's file, no matter how many threads run concurrently.
+TEST_F(HasherTest, DecodeWarningNotMisattributedAcrossThreads) {
+    auto good = create_image("good_concurrent.jpg", 320, 240, cv::Scalar(40, 80, 120));
+
+    const int kThreads = 12;
+    const int kIters = 10;
+    std::atomic<int> good_false_warning{0};   // good file wrongly got a warning
+    std::atomic<int> bad_missing_warning{0};  // bad file wrongly got none
+
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int t = 0; t < kThreads; t++) {
+        // Half the threads hammer the bad CR2, half the good JPEG.
+        const bool decode_bad = (t % 2 == 0);
+        const std::string path = decode_bad ? std::string(kBadCr2) : good;
+        threads.emplace_back([&, path, decode_bad] {
+            for (int i = 0; i < kIters; i++) {
+                auto r = decode_image_with_warning(path);
+                if (decode_bad) {
+                    if (r.warning.find("Internal imread") == std::string::npos)
+                        bad_missing_warning.fetch_add(1);
+                } else {
+                    if (!r.warning.empty()) good_false_warning.fetch_add(1);
+                }
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    EXPECT_EQ(good_false_warning.load(), 0);
+    EXPECT_EQ(bad_missing_warning.load(), 0);
 }
 
 // ---- Blur / sharpness (plan 012) ----
