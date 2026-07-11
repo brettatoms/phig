@@ -199,11 +199,20 @@ void atomic_copy_file(const std::string& source, const std::string& dest) {
         fs::remove(tmp, ec);
         throw fs::filesystem_error("atomic_copy_file: copy failed", source, dst, ec);
     }
+    // User data is being placed: make the bytes durable before the rename
+    // publishes the path, so a power loss can't leave a valid-looking
+    // truncated dest. (Thumbnails skip this — regenerable cache.)
+    if (!fsync_file(tmp)) {
+        fs::remove(tmp, ec);
+        throw fs::filesystem_error("atomic_copy_file: fsync failed", tmp, dst,
+                                   std::error_code(errno, std::generic_category()));
+    }
     fs::rename(tmp, dst, ec);
     if (ec) {
         fs::remove(tmp, ec);
         throw fs::filesystem_error("atomic_copy_file: rename failed", tmp, dst, ec);
     }
+    fsync_dir(dst.parent_path());
 }
 
 bool atomic_write_file(const std::string& dest, const void* data, size_t size) {
