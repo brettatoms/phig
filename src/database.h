@@ -28,7 +28,7 @@ class Database {
     // ---- Activity log (plan 020) ----
     // One operation_entries row: an inverse-able record of a single file change.
     struct OperationEntry {
-        std::string kind;  // "move" | "copy" | "purge_row"
+        std::string kind;  // "move" | "copy" | "purge_row" | "relink"
         std::string src;
         std::string dst;           // "" when N/A (purge)
         std::string restore_json;  // "" unless kind == "purge_row"
@@ -83,6 +83,17 @@ class Database {
 
     // Get all distinct SHA256 hashes in the database
     std::set<std::string> get_all_sha256s();
+
+    // Paths of all rows with this sha256, excluding `exclude_path` (used by
+    // scan re-link to find where an externally moved file's content lives now).
+    std::vector<std::string> get_paths_for_sha256(const std::string& sha256,
+                                                  const std::string& exclude_path);
+
+    // Move user-authored metadata from one image row to another (scan re-link):
+    // tags are unioned onto `to_id`; gallery copies only when `to_id`'s is
+    // NULL; faces repoint only when `to_id` has none (vec_faces rows are keyed
+    // by face_id and are unaffected). Runs in the caller's transaction.
+    void transfer_user_metadata(int64_t from_id, int64_t to_id);
 
     // Get all images, optionally filtered by path prefix
     std::vector<ImageInfo> get_all_images(const std::string& path_prefix = "");

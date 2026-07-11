@@ -993,6 +993,81 @@ std::set<std::string> Database::get_all_sha256s() {
     return result;
 }
 
+std::vector<std::string> Database::get_paths_for_sha256(const std::string& sha256,
+                                                        const std::string& exclude_path) {
+    const char* sql = "SELECT path FROM images WHERE sha256 = ? AND path != ? ORDER BY path";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare sha256 lookup: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    sqlite3_bind_text(stmt, 1, sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, exclude_path.c_str(), -1, SQLITE_TRANSIENT);
+    std::vector<std::string> paths;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (text) paths.emplace_back(text);
+    }
+    sqlite3_finalize(stmt);
+    return paths;
+}
+
+void Database::transfer_user_metadata(int64_t from_id, int64_t to_id) {
+    // Tags: union — the target keeps its own and gains the source's.
+    {
+        const char* sql =
+            "INSERT OR IGNORE INTO image_tags (image_id, tag_id) "
+            "SELECT ?, tag_id FROM image_tags WHERE image_id = ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Failed to prepare tag transfer: " +
+                                     std::string(sqlite3_errmsg(db_)));
+        sqlite3_bind_int64(stmt, 1, to_id);
+        sqlite3_bind_int64(stmt, 2, from_id);
+        step_write_or_throw(db_, stmt, "Failed to transfer tags");
+    }
+
+    // Gallery: fill only an empty target — a user-set gallery on the target wins.
+    {
+        const char* sql =
+            "UPDATE images SET gallery = (SELECT gallery FROM images WHERE id = ?) "
+            "WHERE id = ? AND gallery IS NULL";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Failed to prepare gallery transfer: " +
+                                     std::string(sqlite3_errmsg(db_)));
+        sqlite3_bind_int64(stmt, 1, from_id);
+        sqlite3_bind_int64(stmt, 2, to_id);
+        step_write_or_throw(db_, stmt, "Failed to transfer gallery");
+    }
+
+    // Faces: repoint only when the target has none. Checked in C++ first — a
+    // NOT EXISTS in the UPDATE's WHERE would see the rows it just moved and
+    // stop after one. Fresh detections on the target win over stale ones.
+    {
+        int64_t target_faces = 0;
+        sqlite3_stmt* c = nullptr;
+        if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM faces WHERE image_id = ?", -1, &c,
+                               nullptr) != SQLITE_OK)
+            throw std::runtime_error("Failed to prepare face count: " +
+                                     std::string(sqlite3_errmsg(db_)));
+        sqlite3_bind_int64(c, 1, to_id);
+        if (sqlite3_step(c) == SQLITE_ROW) target_faces = sqlite3_column_int64(c, 0);
+        sqlite3_finalize(c);
+
+        if (target_faces == 0) {
+            sqlite3_stmt* stmt = nullptr;
+            if (sqlite3_prepare_v2(db_, "UPDATE faces SET image_id = ? WHERE image_id = ?", -1,
+                                   &stmt, nullptr) != SQLITE_OK)
+                throw std::runtime_error("Failed to prepare face transfer: " +
+                                         std::string(sqlite3_errmsg(db_)));
+            sqlite3_bind_int64(stmt, 1, to_id);
+            sqlite3_bind_int64(stmt, 2, from_id);
+            step_write_or_throw(db_, stmt, "Failed to transfer faces");
+        }
+    }
+}
+
 std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) {
     std::string sql =
         "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, "

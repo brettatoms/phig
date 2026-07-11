@@ -876,3 +876,78 @@ TEST_F(DatabaseTest, PurgeSnapshotMarksOmittedFaces) {
     sqlite3_finalize(s);
     EXPECT_NE(restore.find("_faces_omitted"), std::string::npos);
 }
+
+TEST_F(DatabaseTest, GetPathsForSha256ExcludesGivenPath) {
+    db->insert(make_image("/a/x.jpg", "same"));
+    db->insert(make_image("/b/y.jpg", "same"));
+    db->insert(make_image("/c/z.jpg", "other"));
+    auto paths = db->get_paths_for_sha256("same", "/a/x.jpg");
+    ASSERT_EQ(paths.size(), 1u);
+    EXPECT_EQ(paths[0], "/b/y.jpg");
+}
+
+TEST_F(DatabaseTest, TransferUserMetadataMovesTagsGalleryFaces) {
+    db->insert(make_image("/old/a.jpg", "same"));
+    db->insert(make_image("/new/a.jpg", "same"));
+    int64_t from_id = db->get_image_id("/old/a.jpg");
+    int64_t to_id = db->get_image_id("/new/a.jpg");
+    db->set_tag({"/old/a.jpg"}, "favorite", true);
+    db->set_tag({"/old/a.jpg"}, "vacation", true);
+    db->set_gallery({"/old/a.jpg"}, "summer", false);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 1;
+    face.y = 1;
+    face.width = 5;
+    face.height = 5;
+    db->insert_face(from_id, face);
+
+    db->begin_transaction();
+    db->transfer_user_metadata(from_id, to_id);
+    db->commit_transaction();
+
+    auto tags = db->get_tags_for_image("/new/a.jpg");
+    ASSERT_EQ(tags.size(), 2u);  // favorite + vacation (ordered by name)
+    EXPECT_TRUE(db->has_faces("/new/a.jpg"));
+    EXPECT_FALSE(db->has_faces("/old/a.jpg"));
+    // vec_faces untouched: still exactly one embedding row
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 1);
+    for (const auto& img : db->get_all_images()) {
+        if (img.path == "/new/a.jpg") EXPECT_EQ(img.gallery, "summer");
+    }
+}
+
+TEST_F(DatabaseTest, TransferUserMetadataTargetGalleryAndFacesWin) {
+    db->insert(make_image("/old/a.jpg", "same"));
+    db->insert(make_image("/new/a.jpg", "same"));
+    int64_t from_id = db->get_image_id("/old/a.jpg");
+    int64_t to_id = db->get_image_id("/new/a.jpg");
+    db->set_gallery({"/old/a.jpg"}, "old-gallery", false);
+    db->set_gallery({"/new/a.jpg"}, "new-gallery", false);
+    FaceInfo old_face{};
+    old_face.embedding.fill(0.1f);
+    old_face.x = 1;
+    old_face.y = 1;
+    old_face.width = 5;
+    old_face.height = 5;
+    db->insert_face(from_id, old_face);
+    FaceInfo new_face{};
+    new_face.embedding.fill(0.9f);
+    new_face.x = 2;
+    new_face.y = 2;
+    new_face.width = 6;
+    new_face.height = 6;
+    db->insert_face(to_id, new_face);
+
+    db->begin_transaction();
+    db->transfer_user_metadata(from_id, to_id);
+    db->commit_transaction();
+
+    for (const auto& img : db->get_all_images()) {
+        if (img.path == "/new/a.jpg") EXPECT_EQ(img.gallery, "new-gallery");
+    }
+    // Old face NOT moved: target already had fresh detections.
+    EXPECT_TRUE(db->has_faces("/old/a.jpg"));
+    std::string q = "SELECT COUNT(*) FROM faces WHERE image_id = " + std::to_string(to_id);
+    EXPECT_EQ(count_rows(db->db_ptr(), q.c_str()), 1);
+}
