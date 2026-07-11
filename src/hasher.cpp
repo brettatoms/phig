@@ -140,11 +140,20 @@ std::string compute_sha256(const std::string& path) {
 
     // Read entire file
     file.seekg(0, std::ios::end);
-    size_t size = file.tellg();
+    std::streampos end = file.tellg();
+    if (end < 0) {
+        throw std::runtime_error("Cannot determine file size for hashing: " + path);
+    }
+    size_t size = static_cast<size_t>(end);
     file.seekg(0, std::ios::beg);
 
     std::vector<uint8_t> buffer(size);
-    file.read(reinterpret_cast<char*>(buffer.data()), size);
+    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(size));
+    // A short read (I/O error, file shrank mid-scan) must not produce a
+    // silently wrong hash — duplicates output drives user deletions.
+    if (static_cast<size_t>(file.gcount()) != size) {
+        throw std::runtime_error("Short read while hashing (file changed or I/O error): " + path);
+    }
 
     return sha256_bytes(buffer.data(), buffer.size());
 }

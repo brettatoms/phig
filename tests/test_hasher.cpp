@@ -78,6 +78,15 @@ TEST_F(HasherTest, SHA256IdenticalFiles) {
     EXPECT_EQ(compute_sha256(path1), compute_sha256(path2));
 }
 
+TEST_F(HasherTest, Sha256ThrowsOnUnreadableInput) {
+    // A directory opens as a stream on Linux/macOS but reads fail — the old
+    // code silently hashed a zero-filled buffer of the directory's st_size.
+    auto dir = fs::temp_directory_path() / "phig-hash-unreadable-test";
+    fs::create_directories(dir);
+    EXPECT_THROW(compute_sha256(dir.string()), std::runtime_error);
+    fs::remove_all(dir);
+}
+
 // ---- PHash tests ----
 
 TEST_F(HasherTest, PhashBasicImage) {
