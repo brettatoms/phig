@@ -1243,6 +1243,7 @@ int cmd_purge(const PurgeOptions& opts) {
     }
 
     Database db(opts.db_path);
+    db.init_schema();
 
     auto all_images = db.get_all_images();
 
