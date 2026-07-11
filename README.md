@@ -153,6 +153,11 @@ phig scan ~/Photos --faces --parallel 2         # control parallelism
 Scanning handles images and video. `--force` accepts `hash`, `thumbs`, `faces`,
 or `all` (bare `--force` means all) to re-process only what you name.
 
+If you move or rename files outside phig, a rescan re-links their metadata: when
+a tracked file is gone but a byte-identical file exists at a new path, phig
+transfers the old file's tags, favorites, gallery, and faces to it before
+dropping the stale entry (reported as `Relinked: N`).
+
 ### Finding Duplicates
 
 ```bash

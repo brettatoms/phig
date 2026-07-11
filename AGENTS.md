@@ -101,6 +101,7 @@ tests/
 - **Re-scan skips unchanged files** — matches on path + mtime. Use `--force` to reprocess.
 - **Granular --force** — `--force` accepts `hash,thumbs,faces,all` (comma-separated or repeated). Bare `--force` = all.
 - **Safety guard on scan** — warns if all DB entries for a directory are missing (possible unmounted drive). Requires `--ignore-mount-warning` to proceed with deletion.
+- **Scan re-link** — when scan removes a stale row (its file is gone) and exactly one other tracked file with the identical sha256 exists on disk, it transfers the stale row's user-authored metadata (tags/favorites, gallery if the target has none, faces if the target has none) to that surviving row before deleting the stale one, logged as a `relink` entry. So moving/renaming files outside phig and rescanning preserves metadata. Ambiguous (two+ identical-content files) or no on-disk match: no transfer, row still deleted with a restore snapshot.
 - **Thumbnails** — 512px JPEG cached in `~/.cache/phig/thumbs/` keyed by SHA256. Deduplicates naturally.
 - **Video support** — scans video files (MP4/MOV/MKV/AVI/WebM etc.), extracts keyframe phash via OpenCV VideoCapture, metadata via libavformat. Videos stored with `media_type = 'video'`, searchable/filterable.
 - **Schema migrations** — `meta` table tracks schema version. Forward-only migrations. Version check on startup bails if DB is newer than code.

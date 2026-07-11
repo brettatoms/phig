@@ -1,6 +1,6 @@
 ---
 name: Scan Re-link (metadata follows externally moved files)
-status: planned
+status: completed
 created: 2026-07-11
 description: >
   When a scan finds that a tracked file is gone but another tracked file with
@@ -629,7 +629,35 @@ git commit -m "Re-link user metadata across external moves during scan"
 
 ## Final verification
 
-- [ ] Full suite green: `direnv exec . cmake --build build && ./build/phig-tests`
-- [ ] Lint: `clang-format --dry-run --Werror src/*.cpp src/*.h tests/*.cpp` and `./scripts/clang-tidy.sh`
-- [ ] Update `AGENTS.md`/`README.md` scan documentation: scan now re-links metadata across external moves and logs its removals.
-- [ ] Update `plans/000-INDEX.md` status for 023 to `completed` and record the outcome at the bottom of this file.
+- [x] Full suite green: `direnv exec . cmake --build build && ./build/phig-tests` (290 tests).
+- [x] Lint: `clang-format --dry-run --Werror` clean on changed files.
+- [x] Update `AGENTS.md`/`README.md` scan documentation: scan now re-links metadata across external moves and logs its removals.
+- [x] Update `plans/000-INDEX.md` status for 023 to `completed` and record the outcome at the bottom of this file.
+
+## Outcome (2026-07-11)
+
+Implemented via subagent-driven development (3 tasks, each with real-behavior
+tests + spec/quality review); final whole-branch review returned READY TO MERGE.
+Full suite: 290 tests passing. Built on plan 022 (upsert `insert`, logged scan
+removals).
+
+Commits (on `master`):
+
+| Task | Commit |
+|------|--------|
+| 1 — `Database::get_paths_for_sha256` + `transfer_user_metadata` primitives | `3604fb6` |
+| 2 — `relink_moved_rows` orchestrator in new `src/relink.{h,cpp}` + tests + CMake | `22651aa` |
+| 3 — wire into `cmd_scan` (relink before delete, same op) + `Relinked:` summary | `0c76509` |
+
+Notes:
+- Task 3 merged the relink call into the existing scan-removal `try/catch` guard
+  (022 commit `ec0008e`) rather than the plan's pre-guard snippet, so a relink
+  failure also marks the operation `interrupted`. Relink runs before
+  `delete_paths_logged` within the same `scan` operation.
+- Whole-branch review confirmed: a transfer target can never be another stale
+  row (the `fs::exists` gate excludes gone files, and `removed_paths` are files
+  already gone from disk); vec_faces stays coherent (repoint touches only
+  `faces.image_id`, never `face_id`); no nested transactions.
+- Forward-looking (non-blocking): a future `undo` implementation should decide
+  how to treat committed `relink` entries under an operation later marked
+  `interrupted` (no undo consumer exists yet). See [020](020-activity-log.md).
