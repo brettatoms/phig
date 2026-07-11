@@ -192,143 +192,164 @@ void Database::init_schema() {
             // Pre-migration DB — set version to 1, then run migrations forward.
             // Re-establish the face-recognition schema that the old init_schema
             // used to guarantee on every startup, in case the existing DB
-            // predates it (idempotent — safe if already present).
-            exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
-            exec(R"(
-                CREATE TABLE IF NOT EXISTS faces (
-                    id          INTEGER PRIMARY KEY,
-                    image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-                    embedding   BLOB NOT NULL,
-                    x           INTEGER,
-                    y           INTEGER,
-                    width       INTEGER,
-                    height      INTEGER
-                )
-            )");
-            exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
-            exec(R"(
-                CREATE TABLE IF NOT EXISTS people (
-                    id   INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE
-                )
-            )");
-            exec(R"(
-                CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
-                    face_id INTEGER PRIMARY KEY,
-                    embedding float[128]
-                )
-            )");
-            // Add person_id to faces if not present (SQLite lacks
-            // IF NOT EXISTS for ALTER TABLE, so probe first).
-            {
-                sqlite3_stmt* stmt;
-                int rc = sqlite3_prepare_v2(db_, "SELECT person_id FROM faces LIMIT 0", -1, &stmt,
-                                            nullptr);
-                if (rc != SQLITE_OK) {
-                    exec("ALTER TABLE faces ADD COLUMN person_id INTEGER REFERENCES people(id)");
-                } else {
-                    sqlite3_finalize(stmt);
+            // predates it (idempotent — safe if already present). Do this in
+            // ONE transaction: a crash partway must not leave a versionless
+            // partial schema that a later run misreads as still pre-migration
+            // (whose re-run would then race the ALTER TABLE probe below).
+            exec("BEGIN TRANSACTION");
+            try {
+                exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+                exec(R"(
+                    CREATE TABLE IF NOT EXISTS faces (
+                        id          INTEGER PRIMARY KEY,
+                        image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                        embedding   BLOB NOT NULL,
+                        x           INTEGER,
+                        y           INTEGER,
+                        width       INTEGER,
+                        height      INTEGER
+                    )
+                )");
+                exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
+                exec(R"(
+                    CREATE TABLE IF NOT EXISTS people (
+                        id   INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE
+                    )
+                )");
+                exec(R"(
+                    CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
+                        face_id INTEGER PRIMARY KEY,
+                        embedding float[128]
+                    )
+                )");
+                // Add person_id to faces if not present (SQLite lacks
+                // IF NOT EXISTS for ALTER TABLE, so probe first).
+                {
+                    sqlite3_stmt* stmt;
+                    int rc = sqlite3_prepare_v2(db_, "SELECT person_id FROM faces LIMIT 0", -1,
+                                                &stmt, nullptr);
+                    if (rc != SQLITE_OK) {
+                        exec(
+                            "ALTER TABLE faces ADD COLUMN person_id INTEGER REFERENCES people(id)");
+                    } else {
+                        sqlite3_finalize(stmt);
+                    }
                 }
+                set_schema_version(1);
+                exec("COMMIT");
+            } catch (...) {
+                exec("ROLLBACK");
+                throw;
             }
-            set_schema_version(1);
             db_version = 1;
             // Fall through to migration path below
         } else {
-            // Truly fresh database — create full schema at latest version
-            exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+            // Truly fresh database — create the full schema at the latest
+            // version in ONE transaction: a crash partway must not leave a
+            // versionless partial schema that a later run misreads as a
+            // pre-migration v1 DB (whose v2 migration would then fail).
+            exec("BEGIN TRANSACTION");
+            try {
+                exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
 
-            exec(R"(
-                CREATE TABLE IF NOT EXISTS images (
-                    id          INTEGER PRIMARY KEY,
-                    path        TEXT NOT NULL UNIQUE,
-                    filename    TEXT NOT NULL,
-                    extension   TEXT NOT NULL,
-                    file_size   INTEGER NOT NULL,
-                    created_at  TEXT,
-                    modified_at TEXT,
-                    sha256      TEXT NOT NULL,
-                    phash       INTEGER NOT NULL,
-                    width       INTEGER,
-                    height      INTEGER,
-                    metadata    TEXT,
-                    media_type  TEXT NOT NULL DEFAULT 'image',
-                    duration_ms INTEGER,
-                    gallery     TEXT,
-                    blur_score  REAL
-                )
-            )");
-            exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
-            exec("CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256)");
-            exec("CREATE INDEX IF NOT EXISTS idx_path ON images(path)");
-            exec("CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery)");
+                exec(R"(
+                    CREATE TABLE IF NOT EXISTS images (
+                        id          INTEGER PRIMARY KEY,
+                        path        TEXT NOT NULL UNIQUE,
+                        filename    TEXT NOT NULL,
+                        extension   TEXT NOT NULL,
+                        file_size   INTEGER NOT NULL,
+                        created_at  TEXT,
+                        modified_at TEXT,
+                        sha256      TEXT NOT NULL,
+                        phash       INTEGER NOT NULL,
+                        width       INTEGER,
+                        height      INTEGER,
+                        metadata    TEXT,
+                        media_type  TEXT NOT NULL DEFAULT 'image',
+                        duration_ms INTEGER,
+                        gallery     TEXT,
+                        blur_score  REAL
+                    )
+                )");
+                exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
+                exec("CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256)");
+                exec("CREATE INDEX IF NOT EXISTS idx_path ON images(path)");
+                exec("CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery)");
 
-            exec(R"(
-                CREATE TABLE IF NOT EXISTS tags (
-                    id   INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE
-                )
-            )");
-            exec(R"(
-                CREATE TABLE IF NOT EXISTS image_tags (
-                    image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-                    tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-                    PRIMARY KEY (image_id, tag_id)
-                )
-            )");
-            exec("INSERT OR IGNORE INTO tags(name) VALUES ('favorite')");
+                exec(R"(
+                    CREATE TABLE IF NOT EXISTS tags (
+                        id   INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE
+                    )
+                )");
+                exec(R"(
+                    CREATE TABLE IF NOT EXISTS image_tags (
+                        image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                        tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                        PRIMARY KEY (image_id, tag_id)
+                    )
+                )");
+                exec("INSERT OR IGNORE INTO tags(name) VALUES ('favorite')");
 
-            exec(R"(
-                CREATE TABLE IF NOT EXISTS faces (
-                    id          INTEGER PRIMARY KEY,
-                    image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-                    embedding   BLOB NOT NULL,
-                    x           INTEGER,
-                    y           INTEGER,
-                    width       INTEGER,
-                    height      INTEGER,
-                    person_id   INTEGER REFERENCES people(id)
-                )
-            )");
-            exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
+                exec(R"(
+                    CREATE TABLE IF NOT EXISTS faces (
+                        id          INTEGER PRIMARY KEY,
+                        image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                        embedding   BLOB NOT NULL,
+                        x           INTEGER,
+                        y           INTEGER,
+                        width       INTEGER,
+                        height      INTEGER,
+                        person_id   INTEGER REFERENCES people(id)
+                    )
+                )");
+                exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
 
-            exec(R"(
-                CREATE TABLE IF NOT EXISTS people (
-                    id   INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE
-                )
-            )");
+                exec(R"(
+                    CREATE TABLE IF NOT EXISTS people (
+                        id   INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE
+                    )
+                )");
 
-            exec(R"(
-                CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
-                    face_id INTEGER PRIMARY KEY,
-                    embedding float[128]
-                )
-            )");
+                exec(R"(
+                    CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
+                        face_id INTEGER PRIMARY KEY,
+                        embedding float[128]
+                    )
+                )");
 
-            exec(R"(
-                CREATE TABLE IF NOT EXISTS operations (
-                    id          INTEGER PRIMARY KEY,
-                    ts          TEXT NOT NULL,
-                    command     TEXT NOT NULL,
-                    argv        TEXT,
-                    status      TEXT NOT NULL,
-                    undoes_id   INTEGER REFERENCES operations(id),
-                    entry_count INTEGER NOT NULL DEFAULT 0
-                )
-            )");
-            exec(R"(
-                CREATE TABLE IF NOT EXISTS operation_entries (
-                    id           INTEGER PRIMARY KEY,
-                    op_id        INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
-                    kind         TEXT NOT NULL,
-                    src          TEXT,
-                    dst          TEXT,
-                    restore_json TEXT
-                )
-            )");
-            exec("CREATE INDEX IF NOT EXISTS idx_op_entries ON operation_entries(op_id)");
+                exec(R"(
+                    CREATE TABLE IF NOT EXISTS operations (
+                        id          INTEGER PRIMARY KEY,
+                        ts          TEXT NOT NULL,
+                        command     TEXT NOT NULL,
+                        argv        TEXT,
+                        status      TEXT NOT NULL,
+                        undoes_id   INTEGER REFERENCES operations(id),
+                        entry_count INTEGER NOT NULL DEFAULT 0
+                    )
+                )");
+                exec(R"(
+                    CREATE TABLE IF NOT EXISTS operation_entries (
+                        id           INTEGER PRIMARY KEY,
+                        op_id        INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+                        kind         TEXT NOT NULL,
+                        src          TEXT,
+                        dst          TEXT,
+                        restore_json TEXT
+                    )
+                )");
+                exec("CREATE INDEX IF NOT EXISTS idx_op_entries ON operation_entries(op_id)");
 
-            set_schema_version(CURRENT_SCHEMA_VERSION);
+                set_schema_version(CURRENT_SCHEMA_VERSION);
+                exec("COMMIT");
+            } catch (...) {
+                exec("ROLLBACK");
+                throw;
+            }
         }
     }
 
