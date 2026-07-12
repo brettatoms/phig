@@ -323,6 +323,11 @@ overwriting.
 audit trail. Disable it with `[log] enabled = false`; cap its size with
 `[log] max_entries`.
 
+`mv`/`cp` also carry a file's metadata sidecars (xmp, pp3, dop, on1, aae, json,
+thm, lrv) along with it, renaming them to match; organize and search also fall
+back to a sidecar's date when a file has no EXIF date, before falling back to
+its modified time.
+
 ### Purging Database Entries
 
 ```bash

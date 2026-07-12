@@ -122,6 +122,15 @@ tests/
   scan summaries log at INFO (file only). `[log] file = false` drops the file
   sink; `[log] file_level = info|warn|error` sets its threshold. All logging
   goes through `src/log.h` — no spdlog includes elsewhere.
+- **Sidecar files** — `mv`/`cp` carry a media file's metadata sidecars (xmp,
+  pp3, dop, on1, aae, json, thm, lrv; both `IMG_1234.xmp` and `IMG_1234.CR2.xmp`
+  naming) to the destination beside their image, renaming them to match a
+  renamed parent, logged as `move_sidecar`/`copy_sidecar` entries linked to the
+  parent image id. Sidecars are never indexed as media. Organize and search
+  display also read a sidecar date (XMP `CreateDate`/`DateTimeOriginal`, Google
+  Takeout `photoTakenTime`) as a date source after EXIF and before mtime, so
+  EXIF-stripped photos file (and display) under their real date, not the copy
+  date. RAW↔JPEG pairing is plan 026, not here.
 
 ## Plans
 
