@@ -9,6 +9,9 @@ namespace fs = std::filesystem;
 // Returns true if the file extension is a known image format
 bool is_known_image_extension(const std::string& ext);
 
+// Returns true if the file extension is a known RAW format (cr2, nef, dng, ...)
+bool is_raw_extension(const std::string& ext);
+
 // Returns true if the file extension is a known video format
 bool is_known_video_extension(const std::string& ext);
 

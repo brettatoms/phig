@@ -6,75 +6,51 @@
 
 namespace {
 
-const std::unordered_set<std::string>& known_extensions() {
+const std::unordered_set<std::string>& raw_extensions() {
     static const std::unordered_set<std::string> exts = {
-        // Common formats
-        "jpg",
-        "jpeg",
-        "png",
-        "gif",
-        "bmp",
-        "tiff",
-        "tif",
-        "webp",
-        // RAW formats
-        "cr2",
-        "cr3",
-        "nef",
-        "nrw",
-        "arw",
-        "srf",
-        "sr2",
-        "dng",
-        "orf",
-        "rw2",
-        "pef",
-        "raf",
-        "raw",
-        "rwl",
-        "3fr",
-        "ari",
-        "bay",
-        "cap",
-        "crw",
-        "dcr",
-        "dcs",
-        "erf",
-        "fff",
-        "iiq",
-        "k25",
-        "kdc",
-        "mdc",
-        "mef",
-        "mos",
-        "mrw",
-        "obm",
-        "ptx",
-        "pxn",
-        "r3d",
-        "srw",
-        "x3f",
-        // Other image formats
-        "heic",
-        "heif",
-        "avif",
-        "jxl",
-        "ico",
-        "svg",
-        "psd",
-        "xcf",
-        "jp2",
-        "j2k",
-        "jpf",
-        "jpm",
-        "jpx",
-        "pgm",
-        "ppm",
-        "pbm",
-        "pnm",
-        "exr",
-        "hdr",
+        "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "dng", "orf", "rw2", "pef", "raf",
+        "raw", "rwl", "3fr", "ari", "bay", "cap", "crw", "dcr", "dcs", "erf", "fff", "iiq",
+        "k25", "kdc", "mdc", "mef", "mos", "mrw", "obm", "ptx", "pxn", "r3d", "srw", "x3f",
     };
+    return exts;
+}
+
+const std::unordered_set<std::string>& known_extensions() {
+    static const std::unordered_set<std::string> exts = [] {
+        std::unordered_set<std::string> s = {
+            // Common formats
+            "jpg",
+            "jpeg",
+            "png",
+            "gif",
+            "bmp",
+            "tiff",
+            "tif",
+            "webp",
+            // Other image formats
+            "heic",
+            "heif",
+            "avif",
+            "jxl",
+            "ico",
+            "svg",
+            "psd",
+            "xcf",
+            "jp2",
+            "j2k",
+            "jpf",
+            "jpm",
+            "jpx",
+            "pgm",
+            "ppm",
+            "pbm",
+            "pnm",
+            "exr",
+            "hdr",
+        };
+        s.insert(raw_extensions().begin(), raw_extensions().end());
+        return s;
+    }();
     return exts;
 }
 
@@ -100,6 +76,15 @@ bool is_known_image_extension(const std::string& ext) {
         lower = lower.substr(1);
     }
     return known_extensions().count(lower) > 0;
+}
+
+bool is_raw_extension(const std::string& ext) {
+    std::string lower = to_lower(ext);
+    // Strip leading dot if present
+    if (!lower.empty() && lower[0] == '.') {
+        lower = lower.substr(1);
+    }
+    return raw_extensions().count(lower) > 0;
 }
 
 bool is_known_video_extension(const std::string& ext) {

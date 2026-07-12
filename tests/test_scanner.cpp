@@ -157,3 +157,10 @@ TEST_F(ScannerTest, KnownImageExtensions) {
     EXPECT_FALSE(is_known_image_extension("db"));
     EXPECT_FALSE(is_known_image_extension(""));
 }
+
+TEST(ScannerExtensionTest, IsRawExtension) {
+    EXPECT_TRUE(is_raw_extension("cr2"));
+    EXPECT_TRUE(is_raw_extension("CR2"));
+    EXPECT_TRUE(is_raw_extension(".nef"));
+    EXPECT_FALSE(is_raw_extension("jpg"));
+}
