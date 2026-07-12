@@ -16,14 +16,24 @@ namespace fs = std::filesystem;
 
 std::string execute_trash_action(Database& db, const std::string& path, int64_t op_id) {
     fs::create_directories(trash_dir());
-    std::string dst = trash_path_for(fs::path(path).filename().string());
 
-    std::error_code ec;
-    fs::rename(path, dst, ec);
-    if (ec) {
-        // Cross-mount (EXDEV) or other rename failure: copy then remove.
-        fs::copy_file(path, dst, fs::copy_options::overwrite_existing);
-        fs::remove(path);  // throws on failure — leaves the copy in trash
+    // move_file() never clobbers: it throws errc::file_exists if the chosen
+    // trash name is already taken (a random-hex collision, or a concurrent phig
+    // run that grabbed the same name). Retry with a fresh random name in that
+    // case; any other error propagates. move_file also fsyncs the cross-device
+    // copy before unlinking the source, so a power loss can't leave the only
+    // copy truncated.
+    std::string filename = fs::path(path).filename().string();
+    std::string dst;
+    for (;;) {
+        dst = trash_path_for(filename);
+        try {
+            move_file(path, dst);
+            break;
+        } catch (const fs::filesystem_error& e) {
+            if (e.code() == std::errc::file_exists) continue;  // regenerate + retry
+            throw;
+        }
     }
 
     if (op_id > 0) db.log_add_entry(op_id, {"trash", path, dst, ""});

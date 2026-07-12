@@ -616,23 +616,39 @@ TEST(TrashPathTest, TrashDirUnderDataHome) {
     fs::remove_all(tmp);
 }
 
-TEST(TrashPathTest, TrashPathForIsFreeSlotAndSuffixesOnCollision) {
+TEST(TrashPathTest, TrashPathForInsertsRandomHexAndIsUnique) {
     fs::path tmp = fs::temp_directory_path() / "phig-trashpath-test";
     fs::remove_all(tmp);
     setenv("XDG_DATA_HOME", tmp.c_str(), 1);
-    fs::create_directories(trash_dir());
 
-    std::string p0 = trash_path_for("IMG_1234.jpg");
-    EXPECT_EQ(p0, (fs::path(trash_dir()) / "IMG_1234.jpg").string());
+    // Shape: <trash_dir>/<stem>.<8 hex>.<ext>, and the path does not exist yet
+    // (trash_path_for never scans/creates — it just names).
+    std::string p = trash_path_for("IMG_1234.jpg");
+    fs::path pp(p);
+    EXPECT_EQ(pp.parent_path(), fs::path(trash_dir()));
+    EXPECT_FALSE(fs::exists(p));
+    // filename is IMG_1234.<hex>.jpg
+    std::string name = pp.filename().string();
+    ASSERT_EQ(name.rfind("IMG_1234.", 0), 0u);          // starts with stem + '.'
+    ASSERT_TRUE(name.size() > std::string("IMG_1234..jpg").size());
+    // The extension is preserved as the final component.
+    EXPECT_EQ(pp.extension().string(), ".jpg");
+    // The token between stem and extension is 8 lowercase-hex chars.
+    std::string mid = name.substr(std::string("IMG_1234.").size());  // "<hex>.jpg"
+    std::string hex = mid.substr(0, mid.size() - std::string(".jpg").size());
+    EXPECT_EQ(hex.size(), 8u);
+    EXPECT_TRUE(std::all_of(hex.begin(), hex.end(),
+                            [](char c) { return std::isxdigit(static_cast<unsigned char>(c)); }));
 
-    // Occupy the free slot; next call must suffix.
-    std::ofstream(p0) << "x";
-    std::string p1 = trash_path_for("IMG_1234.jpg");
-    EXPECT_EQ(p1, (fs::path(trash_dir()) / "IMG_1234.jpg.1").string());
+    // Two calls for the same name yield different paths (random, no counter).
+    std::string q = trash_path_for("IMG_1234.jpg");
+    EXPECT_NE(p, q);
 
-    std::ofstream(p1) << "x";
-    std::string p2 = trash_path_for("IMG_1234.jpg");
-    EXPECT_EQ(p2, (fs::path(trash_dir()) / "IMG_1234.jpg.2").string());
+    // A name with no extension still gets a hex token appended.
+    std::string noext = trash_path_for("NOEXT");
+    std::string noext_name = fs::path(noext).filename().string();
+    EXPECT_EQ(noext_name.rfind("NOEXT.", 0), 0u);
+    EXPECT_EQ(noext_name.size(), std::string("NOEXT.").size() + 8u);
 
     unsetenv("XDG_DATA_HOME");
     fs::remove_all(tmp);

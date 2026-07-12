@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <string>
 
 #include "database.h"
@@ -89,23 +90,32 @@ TEST_F(RemoveExecTest, TrashMovesFileAndLogs) {
     EXPECT_EQ(count_entries("trash", src), 1);
 }
 
-TEST_F(RemoveExecTest, TrashSuffixesOnCollisionAndLogsSuffixedPath) {
+TEST_F(RemoveExecTest, TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs) {
     std::string a = (photos / "IMG_1.jpg").string();
     std::string b = (photos / "sub" / "IMG_1.jpg").string();  // same filename
-    write_file(a, "a");
-    write_file(b, "b");
+    write_file(a, "aaa");
+    write_file(b, "bbb");
     int64_t op = db->log_begin_operation("rm", "phig rm", "2026-07-12T00:00:00Z");
 
     std::string da = execute_trash_action(*db, a, op);
     std::string db2 = execute_trash_action(*db, b, op);
 
-    EXPECT_EQ(fs::path(da).filename().string(), "IMG_1.jpg");
-    EXPECT_EQ(fs::path(db2).filename().string(), "IMG_1.jpg.1");
-    EXPECT_TRUE(fs::exists(da));
-    EXPECT_TRUE(fs::exists(db2));
+    // Distinct random-hex names: neither clobbers the other, both survive with
+    // their original bytes intact.
+    EXPECT_NE(da, db2);
+    ASSERT_TRUE(fs::exists(da));
+    ASSERT_TRUE(fs::exists(db2));
+    auto read = [](const std::string& p) {
+        std::ifstream in(p);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    EXPECT_EQ(read(da), "aaa");
+    EXPECT_EQ(read(db2), "bbb");
+    EXPECT_EQ(fs::path(da).parent_path(), fs::path(trash_dir()));
+    EXPECT_EQ(fs::path(db2).parent_path(), fs::path(trash_dir()));
 
-    // The log records the actual (suffixed) trash path in dst, so a future undo
-    // restores from the right place. Verify dst for the second file.
+    // The log records the actual trash path in dst, so a future undo restores
+    // from the right place. Verify dst for the second file.
     std::string dst_logged;
     std::string sql = "SELECT dst FROM operation_entries WHERE kind='trash' AND src='" + b + "'";
     sqlite3_exec(
@@ -116,6 +126,24 @@ TEST_F(RemoveExecTest, TrashSuffixesOnCollisionAndLogsSuffixedPath) {
         },
         &dst_logged, nullptr);
     EXPECT_EQ(dst_logged, db2);
+}
+
+TEST_F(RemoveExecTest, TrashManySameNameFilesAllSurviveDistinctly) {
+    // Stress the random-hex naming + no-clobber move: many identically-named
+    // files must all land in the trash at distinct paths, none overwritten.
+    const int N = 50;
+    std::set<std::string> dsts;
+    for (int i = 0; i < N; i++) {
+        std::string src = (photos / ("dir" + std::to_string(i)) / "SAME.jpg").string();
+        write_file(src, "content-" + std::to_string(i));
+        std::string dst = execute_trash_action(*db, src, 0);
+        EXPECT_TRUE(dsts.insert(dst).second) << "duplicate trash path: " << dst;
+        ASSERT_TRUE(fs::exists(dst));
+        std::ifstream in(dst);
+        std::string got((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        EXPECT_EQ(got, "content-" + std::to_string(i));
+    }
+    EXPECT_EQ(dsts.size(), static_cast<size_t>(N));
 }
 
 TEST_F(RemoveExecTest, HardDeleteRemovesAndLogs) {

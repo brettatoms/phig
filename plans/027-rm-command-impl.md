@@ -10,6 +10,8 @@
 
 **Note on scope:** The `--ignored` mode is specified in plan 028 (`.phigignore`) and is **out of scope here**. This plan builds trash / `--hard` / `--db-only` / `--orphans` only. Where the spec lists `--ignored`, treat it as a future addition; do not add it.
 
+**Post-implementation amendment (2026-07-12):** the trash naming/move scheme in Tasks 1–2 below was superseded after the feature shipped. `trash_path_for()` now inserts 8 random hex chars before the extension (`IMG_1234.<8hex>.jpg`) with no free-slot scan, and `execute_trash_action()` moves via `move_file()` (no-clobber `renameat2` + fsync'd cross-device copy) with a regenerate-and-retry on `errc::file_exists`. This removes the counter's TOCTOU race and the unfsync'd EXDEV copy. See the current spec's "Trash mechanics" section (`plans/027-rm-command.md`) for the authoritative behavior; the `.1`/`.2` counter code in Tasks 1–2 is historical.
+
 ## Global Constraints
 
 - C++20; match existing file style (4-space indent, `namespace fs = std::filesystem;`, no exceptions for control flow across module boundaries beyond what the codebase already does).

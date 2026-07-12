@@ -129,12 +129,18 @@ burden — an unreadable/unmovable file fails identically under any scheme.
 ## Trash mechanics
 
 - **Location**: a single directory `data_dir()/trash`, created on first use.
-- **Move**: same-filesystem → `fs::rename` (fast, atomic). Cross-mount
-  (`fs::rename` throws / `EXDEV`) → copy the bytes then `fs::remove` the
-  original.
-- **Name collisions inside the trash**: suffix with a counter —
-  `IMG_1234.jpg`, then `IMG_1234.jpg.1`, `IMG_1234.jpg.2`, … The chosen trash
-  path is what gets recorded in the log entry, so restore is unambiguous.
+- **Trash name**: `trash_path_for()` inserts 8 random hex chars before the
+  extension — `IMG_1234.jpg` → `IMG_1234.<8hex>.jpg` (a dotless name gets
+  `NAME.<8hex>`). No "find the next free slot" scan, so there is no
+  time-of-check/time-of-use race between concurrent runs. The chosen path is
+  recorded in the `trash` log entry's `dst`, so restore is unambiguous.
+- **Move**: route through `move_file()` (paths.cpp) — a no-clobber
+  `renameat2(RENAME_NOREPLACE)` on the same filesystem, falling back to an
+  fsync'd copy-then-remove across mounts (`EXDEV`). `move_file` throws
+  `errc::file_exists` rather than overwrite; `execute_trash_action` catches that
+  one error and retries with a freshly generated random name, so an
+  astronomically-rare hex collision (or a concurrent process grabbing the same
+  name) can never clobber an existing trashed file. Any other error propagates.
 - **`--hard`**: `fs::remove` the file directly; no trash copy.
 - **`phig trash empty`**: delete every entry under `data_dir()/trash`. Requires
   `--yes` for the same reason `--hard` does — it is a permanent delete. Does

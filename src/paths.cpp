@@ -10,6 +10,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <stdexcept>
 #include <system_error>
 
@@ -63,12 +64,21 @@ std::string trash_dir() { return data_dir() + "/trash"; }
 
 std::string trash_path_for(const std::string& filename) {
     namespace fs = std::filesystem;
-    fs::path base = fs::path(trash_dir()) / filename;
-    if (!fs::exists(base)) return base.string();
-    for (int i = 1;; i++) {
-        fs::path candidate = fs::path(trash_dir()) / (filename + "." + std::to_string(i));
-        if (!fs::exists(candidate)) return candidate.string();
-    }
+    // 8 random hex chars (32 bits) inserted before the extension so the trash
+    // name is unique without scanning for a free slot (no TOCTOU race). The
+    // caller moves via move_file(), which never clobbers and retries with a
+    // fresh name on the astronomically-rare collision.
+    static thread_local std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> dist(0, 15);
+    char hex[9];
+    for (int i = 0; i < 8; i++) hex[i] = "0123456789abcdef"[dist(rng)];
+    hex[8] = '\0';
+
+    fs::path name(filename);
+    std::string ext = name.extension().string();  // ".jpg" or ""
+    std::string stem = name.stem().string();       // "IMG_1234" (or full name if no ext)
+    std::string tagged = stem + "." + hex + ext;    // IMG_1234.<hex>.jpg  /  NOEXT.<hex>
+    return (fs::path(trash_dir()) / tagged).string();
 }
 
 void set_path_overrides(const std::optional<std::string>& db,
