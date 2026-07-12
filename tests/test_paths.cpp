@@ -604,3 +604,36 @@ TEST_F(AtomicWriteTest, CopyFileOverwritesExistingDestOnSuccess) {
     EXPECT_EQ(read_file(dst), "NEW");
     EXPECT_FALSE(has_temp_residue());
 }
+
+// ---- trash_dir and trash_path_for ----
+
+TEST(TrashPathTest, TrashDirUnderDataHome) {
+    fs::path tmp = fs::temp_directory_path() / "phig-trashdir-test";
+    fs::remove_all(tmp);
+    setenv("XDG_DATA_HOME", tmp.c_str(), 1);
+    EXPECT_EQ(trash_dir(), (tmp / "phig" / "trash").string());
+    unsetenv("XDG_DATA_HOME");
+    fs::remove_all(tmp);
+}
+
+TEST(TrashPathTest, TrashPathForIsFreeSlotAndSuffixesOnCollision) {
+    fs::path tmp = fs::temp_directory_path() / "phig-trashpath-test";
+    fs::remove_all(tmp);
+    setenv("XDG_DATA_HOME", tmp.c_str(), 1);
+    fs::create_directories(trash_dir());
+
+    std::string p0 = trash_path_for("IMG_1234.jpg");
+    EXPECT_EQ(p0, (fs::path(trash_dir()) / "IMG_1234.jpg").string());
+
+    // Occupy the free slot; next call must suffix.
+    std::ofstream(p0) << "x";
+    std::string p1 = trash_path_for("IMG_1234.jpg");
+    EXPECT_EQ(p1, (fs::path(trash_dir()) / "IMG_1234.jpg.1").string());
+
+    std::ofstream(p1) << "x";
+    std::string p2 = trash_path_for("IMG_1234.jpg");
+    EXPECT_EQ(p2, (fs::path(trash_dir()) / "IMG_1234.jpg.2").string());
+
+    unsetenv("XDG_DATA_HOME");
+    fs::remove_all(tmp);
+}

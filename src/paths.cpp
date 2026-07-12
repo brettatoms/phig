@@ -48,6 +48,18 @@ std::string thumbs_dir() {
 std::string config_path() { return config_dir() + "/config.ini"; }
 std::string default_log_path() { return state_dir() + "/phig.log"; }
 
+std::string trash_dir() { return data_dir() + "/trash"; }
+
+std::string trash_path_for(const std::string& filename) {
+    namespace fs = std::filesystem;
+    fs::path base = fs::path(trash_dir()) / filename;
+    if (!fs::exists(base)) return base.string();
+    for (int i = 1;; i++) {
+        fs::path candidate = fs::path(trash_dir()) / (filename + "." + std::to_string(i));
+        if (!fs::exists(candidate)) return candidate.string();
+    }
+}
+
 void set_path_overrides(const std::optional<std::string>& db,
                         const std::optional<std::string>& models,
                         const std::optional<std::string>& thumbs) {

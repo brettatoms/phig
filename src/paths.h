@@ -22,6 +22,13 @@ std::string thumbs_dir();        // cache_dir() + /thumbs
 std::string config_path();       // config_dir() + /config.ini
 std::string default_log_path();  // state_dir() + /phig.log
 
+std::string trash_dir();    // data_dir() + /trash  (phig-managed trash)
+
+// A non-colliding absolute path inside trash_dir() for a file named `filename`:
+// trash_dir()/filename if free, else trash_dir()/filename.1, .2, … The returned
+// path does not exist yet. Does NOT create trash_dir().
+std::string trash_path_for(const std::string& filename);
+
 // Expand a leading ~ to $HOME. Paths not starting with ~ are returned unchanged,
 // as are ~ paths when HOME is unset.
 std::string expand_tilde(const std::string& path);
