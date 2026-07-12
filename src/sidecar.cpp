@@ -139,7 +139,13 @@ std::string sidecar_date(const fs::path& sidecar_file) {
 
     if (lower_ext == "json") {
         // Google Takeout: photoTakenTime.timestamp is epoch seconds (UTC).
-        std::string ts = json_string_value(content, "timestamp");
+        // Scope the search to the photoTakenTime object so a sibling
+        // creationTime.timestamp (upload time) is never picked by mistake.
+        std::string ts;
+        auto obj = content.find("\"photoTakenTime\"");
+        if (obj != std::string::npos) {
+            ts = json_string_value(content.substr(obj), "timestamp");
+        }
         if (!ts.empty()) {
             std::time_t t = static_cast<std::time_t>(std::strtoll(ts.c_str(), nullptr, 10));
             std::tm tm{};

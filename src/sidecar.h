@@ -20,6 +20,8 @@ std::vector<std::filesystem::path> find_sidecars(const std::filesystem::path& me
 // Organizing date read from a sidecar, in EXIF shape "YYYY:MM:DD HH:MM:SS",
 // or "" if none. Parses XMP (xmp:CreateDate / exif:DateTimeOriginal, whose
 // values may be "M/D/YYYY h:mm:ss AM" or "YYYY-MM-DDThh:mm:ss") and Google
-// Takeout JSON (photoTakenTime.formatted / .timestamp). Returns "" on any
-// unparseable or dateless file.
+// Takeout JSON, specifically photoTakenTime.timestamp (capture time) — never
+// the sibling creationTime.timestamp (upload time), even if creationTime
+// appears earlier in the file. Returns "" on any unparseable or dateless
+// file.
 std::string sidecar_date(const std::filesystem::path& sidecar_file);

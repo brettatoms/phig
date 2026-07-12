@@ -109,6 +109,18 @@ TEST_F(SidecarTest, GoogleJsonPhotoTakenTime) {
     EXPECT_EQ(d.substr(0, 4), "2010");
 }
 
+TEST_F(SidecarTest, GoogleJsonIgnoresCreationTimeBeforePhotoTakenTime) {
+    // creationTime (upload time, 2015) appears before photoTakenTime (capture
+    // time, 2010) in the JSON. The result must be photoTakenTime's date, not
+    // whichever "timestamp" key happens to appear first in the file.
+    write(dir / "e.json",
+          R"({"creationTime":{"timestamp":"1420070400","formatted":"Jan 1, 2015"},)"
+          R"("photoTakenTime":{"timestamp":"1288000497","formatted":"Nov 25, 2010"}})");
+    std::string d = sidecar_date(dir / "e.json");
+    ASSERT_GE(d.size(), 10u);
+    EXPECT_EQ(d.substr(0, 4), "2010");
+}
+
 TEST_F(SidecarTest, DatelessSidecarReturnsEmpty) {
     write(dir / "d.xmp", R"(<x:xmpmeta><rdf:Description xmp:Rating="0"/></x:xmpmeta>)");
     EXPECT_EQ(sidecar_date(dir / "d.xmp"), "");
