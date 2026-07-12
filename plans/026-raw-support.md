@@ -54,29 +54,76 @@ existing CR2 decode failures.
 
 ## Scan & re-scan transitions
 
-**Scan rule (stateless).** When scanning a file: a JPEG is indexed **unless a
-same-basename RAW sits beside it** in the same directory. A RAW is always
-indexed, with its pixel source resolved per the model. (Scan today processes
-each file independently; this adds a per-file sibling check.)
+**Scan rule (stateless, disk-based — order-independent).** When scanning a file:
+a JPEG is indexed **unless a same-basename RAW sits beside it ON DISK** in the
+same directory. A RAW is always indexed, with its pixel source resolved per the
+model.
 
-**Re-scan transitions (lossless, via metadata transfer):**
+The sibling check queries the **filesystem**, not the DB and not processing
+order. This matters because scan enumerates files in unsorted filesystem order
+and processes them across a thread pool — the JPEG and its RAW may be handled in
+either order or concurrently. Since both files are on disk for the entire scan,
+"does a same-basename RAW exist on disk?" returns the same answer no matter which
+thread runs first or whether the RAW has been indexed yet. Seeing the JPEG
+before the RAW is therefore not a problem: the JPEG is skipped because the RAW is
+*present on disk*, never because the RAW was *already indexed*.
+
+**`--media image` interaction.** The RAW extensions are image extensions, so a
+default scan sees both. If a `--media`/match filter excludes the RAW from the
+scanned set while including the JPEG, the disk check still sees the RAW on disk
+and demotes the JPEG — the JPEG's row is not created even though the RAW won't be
+indexed this run. Settle in planning whether the demotion should require the RAW
+to actually be in the scanned set (default: demote on disk presence, matching the
+"one shot" intent; the RAW gets indexed on a later unfiltered scan).
+
+**Re-scan transitions (lossless, via metadata transfer).** These are the hard,
+concurrency-sensitive cases and the exact hook point is a planning decision (see
+open question 6):
 - **RAW arrives beside an already-indexed JPEG.** The JPEG previously scanned
   alone has a row (possibly with tags / faces / favorite / gallery). On re-scan
   with the RAW now present: index the RAW, **transfer the JPEG row's
-  user-authored metadata to the RAW row** (plan 023's `transfer_user_metadata`,
-  triggered by same-basename pairing, not sha256), log a `relink` entry, and
-  **delete the JPEG row** (it becomes a sidecar).
+  user-authored metadata to the RAW row**, log a `relink` entry, and **delete the
+  JPEG row** (it becomes an attachment). Key subtlety: because processing is
+  parallel, the thread that decides to *skip* the JPEG and the thread that
+  *indexes* the RAW are different and may run concurrently — so the transfer
+  cannot be driven inline from the JPEG's skip decision. Two candidate
+  mechanisms, decided in planning:
+  - **(a) Reconcile at scan cleanup (recommended).** The RAW indexes as master;
+    the now-unindexed JPEG becomes a stale row at end-of-scan cleanup (the same
+    path that removes rows for vanished files), and its metadata transfers to the
+    RAW **by basename** before its row is deleted. Order-independent, reuses the
+    cleanup path. NOTE: plan 023's `relink_moved_rows` triggers on identical
+    **sha256** — a RAW and its JPEG differ, so 023's existing trigger will NOT
+    fire. This needs a **basename-triggered** transfer that reuses 023's
+    `transfer_user_metadata(from_id, to_id)` primitive and `relink` log entry,
+    but with a same-basename-RAW-on-disk trigger instead of the sha256 one.
+  - **(b) Transfer inline during RAW processing.** The RAW's processing looks up
+    a same-basename JPEG row and absorbs it then. More immediate but races the
+    JPEG's own skip thread under `db_mutex`.
 - **RAW deleted, lone JPEG remains.** The RAW row goes through normal stale-row
-  removal; the now-lone JPEG is indexed as a normal photo (**promoted**).
+  removal; the now-lone JPEG is indexed as a normal photo (**promoted**) — the
+  disk check no longer finds a RAW, so the JPEG is indexed on the next scan.
 
 ## Move/organize, purge, duplicates
 
 **Organize (as a unit).** Moving a RAW carries its same-basename JPEG and any
-`.xmp`/other metadata sidecars to the RAW's destination, reusing plan 025's
-`carry_sidecars` — the JPEG is one more carried attachment. Only the RAW has a
-row, so there is no second row to repoint; the JPEG move is a `move_sidecar`
-entry (025) linked to the RAW's image id. The pair is derived from the source
-directory **at move time**, so it cannot desync.
+`.xmp`/other metadata sidecars to the RAW's destination. Only the RAW has a row,
+so there is no second row to repoint; each carried file is logged as a
+`move_sidecar`/`copy_sidecar` entry (025) linked to the RAW's image id. The pair
+is derived from the source directory **at move time**, so it cannot desync.
+
+**Mechanism gap to close (planning).** Plan 025's `carry_sidecars` finds what to
+carry via `find_sidecars`, which matches only the **metadata-sidecar allowlist**
+(xmp/pp3/dop/on1/aae/json/thm/lrv). `.jpg` is deliberately NOT on that list (a
+lone JPEG is a real photo, not a sidecar), so `carry_sidecars` as it exists will
+**not** pick up the attached JPEG. The design intent — "carry the JPEG via 025's
+machinery" — therefore needs an explicit **attachments pass**: when moving a RAW,
+also carry the same-basename JPEG (found by basename, not the sidecar allowlist),
+logged the same way. This is a small generalization of the carry step (extend
+`carry_sidecars`, or a sibling `carry_attachments`, that adds the same-basename
+JPEG to the set). Do NOT add `jpg` to the sidecar allowlist — that would make
+`find_sidecars` treat any same-stem JPEG as a metadata sidecar of any media file
+and misclassify lone JPEGs. Settle the exact shape in planning.
 
 **Purge.** `phig purge` removes DB rows only (never disk files). Only the RAW has
 a row, so purging the shot purges the RAW row; the JPEG on disk is unaffected,
@@ -163,3 +210,14 @@ Out of scope:
    real libraries. Default: case-insensitive stem, first RAW wins.
 5. **Faces from the pixel source** — confirm face detection runs on the resolved
    pixel `cv::Mat` (JPEG/preview) and stores against the RAW row's image id.
+6. **Transition transfer hook (RAW arrives beside an already-indexed JPEG).**
+   Mechanism (a) reconcile-at-cleanup vs (b) inline-during-RAW. Recommended (a):
+   a **basename-triggered** metadata transfer at end-of-scan cleanup reusing
+   023's `transfer_user_metadata` + `relink` entry (023's own trigger is sha256,
+   which won't fire for RAW≠JPEG). Settle where it hooks into the cleanup path.
+7. **Carry the attached JPEG on mv/cp.** `carry_sidecars` only matches the
+   sidecar allowlist; add an attachments pass so the same-basename JPEG travels
+   with the RAW (basename-matched, logged as `move_sidecar`/`copy_sidecar`). Do
+   not pollute the sidecar allowlist with `jpg`.
+8. **`--media`/filter + demotion.** Whether demoting a JPEG requires the RAW to
+   be in the scanned set or just present on disk (default: on-disk presence).
