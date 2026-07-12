@@ -3,10 +3,11 @@ name: Remove Command (phig rm, replaces purge)
 status: planned
 created: 2026-07-12
 description: >
-  A `phig rm` command that removes selected images, with four modes: trash
+  A `phig rm` command that removes selected images, with modes: trash
   (default, recoverable), `--hard` (permanent delete), `--db-only` (drop the DB
-  row, leave the file — today's `purge`), and `--orphans` (drop rows whose
-  files are missing from disk, mount-safe). Trashes/deletes the photo's sidecar
+  row, leave the file — today's `purge`), `--orphans` (drop rows whose files
+  are missing from disk, mount-safe), and `--ignored` (drop rows for
+  `.phigignore`-ignored files; added by plan 028). Trashes/deletes the photo's sidecar
   files alongside it, leaves same-stem RAW/JPEG siblings intact, and records
   every action in the activity log. Replaces the `purge` command.
 ---
@@ -22,7 +23,7 @@ real means running an OS `rm` and then `scan` to reconcile the database — two
 steps, and the file is gone with no recovery.
 
 `phig rm` is the single removal command. It selects images with
-`--match`/`--filter` like `mv`/`cp`, and removes them in one of four modes:
+`--match`/`--exclude` like `mv`/`cp`, and removes them in one of five modes:
 
 - **trash** (default) — move the file to a phig-managed trash and drop the DB
   row. Recoverable.
@@ -33,10 +34,15 @@ steps, and the file is gone with no recovery.
   touches disk (nothing to delete). Mount-safe: a row is not dropped when its
   parent directory is missing (an unmounted/unreachable drive is not treated as
   deletion). Use it to prune stale catalog entries.
+- **`--ignored`** — drop rows for files currently ignored by `.phigignore`
+  (plan 028). db-only semantics: the file is left on disk (ignore never
+  deletes), only the row is removed. Use it to reconcile the catalog to the
+  ignore rules. Defined by plan 028.
 
-The first three modes require at least one `--match`. `--orphans` makes
-`--match` optional: with no `--match` it sweeps the whole database for orphaned
-rows; with `--match` it restricts the sweep to that subtree.
+The trash, `--hard`, and `--db-only` modes require at least one `--match`.
+`--orphans` and `--ignored` make `--match` optional: with no `--match` they
+sweep the whole database (for orphaned / ignored rows respectively); with
+`--match` they restrict the sweep to that subtree.
 
 Because db-only removal is now one mode of `rm`, **the `purge` command is
 removed** (see "Replacing purge"). Sidecar files travel with the photo in trash
@@ -60,8 +66,8 @@ and hard modes. Every action is recorded in the activity log so a future
 ## Command surface
 
 ```
-phig rm [--match <glob>] [--filter <glob>]
-        [--hard | --db-only | --orphans] [--dry-run] [--yes] [--db <path>]
+phig rm [--match <glob>] [--exclude <glob>]
+        [--hard | --db-only | --orphans | --ignored] [--dry-run] [--yes] [--db <path>]
 
 phig trash empty [--yes] [--db <path>]
 ```
@@ -69,12 +75,13 @@ phig trash empty [--yes] [--db <path>]
 - **Mode** (mutually exclusive; default trash): none = trash file + drop row;
   `--hard` = permanently delete file + drop row; `--db-only` = drop row, leave
   file; `--orphans` = drop rows whose files are missing (mount-safe), disk
-  untouched. Any two mode flags together is an error.
-- **Selection**: `--match` / `--filter`, same as the other file commands
-  `mv`, `cp` (`--filter` excludes and wins over `--match`). Trash, `--hard`,
+  untouched; `--ignored` = drop rows for `.phigignore`-ignored files (plan 028),
+  disk untouched. Any two mode flags together is an error.
+- **Selection**: `--match` / `--exclude`, same as the other file commands
+  `mv`, `cp` (`--exclude` excludes and wins over `--match`). Trash, `--hard`,
   and `--db-only` require at least one `--match` (like the old `purge`).
-  `--orphans` makes `--match` **optional** — no `--match` sweeps the whole DB;
-  `--match` narrows the sweep. Note `--path` is a metadata-command flag
+  `--orphans` and `--ignored` make `--match` **optional** — no `--match` sweeps
+  the whole DB; `--match` narrows the sweep. Note `--path` is a metadata-command flag
   (`tag`/`gallery`/`fav`); the file commands don't take it, and `rm` follows the
   file-command convention. (Whether `--path` should stay on the metadata
   commands at all is flagged as a separate cleanup — see "Follow-up".)
@@ -218,8 +225,8 @@ Carry over the old `purge` broad-selection guard verbatim: a selection is
 "broad" when it covers at least half the database **and** at least 20 entries
 (`matched * 2 >= total && matched >= 20`). A broad `rm` without `--yes` prompts
 for a typed `yes` on an interactive terminal, or refuses outright when stdin is
-not a tty. A narrow (non-broad) trash / `--db-only` / `--orphans` `rm` proceeds
-without prompting. (A whole-DB `--orphans` sweep counts all missing-file rows as
+not a tty. A narrow (non-broad) trash / `--db-only` / `--orphans` / `--ignored`
+`rm` proceeds without prompting. (A whole-DB `--orphans` sweep counts all missing-file rows as
 the selection for the guard, so a large cleanup still prompts.)
 
 `--hard` additionally requires `--yes` **always**, even for a single narrow
@@ -236,7 +243,7 @@ Option C: `rm --db-only` subsumes `purge`, and the `purge` command is removed.
 - **`cmd_purge`**: its db-only logic (match/filter selection, broad guard,
   `delete_paths_logged`) moves into the shared `rm` path. The DB method
   `Database::purge()` may stay (internal helper) or be inlined; not user-facing.
-- **Operation name**: the logged operation is `rm` for all four modes.
+- **Operation name**: the logged operation is `rm` for all modes.
   Existing activity-log rows named `purge` from prior runs remain untouched and
   readable; only new operations use `rm`.
 - **Docs**: remove `phig purge` from `README.md` and `AGENTS.md`, replace with
@@ -296,10 +303,11 @@ comprehensive real-behavior tests:
 - `--orphans` mount-safety: a row whose **parent directory** is missing (e.g. an
   unmounted drive) is NOT dropped, even though the file itself is absent —
   verifies reuse of `paths_safe_to_delete()`.
-- Mode exclusivity: any two of `--hard` / `--db-only` / `--orphans` together are
-  rejected with an error, no changes.
+- Mode exclusivity: any two of `--hard` / `--db-only` / `--orphans` /
+  `--ignored` together are rejected with an error, no changes.
 - Required `--match`: trash / `--hard` / `--db-only` without any `--match` is
-  rejected; `--orphans` without `--match` is allowed.
+  rejected; `--orphans` and `--ignored` without `--match` are allowed.
+- (`--ignored` behavior is specified and tested in plan 028.)
 - `--dry-run`: nothing on disk changes, no DB row removed, no log entry written;
   output names the mode.
 - Confirmation guard: broad selection without `--yes` refuses (in every mode);
@@ -317,11 +325,11 @@ Separate plans, in rough priority order:
   restoring `move`/`copy`/`trash`/`purge_row` entries and reporting
   `delete_file` entries as bytes-unrecoverable. Turns `rm`'s log-only records
   into an actual restore path.
-- **`.phigignore`** — a gitignore-style ignore file so `scan` skips (and
-  existing rows for) files matching ignore patterns. Related to `rm --orphans`
-  and `rm --db-only`: all three are about keeping the catalog free of files the
-  user doesn't want tracked, but `.phigignore` does it declaratively at scan
-  time rather than by one-off command.
+- **`.phigignore`** — specified in plan 028. Adds the `--ignored` mode to this
+  command (drop rows for `.phigignore`-ignored files) and a shared glob core
+  that gives `--match`/`--exclude` `[..]` and `**`. Related to `rm --orphans`
+  and `rm --db-only`: all are about keeping the catalog free of files the user
+  doesn't want tracked; `.phigignore` does it declaratively at scan time.
 - **`--path` cleanup on metadata commands** — `--path` on `tag`/`gallery`/`fav`
   appears to have been added in error (and `AGENTS.md` wrongly documents it on
   `purge`). Evaluate removing it in favor of the `--match '<prefix>/**'` idiom
