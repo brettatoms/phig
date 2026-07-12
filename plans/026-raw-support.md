@@ -1,6 +1,6 @@
 ---
 name: RAW Support (RAW as master, JPEG as attachment)
-status: planned
+status: completed
 created: 2026-07-11
 description: >
   Treat a RAW + same-basename JPEG of one shot as a single logical photo: the
@@ -221,3 +221,59 @@ Out of scope:
    not pollute the sidecar allowlist with `jpg`.
 8. **`--media`/filter + demotion.** Whether demoting a JPEG requires the RAW to
    be in the scanned set or just present on disk (default: on-disk presence).
+
+---
+
+## Outcome (2026-07-12)
+
+Implemented via subagent-driven development (8 tasks + 2 review fixes), each with
+real-behavior tests + spec/quality review; final whole-branch review returned
+READY TO MERGE (thread-safety, demotion/transfer composition, and carry
+round-trip all verified sound). Full suite: 348 tests passing. Depends on plan
+023 (`transfer_user_metadata`) and reuses plan 025 (`carry_sidecars`).
+
+Commits (on `master`):
+
+| Task | Commit(s) |
+|------|-----------|
+| 1 — LibRaw dependency (devenv/CMake `libraw_r` var-style/CI/README) | `546f593` |
+| 2 — `src/raw.{h,cpp}` (`is_raw_extension` + `raw_decode` 3-tier) | `f07218b` |
+| 3 — route RAW through `decode_image_with_warning`; faces.cpp → `decode_image` | `a0667ec` |
+| 4 — scan JPEG-demotion (`has_sibling_raw`, disk-based, order-independent) | `822d0cb` |
+| 5 — `demote_jpeg_rows` transfer at cleanup + restructure | `9ee08eb`; `889cd44` (only demote a JPEG whose file still exists — fixes a double-count found in review) |
+| 6 — carry a RAW's attached JPEG on mv/cp (attachments pass) | `85f9a28` |
+| 7 — comment/duplicates verification (NO-OP: no stale comments; duplicates needs no change) | — |
+| 8 — binary e2e (proved demotion + carry) + docs | `c5155fa` |
+
+Model as built:
+- **RAW is the only indexed row.** A same-basename JPEG in the same directory is
+  NOT indexed (scan skips it via `has_sibling_raw` — a disk check, so it's
+  parallel- and order-independent). A lone JPEG stays a normal photo.
+- **Pixel source** for the RAW row's phash/thumbnail/faces/blur: sidecar JPEG →
+  LibRaw embedded preview → LibRaw full decode, resolved in `raw_decode` and
+  routed at the single decode chokepoint `decode_image_with_warning`. This
+  replaces OpenCV's flaky `cv::imread` for RAW. The RAW's `sha256` is still the
+  RAW file's bytes (dedup identity); its phash/thumbnail come from the JPEG
+  pixels (visual similarity) — intended.
+- **Transition** (JPEG indexed alone, then a RAW appears): `demote_jpeg_rows` at
+  scan cleanup transfers the JPEG row's tags/faces/gallery to the RAW row (023's
+  `transfer_user_metadata`, basename-triggered — 023's sha256 trigger doesn't
+  fire for RAW≠JPEG), logs a `relink` entry, deletes the JPEG row. Runs after
+  workers join, so the RAW row is committed before the lookup.
+- **Organize** carries the JPEG (Task 6 attachments pass) and any `.xmp` (025) to
+  the RAW's destination, logged as `move_sidecar`/`copy_sidecar`. mv-then-rescan
+  is stable (the JPEG is re-demoted at the destination).
+
+Notes / accepted:
+- **LibRaw success paths** (valid CR2 → embedded preview / full decode) are NOT
+  unit-tested — the only committable CR2 fixture (`tests/data/truncated_ojpeg.cr2`)
+  is truncated and undecodable even by LibRaw, so it only exercises graceful
+  failure. Success is covered by real-world use and the Task 8 binary e2e. A
+  small valid CR2 fixture would close this gap (deliberately not committed to
+  avoid multi-MB repo bloat).
+- **Non-blocking follow-ups** from the whole-branch review: per-file
+  `directory_iterator` for the sibling check (vs. a per-directory index —
+  design open question 3); a demoted JPEG's faces are dropped when the CR2 was
+  scanned `--faces` (equivalent pixel source, acceptable); raw.cpp's tier
+  imread/imdecode lack `StderrSuppressor` (cosmetic stderr leak on a broken
+  sidecar).
