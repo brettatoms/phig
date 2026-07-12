@@ -428,15 +428,17 @@ git commit -m "feat(sidecar): sidecar_date reads XMP and Google JSON dates"
 
 ---
 
-### Task 3: Date fallback — consult sidecar date after EXIF, before mtime
+### Task 3: Date fallback — consult sidecar date after EXIF, before mtime (organize AND display)
 
 **Files:**
-- Modify: `src/main.cpp` (`get_best_date`, ~line 992-1008; add `#include "sidecar.h"` near the other includes ~line 28)
-- Modify: `tests/test_organize.cpp` (date-fallback tests already live here per AGENTS.md coverage note)
+- Modify: `src/main.cpp` — TWO date functions, both with an EXIF→mtime fallback that must gain the sidecar step: `get_best_date` (organize/folder placement, currently ~line 1041) and `get_best_date_str` (search/porcelain DISPLAY output, currently ~line 1398). Add `#include "sidecar.h"` near the other project includes. **Locate both by content (`rg -n 'get_best_date'`), not by these line numbers — they drift.**
+- Modify: `tests/test_organize.cpp` (date-fallback tests).
 
 **Interfaces:**
 - Consumes: `find_sidecars`, `sidecar_date` from `src/sidecar.h`; `ImageInfo` (has `.path`, `.metadata_json`, `.modified_at`).
-- Produces: no new public symbol — `get_best_date` behavior changes.
+- Produces: no new public symbol — both `get_best_date` and `get_best_date_str` behavior change.
+
+**Why both:** `get_best_date` decides the destination folder (the misfiling bug); `get_best_date_str` produces the `YYYY-MM-DD`-ish string shown by `phig search`/porcelain. If only the first is fixed, an EXIF-stripped photo lands in the right 2010 folder but `search` still displays its mtime (2026) date. Fixing both keeps organize and display consistent. `sidecar_date` returns EXIF shape `"YYYY:MM:DD HH:MM:SS"`, so `get_best_date_str` uses `substr(0,10)` exactly as it already does for the EXIF branches (colon-form, no format change).
 
 - [ ] **Step 1: Write a failing test in `tests/test_organize.cpp`**
 
@@ -468,14 +470,14 @@ TEST(GetBestDate, ExifWinsOverSidecar) {
 Run: `cmake --build build && ./build/phig-tests --gtest_filter='GetBestDate.*'`
 Expected: FAIL (sidecar not yet consulted; `SidecarUsedWhenNoExif` yields the mtime year).
 
-- [ ] **Step 3: Add `#include "sidecar.h"` and the sidecar step in `get_best_date`**
+- [ ] **Step 3a: Add `#include "sidecar.h"` and the sidecar step in `get_best_date` (organize)**
 
 Near the top includes of `src/main.cpp` (with the other `#include "..."`):
 ```cpp
 #include "sidecar.h"
 ```
 
-In `get_best_date` (`src/main.cpp`), insert between the EXIF `DateTimeDigitized` check and the mtime check:
+In `get_best_date`, insert between the EXIF `DateTimeDigitized` check and the `// File modified time` check:
 ```cpp
     // 3. Sidecar date (e.g. f-spot .xmp, Google Takeout .json). Only consulted
     //    when the embedded EXIF has no date; a sidecar can be edited, so EXIF
@@ -491,17 +493,35 @@ In `get_best_date` (`src/main.cpp`), insert between the EXIF `DateTimeDigitized`
 ```
 (Renumber the trailing mtime comment from `3.` to `4.` accordingly.)
 
+- [ ] **Step 3b: Add the same sidecar step to `get_best_date_str` (display)**
+
+In `get_best_date_str`, insert between the `DateTimeDigitized` branch and the `Fall back to modified_at` branch. This mirrors the existing branches' `substr(0,10)` shape (the sidecar date is EXIF-form `YYYY:MM:DD ...`, so `substr(0,10)` yields `YYYY:MM:DD` like the EXIF branches above it):
+```cpp
+    // Sidecar date (f-spot .xmp / Google Takeout .json) before mtime, so search
+    // display agrees with where organize files the photo.
+    for (const auto& side : find_sidecars(img.path)) {
+        std::string sd = sidecar_date(side);
+        if (sd.size() >= 10 && sd.substr(0, 4) != "0000" && sd.substr(0, 4) != "1970") {
+            return sd.substr(0, 10);
+        }
+    }
+    // Fall back to modified_at
+```
+(Insert immediately above the existing `// Fall back to modified_at` line; keep that block intact.)
+
 - [ ] **Step 4: Build and run the tests**
 
 Run: `cmake --build build && ./build/phig-tests --gtest_filter='GetBestDate.*:Sidecar*'`
 Expected: PASS.
+
+Also add a display-path test (in `tests/test_organize.cpp` if `get_best_date_str` is reachable there, else note it's covered by the Task 5 porcelain test): a no-EXIF file with a dated sidecar → `get_best_date_str` returns the sidecar's `YYYY:MM:DD`, not the mtime date.
 
 - [ ] **Step 5: Format and commit**
 
 ```bash
 clang-format -i src/main.cpp tests/test_organize.cpp tests/test_sidecar.cpp
 git add src/main.cpp tests/test_organize.cpp tests/test_sidecar.cpp
-git commit -m "feat(organize): use sidecar date after EXIF, before mtime"
+git commit -m "feat(organize): use sidecar date after EXIF, before mtime (organize + display)"
 ```
 
 ---

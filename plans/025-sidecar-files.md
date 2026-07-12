@@ -153,10 +153,16 @@ their parent, so no special ordering is needed. Undo's existing
 verify-and-refuse-on-conflict guard applies: if a sidecar's `dst` changed or its
 `src` is now occupied, that entry refuses rather than clobbering.
 
-## Organize date fallback
+## Date fallback (organize + display)
 
-`get_best_date` (`src/main.cpp`) gains one step, inserted after the EXIF checks
-and before mtime:
+Both date functions in `src/main.cpp` gain the same step, inserted after the
+EXIF checks and before mtime:
+
+- `get_best_date` — decides the destination **folder** (the misfiling bug).
+- `get_best_date_str` — the `YYYY-MM-DD`-ish string shown by `phig search` /
+  porcelain (**display**). Fixed too, so search output agrees with where
+  organize files a photo; without it an EXIF-stripped photo lands in the right
+  2010 folder but still *displays* its mtime (2026) date.
 
 ```
 1. EXIF DateTimeOriginal          (unchanged)
@@ -164,7 +170,7 @@ and before mtime:
 3. Sidecar date  ← NEW           find_sidecars(img.path) → first valid
                                   sidecar_date(...)
 4. File mtime                     (unchanged — still trusted)
-5. otherwise → unsorted/          (unchanged)
+5. otherwise → unsorted/unknown   (unchanged)
 ```
 
 EXIF wins over the sidecar: the sidecar only speaks when the embedded EXIF has
