@@ -133,6 +133,12 @@ tests/
   Takeout `photoTakenTime`) as a date source after EXIF and before mtime, so
   EXIF-stripped photos file (and display) under their real date, not the copy
   date. RAW↔JPEG pairing is plan 026, not here.
+- **Concurrency** — SQLite is WAL with a 30s busy_timeout; write transactions
+  use `BEGIN IMMEDIATE` so read-then-write paths don't hit BUSY_SNAPSHOT, and
+  schema migrations re-check the version inside an IMMEDIATE transaction so
+  concurrent first-runs don't re-apply DDL. Mutating commands additionally take
+  a process-wide advisory `flock` on `<db>.lock` (`src/lockfile.cpp`) so whole
+  operations serialize; reads never take it. Per-machine only.
 - **RAW + JPEG pairing** — a RAW file (CR2, NEF, ARW, etc.) is the indexed
   shot; a same-basename JPEG beside it is not indexed as its own row. Instead
   it's an attachment: the RAW row's pixel source (for phash/faces/thumbs) and
