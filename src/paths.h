@@ -13,12 +13,14 @@
 std::string config_dir();  // $XDG_CONFIG_HOME or ~/.config,      + /phig
 std::string data_dir();    // $XDG_DATA_HOME   or ~/.local/share, + /phig
 std::string cache_dir();   // $XDG_CACHE_HOME  or ~/.cache,       + /phig
+std::string state_dir();   // $XDG_STATE_HOME  or ~/.local/state, + /phig
 
 // Derived paths.
-std::string default_db_path();  // data_dir()  + /phig.db
-std::string models_dir();       // cache_dir() + /models
-std::string thumbs_dir();       // cache_dir() + /thumbs
-std::string config_path();      // config_dir() + /config.ini
+std::string default_db_path();   // data_dir()  + /phig.db
+std::string models_dir();        // cache_dir() + /models
+std::string thumbs_dir();        // cache_dir() + /thumbs
+std::string config_path();       // config_dir() + /config.ini
+std::string default_log_path();  // state_dir() + /phig.log
 
 // Expand a leading ~ to $HOME. Paths not starting with ~ are returned unchanged,
 // as are ~ paths when HOME is unset.

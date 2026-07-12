@@ -36,6 +36,7 @@ std::optional<std::string> g_thumbs_override;
 std::string config_dir() { return xdg_base("XDG_CONFIG_HOME", "/.config") + "/phig"; }
 std::string data_dir() { return xdg_base("XDG_DATA_HOME", "/.local/share") + "/phig"; }
 std::string cache_dir() { return xdg_base("XDG_CACHE_HOME", "/.cache") + "/phig"; }
+std::string state_dir() { return xdg_base("XDG_STATE_HOME", "/.local/state") + "/phig"; }
 
 std::string default_db_path() { return g_db_override ? *g_db_override : data_dir() + "/phig.db"; }
 std::string models_dir() {
@@ -45,6 +46,7 @@ std::string thumbs_dir() {
     return g_thumbs_override ? *g_thumbs_override : cache_dir() + "/thumbs";
 }
 std::string config_path() { return config_dir() + "/config.ini"; }
+std::string default_log_path() { return state_dir() + "/phig.log"; }
 
 void set_path_overrides(const std::optional<std::string>& db,
                         const std::optional<std::string>& models,

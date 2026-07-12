@@ -23,11 +23,9 @@ class PathsTest : public ::testing::Test {
         bool was_set;
         std::string value;
     };
-    Saved vars[4] = {
-        {"HOME", false, ""},
-        {"XDG_CONFIG_HOME", false, ""},
-        {"XDG_DATA_HOME", false, ""},
-        {"XDG_CACHE_HOME", false, ""},
+    Saved vars[5] = {
+        {"HOME", false, ""},           {"XDG_CONFIG_HOME", false, ""}, {"XDG_DATA_HOME", false, ""},
+        {"XDG_CACHE_HOME", false, ""}, {"XDG_STATE_HOME", false, ""},
     };
 
     void SetUp() override {
@@ -41,6 +39,7 @@ class PathsTest : public ::testing::Test {
         unsetenv("XDG_CONFIG_HOME");
         unsetenv("XDG_DATA_HOME");
         unsetenv("XDG_CACHE_HOME");
+        unsetenv("XDG_STATE_HOME");
         // No path overrides unless a test sets them.
         set_path_overrides(std::nullopt, std::nullopt, std::nullopt);
     }
@@ -108,6 +107,19 @@ TEST_F(PathsTest, ThumbsDirUnderCache) {
 
 TEST_F(PathsTest, ConfigPathUnderConfig) {
     EXPECT_EQ(config_path(), "/home/tester/.config/phig/config.ini");
+}
+
+TEST_F(PathsTest, StateDirHonorsXdgStateHome) {
+    setenv("XDG_STATE_HOME", "/tmp/xdg-state-test", 1);
+    EXPECT_EQ(state_dir(), "/tmp/xdg-state-test/phig");
+}
+
+TEST_F(PathsTest, StateDirFallsBackToHome) {
+    EXPECT_EQ(state_dir(), "/home/tester/.local/state/phig");
+}
+
+TEST_F(PathsTest, DefaultLogPathUnderStateDir) {
+    EXPECT_EQ(default_log_path(), state_dir() + "/phig.log");
 }
 
 // ---- Missing HOME with no XDG override throws ----
