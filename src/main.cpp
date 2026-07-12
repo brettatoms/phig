@@ -29,6 +29,7 @@
 #include "faces.h"
 #include "filters.h"
 #include "hasher.h"
+#include "log.h"
 #include "metadata.h"
 #include "models.h"
 #include "organize_exec.h"
@@ -2584,6 +2585,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     set_path_overrides(cfg.db, cfg.models_dir, cfg.thumbs_dir);
+
+    // Diagnostic logger (plan 024): stderr sink for warnings/errors plus a
+    // rotating file sink at ~/.local/state/phig/phig.log unless disabled.
+    // Init before any dispatch so every instrumented site has a live logger.
+    log_init(default_log_path(), !cfg.log_file || *cfg.log_file,
+             cfg.log_file_level ? log_level_from_string(*cfg.log_file_level) : LogLevel::Info);
+
     bool cfg_loaded = fs::exists(resolved_cfg_path);
 
     if (argc < 2) {
@@ -2608,6 +2616,8 @@ int main(int argc, char* argv[]) {
             return 0;
         }
     }
+
+    log_info(join_argv(argc, argv));  // file-only: the stderr sink is warn+
 
     if (command == "scan") {
         if (argc < 3) {
@@ -2683,7 +2693,7 @@ int main(int argc, char* argv[]) {
         try {
             return cmd_scan(opts);
         } catch (const std::exception& e) {
-            std::cerr << "Error: " << e.what() << "\n";
+            log_error(command + ": " + e.what());
             return 1;
         }
     } else if (command == "duplicates") {
@@ -2736,7 +2746,7 @@ int main(int argc, char* argv[]) {
         try {
             return cmd_duplicates(opts);
         } catch (const std::exception& e) {
-            std::cerr << "Error: " << e.what() << "\n";
+            log_error(command + ": " + e.what());
             return 1;
         }
     } else if (command == "purge") {
@@ -2768,7 +2778,7 @@ int main(int argc, char* argv[]) {
         try {
             return cmd_purge(opts);
         } catch (const std::exception& e) {
-            std::cerr << "Error: " << e.what() << "\n";
+            log_error(command + ": " + e.what());
             return 1;
         }
     } else if (command == "cp" || command == "mv") {
@@ -2817,7 +2827,7 @@ int main(int argc, char* argv[]) {
         try {
             return cmd_organize(opts);
         } catch (const std::exception& e) {
-            std::cerr << "Error: " << e.what() << "\n";
+            log_error(command + ": " + e.what());
             return 1;
         }
     } else if (command == "thumbs") {
@@ -2831,7 +2841,7 @@ int main(int argc, char* argv[]) {
         try {
             return cmd_thumbs(argc, argv, thumbs_db, cfg.parallel.value_or(-1));
         } catch (const std::exception& e) {
-            std::cerr << "Error: " << e.what() << "\n";
+            log_error(command + ": " + e.what());
             return 1;
         }
     } else if (command == "tag" || command == "gallery" || command == "fav") {
@@ -2847,7 +2857,7 @@ int main(int argc, char* argv[]) {
             if (command == "gallery") return cmd_gallery(argc, argv, db_path);
             return cmd_fav(argc, argv, db_path);
         } catch (const std::exception& e) {
-            std::cerr << "Error: " << e.what() << "\n";
+            log_error(command + ": " + e.what());
             return 1;
         }
     } else if (command == "face") {
@@ -2862,7 +2872,7 @@ int main(int argc, char* argv[]) {
         try {
             return cmd_face(argc, argv, face_db, cfg.parallel.value_or(-1));
         } catch (const std::exception& e) {
-            std::cerr << "Error: " << e.what() << "\n";
+            log_error(command + ": " + e.what());
             return 1;
         }
     } else if (command == "models") {
@@ -2879,7 +2889,7 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
         } catch (const std::exception& e) {
-            std::cerr << "Error: " << e.what() << "\n";
+            log_error(command + ": " + e.what());
             return 1;
         }
     } else if (command == "search") {
@@ -2957,14 +2967,14 @@ int main(int argc, char* argv[]) {
                 try {
                     opts.min_duration_ms = parse_duration(argv[++i]);
                 } catch (const std::exception& e) {
-                    std::cerr << "Error: invalid --min-duration: " << e.what() << "\n";
+                    log_error(command + ": invalid --min-duration: " + e.what());
                     return 1;
                 }
             } else if (arg == "--max-duration" && i + 1 < argc) {
                 try {
                     opts.max_duration_ms = parse_duration(argv[++i]);
                 } catch (const std::exception& e) {
-                    std::cerr << "Error: invalid --max-duration: " << e.what() << "\n";
+                    log_error(command + ": invalid --max-duration: " + e.what());
                     return 1;
                 }
             } else if (arg == "--output" && i + 1 < argc) {
@@ -2981,7 +2991,7 @@ int main(int argc, char* argv[]) {
         try {
             return cmd_search(opts);
         } catch (const std::exception& e) {
-            std::cerr << "Error: " << e.what() << "\n";
+            log_error(command + ": " + e.what());
             return 1;
         }
     } else {
