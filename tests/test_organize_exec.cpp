@@ -236,3 +236,90 @@ TEST_F(OrganizeExecTest, NoOpSelfCopyDoesNotCorruptFile) {
     EXPECT_TRUE(fs::exists(src));
     EXPECT_EQ(read_file(src), "AAA");
 }
+
+// ---- carry_sidecars ----
+
+TEST_F(OrganizeExecTest, CarryMovesStemSidecarBesideParent) {
+    fs::path src = dir / "src" / "IMG_1.JPG";
+    fs::path dst = dir / "dest" / "IMG_1.JPG";
+    write_file(src, "AAA");
+    write_file(dir / "src" / "IMG_1.xmp", "<xmp/>");
+    insert_row(src.string());
+
+    // Parent first (repoints the row so get_image_id(dst) works), then sidecars.
+    execute_organize_action(*db, src.string(), dst.string(), true, 0);
+    carry_sidecars(*db, src.string(), dst.string(), /*is_move=*/true, /*op_id=*/0);
+
+    EXPECT_FALSE(fs::exists(dir / "src" / "IMG_1.xmp"));
+    EXPECT_TRUE(fs::exists(dir / "dest" / "IMG_1.xmp"));
+}
+
+TEST_F(OrganizeExecTest, CarryRenamesSidecarToMatchRenamedParent) {
+    // Parent was renamed to avoid a conflict: IMG_1.JPG -> IMG_1-1.JPG.
+    fs::path src = dir / "src" / "IMG_1.JPG";
+    fs::path dst = dir / "dest" / "IMG_1-1.JPG";  // final (renamed) name
+    write_file(src, "AAA");
+    write_file(dir / "src" / "IMG_1.xmp", "<xmp/>");
+    insert_row(src.string());
+
+    execute_organize_action(*db, src.string(), dst.string(), true, 0);
+    carry_sidecars(*db, src.string(), dst.string(), true, 0);
+
+    EXPECT_TRUE(fs::exists(dir / "dest" / "IMG_1-1.xmp"));
+}
+
+TEST_F(OrganizeExecTest, CarryHandlesAppendStyleRawSidecar) {
+    fs::path src = dir / "src" / "IMG_1.CR2";
+    fs::path dst = dir / "dest" / "IMG_1-1.CR2";
+    write_file(src, "AAA");
+    write_file(dir / "src" / "IMG_1.CR2.xmp", "<xmp/>");
+    insert_row(src.string());
+
+    execute_organize_action(*db, src.string(), dst.string(), true, 0);
+    carry_sidecars(*db, src.string(), dst.string(), true, 0);
+
+    EXPECT_TRUE(fs::exists(dir / "dest" / "IMG_1-1.CR2.xmp"));
+}
+
+TEST_F(OrganizeExecTest, CarryCopyLeavesSourceSidecar) {
+    fs::path src = dir / "src" / "IMG_1.JPG";
+    fs::path dst = dir / "dest" / "IMG_1.JPG";
+    write_file(src, "AAA");
+    write_file(dir / "src" / "IMG_1.xmp", "<xmp/>");
+    insert_row(src.string());
+
+    execute_organize_action(*db, src.string(), dst.string(), false, 0);
+    carry_sidecars(*db, src.string(), dst.string(), /*is_move=*/false, 0);
+
+    EXPECT_TRUE(fs::exists(dir / "src" / "IMG_1.xmp"));  // copy leaves source
+    EXPECT_TRUE(fs::exists(dir / "dest" / "IMG_1.xmp"));
+}
+
+TEST_F(OrganizeExecTest, CarryLogsSidecarEntryWithParentId) {
+    fs::path src = dir / "src" / "IMG_1.JPG";
+    fs::path dst = dir / "dest" / "IMG_1.JPG";
+    write_file(src, "AAA");
+    write_file(dir / "src" / "IMG_1.xmp", "<xmp/>");
+    insert_row(src.string());
+
+    int64_t op = db->log_begin_operation("mv", "argv", "2026-07-11T00:00:00Z");
+    execute_organize_action(*db, src.string(), dst.string(), true, op);
+    carry_sidecars(*db, src.string(), dst.string(), true, op);
+    db->log_finish_operation(op, "completed");
+
+    // Exactly one move_sidecar entry, dst is the moved sidecar, restore_json
+    // names the parent image id.
+    sqlite3_stmt* st = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(),
+                       "SELECT kind, dst, restore_json FROM operation_entries "
+                       "WHERE kind='move_sidecar'",
+                       -1, &st, nullptr);
+    ASSERT_EQ(sqlite3_step(st), SQLITE_ROW);
+    std::string kind = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+    std::string edst = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
+    std::string rj = reinterpret_cast<const char*>(sqlite3_column_text(st, 2));
+    sqlite3_finalize(st);
+    EXPECT_EQ(kind, "move_sidecar");
+    EXPECT_EQ(edst, (dir / "dest" / "IMG_1.xmp").string());
+    EXPECT_NE(rj.find("parent_image_id"), std::string::npos);
+}

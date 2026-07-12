@@ -1233,6 +1233,8 @@ int cmd_organize(const OrganizeOptions& opts) {
                                     logging ? op_id : 0);
             done++;
 
+            carry_sidecars(db, a.source, a.dest.string(), opts.is_move, logging ? op_id : 0);
+
             std::cout << "\r[" << done << "/" << to_process << "] " << std::flush;
         } catch (const std::exception& e) {
             std::cerr << "\nError: " << a.source << " → " << a.dest << ": " << e.what() << "\n";

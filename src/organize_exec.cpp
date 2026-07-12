@@ -3,9 +3,11 @@
 #include <cstdio>
 #include <filesystem>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 
 #include "paths.h"
+#include "sidecar.h"
 
 namespace fs = std::filesystem;
 
@@ -100,6 +102,52 @@ void execute_organize_action(Database& db, const std::string& source, const std:
                 std::fprintf(stderr, "Warning: left backup file %s in place (%s)\n", backup.c_str(),
                              ec.message().c_str());
             }
+        }
+    }
+}
+
+void carry_sidecars(Database& db, const std::string& parent_source, const std::string& parent_dest,
+                    bool is_move, int64_t op_id) {
+    const bool logging = op_id > 0;
+    fs::path src_media(parent_source);
+    fs::path dst_media(parent_dest);
+    std::string src_stem = src_media.stem().string();      // IMG_1
+    std::string src_name = src_media.filename().string();  // IMG_1.CR2
+    std::string dst_stem = dst_media.stem().string();      // IMG_1-1
+    fs::path dst_dir = dst_media.parent_path();
+
+    // Parent id for linking (parent row already repointed to dst by the caller).
+    int64_t parent_id = logging ? db.get_image_id(parent_dest) : 0;
+
+    for (const auto& side : find_sidecars(src_media)) {
+        std::string side_name = side.filename().string();  // IMG_1.xmp or IMG_1.CR2.xmp
+        // Rewrite the leading parent stem to the destination stem; keep the rest
+        // (".xmp" for stem style, ".CR2.xmp" for append style).
+        std::string tail;
+        if (side_name.rfind(src_name + ".", 0) == 0) {
+            tail = side_name.substr(src_name.size());  // ".xmp" after "IMG_1.CR2"
+            // append style: dest keeps full media name -> dst_stem + parent ext + tail
+            // dst media filename is dst_stem + parent-ext; reconstruct from dst_media.
+            std::string dst_name = dst_media.filename().string();  // IMG_1-1.CR2
+            tail = dst_name + tail;                                // IMG_1-1.CR2.xmp
+        } else {
+            // stem style: IMG_1.xmp -> IMG_1-1.xmp
+            tail = dst_stem + side_name.substr(src_stem.size());
+        }
+        fs::path side_dst = dst_dir / tail;
+
+        if (src_media.parent_path() == dst_dir && side == side_dst) continue;  // no-op
+
+        if (is_move) {
+            move_file(side.string(), side_dst.string());
+        } else {
+            atomic_copy_file(side.string(), side_dst.string());
+        }
+        if (logging) {
+            std::string rj =
+                parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}") : "";
+            db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar", side.string(),
+                                     side_dst.string(), rj});
         }
     }
 }
