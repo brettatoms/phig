@@ -167,6 +167,11 @@ a tracked file is gone but a byte-identical file exists at a new path, phig
 transfers the old file's tags, favorites, gallery, and faces to it before
 dropping the stale entry (reported as `Relinked: N`).
 
+RAW files (CR2, NEF, ARW, etc.) are indexed directly. If a same-basename JPEG
+sits beside a RAW, it isn't indexed separately — it's used as the RAW's pixel
+source (via LibRaw, falling back to the embedded preview or a full decode) and
+is carried alongside the RAW on `mv`/`cp`, the same way sidecars are.
+
 ### Finding Duplicates
 
 ```bash

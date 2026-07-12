@@ -131,6 +131,18 @@ tests/
   Takeout `photoTakenTime`) as a date source after EXIF and before mtime, so
   EXIF-stripped photos file (and display) under their real date, not the copy
   date. RAW↔JPEG pairing is plan 026, not here.
+- **RAW + JPEG pairing** — a RAW file (CR2, NEF, ARW, etc.) is the indexed
+  shot; a same-basename JPEG beside it is not indexed as its own row. Instead
+  it's an attachment: the RAW row's pixel source (for phash/faces/thumbs) and
+  a file carried alongside the RAW on `mv`/`cp`, like a sidecar. Pixels come
+  from a 3-tier LibRaw-backed source — sidecar JPEG, then embedded preview,
+  then full RAW decode — replacing OpenCV's `cv::imread`, which fails on many
+  RAW formats. On scan, a JPEG with a same-basename RAW on disk is demoted:
+  skipped as its own row, and if it was already indexed from an earlier scan,
+  its tags/faces/gallery transfer to the RAW row at cleanup (reusing plan
+  023's metadata transfer) before its row is dropped. A lone JPEG with no
+  sibling RAW is indexed normally. Carry-on-move reuses plan 025's sidecar
+  machinery.
 
 ## Plans
 
