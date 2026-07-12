@@ -92,7 +92,10 @@ void print_usage() {
         << "  phig duplicates [flags]\n"
         << "  phig cp <destination> [flags]\n"
         << "  phig mv <destination> [flags]\n"
-        << "  phig purge [flags]        (--dry-run to preview, --yes for broad purges)\n"
+        << "  phig rm [--match|--exclude] [--hard|--db-only|--orphans] [--dry-run] [--yes]\n"
+        << "                               Remove images: trash (default), --hard (permanent),\n"
+        << "                               --db-only (keep file), --orphans (missing files)\n"
+        << "  phig trash empty [--yes]     Permanently delete everything in the trash\n"
         << "  phig search [flags]\n"
         << "  phig face name <image> <name>     Name a face from a single-face photo\n"
         << "  phig face identify <name>          Label all matching faces in DB\n"
@@ -137,10 +140,14 @@ void print_usage() {
         << "  --dry-run                Show what would happen without doing it\n"
         << "  --on-conflict skip|overwrite|rename  (default: skip)\n"
         << "  --db <path>              Database path\n"
-        << "\nPurge flags:\n"
+        << "\nRemove flags (rm):\n"
         << "  --match <glob>           Remove entries matching glob (repeatable, matches path)\n"
         << "  --exclude <glob>          Exclude matching files (repeatable, wins over --match)\n"
+        << "  --hard                   Delete the file from disk (permanent, no trash)\n"
+        << "  --db-only                Remove the DB row only, keep the file on disk\n"
+        << "  --orphans                Remove DB rows whose files are already missing\n"
         << "  --dry-run                Show what would be removed\n"
+        << "  --yes                    Skip confirmation for broad removals\n"
         << "  --db <path>              Database path\n"
         << "\nSearch flags:\n"
         << "  --ext <extension>        Match file extension (e.g., jpg, png, cr2)\n"
@@ -666,7 +673,7 @@ int cmd_scan(const ScanOptions& opts) {
                     // delete_paths_logged rolls back its own transaction, but the
                     // operation row was autocommitted by log_begin_operation. Mark
                     // it so it doesn't linger as a stuck 'in_progress' row, matching
-                    // cmd_purge's guard (review [6]); best-effort.
+                    // rm's broad-selection guard (review [6]); best-effort.
                     try {
                         db.log_finish_operation(op_id, "interrupted");
                     } catch (...) {
@@ -1349,6 +1356,40 @@ int cmd_rm(const RemoveOptions& opts) {
     if (failed) std::cout << " (" << failed << " file(s) failed and were skipped)";
     std::cout << ".\nTotal DB: " << db.count() << " images\n";
     return failed ? 1 : 0;
+}
+
+int cmd_trash_empty(bool assume_yes) {
+    std::string dir = trash_dir();
+    if (!fs::exists(dir)) {
+        std::cout << "Trash is empty.\n";
+        return 0;
+    }
+    size_t n = 0;
+    for (const auto& e : fs::directory_iterator(dir)) {
+        (void)e;
+        n++;
+    }
+    if (n == 0) {
+        std::cout << "Trash is empty.\n";
+        return 0;
+    }
+    if (!assume_yes) {
+        std::cout << "This will PERMANENTLY delete " << n << " item(s) from " << dir << ".\n";
+        if (!::isatty(fileno(stdin))) {
+            std::cerr << "Refusing without confirmation. Re-run with --yes.\n";
+            return 1;
+        }
+        std::cout << "Type 'yes' to proceed: " << std::flush;
+        std::string answer;
+        std::getline(std::cin, answer);
+        if (answer != "yes") {
+            std::cout << "Aborted.\n";
+            return 1;
+        }
+    }
+    for (const auto& e : fs::directory_iterator(dir)) fs::remove_all(e.path());
+    std::cout << "Emptied trash (" << n << " item(s)).\n";
+    return 0;
 }
 
 // ---- Search command ----
@@ -2787,6 +2828,73 @@ int main(int argc, char* argv[]) {
             return cmd_organize(opts);
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
+            return 1;
+        }
+    } else if (command == "rm") {
+        RemoveOptions opts;
+        opts.db_path = default_db_path();
+        if (cfg.log_enabled) opts.log_enabled = *cfg.log_enabled;
+        if (cfg.log_max_entries) opts.log_max_entries = *cfg.log_max_entries;
+        opts.argv_str = join_argv(argc, argv);
+
+        int mode_flags = 0;
+        for (int i = 2; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "--match" && i + 1 < argc) {
+                opts.matches.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                opts.excludes.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--hard") {
+                opts.mode = RemoveMode::Hard;
+                mode_flags++;
+            } else if (arg == "--db-only") {
+                opts.mode = RemoveMode::DbOnly;
+                mode_flags++;
+            } else if (arg == "--orphans") {
+                opts.mode = RemoveMode::Orphans;
+                mode_flags++;
+            } else if (arg == "--dry-run") {
+                opts.dry_run = true;
+            } else if (arg == "--yes" || arg == "-y") {
+                opts.assume_yes = true;
+            } else if (arg == "--db" && i + 1 < argc) {
+                opts.db_path = argv[++i];
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                print_usage();
+                return 1;
+            }
+        }
+        if (mode_flags > 1) {
+            std::cerr << "Error: --hard, --db-only, and --orphans are mutually exclusive\n";
+            return 1;
+        }
+        try {
+            return cmd_rm(opts);
+        } catch (const std::exception& e) {
+            log_error(std::string("rm: ") + e.what());
+            return 1;
+        }
+    } else if (command == "trash") {
+        // Only subcommand: `trash empty`.
+        if (argc < 3 || std::string(argv[2]) != "empty") {
+            std::cerr << "Usage: phig trash empty [--yes]\n";
+            return 1;
+        }
+        bool yes = false;
+        for (int i = 3; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "--yes" || arg == "-y")
+                yes = true;
+            else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                return 1;
+            }
+        }
+        try {
+            return cmd_trash_empty(yes);
+        } catch (const std::exception& e) {
+            log_error(std::string("trash: ") + e.what());
             return 1;
         }
     } else if (command == "thumbs") {
