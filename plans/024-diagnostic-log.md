@@ -1,6 +1,6 @@
 ---
 name: Diagnostic Log File
-status: planned
+status: completed
 created: 2026-07-11
 description: >
   Route phig's diagnostic messages (command invocations, warnings, errors)
@@ -903,3 +903,44 @@ Expected: no output (clean).
 git add AGENTS.md README.md
 git commit -m "Document diagnostic log"
 ```
+
+---
+
+## Outcome (2026-07-11)
+
+Implemented via subagent-driven development (7 tasks, each with real-behavior
+tests + spec/quality review); final whole-branch review returned READY TO MERGE.
+Full suite: 305 tests passing; clang-format clean; spdlog confined to `log.cpp`.
+
+Commits (on `master`):
+
+| Task | Commit |
+|------|--------|
+| 1 — `state_dir()` + `default_log_path()` (XDG state dir) | `23d65f4` |
+| 2 — spdlog dependency (devenv.nix, CMake, CI, README) | `ae0b0ef` |
+| 3 — `src/log.{h,cpp}` logger wrapper (stderr + rotating file sinks) + tests | `f1acd90` |
+| 4 — `[log] file` + `file_level` config keys | `9636687` |
+| 5 — wire logger into `main()`: init, invocation INFO, top-level ERROR | `91ab3f3` |
+| 6 — swap scan/hasher/faces diagnostics to the logger | `e4611fc` |
+| 7 — document the diagnostic log (AGENTS/README) | `589e15e` |
+
+Notes:
+- spdlog is added via `pkgs.spdlog.dev` in the devenv `CMAKE_PREFIX_PATH`
+  (spdlog has a separate `dev` output); resolves to spdlog 1.17.0. `find_package`
+  works, no `devenv.lock` change.
+- `stderr_sink_mt` is included from `spdlog/sinks/stdout_sinks.h` (v1.17.0 header
+  layout), not the plan's `stderr_sinks.h` — header path only, class/behavior
+  unchanged.
+- Task 4 used the file's existing `parse_enum` helper for `file_level` validation
+  rather than an inline check — same behavior, matches the file's other enum keys.
+- Whole-branch review confirmed: thread-safe (`g_logger` set once before scan
+  workers spawn; `_mt` sinks lock internally); `log_*` is a safe no-op before
+  `log_init` (so phig-lib's `hasher.cpp` logging doesn't affect the test binary,
+  which never inits); `log_level_from_string` in `main()` can't throw (config
+  validates `file_level` at parse); multi-process append is atomic per line
+  (worst case a benign rotation race, never corruption).
+- Terminal format change (accepted, documented): top-level failures now print
+  `[error] <command>: <what>`; scan per-file diagnostics `[warning] scan: <rel>
+  -- <what>`. Argument-validation `Error:` messages and all stdout are unchanged.
+- Distinct from the activity log (plan 020): this records diagnostics as text in
+  `~/.local/state/phig/phig.log`; 020 records file operations in the DB.
