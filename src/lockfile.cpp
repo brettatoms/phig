@@ -23,9 +23,10 @@ int read_pid(int fd) {
 
 void write_pid(int fd) {
     std::string s = std::to_string(::getpid());
-    if (::ftruncate(fd, 0) == 0) {
-        (void)::pwrite(fd, s.data(), s.size(), 0);  // best-effort
-    }
+    if (::ftruncate(fd, 0) != 0) return;  // best-effort; give up quietly
+    ssize_t n = ::pwrite(fd, s.data(), s.size(), 0);
+    (void)n;  // best-effort: a short/failed write just means holder_pid()
+              // may read -1 later; not worth failing the lock over
 }
 }  // namespace
 
