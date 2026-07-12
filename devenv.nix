@@ -12,6 +12,7 @@
     pkgs.gtest
     pkgs.curl
     pkgs.ffmpeg-headless
+    pkgs.spdlog
   ];
 
   env.CMAKE_PREFIX_PATH = lib.makeSearchPath "" [
@@ -19,6 +20,7 @@
     pkgs.libexif
     pkgs.sqlite.dev
     pkgs.ffmpeg-headless.dev
+    pkgs.spdlog.dev
   ];
 
   enterShell = ''

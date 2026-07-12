@@ -34,11 +34,11 @@ jobs:
             build-essential cmake pkg-config \
             libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
-            libgtest-dev
+            libgtest-dev libspdlog-dev
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install cmake pkg-config opencv sqlite libexif ffmpeg googletest
+        run: brew install cmake pkg-config opencv sqlite libexif ffmpeg googletest spdlog
 
       - name: Configure
         run: cmake -B build -DPHIG_WERROR=ON
@@ -62,7 +62,7 @@ jobs:
             build-essential cmake pkg-config \
             libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
-            libgtest-dev
+            libgtest-dev libspdlog-dev
           # Pin clang tools to the dev environment's version (Nix clang 21) so
           # formatting/analysis is version-stable across machines and CI.
           pipx install clang-format==21.1.8

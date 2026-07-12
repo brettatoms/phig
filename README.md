@@ -34,24 +34,24 @@ The binary is at `./build/phig`. It links against Nix store libraries and is int
 ### With system packages (distribution)
 
 phig builds against stock system libraries — OpenCV (core modules only; no
-`contrib` needed), SQLite3, libexif, libcurl, and FFmpeg. Install the dependencies
-with your package manager:
+`contrib` needed), SQLite3, libexif, libcurl, FFmpeg, and spdlog. Install the
+dependencies with your package manager:
 
 ```bash
 # Debian / Ubuntu
 sudo apt install build-essential cmake pkg-config libopencv-dev libsqlite3-dev \
     libexif-dev libcurl4-openssl-dev libavformat-dev libavcodec-dev \
-    libavutil-dev libswscale-dev libgtest-dev
+    libavutil-dev libswscale-dev libgtest-dev libspdlog-dev
 
 # Fedora
 sudo dnf install gcc-c++ cmake make pkgconf-pkg-config opencv-devel sqlite-devel \
-    libexif-devel libcurl-devel ffmpeg-free-devel gtest-devel
+    libexif-devel libcurl-devel ffmpeg-free-devel gtest-devel spdlog-devel
 
 # Arch Linux
-sudo pacman -S base-devel cmake opencv sqlite libexif curl ffmpeg gtest
+sudo pacman -S base-devel cmake opencv sqlite libexif curl ffmpeg gtest spdlog
 
 # macOS (Homebrew)
-brew install cmake pkg-config opencv sqlite libexif ffmpeg googletest
+brew install cmake pkg-config opencv sqlite libexif ffmpeg googletest spdlog
 ```
 
 Then build and install:

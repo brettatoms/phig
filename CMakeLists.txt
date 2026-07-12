@@ -25,6 +25,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(EXIF REQUIRED libexif)
 find_package(SQLite3 REQUIRED)
 find_package(CURL REQUIRED)
+find_package(spdlog REQUIRED)
 pkg_check_modules(AVFORMAT REQUIRED libavformat)
 pkg_check_modules(AVCODEC REQUIRED libavcodec)
 pkg_check_modules(AVUTIL REQUIRED libavutil)
@@ -80,6 +81,7 @@ target_link_libraries(phig-lib PUBLIC
     ${SWSCALE_LIBRARIES}
     SQLite::SQLite3
     CURL::libcurl
+    spdlog::spdlog
     pthread
 )
 
