@@ -22,6 +22,7 @@ std::string state_dir();   // $XDG_STATE_HOME  or ~/.local/state, + /phig
 
 // Derived paths.
 std::string default_db_path();   // data_dir()  + /phig.db
+std::string lock_path();         // default_db_path() + ".lock"  (advisory writer lock)
 std::string models_dir();        // cache_dir() + /models
 std::string thumbs_dir();        // cache_dir() + /thumbs
 std::string config_path();       // config_dir() + /config.ini

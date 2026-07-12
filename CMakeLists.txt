@@ -64,6 +64,7 @@ add_library(phig-lib STATIC
     src/sidecar.cpp
     src/dates.cpp
     src/raw.cpp
+    src/lockfile.cpp
 )
 
 target_include_directories(phig-lib PUBLIC
@@ -135,6 +136,7 @@ add_executable(phig-tests
     tests/test_sidecar.cpp
     tests/test_dates.cpp
     tests/test_raw.cpp
+    tests/test_lockfile.cpp
 )
 
 target_link_libraries(phig-tests PRIVATE

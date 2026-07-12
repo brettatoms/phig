@@ -52,6 +52,7 @@ std::string cache_dir() { return xdg_base("XDG_CACHE_HOME", "/.cache") + "/phig"
 std::string state_dir() { return xdg_base("XDG_STATE_HOME", "/.local/state") + "/phig"; }
 
 std::string default_db_path() { return g_db_override ? *g_db_override : data_dir() + "/phig.db"; }
+std::string lock_path() { return default_db_path() + ".lock"; }
 std::string models_dir() {
     return g_models_override ? *g_models_override : cache_dir() + "/models";
 }
