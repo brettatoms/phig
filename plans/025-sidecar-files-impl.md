@@ -732,76 +732,135 @@ git commit -m "feat(organize): carry sidecars on mv/cp, logged and parent-linked
 
 ---
 
-### Task 5: End-to-end porcelain test + dry-run + docs
+### Task 5: Extract date functions to phig-lib + unit-test the ordering + docs
+
+**Why this changed from the original plan:** the original Task 5 assumed a
+binary-invoking porcelain harness. There is none — `PorcelainTest` is a
+library-level test (inserts `ImageInfo` directly), no test in the suite shells
+out to `./build/phig`, and `get_best_date`/`get_best_date_str` live in the
+`phig` binary target (`main.cpp`), unreachable from `phig-tests`. So the
+EXIF→sidecar→mtime ordering (Task 3) currently has ZERO executable
+verification. This task fixes that by extracting the date cluster into a
+phig-lib unit so the ordering is a normal unit test.
 
 **Files:**
-- Modify: `tests/test_porcelain.cpp` (end-to-end mv-with-sidecar + dry-run)
-- Modify: `AGENTS.md` ("Key Design Decisions" — add a sidecar bullet)
-- Modify: `README.md` (note mv/cp carry sidecars and organize reads sidecar dates)
+- Create: `src/dates.h`, `src/dates.cpp` — the date cluster moved out of `main.cpp`.
+- Modify: `src/main.cpp` — remove the moved definitions; `#include "dates.h"`.
+- Modify: `CMakeLists.txt` — add `src/dates.cpp` to `phig-lib`, `tests/test_dates.cpp` to `phig-tests`.
+- Create: `tests/test_dates.cpp` — unit tests for the ordering.
+- Modify: `AGENTS.md`, `README.md` — sidecar docs.
 
-**Interfaces:**
-- Consumes: the full binary (`./build/phig`) via the porcelain harness in `tests/test_porcelain.cpp`.
-- Produces: no new symbol.
+**What to move into `src/dates.{h,cpp}`** (a cohesive cluster; `apply_format`
+STAYS in main.cpp but will include `dates.h`):
+- `struct DateParts` (currently ~main.cpp:999)
+- `DateParts parse_date(const std::string&)` (~1006)
+- `std::string json_get(const std::string&, const std::string&)` (~1032) —
+  general JSON helper, used broadly in main.cpp (Model/Make/camera in
+  `apply_format` and search); move it here and have main.cpp use it via the
+  header, since the date functions need it too.
+- `DateParts get_best_date(const ImageInfo&)` (~1042) — includes the sidecar step
+- `std::string get_best_date_str(const ImageInfo&)` (~1398) — includes the sidecar step
 
-- [ ] **Step 1: Inspect the porcelain harness to match its exact run pattern**
+`dates.cpp` will `#include "sidecar.h"` (for `find_sidecars`/`sidecar_date`) and
+`#include "types.h"` (for `ImageInfo`). `dates.h` declares all five symbols.
 
-Run: `sed -n '1,64p' tests/test_porcelain.cpp`
-Note how it invokes the binary, sets `--db`, and asserts on filesystem/DB state; mirror it.
-
-- [ ] **Step 2: Write failing end-to-end tests in `tests/test_porcelain.cpp`**
-
-Two cases, using the harness's existing scaffolding (scan a temp source, run `mv`, assert):
+**Interfaces produced (consumed by main.cpp and the new test):**
 ```cpp
-// mv carries the sidecar to the destination beside its image.
-TEST_F(PorcelainTest, MvCarriesSidecar) {
-    // 1. Create <src>/IMG_1.JPG (a tiny valid image the scanner accepts) and
-    //    <src>/IMG_1.xmp with xmp:CreateDate="11/25/2010 8:34:57 AM".
-    // 2. phig scan <src>; phig mv <dest> --match '<src>/**' --format '%Y/%m/%original'.
-    // 3. EXPECT <dest>/2010/11/IMG_1.JPG exists (dated from the sidecar) AND
-    //    <dest>/2010/11/IMG_1.xmp exists beside it; source .xmp is gone.
-}
+struct DateParts { std::string year, month, day; bool valid; };  // match the current fields exactly
+DateParts parse_date(const std::string& date_str);
+std::string json_get(const std::string& json, const std::string& key);
+DateParts get_best_date(const ImageInfo& img);
+std::string get_best_date_str(const ImageInfo& img);
+```
+(Copy `DateParts`'s ACTUAL current field set/defaults from main.cpp — do not
+guess. `apply_format` and search reference `date.year`/`.month`/`.day`/`.valid`.)
 
-// --dry-run moves nothing, including the sidecar.
-TEST_F(PorcelainTest, MvDryRunLeavesSidecar) {
-    // scan, then phig mv <dest> --match '<src>/**' --dry-run.
-    // EXPECT source IMG_1.JPG and IMG_1.xmp both still present; <dest> empty.
+- [ ] **Step 1: Move the cluster into `src/dates.{h,cpp}`, wire CMake, build green (no behavior change yet)**
+
+Cut `DateParts`, `parse_date`, `json_get`, `get_best_date`, `get_best_date_str`
+verbatim from `main.cpp` into `dates.cpp` (declarations in `dates.h`). Add
+`#include "dates.h"` to `main.cpp`. Add `src/dates.cpp` to phig-lib and (next
+step) `tests/test_dates.cpp` to phig-tests in CMakeLists.txt. `apply_format`,
+the search output sites, and `cmd_organize` keep calling these by name via the
+header — no call-site changes beyond the include.
+
+Run: `direnv exec . cmake -B build && direnv exec . cmake --build build && ./build/phig-tests`
+Expected: full suite still green (this step is a pure move — 324 baseline). If
+anything else in main.cpp used a now-moved symbol, add the include; do not
+duplicate definitions.
+
+- [ ] **Step 2: Write the ordering unit tests in `tests/test_dates.cpp`**
+
+Now that the functions are in phig-lib, test them directly with a temp dir for
+the sidecar file:
+```cpp
+// A file with no EXIF date but a dated .xmp sidecar dates from the sidecar
+// (folder placement), not mtime.
+TEST(GetBestDate, SidecarUsedWhenNoExif) {
+    // temp dir; write <dir>/IMG_1.xmp with xmp:CreateDate="11/25/2010 8:34:57 AM";
+    // ImageInfo img: path=<dir>/IMG_1.JPG, metadata_json="{}",
+    //   modified_at="2026-07-11T00:00:00Z";
+    // auto d = get_best_date(img); EXPECT d.valid; EXPECT d.year=="2010"; d.month=="11".
+}
+// EXIF wins over a differently-dated sidecar.
+TEST(GetBestDate, ExifWinsOverSidecar) {
+    // metadata_json has DateTimeOriginal "2015:01:02 ..."; a 2010 sidecar beside it
+    // -> EXPECT d.year=="2015".
+}
+// Display string also uses the sidecar (search output agrees with organize).
+TEST(GetBestDateStr, SidecarUsedWhenNoExif) {
+    // same no-EXIF + 2010 sidecar setup -> get_best_date_str(img) == "2010:11:25".
+}
+// No EXIF, no sidecar -> mtime (unchanged behavior).
+TEST(GetBestDate, FallsBackToMtimeWhenNothingElse) {
+    // metadata_json="{}", no sidecar, modified_at="2020:05:06 ..."-parseable ->
+    // EXPECT d.year=="2020" (whatever parse_date yields from modified_at).
 }
 ```
-Use whatever minimal valid image the other porcelain/scanner tests use as a fixture (check `tests/data/`).
+Use the exact `xmp:CreateDate` fixture shape the sidecar tests use. Write these
+FIRST against the post-move code — `SidecarUsedWhenNoExif` should already PASS
+(Task 3 wired the ordering); if it does not, the ordering is wrong and this test
+is exactly what catches it. `ExifWinsOverSidecar` and the mtime fallback lock in
+the invariant.
 
-Run: `ls tests/data` to find an existing tiny image to copy as the fixture.
+- [ ] **Step 3: Build and run**
 
-- [ ] **Step 3: Run to verify failure**
+Run: `direnv exec . cmake --build build && ./build/phig-tests --gtest_filter='GetBestDate*'`
+Expected: PASS. If `SidecarUsedWhenNoExif` fails (returns the mtime year), Task
+3's ordering is wrong — fix in `dates.cpp` (sidecar step must sit after the EXIF
+checks, before mtime) and re-run.
 
-Run: `cmake --build build && ./build/phig-tests --gtest_filter='PorcelainTest.Mv*'`
-Expected: `MvCarriesSidecar` FAILS (sidecar not at dest) before the feature is wired end-to-end; it PASSES once Tasks 3-4 are in. If Tasks 3-4 already passed, this test confirms the full path — run it to prove the date+carry work together through the real binary.
+- [ ] **Step 4: Library-level carry dry-run/skip note**
 
-- [ ] **Step 4: Confirm both pass**
-
-Run: `./build/phig-tests --gtest_filter='PorcelainTest.Mv*'`
-Expected: PASS. If `MvCarriesSidecar` fails on the date (image lands in `unsorted` not `2010/11`), verify Task 3's ordering; if it fails on the sidecar location, verify Task 4's `cmd_organize` call site.
+`carry_sidecars` is already covered by `OrganizeExecTest` (Task 4). The
+`cmd_organize` dry-run path (which must NOT move sidecars) lives in the binary
+and stays inspection-verified — note this in the report. Do NOT add a
+binary-invoking test (no such harness exists; out of scope).
 
 - [ ] **Step 5: Update `AGENTS.md` and `README.md`**
 
 `AGENTS.md`, under "Key Design Decisions", add:
 ```markdown
-- **Sidecar files** — `mv`/`cp` carry a media file's sidecars (xmp, pp3, dop,
-  on1, aae, json, thm, lrv; both `IMG_1234.xmp` and `IMG_1234.CR2.xmp` naming)
-  to the destination beside their image, renaming them to match a renamed
-  parent, logged as `move_sidecar`/`copy_sidecar` entries linked to the parent
-  image id. Sidecars are never indexed as media. Organize also reads a sidecar
-  date (XMP / Google Takeout JSON) as a date source after EXIF and before mtime.
+- **Sidecar files** — `mv`/`cp` carry a media file's metadata sidecars (xmp,
+  pp3, dop, on1, aae, json, thm, lrv; both `IMG_1234.xmp` and `IMG_1234.CR2.xmp`
+  naming) to the destination beside their image, renaming them to match a
+  renamed parent, logged as `move_sidecar`/`copy_sidecar` entries linked to the
+  parent image id. Sidecars are never indexed as media. Organize and search
+  display also read a sidecar date (XMP `CreateDate`/`DateTimeOriginal`, Google
+  Takeout `photoTakenTime`) as a date source after EXIF and before mtime, so
+  EXIF-stripped photos file (and display) under their real date, not the copy
+  date. RAW↔JPEG pairing is plan 026, not here.
 ```
 
-`README.md`: add a short note in the organize/mv section mirroring the above (one or two sentences, plain).
+`README.md`: add a short note in the organize/mv section (one or two sentences, plain).
 
 - [ ] **Step 6: Full test run, format, commit**
 
 ```bash
-cmake --build build && ./build/phig-tests
-clang-format -i tests/test_porcelain.cpp
-git add tests/test_porcelain.cpp AGENTS.md README.md
-git commit -m "test(sidecar): end-to-end mv carry + dry-run; document sidecar handling"
+direnv exec . cmake --build build && ./build/phig-tests
+clang-format -i src/dates.h src/dates.cpp src/main.cpp tests/test_dates.cpp AGENTS.md README.md
+git add src/dates.h src/dates.cpp src/main.cpp CMakeLists.txt tests/test_dates.cpp AGENTS.md README.md
+git commit -m "Extract date functions to phig-lib; unit-test sidecar-date ordering; document sidecars"
 ```
 
 ---
