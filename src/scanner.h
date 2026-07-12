@@ -18,6 +18,13 @@ bool is_known_video_extension(const std::string& ext);
 // Returns true if the file extension is a known image or video format
 bool is_known_media_extension(const std::string& ext);
 
+// True if `media_path` is a JPEG (jpg/jpeg, case-insensitive) AND a same-basename
+// RAW file exists on disk in the same directory (e.g. IMG_1.JPG with IMG_1.CR2
+// beside it). Used by scan to demote the JPEG to an attachment of the RAW.
+// Case-insensitive stem match; any same-stem RAW counts. Returns false for a
+// non-JPEG path, a lone JPEG, or the RAW itself.
+bool has_sibling_raw(const std::filesystem::path& media_path);
+
 // Collects file paths from a directory, optionally recursive.
 // Only includes files with known media extensions (images + videos).
 // Hidden and temp entries (names starting with '.' or '~') are skipped

@@ -433,6 +433,11 @@ int cmd_scan(const ScanOptions& opts) {
                     continue;
                 }
 
+                if (has_sibling_raw(filepath)) {
+                    skipped.fetch_add(1);
+                    continue;
+                }
+
                 // Check if we should skip (path + mtime match)
                 bool needs_faces_only = false;
                 bool needs_thumbs_only = false;

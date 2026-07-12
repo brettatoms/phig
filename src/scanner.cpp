@@ -101,6 +101,40 @@ bool is_known_media_extension(const std::string& ext) {
 
 namespace {
 
+bool is_jpeg_extension(const std::string& ext) {
+    std::string lower = to_lower(ext);
+    if (!lower.empty() && lower[0] == '.') {
+        lower = lower.substr(1);
+    }
+    return lower == "jpg" || lower == "jpeg";
+}
+
+}  // anonymous namespace
+
+bool has_sibling_raw(const fs::path& media_path) {
+    if (!is_jpeg_extension(media_path.extension().string())) return false;
+
+    std::error_code ec;
+    fs::path dir = media_path.parent_path();
+    if (!fs::exists(dir, ec) || ec) return false;
+
+    std::string target_stem = to_lower(media_path.stem().string());
+
+    auto it = fs::directory_iterator(dir, ec);
+    if (ec) return false;
+    for (const auto& end = fs::directory_iterator(); it != end; it.increment(ec)) {
+        if (ec) break;
+        const auto& entry = *it;
+        if (!entry.is_regular_file(ec)) continue;
+        if (to_lower(entry.path().stem().string()) != target_stem) continue;
+        if (is_raw_extension(entry.path().extension().string())) return true;
+    }
+
+    return false;
+}
+
+namespace {
+
 // A hidden or temp name: dotfiles/dotdirs and editor/sync temp files.
 // This matches a single path component's literal name, not a shell path:
 // a leading '~' means a filename that actually begins with a tilde (e.g. a

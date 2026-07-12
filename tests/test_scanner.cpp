@@ -164,3 +164,38 @@ TEST(ScannerExtensionTest, IsRawExtension) {
     EXPECT_TRUE(is_raw_extension(".nef"));
     EXPECT_FALSE(is_raw_extension("jpg"));
 }
+
+TEST_F(ScannerTest, HasSiblingRawTrueWhenRawBeside) {
+    create_file("IMG_1.JPG");
+    create_file("IMG_1.CR2");
+    EXPECT_TRUE(has_sibling_raw(fs::path(test_dir) / "IMG_1.JPG"));
+}
+
+TEST_F(ScannerTest, HasSiblingRawFalseWhenLoneJpeg) {
+    create_file("IMG_2.JPG");
+    EXPECT_FALSE(has_sibling_raw(fs::path(test_dir) / "IMG_2.JPG"));
+}
+
+TEST_F(ScannerTest, HasSiblingRawFalseForRawItself) {
+    create_file("IMG_1.JPG");
+    create_file("IMG_1.CR2");
+    EXPECT_FALSE(has_sibling_raw(fs::path(test_dir) / "IMG_1.CR2"));
+}
+
+TEST_F(ScannerTest, HasSiblingRawCaseInsensitiveExtension) {
+    create_file("IMG_1.jpg");
+    create_file("IMG_1.NEF");
+    EXPECT_TRUE(has_sibling_raw(fs::path(test_dir) / "IMG_1.jpg"));
+}
+
+TEST_F(ScannerTest, HasSiblingRawCaseInsensitiveStem) {
+    create_file("img_1.JPG");
+    create_file("IMG_1.cr2");
+    EXPECT_TRUE(has_sibling_raw(fs::path(test_dir) / "img_1.JPG"));
+}
+
+TEST_F(ScannerTest, HasSiblingRawFalseForNonJpegWithSiblingRaw) {
+    create_file("IMG_1.png");
+    create_file("IMG_1.CR2");
+    EXPECT_FALSE(has_sibling_raw(fs::path(test_dir) / "IMG_1.png"));
+}
