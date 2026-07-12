@@ -815,7 +815,7 @@ TEST_F(DatabaseTest, LogPruneUnlimitedIsNoOp) {
 
 TEST_F(DatabaseTest, PurgeLogsRestorableSnapshot) {
     db->insert(make_image("/x/a.jpg", "shaA"));
-    int64_t op = db->log_begin_operation("purge", "phig purge --match *", "2026-07-06T00:00:00Z");
+    int64_t op = db->log_begin_operation("rm", "phig rm --db-only --match *", "2026-07-06T00:00:00Z");
     int n = db->delete_paths_logged({"/x/a.jpg"}, op);
     db->log_finish_operation(op, "completed");
     EXPECT_EQ(n, 1);
@@ -863,7 +863,7 @@ TEST_F(DatabaseTest, PurgeSnapshotMarksOmittedFaces) {
     f.height = 4;
     db->insert_face(id, f);
 
-    int64_t op = db->log_begin_operation("purge", "phig purge", "2026-07-06T00:00:00Z");
+    int64_t op = db->log_begin_operation("rm", "phig rm --db-only", "2026-07-06T00:00:00Z");
     db->delete_paths_logged({"/x/a.jpg"}, op);
     db->log_finish_operation(op, "completed");
 
