@@ -13,6 +13,7 @@
     pkgs.curl
     pkgs.ffmpeg-headless
     pkgs.spdlog
+    pkgs.libraw
   ];
 
   env.CMAKE_PREFIX_PATH = lib.makeSearchPath "" [
@@ -21,6 +22,7 @@
     pkgs.sqlite.dev
     pkgs.ffmpeg-headless.dev
     pkgs.spdlog.dev
+    pkgs.libraw.dev
   ];
 
   enterShell = ''

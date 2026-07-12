@@ -26,6 +26,7 @@ pkg_check_modules(EXIF REQUIRED libexif)
 find_package(SQLite3 REQUIRED)
 find_package(CURL REQUIRED)
 find_package(spdlog REQUIRED)
+pkg_check_modules(LIBRAW_R REQUIRED libraw_r)
 pkg_check_modules(AVFORMAT REQUIRED libavformat)
 pkg_check_modules(AVCODEC REQUIRED libavcodec)
 pkg_check_modules(AVUTIL REQUIRED libavutil)
@@ -67,6 +68,7 @@ target_include_directories(phig-lib PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${OpenCV_INCLUDE_DIRS}
     ${EXIF_INCLUDE_DIRS}
+    ${LIBRAW_R_INCLUDE_DIRS}
     ${AVFORMAT_INCLUDE_DIRS}
     ${AVCODEC_INCLUDE_DIRS}
     ${AVUTIL_INCLUDE_DIRS}
@@ -85,6 +87,7 @@ target_link_libraries(phig-lib PUBLIC
     SQLite::SQLite3
     CURL::libcurl
     spdlog::spdlog
+    ${LIBRAW_R_LIBRARIES}
     pthread
 )
 
@@ -92,6 +95,7 @@ target_link_libraries(phig-lib PUBLIC
 # e.g. Homebrew's /opt/homebrew/lib on macOS — so add their -L dirs explicitly.
 target_link_directories(phig-lib PUBLIC
     ${EXIF_LIBRARY_DIRS}
+    ${LIBRAW_R_LIBRARY_DIRS}
     ${AVFORMAT_LIBRARY_DIRS}
     ${AVCODEC_LIBRARY_DIRS}
     ${AVUTIL_LIBRARY_DIRS}
