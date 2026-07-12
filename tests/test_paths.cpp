@@ -670,8 +670,7 @@ TEST(TempSiblingConcurrency, NoCollisionUnderThreads) {
     for (int t = 0; t < threads; ++t) {
         pool.emplace_back([&, t] {
             results[t].reserve(per_thread);
-            for (int i = 0; i < per_thread; ++i)
-                results[t].push_back(temp_sibling(dest).string());
+            for (int i = 0; i < per_thread; ++i) results[t].push_back(temp_sibling(dest).string());
         });
     }
     for (auto& th : pool) th.join();
@@ -679,7 +678,10 @@ TEST(TempSiblingConcurrency, NoCollisionUnderThreads) {
     std::set<std::string> uniq;
     size_t total = 0;
     for (auto& r : results)
-        for (auto& s : r) { uniq.insert(s); ++total; }
+        for (auto& s : r) {
+            uniq.insert(s);
+            ++total;
+        }
 
     // Every generated temp path must be distinct.
     EXPECT_EQ(uniq.size(), total);
