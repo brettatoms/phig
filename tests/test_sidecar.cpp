@@ -22,6 +22,11 @@ class SidecarTest : public ::testing::Test {
         fs::create_directories(p.parent_path());
         std::ofstream(p) << "x";
     }
+
+    void write(const fs::path& p, const std::string& contents) {
+        fs::create_directories(p.parent_path());
+        std::ofstream(p) << contents;
+    }
 };
 
 TEST_F(SidecarTest, StemStyleAttachesToImage) {
@@ -82,3 +87,31 @@ TEST_F(SidecarTest, ExtensionMatchIsCaseInsensitive) {
     ASSERT_EQ(s.size(), 1u);
     EXPECT_EQ(s[0].filename(), "IMG_1234.XMP");
 }
+
+TEST_F(SidecarTest, FspotXmpCreateDate) {
+    // Shape observed in the real 2010 library.
+    write(dir / "a.xmp", R"(<x:xmpmeta><rdf:Description xmp:CreateDate="11/25/2010 8:34:57 AM">)"
+                         R"(</rdf:Description></x:xmpmeta>)");
+    EXPECT_EQ(sidecar_date(dir / "a.xmp"), "2010:11:25 08:34:57");
+}
+
+TEST_F(SidecarTest, IsoXmpDateTimeOriginal) {
+    write(dir / "b.xmp", R"(<rdf:Description exif:DateTimeOriginal="2012-06-03T14:07:00"/>)");
+    EXPECT_EQ(sidecar_date(dir / "b.xmp"), "2012:06:03 14:07:00");
+}
+
+TEST_F(SidecarTest, GoogleJsonPhotoTakenTime) {
+    write(dir / "c.json",
+          R"({"photoTakenTime":{"timestamp":"1288000497","formatted":"Nov 25, 2010"}})");
+    // From the epoch timestamp (UTC): 2010-10-25 ... just assert year/month/day prefix.
+    std::string d = sidecar_date(dir / "c.json");
+    ASSERT_GE(d.size(), 10u);
+    EXPECT_EQ(d.substr(0, 4), "2010");
+}
+
+TEST_F(SidecarTest, DatelessSidecarReturnsEmpty) {
+    write(dir / "d.xmp", R"(<x:xmpmeta><rdf:Description xmp:Rating="0"/></x:xmpmeta>)");
+    EXPECT_EQ(sidecar_date(dir / "d.xmp"), "");
+}
+
+TEST_F(SidecarTest, MissingFileReturnsEmpty) { EXPECT_EQ(sidecar_date(dir / "nope.xmp"), ""); }

@@ -16,3 +16,10 @@ bool is_known_sidecar_extension(const std::string& ext);
 //   append style: IMG_1234.CR2.xmp   (full media filename + sidecar ext)
 // Returns absolute/normalized paths that exist on disk. Empty if none.
 std::vector<std::filesystem::path> find_sidecars(const std::filesystem::path& media_file);
+
+// Organizing date read from a sidecar, in EXIF shape "YYYY:MM:DD HH:MM:SS",
+// or "" if none. Parses XMP (xmp:CreateDate / exif:DateTimeOriginal, whose
+// values may be "M/D/YYYY h:mm:ss AM" or "YYYY-MM-DDThh:mm:ss") and Google
+// Takeout JSON (photoTakenTime.formatted / .timestamp). Returns "" on any
+// unparseable or dateless file.
+std::string sidecar_date(const std::filesystem::path& sidecar_file);

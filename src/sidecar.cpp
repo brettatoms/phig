@@ -3,6 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <fstream>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -12,6 +17,68 @@ std::string to_lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
+}
+
+std::string read_all(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return "";
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// Value of attribute `attr="..."` in `xml`, or "".
+std::string attr_value(const std::string& xml, const std::string& attr) {
+    std::string key = attr + "=\"";
+    auto pos = xml.find(key);
+    if (pos == std::string::npos) return "";
+    pos += key.size();
+    auto end = xml.find('"', pos);
+    if (end == std::string::npos) return "";
+    return xml.substr(pos, end - pos);
+}
+
+// Format y/m/d/H/M/S into "YYYY:MM:DD HH:MM:SS".
+std::string exif_shape(int y, int mo, int d, int h, int mi, int s) {
+    char buf[20];
+    std::snprintf(buf, sizeof(buf), "%04d:%02d:%02d %02d:%02d:%02d", y, mo, d, h, mi, s);
+    return buf;
+}
+
+// Parse the two XMP value shapes into EXIF shape, or "".
+std::string normalize_xmp_date(const std::string& v) {
+    if (v.empty()) return "";
+    // ISO: "YYYY-MM-DDThh:mm:ss"
+    if (v.size() >= 19 && v[4] == '-' && v[7] == '-' && (v[10] == 'T' || v[10] == ' ')) {
+        int y, mo, d, h, mi, s;
+        if (std::sscanf(v.c_str(), "%d-%d-%d%*c%d:%d:%d", &y, &mo, &d, &h, &mi, &s) == 6)
+            return exif_shape(y, mo, d, h, mi, s);
+        return "";
+    }
+    // f-spot/US: "M/D/YYYY h:mm:ss AM|PM"
+    {
+        int mo, d, y, h, mi, s;
+        char ampm[3] = {0, 0, 0};
+        int n = std::sscanf(v.c_str(), "%d/%d/%d %d:%d:%d %2s", &mo, &d, &y, &h, &mi, &s, ampm);
+        if (n >= 6) {
+            if (n == 7) {
+                if ((ampm[0] == 'P' || ampm[0] == 'p') && h < 12) h += 12;
+                if ((ampm[0] == 'A' || ampm[0] == 'a') && h == 12) h = 0;
+            }
+            return exif_shape(y, mo, d, h, mi, s);
+        }
+    }
+    return "";
+}
+
+std::string json_string_value(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\":\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) return "";
+    pos += search.size();
+    auto end = json.find('"', pos);
+    if (end == std::string::npos) return "";
+    return json.substr(pos, end - pos);
 }
 
 }  // namespace
@@ -60,4 +127,33 @@ std::vector<fs::path> find_sidecars(const fs::path& media_file) {
         }
     }
     return out;
+}
+
+std::string sidecar_date(const fs::path& sidecar_file) {
+    std::string ext = sidecar_file.extension().string();
+    std::string content = read_all(sidecar_file);
+    if (content.empty()) return "";
+
+    std::string lower_ext = to_lower(ext);
+    if (!lower_ext.empty() && lower_ext[0] == '.') lower_ext = lower_ext.substr(1);
+
+    if (lower_ext == "json") {
+        // Google Takeout: photoTakenTime.timestamp is epoch seconds (UTC).
+        std::string ts = json_string_value(content, "timestamp");
+        if (!ts.empty()) {
+            std::time_t t = static_cast<std::time_t>(std::strtoll(ts.c_str(), nullptr, 10));
+            std::tm tm{};
+            gmtime_r(&t, &tm);
+            return exif_shape(tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min,
+                              tm.tm_sec);
+        }
+        return "";
+    }
+
+    // XMP: prefer CreateDate, then DateTimeOriginal.
+    std::string v = attr_value(content, "xmp:CreateDate");
+    std::string d = normalize_xmp_date(v);
+    if (!d.empty()) return d;
+    v = attr_value(content, "exif:DateTimeOriginal");
+    return normalize_xmp_date(v);
 }
