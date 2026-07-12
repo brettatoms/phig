@@ -14,6 +14,12 @@ bool is_known_sidecar_extension(const std::string& ext);
 // known-sidecar allowlist by BOTH naming conventions:
 //   stem style:   IMG_1234.xmp       (media stem + sidecar ext)
 //   append style: IMG_1234.CR2.xmp   (full media filename + sidecar ext)
+// A stem-style sidecar is ceded to a same-stem sibling (e.g. a RAW+JPEG pair,
+// each with its own append-style sidecar of the same extension) only when
+// such a sibling MEDIA file actually exists on disk; if media_file is alone,
+// it keeps the stem-style sidecar even when it also has its own append-style
+// one, so the sidecar isn't stranded and its date isn't lost to a mtime
+// fallback.
 // Returns absolute/normalized paths that exist on disk. Empty if none.
 std::vector<std::filesystem::path> find_sidecars(const std::filesystem::path& media_file);
 

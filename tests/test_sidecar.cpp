@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -58,6 +59,18 @@ TEST_F(SidecarTest, RawAndJpegKeepDistinctSidecars) {
     auto jpg = find_sidecars(dir / "IMG_1234.JPG");
     ASSERT_EQ(jpg.size(), 1u);
     EXPECT_EQ(jpg[0].filename(), "IMG_1234.xmp");
+}
+
+TEST_F(SidecarTest, StemSidecarKeptWhenMediaAloneDespiteAppendStyle) {
+    touch(dir / "IMG_1.JPG");
+    touch(dir / "IMG_1.xmp");      // stem style
+    touch(dir / "IMG_1.JPG.xmp");  // append style, no same-stem sibling media
+    auto s = find_sidecars(dir / "IMG_1.JPG");
+    ASSERT_EQ(s.size(), 2u);
+    EXPECT_TRUE(std::any_of(s.begin(), s.end(),
+                            [](const fs::path& p) { return p.filename() == "IMG_1.xmp"; }));
+    EXPECT_TRUE(std::any_of(s.begin(), s.end(),
+                            [](const fs::path& p) { return p.filename() == "IMG_1.JPG.xmp"; }));
 }
 
 TEST_F(SidecarTest, NonAllowlistSameStemIgnored) {

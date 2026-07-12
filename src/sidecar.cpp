@@ -9,6 +9,8 @@
 #include <fstream>
 #include <sstream>
 
+#include "scanner.h"
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -119,11 +121,30 @@ std::vector<fs::path> find_sidecars(const fs::path& media_file) {
         }
         // stem style: base == media_stem (IMG_1234.xmp -> IMG_1234). Siblings
         // sharing the same stem (e.g. a RAW+JPEG pair) can each have their own
-        // append-style sidecar of the same extension; when media_file has one,
-        // the plain stem-style file belongs to a *different* sibling instead.
+        // append-style sidecar of the same extension; when media_file has one
+        // AND a same-stem sibling media file exists to claim the plain file,
+        // the stem-style file belongs to that *other* sibling instead. If
+        // media_file is alone (no same-stem sibling media file), it keeps the
+        // stem-style sidecar even when it also has its own append-style one —
+        // ceding it would strand the sidecar and, if it carries the date,
+        // make the photo date by mtime instead.
         if (base == media_stem) {
             const fs::path append_style_sibling = parent / (media_name + p.extension().string());
-            if (!fs::exists(append_style_sibling, ec)) out.push_back(p);
+            bool has_own_append = fs::exists(append_style_sibling, ec);
+            bool sibling_media_exists = false;
+            if (has_own_append) {
+                for (const auto& sib : fs::directory_iterator(parent, ec)) {
+                    if (!sib.is_regular_file()) continue;
+                    const fs::path& sp = sib.path();
+                    if (sp.filename() == media_file.filename()) continue;
+                    if (sp.stem().string() == media_stem &&
+                        is_known_media_extension(sp.extension().string())) {
+                        sibling_media_exists = true;
+                        break;
+                    }
+                }
+            }
+            if (!has_own_append || !sibling_media_exists) out.push_back(p);
         }
     }
     return out;
