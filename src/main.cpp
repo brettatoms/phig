@@ -628,14 +628,25 @@ int cmd_scan(const ScanOptions& opts) {
     std::vector<std::string> removed_paths = paths_safe_to_delete(db_paths);
     size_t removed_count = 0;
     int relinked_count = 0;
-    if (!removed_paths.empty()) {
-        if (!db_paths.empty() && removed_paths.size() == db_paths.size() &&
-            !opts.ignore_mount_warning) {
-            log_warn("scan: all " + std::to_string(removed_paths.size()) +
-                     " previously scanned files in this directory are missing.\n"
-                     "This may indicate an unmounted drive or incorrect path.\n"
-                     "Use --ignore-mount-warning to remove these entries from the database.");
-        } else {
+    int demoted_count = 0;
+
+    if (!removed_paths.empty() && !db_paths.empty() && removed_paths.size() == db_paths.size() &&
+        !opts.ignore_mount_warning) {
+        log_warn("scan: all " + std::to_string(removed_paths.size()) +
+                 " previously scanned files in this directory are missing.\n"
+                 "This may indicate an unmounted drive or incorrect path.\n"
+                 "Use --ignore-mount-warning to remove these entries from the database.");
+    } else {
+        // A demoted JPEG (same-basename RAW now on disk, RAW itself indexed)
+        // still exists on disk, so it's never in removed_paths — but its
+        // stale row must still be cleaned up. has_sibling_raw is a cheap,
+        // read-only peek (no DB writes) used only to decide whether it's
+        // worth opening a scan operation; demote_jpeg_rows (below) does the
+        // real, authoritative work exactly once, inside that operation.
+        bool maybe_demotable = std::any_of(db_paths.begin(), db_paths.end(),
+                                           [](const auto& p) { return has_sibling_raw(p); });
+
+        if (!removed_paths.empty() || maybe_demotable) {
             // Removing a row destroys user-authored metadata (tags, gallery,
             // faces) that a rescan cannot rebuild — record it like purge does,
             // with a restorable row snapshot per entry (review #3a).
@@ -643,7 +654,13 @@ int cmd_scan(const ScanOptions& opts) {
                 int64_t op_id = db.log_begin_operation("scan", opts.argv_str, iso_utc_now());
                 try {
                     relinked_count = relink_moved_rows(db, removed_paths, op_id);
-                    removed_count = db.delete_paths_logged(removed_paths, op_id);
+                    std::vector<std::string> demoted_paths =
+                        demote_jpeg_rows(db, scan_prefix, op_id);
+                    demoted_count = static_cast<int>(demoted_paths.size());
+                    std::vector<std::string> to_delete = removed_paths;
+                    to_delete.insert(to_delete.end(), demoted_paths.begin(), demoted_paths.end());
+                    db.delete_paths_logged(to_delete, op_id);
+                    removed_count = removed_paths.size();
                 } catch (...) {
                     // delete_paths_logged rolls back its own transaction, but the
                     // operation row was autocommitted by log_begin_operation. Mark
@@ -659,7 +676,11 @@ int cmd_scan(const ScanOptions& opts) {
                 db.log_prune(opts.log_max_entries);
             } else {
                 relinked_count = relink_moved_rows(db, removed_paths, 0);
-                db.delete_paths(removed_paths);
+                std::vector<std::string> demoted_paths = demote_jpeg_rows(db, scan_prefix, 0);
+                demoted_count = static_cast<int>(demoted_paths.size());
+                std::vector<std::string> to_delete = removed_paths;
+                to_delete.insert(to_delete.end(), demoted_paths.begin(), demoted_paths.end());
+                db.delete_paths(to_delete);
                 removed_count = removed_paths.size();
             }
         }
@@ -678,6 +699,10 @@ int cmd_scan(const ScanOptions& opts) {
     if (relinked_count > 0) {
         std::cout << "  Relinked:  " << relinked_count
                   << " (metadata moved to identical files at new paths)\n";
+    }
+    if (demoted_count > 0) {
+        std::cout << "  Demoted:   " << demoted_count
+                  << " (metadata moved from JPEG to sibling RAW)\n";
     }
     if (opts.faces) {
         std::cout << "  Faces:     " << face_count.load() << "\n";

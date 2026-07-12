@@ -111,27 +111,29 @@ bool is_jpeg_extension(const std::string& ext) {
 
 }  // anonymous namespace
 
-bool has_sibling_raw(const fs::path& media_path) {
-    if (!is_jpeg_extension(media_path.extension().string())) return false;
+fs::path sibling_raw_path(const fs::path& media_path) {
+    if (!is_jpeg_extension(media_path.extension().string())) return {};
 
     std::error_code ec;
     fs::path dir = media_path.parent_path();
-    if (!fs::exists(dir, ec) || ec) return false;
+    if (!fs::exists(dir, ec) || ec) return {};
 
     std::string target_stem = to_lower(media_path.stem().string());
 
     auto it = fs::directory_iterator(dir, ec);
-    if (ec) return false;
+    if (ec) return {};
     for (const auto& end = fs::directory_iterator(); it != end; it.increment(ec)) {
         if (ec) break;
         const auto& entry = *it;
         if (!entry.is_regular_file(ec)) continue;
         if (to_lower(entry.path().stem().string()) != target_stem) continue;
-        if (is_raw_extension(entry.path().extension().string())) return true;
+        if (is_raw_extension(entry.path().extension().string())) return entry.path();
     }
 
-    return false;
+    return {};
 }
+
+bool has_sibling_raw(const fs::path& media_path) { return !sibling_raw_path(media_path).empty(); }
 
 namespace {
 

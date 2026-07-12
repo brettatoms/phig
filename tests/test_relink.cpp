@@ -130,3 +130,49 @@ TEST_F(RelinkTest, LogsRelinkEntryUnderOperation) {
         1);
     EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM operations WHERE entry_count = 1"), 1);
 }
+
+TEST_F(RelinkTest, DemotesJpegToSameBasenameRaw) {
+    std::string jpeg_path = add_row("a.jpg", "jpegSha", /*on_disk=*/true);
+    std::string raw_path = add_row("a.cr2", "rawSha", /*on_disk=*/true);
+    db->set_tag({jpeg_path}, "favorite", true);
+
+    int64_t op_id = db->log_begin_operation("scan", "phig scan test", "2026-07-11T00:00:00Z");
+    auto demoted = demote_jpeg_rows(*db, dir.string(), op_id);
+    db->log_finish_operation(op_id, "completed");
+
+    ASSERT_EQ(demoted.size(), 1u);
+    EXPECT_EQ(demoted[0], jpeg_path);
+    auto tags = db->get_tags_for_image(raw_path);
+    ASSERT_EQ(tags.size(), 1u);
+    EXPECT_EQ(tags[0], "favorite");
+    EXPECT_EQ(
+        count_rows(db->db_ptr(), "SELECT COUNT(*) FROM operation_entries WHERE kind = 'relink'"),
+        1);
+}
+
+TEST_F(RelinkTest, LoneJpegNotDemoted) {
+    std::string jpeg_path = add_row("a.jpg", "jpegSha", /*on_disk=*/true);
+    db->set_tag({jpeg_path}, "favorite", true);
+
+    auto demoted = demote_jpeg_rows(*db, dir.string(), 0);
+
+    EXPECT_TRUE(demoted.empty());
+    auto tags = db->get_tags_for_image(jpeg_path);
+    ASSERT_EQ(tags.size(), 1u);
+    EXPECT_EQ(tags[0], "favorite");
+}
+
+TEST_F(RelinkTest, JpegWithRawRowMissingNotDemoted) {
+    std::string jpeg_path = add_row("a.jpg", "jpegSha", /*on_disk=*/true);
+    // RAW file on disk, but no DB row for it.
+    fs::path raw_file = dir / "a.cr2";
+    std::ofstream(raw_file) << "raw-bytes";
+    db->set_tag({jpeg_path}, "favorite", true);
+
+    auto demoted = demote_jpeg_rows(*db, dir.string(), 0);
+
+    EXPECT_TRUE(demoted.empty());
+    auto tags = db->get_tags_for_image(jpeg_path);
+    ASSERT_EQ(tags.size(), 1u);
+    EXPECT_EQ(tags[0], "favorite");
+}

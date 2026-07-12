@@ -25,6 +25,11 @@ bool is_known_media_extension(const std::string& ext);
 // non-JPEG path, a lone JPEG, or the RAW itself.
 bool has_sibling_raw(const std::filesystem::path& media_path);
 
+// Same-basename RAW file path beside `media_path`, or "" if `media_path` is
+// not a JPEG or no such RAW file exists on disk. has_sibling_raw is a thin
+// wrapper over this.
+std::filesystem::path sibling_raw_path(const std::filesystem::path& media_path);
+
 // Collects file paths from a directory, optionally recursive.
 // Only includes files with known media extensions (images + videos).
 // Hidden and temp entries (names starting with '.' or '~') are skipped
