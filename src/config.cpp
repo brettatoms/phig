@@ -134,6 +134,10 @@ Config load_config(const std::string& path) {
                 int n = parse_int(path, section, key, val);
                 if (n < 0) fail(path, section, key, "must be >= 0, got " + val);
                 cfg.log_max_entries = n;
+            } else if (sec == "log" && k == "file") {
+                cfg.log_file = parse_bool(path, section, key, val);
+            } else if (sec == "log" && k == "file_level") {
+                cfg.log_file_level = parse_enum(path, section, key, val, {"info", "warn", "error"});
             } else {
                 std::cerr << "Warning: config " << path << ": unknown key [" << section << "] "
                           << key << " (ignored)\n";

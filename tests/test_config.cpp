@@ -160,3 +160,24 @@ TEST_F(ConfigTest, RejectsNegativeMaxEntries) {
     std::string p = write_ini("[log]\nmax_entries = -1\n");
     EXPECT_THROW(load_config(p), std::runtime_error);
 }
+
+TEST_F(ConfigTest, ParsesLogFileKeys) {
+    std::string p = write_ini("[log]\nfile = false\nfile_level = warn\n");
+    Config cfg = load_config(p);
+    ASSERT_TRUE(cfg.log_file.has_value());
+    EXPECT_FALSE(*cfg.log_file);
+    ASSERT_TRUE(cfg.log_file_level.has_value());
+    EXPECT_EQ(*cfg.log_file_level, "warn");
+}
+
+TEST_F(ConfigTest, LogFileKeysDefaultUnset) {
+    std::string p = write_ini("[log]\nenabled = true\n");
+    Config cfg = load_config(p);
+    EXPECT_FALSE(cfg.log_file.has_value());
+    EXPECT_FALSE(cfg.log_file_level.has_value());
+}
+
+TEST_F(ConfigTest, RejectsInvalidFileLevel) {
+    std::string p = write_ini("[log]\nfile_level = debug\n");
+    EXPECT_THROW(load_config(p), std::runtime_error);
+}

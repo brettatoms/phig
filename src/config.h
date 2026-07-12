@@ -22,7 +22,10 @@ struct Config {
     std::optional<double> faces_threshold;
     std::optional<bool> log_enabled;  // [log] enabled — default true (unset)
     std::optional<int>
-        log_max_entries;  // [log] max_entries — default 100000 (unset); 0 = unlimited
+        log_max_entries;           // [log] max_entries — default 100000 (unset); 0 = unlimited
+    std::optional<bool> log_file;  // [log] file — default true (unset)
+    std::optional<std::string>
+        log_file_level;  // [log] file_level — "info" | "warn" | "error", default info (unset)
 };
 
 // Load configuration from an INI file at `path`.
