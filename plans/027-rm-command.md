@@ -69,8 +69,11 @@ and hard modes. Every action is recorded in the activity log so a future
 phig rm [--match <glob>] [--exclude <glob>]
         [--hard | --db-only | --orphans | --ignored] [--dry-run] [--yes] [--db <path>]
 
-phig trash empty [--yes] [--db <path>]
+phig trash empty [--yes]
 ```
+
+`trash empty` takes no `--db`: the trash lives under `data_dir()/trash` (an XDG
+data path), independent of which database a run targets.
 
 - **Mode** (mutually exclusive; default trash): none = trash file + drop row;
   `--hard` = permanently delete file + drop row; `--db-only` = drop row, leave
