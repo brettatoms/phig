@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <set>
@@ -92,3 +93,9 @@ std::string resolve_conflict(const std::string& dest, const std::string& on_conf
 void set_path_overrides(const std::optional<std::string>& db,
                         const std::optional<std::string>& models,
                         const std::optional<std::string>& thumbs);
+
+// Internal: temporary sibling path for atomic writes (exposed for testing).
+// A temp path in the same directory as dest (so the final rename stays on one
+// filesystem and is atomic). Includes the pid and a per-process counter so
+// concurrent writers and repeated calls don't collide.
+std::filesystem::path temp_sibling(const std::filesystem::path& dest);

@@ -2,6 +2,7 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -9,6 +10,8 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "paths.h"
 
@@ -652,4 +655,32 @@ TEST(TrashPathTest, TrashPathForInsertsRandomHexAndIsUnique) {
 
     unsetenv("XDG_DATA_HOME");
     fs::remove_all(tmp);
+}
+
+// ---- temp_sibling concurrency (data race test) ----
+
+TEST(TempSiblingConcurrency, NoCollisionUnderThreads) {
+    namespace fs = std::filesystem;
+    const fs::path dest = fs::temp_directory_path() / "phig-tmpsib" / "IMG_1.jpg";
+    const int threads = 8;
+    const int per_thread = 2000;
+
+    std::vector<std::vector<std::string>> results(threads);
+    std::vector<std::thread> pool;
+    for (int t = 0; t < threads; ++t) {
+        pool.emplace_back([&, t] {
+            results[t].reserve(per_thread);
+            for (int i = 0; i < per_thread; ++i)
+                results[t].push_back(temp_sibling(dest).string());
+        });
+    }
+    for (auto& th : pool) th.join();
+
+    std::set<std::string> uniq;
+    size_t total = 0;
+    for (auto& r : results)
+        for (auto& s : r) { uniq.insert(s); ++total; }
+
+    // Every generated temp path must be distinct.
+    EXPECT_EQ(uniq.size(), total);
 }

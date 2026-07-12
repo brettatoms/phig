@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -99,18 +100,18 @@ std::string expand_tilde(const std::string& path) {
     return path;
 }
 
-namespace {
 // A temp path in the same directory as dest (so the final rename stays on one
 // filesystem and is atomic). Includes the pid and a per-process counter so
 // concurrent writers and repeated calls don't collide.
 std::filesystem::path temp_sibling(const std::filesystem::path& dest) {
-    static unsigned long counter = 0;
+    static std::atomic<unsigned long> counter{0};
     std::string name = "." + dest.filename().string() + ".phig-tmp." +
                        std::to_string(static_cast<long>(getpid())) + "." +
-                       std::to_string(counter++);
+                       std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
     return dest.parent_path() / name;
 }
 
+namespace {
 // Flush a file's bytes to stable storage. Returns false on failure.
 bool fsync_file(const std::filesystem::path& p) {
     int fd = ::open(p.c_str(), O_RDONLY);
