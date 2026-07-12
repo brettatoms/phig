@@ -458,7 +458,7 @@ void Database::insert(const ImageInfo& info) {
 }
 
 void Database::insert_batch(const std::vector<ImageInfo>& infos) {
-    exec("BEGIN TRANSACTION");
+    exec("BEGIN IMMEDIATE TRANSACTION");
     try {
         for (const auto& info : infos) {
             insert(info);
@@ -568,7 +568,7 @@ void Database::log_finish_operation(int64_t op_id, const std::string& status) {
 void Database::log_prune(int max_entries) {
     if (max_entries <= 0) return;  // unlimited
 
-    exec("BEGIN TRANSACTION");
+    exec("BEGIN IMMEDIATE TRANSACTION");
     auto fail = [&](const std::string& what) {
         exec("ROLLBACK");
         throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
@@ -619,7 +619,7 @@ void Database::log_prune(int max_entries) {
     exec("COMMIT");
 }
 
-void Database::begin_transaction() { exec("BEGIN TRANSACTION"); }
+void Database::begin_transaction() { exec("BEGIN IMMEDIATE TRANSACTION"); }
 
 void Database::commit_transaction() { exec("COMMIT"); }
 
@@ -720,7 +720,7 @@ void Database::update_path_in_txn(const std::string& old_path, const std::string
 
 void Database::update_path(const std::string& old_path, const std::string& new_path) {
     if (old_path == new_path) return;
-    exec("BEGIN TRANSACTION");
+    exec("BEGIN IMMEDIATE TRANSACTION");
     try {
         update_path_in_txn(old_path, new_path);
         exec("COMMIT");
@@ -779,7 +779,7 @@ std::vector<std::string> Database::get_paths_with_prefix(const std::string& pref
 void Database::delete_paths(const std::vector<std::string>& paths) {
     if (paths.empty()) return;
 
-    exec("BEGIN TRANSACTION");
+    exec("BEGIN IMMEDIATE TRANSACTION");
     const char* sql = "DELETE FROM images WHERE path = ?";
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -811,7 +811,7 @@ void Database::delete_paths(const std::vector<std::string>& paths) {
 
 int Database::delete_paths_logged(const std::vector<std::string>& paths, int64_t op_id) {
     if (paths.empty()) return 0;
-    exec("BEGIN TRANSACTION");
+    exec("BEGIN IMMEDIATE TRANSACTION");
     auto fail = [&](const std::string& what) {
         exec("ROLLBACK");
         throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
@@ -1244,7 +1244,7 @@ int Database::set_tag(const std::vector<std::string>& paths, const std::string& 
                           : "DELETE FROM image_tags WHERE image_id = ? AND tag_id = ?";
 
     int affected = 0;
-    exec("BEGIN TRANSACTION");
+    exec("BEGIN IMMEDIATE TRANSACTION");
     for (const auto& path : paths) {
         int64_t image_id = get_image_id(path);
         if (image_id < 0) {
@@ -1304,7 +1304,7 @@ int Database::set_gallery(const std::vector<std::string>& paths, const std::stri
                           ? "UPDATE images SET gallery = ? WHERE path = ? AND gallery IS NULL"
                           : "UPDATE images SET gallery = ? WHERE path = ?";
     int affected = 0;
-    exec("BEGIN TRANSACTION");
+    exec("BEGIN IMMEDIATE TRANSACTION");
     for (const auto& path : paths) {
         sqlite3_stmt* stmt = nullptr;
         sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -1323,7 +1323,7 @@ int Database::clear_gallery(const std::vector<std::string>& paths) {
         return 0;
     }
     int affected = 0;
-    exec("BEGIN TRANSACTION");
+    exec("BEGIN IMMEDIATE TRANSACTION");
     for (const auto& path : paths) {
         sqlite3_stmt* stmt = nullptr;
         sqlite3_prepare_v2(

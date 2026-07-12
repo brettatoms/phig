@@ -951,3 +951,84 @@ TEST_F(DatabaseTest, TransferUserMetadataTargetGalleryAndFacesWin) {
     std::string q = "SELECT COUNT(*) FROM faces WHERE image_id = " + std::to_string(to_id);
     EXPECT_EQ(count_rows(db->db_ptr(), q.c_str()), 1);
 }
+
+// Small helper: run raw SQL on a connection, throwing on any error so the tests
+// below can assert throw/no-throw. Database::exec() is private, so tests drive
+// raw SQL through the public db_ptr().
+static void raw_exec(sqlite3* db, const char* sql) {
+    char* err = nullptr;
+    int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    if (rc != SQLITE_OK) {
+        std::string msg = err ? err : "sqlite error";
+        sqlite3_free(err);
+        throw std::runtime_error(msg);
+    }
+}
+
+// Reproduces the deferred-BEGIN hazard directly with raw SQL on two WAL
+// connections: A pins a read snapshot with a deferred BEGIN, B commits a write
+// that advances the DB past A's snapshot, then A's write fails with
+// SQLITE_BUSY_SNAPSHOT (which the busy handler does NOT retry). This documents
+// the bug that BEGIN IMMEDIATE fixes.
+TEST(DatabaseConcurrency, DeferredBeginCanBusySnapshotOnReadThenWrite) {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "phig-db-busysnap";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    std::string dbp = (dir / "c.db").string();
+    {
+        Database init(dbp);
+        init.init_schema();
+    }
+
+    Database a(dbp);
+    Database b(dbp);
+    // Shorten A's busy timeout so this test can't hang if the snapshot upgrade
+    // were ever to wait instead of failing fast.
+    sqlite3_busy_timeout(a.db_ptr(), 200);
+
+    // A: deferred BEGIN, then a read -> pins a read snapshot.
+    raw_exec(a.db_ptr(), "BEGIN");  // deferred (NOT immediate)
+    raw_exec(a.db_ptr(), "SELECT count(*) FROM images");
+
+    // B: independent write that advances the DB past A's snapshot.
+    raw_exec(b.db_ptr(), "INSERT INTO meta(key,value) VALUES('probe','1')");  // autocommit write
+
+    // A now tries to write on its stale snapshot -> BUSY_SNAPSHOT, thrown by
+    // exec() (SQLITE_BUSY_SNAPSHOT is not retried by the busy handler).
+    EXPECT_THROW(raw_exec(a.db_ptr(), "INSERT INTO meta(key,value) VALUES('a','1')"),
+                 std::exception);
+    raw_exec(a.db_ptr(), "ROLLBACK");
+    fs::remove_all(dir);
+}
+
+// Proves begin_transaction() now takes the write lock at BEGIN (IMMEDIATE):
+// while A holds an open begin_transaction(), a second connection's immediate
+// write attempt is refused (SQLITE_BUSY) rather than slipping in to create the
+// stale-snapshot condition. This is the observable effect of the fix.
+TEST(DatabaseConcurrency, BeginTransactionTakesWriteLockImmediately) {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "phig-db-immediate";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    std::string dbp = (dir / "c.db").string();
+    {
+        Database init(dbp);
+        init.init_schema();
+    }
+
+    Database a(dbp);
+    Database b(dbp);
+    sqlite3_busy_timeout(b.db_ptr(), 200);  // don't let B wait the full 30s
+
+    a.begin_transaction();  // now BEGIN IMMEDIATE -> A holds the write lock
+
+    // B cannot acquire the write lock while A holds it: an IMMEDIATE begin on B
+    // fails with SQLITE_BUSY after the short timeout.
+    EXPECT_THROW(raw_exec(b.db_ptr(), "BEGIN IMMEDIATE"), std::exception);
+
+    a.commit_transaction();  // release; now B can take it
+    EXPECT_NO_THROW(raw_exec(b.db_ptr(), "BEGIN IMMEDIATE"));
+    raw_exec(b.db_ptr(), "ROLLBACK");
+    fs::remove_all(dir);
+}
