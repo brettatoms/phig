@@ -59,6 +59,7 @@ add_library(phig-lib STATIC
     src/organize_exec.cpp
     src/relink.cpp
     src/log.cpp
+    src/sidecar.cpp
 )
 
 target_include_directories(phig-lib PUBLIC
@@ -123,6 +124,7 @@ add_executable(phig-tests
     tests/test_organize_exec.cpp
     tests/test_relink.cpp
     tests/test_log.cpp
+    tests/test_sidecar.cpp
 )
 
 target_link_libraries(phig-tests PRIVATE
