@@ -1,6 +1,6 @@
 ---
 name: Sidecar Files (carry on move/copy + date fallback)
-status: planned
+status: completed
 created: 2026-07-11
 description: >
   Make phig sidecar-aware. A new pure `sidecar` module pairs a media file with
@@ -262,3 +262,41 @@ Date fix:
 3. Whether `find_sidecars` should be called once per parent and threaded through
    both the carry step and (if the same file is organized) the date step, to
    avoid a second directory stat.
+
+---
+
+## Outcome (2026-07-11)
+
+Implemented via subagent-driven development (5 tasks + 2 review fixes), each with
+real-behavior tests + spec/quality review; final whole-branch review returned
+READY TO MERGE. Full suite: 329 tests passing. Depends on the activity log
+(020) for the `move_sidecar`/`copy_sidecar` entries.
+
+Commits (on `master`):
+
+| Task | Commit(s) |
+|------|-----------|
+| 1 — `find_sidecars` + `is_known_sidecar_extension` (both naming styles, allowlist) | `22f68a4`; `a737e58` (keep stem-style sidecar when the media file has no same-stem sibling — whole-branch review gap) |
+| 2 — `sidecar_date` (XMP + Google Takeout JSON) | `caa342e`; `ce57bb9` (read `photoTakenTime` specifically, not the first JSON `timestamp` — a real misfiling bug caught in review) |
+| 3 — sidecar date in `get_best_date` AND `get_best_date_str` (organize + display) | `b99184d` |
+| 4 — `carry_sidecars` on mv/cp, logged + parent-linked | `9dc76af` |
+| 5 — extract date cluster to `src/dates.{h,cpp}` for unit-testable ordering + docs | `338c0c2` |
+
+Notes:
+- **The find_sidecars matcher** disambiguates RAW+JPEG pairs (each `.xmp` to the
+  right parent) but cedes a plain stem-style sidecar to a sibling ONLY when a
+  same-stem sibling media file actually exists on disk; a lone media file keeps
+  its stem-style sidecar even if it also has an append-style one.
+- **`sidecar_date` JSON scoping** reads `photoTakenTime.timestamp` specifically,
+  never a sibling `creationTime.timestamp` (upload time) — the review caught that
+  the first-`timestamp` search would misfile by upload date.
+- **Task 5 was reworked** from the plan's original binary-invoking porcelain test
+  (no such harness exists in phig) to extracting the date functions into a
+  phig-lib unit (`src/dates.{h,cpp}`), which made the EXIF→sidecar→mtime ordering
+  directly unit-testable. `json_get` (a general JSON helper used for
+  Model/Make/camera too) moved with the cluster.
+- **Non-blocking deviations** (from the whole-branch review, accepted): `move_file`
+  is no-replace so "overwrite → sidecar overwrites" isn't literal for moves (the
+  parent's rename-around keeps the sidecar dest collision-free); sidecars aren't
+  listed in the dry-run *preview* (dry-run correctly moves nothing).
+- RAW↔JPEG same-shot pairing is plan [026](026-raw-support.md), not here.
