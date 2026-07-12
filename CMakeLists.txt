@@ -50,7 +50,7 @@ add_library(phig-lib STATIC
     src/hasher.cpp
     src/exif.cpp
     src/database.cpp
-    src/filters.cpp
+    src/selection.cpp
     src/faces.cpp
     src/models.cpp
     src/thumbs.cpp

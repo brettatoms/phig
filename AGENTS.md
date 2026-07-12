@@ -26,7 +26,7 @@ Binary: `./build/phig`
 cmake --build build && ./build/phig-tests
 ```
 
-Coverage: scanner, hasher (SHA256 + phash), exif, database, glob, filters (match/filter precedence), date parsing, JSON helpers, format strings, face DB operations, embedding distance, thumbnails, video extensions, video phash, video metadata, migrations, video search.
+Coverage: scanner, hasher (SHA256 + phash), exif, database, glob, selection (match/exclude precedence), date parsing, JSON helpers, format strings, face DB operations, embedding distance, thumbnails, video extensions, video phash, video metadata, migrations, video search.
 
 ## Linting & CI
 
@@ -51,20 +51,20 @@ Coverage: scanner, hasher (SHA256 + phash), exif, database, glob, filters (match
 phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--db <path>]
 
 # Generate thumbnails
-phig thumbs rebuild [--match <glob>] [--filter <glob>] [--force] [--parallel N] [--db <path>]
+phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--parallel N] [--db <path>]
 phig thumbs clean [--db <path>]
 
 # Find duplicate images
-phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--filter <glob>] [--path <dir>] [--db <path>]
+phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
 
 # Copy files into YYYY/MM structure
-phig cp <destination> [--format <string>] [--match <glob>] [--filter <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
 
 # Move files into YYYY/MM structure
-phig mv <destination> [--format <string>] [--match <glob>] [--filter <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
 
 # Remove entries from the database
-phig purge [--match <glob>] [--filter <glob>] [--path <dir>] [--dry-run] [--db <path>]
+phig purge [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--db <path>]
 ```
 
 Paths follow XDG conventions (all resolved in `src/paths.cpp`): database at
@@ -83,7 +83,7 @@ src/
 ├── hasher.h/cpp      SHA256 computation, OpenCV phash
 ├── exif.h/cpp        EXIF extraction to JSON via libexif
 ├── database.h/cpp    SQLite schema, CRUD, queries
-├── filters.h/cpp     Glob matching, match/filter logic
+├── selection.h/cpp   Glob matching, match/exclude logic
 ├── thumbs.h/cpp      Thumbnail generation (512px JPEG, SHA256-keyed cache)
 ├── metadata.h/cpp    Video metadata extraction via libavformat
 └── types.h           ImageInfo struct
@@ -108,8 +108,8 @@ tests/
 - **Schema migrations** — `meta` table tracks schema version. Forward-only migrations. Version check on startup bails if DB is newer than code.
 - **`exif` column renamed to `metadata`** — stores JSON blob for any media type (EXIF for images, container metadata for videos).
 - **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.
-- **Match/filter system** — `--match` includes (repeatable), `--filter` excludes (repeatable), filter wins on overlap.
-- **Duplicates compare against full DB** — `--match` filters which groups to show, not which files to compare.
+- **Match/exclude system** — `--match` includes (repeatable), `--exclude` excludes (repeatable), exclude wins on overlap.
+- **Duplicates compare against full DB** — `--match` selects which groups to show, not which files to compare.
 - **Activity log** — `mv`/`cp`/`purge` record an operation plus per-file entries in
   `phig.db` (append-only; undo is a future logged operation). Each entry commits in
   the same transaction as the DB change it describes. Disable with `[log] enabled =

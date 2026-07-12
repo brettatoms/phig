@@ -28,7 +28,7 @@
 #include "dates.h"
 #include "exif.h"
 #include "faces.h"
-#include "filters.h"
+#include "selection.h"
 #include "hasher.h"
 #include "log.h"
 #include "metadata.h"
@@ -95,15 +95,15 @@ void print_usage() {
         << "  phig search [flags]\n"
         << "  phig face name <image> <name>     Name a face from a single-face photo\n"
         << "  phig face identify <name>          Label all matching faces in DB\n"
-        << "  phig face rebuild [--match] [--filter] [--parallel N]  Re-detect all faces\n"
+        << "  phig face rebuild [--match] [--exclude] [--parallel N]  Re-detect all faces\n"
         << "  phig face list                     List known people\n"
         << "  phig thumbs rebuild [flags]  Generate missing thumbnails\n"
         << "  phig thumbs clean            Remove orphaned thumbnails\n"
-        << "  phig tag add|remove <tag> [--match|--filter|--path]   Tag images\n"
+        << "  phig tag add|remove <tag> [--match|--exclude|--path]   Tag images\n"
         << "  phig tag list                                         List tags and counts\n"
-        << "  phig gallery set <name>|clear [--match|--filter|--path]  Assign/clear gallery\n"
+        << "  phig gallery set <name>|clear [--match|--exclude|--path]  Assign/clear gallery\n"
         << "  phig gallery list                                     List galleries and counts\n"
-        << "  phig fav add|remove [--match|--filter|--path]         Favorite images\n"
+        << "  phig fav add|remove [--match|--exclude|--path]         Favorite images\n"
         << "  phig fav list [output flags]                          List favorites\n"
         << "  phig models download\n"
         << "\nScan flags:\n"
@@ -124,7 +124,7 @@ void print_usage() {
         << "  --output <path>          Write to file instead of stdout\n"
         << "  --match <glob>           Show groups containing matching files (repeatable, matches "
            "path)\n"
-        << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
+        << "  --exclude <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --media image|video|all  Filter by media type (default: all)\n"
         << "  --fav                    Only groups containing a favorite\n"
         << "  --db <path>              Database path\n"
@@ -132,13 +132,13 @@ void print_usage() {
         << "  --format <string>        Output path format (default: %Y/%m/%original)\n"
         << "                           Tokens: %Y %m %d %camera %make %gallery %fav %original\n"
         << "  --match <glob>           Only files matching glob (repeatable, matches path)\n"
-        << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
+        << "  --exclude <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --dry-run                Show what would happen without doing it\n"
         << "  --on-conflict skip|overwrite|rename  (default: skip)\n"
         << "  --db <path>              Database path\n"
         << "\nPurge flags:\n"
         << "  --match <glob>           Remove entries matching glob (repeatable, matches path)\n"
-        << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
+        << "  --exclude <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --dry-run                Show what would be removed\n"
         << "  --db <path>              Database path\n"
         << "\nSearch flags:\n"
@@ -164,8 +164,8 @@ void print_usage() {
         << "  --blurry                 Low-sharpness images (blur_score <= 100)\n"
         << "  --min-sharpness <n>      Only images with blur_score >= n\n"
         << "  --max-sharpness <n>      Only images with blur_score <= n\n"
-        << "  --match <glob>           Include filter (repeatable, matches path)\n"
-        << "  --filter <glob>          Exclude matching files (repeatable, wins over --match)\n"
+        << "  --match <glob>           Include matching files (repeatable, matches path)\n"
+        << "  --exclude <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --limit N                Maximum number of results\n"
         << "  --count                  Show count of matches only\n"
         << "  --porcelain              Tab-separated machine output\n"
@@ -175,7 +175,7 @@ void print_usage() {
         << "  --db <path>              Database path\n"
         << "\nThumbs rebuild flags:\n"
         << "  --match <glob>           Only matching files (repeatable)\n"
-        << "  --filter <glob>          Exclude matching files (repeatable)\n"
+        << "  --exclude <glob>          Exclude matching files (repeatable)\n"
         << "  --force                  Regenerate even if thumbnail exists\n"
         << "  --parallel N             Number of images to process in parallel (default: auto)\n"
         << "  --db <path>              Database path\n";
@@ -727,7 +727,7 @@ struct DuplicatesOptions {
     std::string format = "text";  // text, csv, json
     std::string output;           // empty = stdout
     std::vector<std::string> matches;
-    std::vector<std::string> filters;
+    std::vector<std::string> excludes;
     std::string media;  // "image", "video", or "" (all)
     bool fav = false;   // only groups containing at least one favorite
     std::string db_path;
@@ -884,17 +884,17 @@ void output_json(std::ostream& out, const std::vector<DuplicateGroup>& exact,
     out << "]}\n";
 }
 
-// Filter duplicate groups: keep only groups where at least one file passes filters
-std::vector<DuplicateGroup> filter_groups(const std::vector<DuplicateGroup>& groups,
+// Select duplicate groups: keep only groups where at least one file passes selection
+std::vector<DuplicateGroup> select_groups(const std::vector<DuplicateGroup>& groups,
                                           const std::vector<std::string>& matches,
-                                          const std::vector<std::string>& filters) {
-    if (matches.empty() && filters.empty()) return groups;
+                                          const std::vector<std::string>& excludes) {
+    if (matches.empty() && excludes.empty()) return groups;
 
     std::vector<DuplicateGroup> result;
     for (const auto& g : groups) {
         bool has_match = false;
         for (const auto& img : g.images) {
-            if (passes_filters(img.path, matches, filters)) {
+            if (passes_selection(img.path, matches, excludes)) {
                 has_match = true;
                 break;
             }
@@ -930,7 +930,7 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
             dg.images = std::move(g);
             exact_groups.push_back(std::move(dg));
         }
-        exact_groups = filter_groups(exact_groups, opts.matches, opts.filters);
+        exact_groups = select_groups(exact_groups, opts.matches, opts.excludes);
         if (!opts.media.empty()) {
             exact_groups.erase(std::remove_if(exact_groups.begin(), exact_groups.end(),
                                               [&](const DuplicateGroup& g) {
@@ -949,7 +949,7 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
         auto all_images = db.get_all_images();
         std::cerr << "Comparing " << all_images.size() << " images for near duplicates...\n";
         near_groups = find_near_duplicates(all_images, opts.threshold, exact_sha256s);
-        near_groups = filter_groups(near_groups, opts.matches, opts.filters);
+        near_groups = select_groups(near_groups, opts.matches, opts.excludes);
         if (!opts.media.empty()) {
             near_groups.erase(std::remove_if(near_groups.begin(), near_groups.end(),
                                              [&](const DuplicateGroup& g) {
@@ -1014,7 +1014,7 @@ struct OrganizeOptions {
     std::string destination;
     std::string format = "%Y/%m/%original";
     std::vector<std::string> matches;
-    std::vector<std::string> filters;
+    std::vector<std::string> excludes;
     bool is_move = false;  // true for mv, false for cp
     bool dry_run = false;
     std::string on_conflict = "skip";  // skip, overwrite, rename
@@ -1082,12 +1082,12 @@ int cmd_organize(const OrganizeOptions& opts) {
     std::cout << "Found " << images.size() << " images in database\n";
 
     // Apply match/filter
-    bool has_filters = !opts.matches.empty() || !opts.filters.empty();
-    if (has_filters) {
+    bool has_selection = !opts.matches.empty() || !opts.excludes.empty();
+    if (has_selection) {
         images.erase(std::remove_if(images.begin(), images.end(),
                                     [&](const ImageInfo& img) {
-                                        return !passes_filters(img.path, opts.matches,
-                                                               opts.filters);
+                                        return !passes_selection(img.path, opts.matches,
+                                                               opts.excludes);
                                     }),
                      images.end());
         std::cout << "After match/filter: " << images.size() << " images\n";
@@ -1224,7 +1224,7 @@ int cmd_organize(const OrganizeOptions& opts) {
 
 struct PurgeOptions {
     std::vector<std::string> matches;
-    std::vector<std::string> filters;
+    std::vector<std::string> excludes;
     bool dry_run = false;
     bool assume_yes = false;  // skip the confirmation prompt for large purges
     std::string db_path;
@@ -1247,7 +1247,7 @@ int cmd_purge(const PurgeOptions& opts) {
     // Apply match/filter
     std::vector<std::string> matched;
     for (const auto& img : all_images) {
-        if (passes_filters(img.path, opts.matches, opts.filters)) {
+        if (passes_selection(img.path, opts.matches, opts.excludes)) {
             matched.push_back(img.path);
         }
     }
@@ -1342,7 +1342,7 @@ struct SearchOptions {
     double min_sharpness = -1;      // blur_score >= this
     double max_sharpness = -1;      // blur_score <= this
     std::vector<std::string> matches;
-    std::vector<std::string> filters;
+    std::vector<std::string> excludes;
     int limit = -1;
     bool count_only = false;
     bool porcelain = false;
@@ -1646,18 +1646,18 @@ int cmd_search(const SearchOptions& opts) {
         criteria.min_sharpness = opts.min_sharpness;
         criteria.max_sharpness = opts.max_sharpness;
         // Don't apply limit in DB if we also need match/filter (apply after)
-        if (opts.matches.empty() && opts.filters.empty()) {
+        if (opts.matches.empty() && opts.excludes.empty()) {
             criteria.limit = opts.limit;
         }
         results = db.search(criteria);
     }
 
     // Apply match/filter
-    if (!opts.matches.empty() || !opts.filters.empty()) {
+    if (!opts.matches.empty() || !opts.excludes.empty()) {
         results.erase(std::remove_if(results.begin(), results.end(),
                                      [&](const ImageInfo& img) {
-                                         return !passes_filters(img.path, opts.matches,
-                                                                opts.filters);
+                                         return !passes_selection(img.path, opts.matches,
+                                                                opts.excludes);
                                      }),
                       results.end());
     }
@@ -1754,7 +1754,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
     std::string subcmd = argv[2];
 
     if (subcmd == "rebuild") {
-        std::vector<std::string> matches, filters;
+        std::vector<std::string> matches, excludes;
         bool force = false;
         int parallel = default_parallel;
 
@@ -1762,8 +1762,8 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
                 matches.push_back(expand_tilde(argv[++i]));
-            } else if (arg == "--filter" && i + 1 < argc) {
-                filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--force") {
                 force = true;
             } else if (arg == "--parallel" && i + 1 < argc) {
@@ -1788,10 +1788,10 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
 
         auto images = db.get_all_images();
 
-        if (!matches.empty() || !filters.empty()) {
+        if (!matches.empty() || !excludes.empty()) {
             images.erase(std::remove_if(images.begin(), images.end(),
                                         [&](const ImageInfo& img) {
-                                            return !passes_filters(img.path, matches, filters);
+                                            return !passes_selection(img.path, matches, excludes);
                                         }),
                          images.end());
         }
@@ -2117,14 +2117,14 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
 
     } else if (subcmd == "rebuild") {
         // Parse match/filter flags
-        std::vector<std::string> matches, filters;
+        std::vector<std::string> matches, excludes;
         int parallel = default_parallel;
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
                 matches.push_back(expand_tilde(argv[++i]));
-            } else if (arg == "--filter" && i + 1 < argc) {
-                filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--parallel" && i + 1 < argc) {
                 parallel = std::stoi(argv[++i]);
             } else if (arg == "--db") {
@@ -2137,7 +2137,7 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         // Apply match/filter
         std::vector<ImageInfo> images;
         for (const auto& img : all_images) {
-            if (passes_filters(img.path, matches, filters)) {
+            if (passes_selection(img.path, matches, excludes)) {
                 images.push_back(img);
             }
         }
@@ -2254,10 +2254,10 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
 // globs into a list of paths, reusing the shared filter logic.
 static std::vector<std::string> select_paths(Database& db, const std::string& path_prefix,
                                              const std::vector<std::string>& matches,
-                                             const std::vector<std::string>& filters) {
+                                             const std::vector<std::string>& excludes) {
     std::vector<std::string> paths;
     for (const auto& img : db.get_all_images(path_prefix)) {
-        if (passes_filters(img.path, matches, filters)) {
+        if (passes_selection(img.path, matches, excludes)) {
             paths.push_back(img.path);
         }
     }
@@ -2267,8 +2267,8 @@ static std::vector<std::string> select_paths(Database& db, const std::string& pa
 int cmd_tag(int argc, char* argv[], const std::string& db_path) {
     if (argc < 3) {
         std::cerr << "Usage:\n"
-                  << "  phig tag add <tag> [--match|--filter|--path]\n"
-                  << "  phig tag remove <tag> [--match|--filter|--path]\n"
+                  << "  phig tag add <tag> [--match|--exclude|--path]\n"
+                  << "  phig tag remove <tag> [--match|--exclude|--path]\n"
                   << "  phig tag list\n";
         return 1;
     }
@@ -2290,13 +2290,13 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path) {
         }
         std::string tag = argv[3];
         std::string path_prefix;
-        std::vector<std::string> matches, filters;
+        std::vector<std::string> matches, excludes;
         for (int i = 4; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
                 matches.push_back(expand_tilde(argv[++i]));
-            } else if (arg == "--filter" && i + 1 < argc) {
-                filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--path" && i + 1 < argc) {
                 path_prefix = expand_tilde(argv[++i]);
             } else if (arg == "--db" && i + 1 < argc) {
@@ -2312,7 +2312,7 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path) {
         }
         Database db(db_path);
         db.init_schema();
-        int n = db.set_tag(select_paths(db, path_prefix, matches, filters), tag, subcmd == "add");
+        int n = db.set_tag(select_paths(db, path_prefix, matches, excludes), tag, subcmd == "add");
         std::cout << (subcmd == "add" ? "Tagged " : "Untagged ") << n << " images (" << tag
                   << ")\n";
         return 0;
@@ -2325,8 +2325,8 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path) {
 int cmd_gallery(int argc, char* argv[], const std::string& db_path) {
     if (argc < 3) {
         std::cerr << "Usage:\n"
-                  << "  phig gallery set <name> [--match|--filter|--path] [--no-overwrite]\n"
-                  << "  phig gallery clear [--match|--filter|--path]\n"
+                  << "  phig gallery set <name> [--match|--exclude|--path] [--no-overwrite]\n"
+                  << "  phig gallery clear [--match|--exclude|--path]\n"
                   << "  phig gallery list\n";
         return 1;
     }
@@ -2354,14 +2354,14 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path) {
             first_flag = 4;
         }
         std::string path_prefix;
-        std::vector<std::string> matches, filters;
+        std::vector<std::string> matches, excludes;
         bool no_overwrite = false;
         for (int i = first_flag; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
                 matches.push_back(expand_tilde(argv[++i]));
-            } else if (arg == "--filter" && i + 1 < argc) {
-                filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--path" && i + 1 < argc) {
                 path_prefix = expand_tilde(argv[++i]);
             } else if (arg == "--no-overwrite" && is_set) {
@@ -2379,7 +2379,7 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path) {
         }
         Database db(db_path);
         db.init_schema();
-        auto paths = select_paths(db, path_prefix, matches, filters);
+        auto paths = select_paths(db, path_prefix, matches, excludes);
         if (is_set) {
             int n = db.set_gallery(paths, gallery, no_overwrite);
             std::cout << "Set gallery '" << gallery << "' on " << n << " images\n";
@@ -2399,22 +2399,22 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path) {
     if (argc < 3) {
         std::cerr
             << "Usage:\n"
-            << "  phig fav add [--match|--filter|--path]\n"
-            << "  phig fav remove [--match|--filter|--path]\n"
-            << "  phig fav list [--match|--filter] [--format|--porcelain|--print0|--output]\n";
+            << "  phig fav add [--match|--exclude|--path]\n"
+            << "  phig fav remove [--match|--exclude|--path]\n"
+            << "  phig fav list [--match|--exclude] [--format|--porcelain|--print0|--output]\n";
         return 1;
     }
     std::string subcmd = argv[2];
 
     if (subcmd == "add" || subcmd == "remove") {
         std::string path_prefix;
-        std::vector<std::string> matches, filters;
+        std::vector<std::string> matches, excludes;
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
                 matches.push_back(expand_tilde(argv[++i]));
-            } else if (arg == "--filter" && i + 1 < argc) {
-                filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--path" && i + 1 < argc) {
                 path_prefix = expand_tilde(argv[++i]);
             } else if (arg == "--db" && i + 1 < argc) {
@@ -2430,7 +2430,7 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path) {
         }
         Database db(db_path);
         db.init_schema();
-        int n = db.set_tag(select_paths(db, path_prefix, matches, filters), "favorite",
+        int n = db.set_tag(select_paths(db, path_prefix, matches, excludes), "favorite",
                            subcmd == "add");
         std::cout << (subcmd == "add" ? "Favorited " : "Unfavorited ") << n << " images\n";
         return 0;
@@ -2445,8 +2445,8 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
                 opts.matches.push_back(expand_tilde(argv[++i]));
-            } else if (arg == "--filter" && i + 1 < argc) {
-                opts.filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                opts.excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--limit" && i + 1 < argc) {
                 opts.limit = std::stoi(argv[++i]);
             } else if (arg == "--count") {
@@ -2681,8 +2681,8 @@ int main(int argc, char* argv[]) {
                 opts.output = argv[++i];
             } else if (arg == "--match" && i + 1 < argc) {
                 opts.matches.push_back(expand_tilde(argv[++i]));
-            } else if (arg == "--filter" && i + 1 < argc) {
-                opts.filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                opts.excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--media" && i + 1 < argc) {
                 opts.media = argv[++i];
                 if (opts.media != "image" && opts.media != "video" && opts.media != "all") {
@@ -2718,8 +2718,8 @@ int main(int argc, char* argv[]) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
                 opts.matches.push_back(expand_tilde(argv[++i]));
-            } else if (arg == "--filter" && i + 1 < argc) {
-                opts.filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                opts.excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--dry-run") {
                 opts.dry_run = true;
             } else if (arg == "--yes" || arg == "-y") {
@@ -2762,8 +2762,8 @@ int main(int argc, char* argv[]) {
                 opts.format = argv[++i];
             } else if (arg == "--match" && i + 1 < argc) {
                 opts.matches.push_back(expand_tilde(argv[++i]));
-            } else if (arg == "--filter" && i + 1 < argc) {
-                opts.filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                opts.excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--dry-run") {
                 opts.dry_run = true;
             } else if (arg == "--on-conflict" && i + 1 < argc) {
@@ -2898,8 +2898,8 @@ int main(int argc, char* argv[]) {
                 if (opts.max_sharpness < 0) opts.max_sharpness = 100.0;  // rough default
             } else if (arg == "--match" && i + 1 < argc) {
                 opts.matches.push_back(expand_tilde(argv[++i]));
-            } else if (arg == "--filter" && i + 1 < argc) {
-                opts.filters.push_back(expand_tilde(argv[++i]));
+            } else if (arg == "--exclude" && i + 1 < argc) {
+                opts.excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--limit" && i + 1 < argc) {
                 opts.limit = std::stoi(argv[++i]);
             } else if (arg == "--count") {

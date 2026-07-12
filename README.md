@@ -13,7 +13,7 @@ A command-line tool for managing image and video collections. Scan directories, 
 - **Thumbnails** — generate 512px JPEG thumbnails cached by SHA256
 - **Activity log** — record `mv`/`cp`/`purge` in the database for an audit trail
 - **Purge** — remove entries from the database by glob pattern
-- **Match/filter** — repeatable `--match` and `--filter` globs across commands, matching against full paths, with filter taking precedence
+- **Match/exclude** — repeatable `--match` and `--exclude` globs across commands, matching against full paths, with exclude taking precedence
 
 ## Building
 
@@ -138,7 +138,7 @@ separate spdlog logger that writes warnings/errors to stderr and, unless
 
 Destructive or per-invocation options are deliberately **not** configurable and
 must be given on the command line: `--force`, `--dry-run`, `--on-conflict`,
-`--ignore-mount-warning`, and the selection/query flags (`--match`, `--filter`,
+`--ignore-mount-warning`, and the selection/query flags (`--match`, `--exclude`,
 etc.). Unknown keys produce a warning; invalid values are a hard error.
 
 `phig --help` prints an "Active configuration" summary showing the resolved
@@ -310,8 +310,8 @@ phig cp ~/Photos/Organized --format "%Y/%m/%original"
 phig cp ~/Photos/Organized --format "%Y/%m/%d/%original"
 phig cp ~/Photos/Organized --format "%Y/%m/%camera/%original"
 
-# Move with filters
-phig mv ~/Photos/Organized --match "*.jpg" --filter "*_copy*"
+# Move with match/exclude
+phig mv ~/Photos/Organized --match "*.jpg" --exclude "*_copy*"
 
 # Handle conflicts (default: skip)
 phig cp ~/Photos/Organized --on-conflict skip     # skip if the path is taken
@@ -343,14 +343,14 @@ phig purge --match "*/Trash/*"                   # remove by directory
 
 ### Match and Filter
 
-All commands support `--match` and `--filter` for glob-based path filtering:
+All commands support `--match` and `--exclude` for glob-based path filtering:
 
 ```bash
 # Match includes files (repeatable)
 phig search --match "*/Vacation/*" --match "*/Beach/*"
 
 # Filter excludes files (repeatable, wins over match)
-phig search --match "*.jpg" --filter "*_thumb*"
+phig search --match "*.jpg" --exclude "*_thumb*"
 
 # Tilde expansion works
 phig search --match "~/Photos/*"

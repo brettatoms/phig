@@ -1,4 +1,4 @@
-#include "filters.h"
+#include "selection.h"
 
 #include <cstdlib>
 
@@ -38,11 +38,11 @@ bool glob_match(const std::string& pattern, const std::string& str) {
     return pi == pattern.size();
 }
 
-bool passes_filters(const std::string& filename, const std::vector<std::string>& matches,
-                    const std::vector<std::string>& filters) {
-    // Filter wins — check exclusions first
-    for (const auto& f : filters) {
-        if (glob_match(f, filename)) return false;
+bool passes_selection(const std::string& filename, const std::vector<std::string>& matches,
+                      const std::vector<std::string>& excludes) {
+    // Exclude wins — check exclusions first
+    for (const auto& e : excludes) {
+        if (glob_match(e, filename)) return false;
     }
     // If no match patterns, everything passes
     if (matches.empty()) return true;

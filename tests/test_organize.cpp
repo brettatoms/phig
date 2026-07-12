@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "filters.h"
+#include "selection.h"
 #include "paths.h"
 #include "types.h"
 
@@ -164,64 +164,64 @@ TEST(GlobTest, TrailingBackslash) {
 
 // ---- Filter tests ----
 
-TEST(FilterTest, NoFiltersPassesAll) { EXPECT_TRUE(passes_filters("anything.jpg", {}, {})); }
+TEST(FilterTest, NoFiltersPassesAll) { EXPECT_TRUE(passes_selection("anything.jpg", {}, {})); }
 
 TEST(FilterTest, MatchIncludesMatching) {
-    EXPECT_TRUE(passes_filters("vacation.jpg", {"vacation*"}, {}));
-    EXPECT_FALSE(passes_filters("winter.jpg", {"vacation*"}, {}));
+    EXPECT_TRUE(passes_selection("vacation.jpg", {"vacation*"}, {}));
+    EXPECT_FALSE(passes_selection("winter.jpg", {"vacation*"}, {}));
 }
 
 TEST(FilterTest, MultipleMatches) {
     std::vector<std::string> matches = {"vacation*", "IMG_*"};
-    EXPECT_TRUE(passes_filters("vacation1.jpg", matches, {}));
-    EXPECT_TRUE(passes_filters("IMG_1234.jpg", matches, {}));
-    EXPECT_FALSE(passes_filters("DSC_5678.jpg", matches, {}));
+    EXPECT_TRUE(passes_selection("vacation1.jpg", matches, {}));
+    EXPECT_TRUE(passes_selection("IMG_1234.jpg", matches, {}));
+    EXPECT_FALSE(passes_selection("DSC_5678.jpg", matches, {}));
 }
 
 TEST(FilterTest, FilterExcludes) {
-    EXPECT_FALSE(passes_filters("vacation_copy.jpg", {}, {"*_copy*"}));
-    EXPECT_TRUE(passes_filters("vacation.jpg", {}, {"*_copy*"}));
+    EXPECT_FALSE(passes_selection("vacation_copy.jpg", {}, {"*_copy*"}));
+    EXPECT_TRUE(passes_selection("vacation.jpg", {}, {"*_copy*"}));
 }
 
 TEST(FilterTest, MultipleFilters) {
-    std::vector<std::string> filters = {"*_copy*", ".*"};
-    EXPECT_FALSE(passes_filters("vacation_copy.jpg", {}, filters));
-    EXPECT_FALSE(passes_filters(".hidden.jpg", {}, filters));
-    EXPECT_TRUE(passes_filters("vacation.jpg", {}, filters));
+    std::vector<std::string> excludes = {"*_copy*", ".*"};
+    EXPECT_FALSE(passes_selection("vacation_copy.jpg", {}, excludes));
+    EXPECT_FALSE(passes_selection(".hidden.jpg", {}, excludes));
+    EXPECT_TRUE(passes_selection("vacation.jpg", {}, excludes));
 }
 
 TEST(FilterTest, FilterWinsOverMatch) {
     std::vector<std::string> matches = {"vacation*"};
-    std::vector<std::string> filters = {"*_copy*"};
-    EXPECT_TRUE(passes_filters("vacation.jpg", matches, filters));
-    EXPECT_FALSE(passes_filters("vacation_copy.jpg", matches, filters));
+    std::vector<std::string> excludes = {"*_copy*"};
+    EXPECT_TRUE(passes_selection("vacation.jpg", matches, excludes));
+    EXPECT_FALSE(passes_selection("vacation_copy.jpg", matches, excludes));
 }
 
 TEST(FilterTest, MatchAndFilterTogether) {
     std::vector<std::string> matches = {"*.jpg", "*.png"};
-    std::vector<std::string> filters = {"thumb_*", "*_small*"};
-    EXPECT_TRUE(passes_filters("photo.jpg", matches, filters));
-    EXPECT_TRUE(passes_filters("image.png", matches, filters));
-    EXPECT_FALSE(passes_filters("photo.gif", matches, filters));        // not matched
-    EXPECT_FALSE(passes_filters("thumb_photo.jpg", matches, filters));  // filtered
-    EXPECT_FALSE(passes_filters("photo_small.png", matches, filters));  // filtered
+    std::vector<std::string> excludes = {"thumb_*", "*_small*"};
+    EXPECT_TRUE(passes_selection("photo.jpg", matches, excludes));
+    EXPECT_TRUE(passes_selection("image.png", matches, excludes));
+    EXPECT_FALSE(passes_selection("photo.gif", matches, excludes));        // not matched
+    EXPECT_FALSE(passes_selection("thumb_photo.jpg", matches, excludes));  // filtered
+    EXPECT_FALSE(passes_selection("photo_small.png", matches, excludes));  // filtered
 }
 
 TEST(FilterTest, MatchesAgainstFullPath) {
-    EXPECT_TRUE(passes_filters("/home/user/Photos/vacation.jpg", {"*/Photos/*"}, {}));
-    EXPECT_FALSE(passes_filters("/home/user/Backup/vacation.jpg", {"*/Photos/*"}, {}));
+    EXPECT_TRUE(passes_selection("/home/user/Photos/vacation.jpg", {"*/Photos/*"}, {}));
+    EXPECT_FALSE(passes_selection("/home/user/Backup/vacation.jpg", {"*/Photos/*"}, {}));
 }
 
 TEST(FilterTest, FilterAgainstFullPath) {
-    EXPECT_FALSE(passes_filters("/home/user/Photos/thumbs/photo.jpg", {}, {"*/thumbs/*"}));
-    EXPECT_TRUE(passes_filters("/home/user/Photos/photo.jpg", {}, {"*/thumbs/*"}));
+    EXPECT_FALSE(passes_selection("/home/user/Photos/thumbs/photo.jpg", {}, {"*/thumbs/*"}));
+    EXPECT_TRUE(passes_selection("/home/user/Photos/photo.jpg", {}, {"*/thumbs/*"}));
 }
 
 TEST(FilterTest, MixedPathAndFilename) {
     std::vector<std::string> matches = {"*/Webcam/*", "*.png"};
-    EXPECT_TRUE(passes_filters("/home/user/Pictures/Webcam/photo.jpg", matches, {}));
-    EXPECT_TRUE(passes_filters("/home/user/Pictures/screenshot.png", matches, {}));
-    EXPECT_FALSE(passes_filters("/home/user/Pictures/photo.jpg", matches, {}));
+    EXPECT_TRUE(passes_selection("/home/user/Pictures/Webcam/photo.jpg", matches, {}));
+    EXPECT_TRUE(passes_selection("/home/user/Pictures/screenshot.png", matches, {}));
+    EXPECT_FALSE(passes_selection("/home/user/Pictures/photo.jpg", matches, {}));
 }
 
 TEST(FilterTest, ExpandTilde) {
