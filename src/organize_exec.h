@@ -28,5 +28,10 @@ void execute_organize_action(Database& db, const std::string& source, const std:
 // kind "move_sidecar"/"copy_sidecar" with restore_json {"parent_image_id":N}
 // (N from get_image_id(parent_dest); omitted if the parent row is absent).
 // op_id <= 0 skips logging. Never touches the images table.
+//
+// When the parent is a RAW, also carries its same-basename attached JPEG
+// (e.g. IMG_1234.CR2 + IMG_1234.JPG) to sit beside parent_dest, renamed
+// stem-style to match (IMG_1234.JPG -> <dest-stem>.JPG, preserving the
+// JPEG's own extension/case), logged the same way as a sidecar.
 void carry_sidecars(Database& db, const std::string& parent_source, const std::string& parent_dest,
                     bool is_move, int64_t op_id);

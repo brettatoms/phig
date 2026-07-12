@@ -7,6 +7,7 @@
 #include <system_error>
 
 #include "paths.h"
+#include "scanner.h"
 #include "sidecar.h"
 
 namespace fs = std::filesystem;
@@ -148,6 +149,32 @@ void carry_sidecars(Database& db, const std::string& parent_source, const std::s
                 parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}") : "";
             db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar", side.string(),
                                      side_dst.string(), rj});
+        }
+    }
+
+    // Attachments pass: a RAW's same-basename JPEG is demoted to an attachment
+    // by scan (not indexed as its own photo), so it isn't in find_sidecars and
+    // must be carried separately. Stem-style rename only (the JPEG's stem
+    // always matches the parent stem), preserving the JPEG's own extension/case.
+    if (is_raw_extension(src_media.extension().string())) {
+        fs::path jpeg_src = sibling_jpeg_path(src_media);
+        if (!jpeg_src.empty()) {
+            fs::path jpeg_dst = dst_dir / (dst_stem + jpeg_src.extension().string());
+
+            if (!(src_media.parent_path() == dst_dir && jpeg_src == jpeg_dst)) {  // skip no-op
+                if (is_move) {
+                    move_file(jpeg_src.string(), jpeg_dst.string());
+                } else {
+                    atomic_copy_file(jpeg_src.string(), jpeg_dst.string());
+                }
+                if (logging) {
+                    std::string rj =
+                        parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
+                                      : "";
+                    db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar",
+                                             jpeg_src.string(), jpeg_dst.string(), rj});
+                }
+            }
         }
     }
 }

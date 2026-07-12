@@ -323,3 +323,87 @@ TEST_F(OrganizeExecTest, CarryLogsSidecarEntryWithParentId) {
     EXPECT_EQ(edst, (dir / "dest" / "IMG_1.xmp").string());
     EXPECT_NE(rj.find("parent_image_id"), std::string::npos);
 }
+
+// ---- carry_sidecars: RAW's attached JPEG ----
+
+TEST_F(OrganizeExecTest, CarryMovesAttachedJpegForRaw) {
+    fs::path src = dir / "src" / "IMG_1.CR2";
+    fs::path dst = dir / "dest" / "IMG_1.CR2";
+    write_file(src, "RAWDATA");
+    write_file(dir / "src" / "IMG_1.JPG", "JPEGDATA");
+    insert_row(src.string());
+
+    int64_t op = db->log_begin_operation("mv", "argv", "2026-07-11T00:00:00Z");
+    execute_organize_action(*db, src.string(), dst.string(), true, op);
+    carry_sidecars(*db, src.string(), dst.string(), /*is_move=*/true, op);
+    db->log_finish_operation(op, "completed");
+
+    EXPECT_FALSE(fs::exists(dir / "src" / "IMG_1.JPG"));
+    EXPECT_TRUE(fs::exists(dir / "dest" / "IMG_1.JPG"));
+
+    sqlite3_stmt* st = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(),
+                       "SELECT kind, dst, restore_json FROM operation_entries "
+                       "WHERE kind='move_sidecar'",
+                       -1, &st, nullptr);
+    ASSERT_EQ(sqlite3_step(st), SQLITE_ROW);
+    std::string kind = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+    std::string edst = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
+    std::string rj = reinterpret_cast<const char*>(sqlite3_column_text(st, 2));
+    sqlite3_finalize(st);
+    EXPECT_EQ(kind, "move_sidecar");
+    EXPECT_EQ(edst, (dir / "dest" / "IMG_1.JPG").string());
+    EXPECT_NE(rj.find("parent_image_id"), std::string::npos);
+}
+
+TEST_F(OrganizeExecTest, CarryRenamesAttachedJpegToMatchRenamedRaw) {
+    fs::path src = dir / "src" / "IMG_1.CR2";
+    fs::path dst = dir / "dest" / "IMG_1-1.CR2";  // parent renamed to avoid a conflict
+    write_file(src, "RAWDATA");
+    write_file(dir / "src" / "IMG_1.JPG", "JPEGDATA");
+    insert_row(src.string());
+
+    execute_organize_action(*db, src.string(), dst.string(), true, 0);
+    carry_sidecars(*db, src.string(), dst.string(), true, 0);
+
+    EXPECT_FALSE(fs::exists(dir / "src" / "IMG_1.JPG"));
+    EXPECT_TRUE(fs::exists(dir / "dest" / "IMG_1-1.JPG"));
+}
+
+TEST_F(OrganizeExecTest, CarryCopyLeavesSourceAttachedJpeg) {
+    fs::path src = dir / "src" / "IMG_1.CR2";
+    fs::path dst = dir / "dest" / "IMG_1.CR2";
+    write_file(src, "RAWDATA");
+    write_file(dir / "src" / "IMG_1.JPG", "JPEGDATA");
+    insert_row(src.string());
+
+    execute_organize_action(*db, src.string(), dst.string(), false, 0);
+    carry_sidecars(*db, src.string(), dst.string(), /*is_move=*/false, 0);
+
+    EXPECT_TRUE(fs::exists(dir / "src" / "IMG_1.JPG"));  // copy leaves source
+    EXPECT_TRUE(fs::exists(dir / "dest" / "IMG_1.JPG"));
+}
+
+TEST_F(OrganizeExecTest, NoAttachedJpegForNonRawParent) {
+    // Parent is itself a JPEG (not a RAW): carry_sidecars must not try to carry
+    // a "sibling jpeg" of a jpeg (would be a self-carry). No sidecars either, so
+    // nothing should be moved or logged.
+    fs::path src = dir / "src" / "IMG_2.JPG";
+    fs::path dst = dir / "dest" / "IMG_2.JPG";
+    write_file(src, "JPEGDATA");
+    insert_row(src.string());
+
+    int64_t op = db->log_begin_operation("mv", "argv", "2026-07-11T00:00:00Z");
+    execute_organize_action(*db, src.string(), dst.string(), true, op);
+    carry_sidecars(*db, src.string(), dst.string(), true, op);
+    db->log_finish_operation(op, "completed");
+
+    sqlite3_stmt* st = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(), "SELECT COUNT(*) FROM operation_entries WHERE op_id=?", -1,
+                       &st, nullptr);
+    sqlite3_bind_int64(st, 1, op);
+    sqlite3_step(st);
+    // Only the "move" entry from execute_organize_action, no sidecar entries.
+    EXPECT_EQ(sqlite3_column_int(st, 0), 1);
+    sqlite3_finalize(st);
+}

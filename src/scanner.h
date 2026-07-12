@@ -30,6 +30,11 @@ bool has_sibling_raw(const std::filesystem::path& media_path);
 // wrapper over this.
 std::filesystem::path sibling_raw_path(const std::filesystem::path& media_path);
 
+// Same-basename JPEG file path beside `media_path`, or "" if `media_path` is
+// not a RAW or no such JPEG file exists on disk. The inverse of
+// sibling_raw_path, used when carrying a RAW's attached JPEG on mv/cp.
+std::filesystem::path sibling_jpeg_path(const std::filesystem::path& media_path);
+
 // Collects file paths from a directory, optionally recursive.
 // Only includes files with known media extensions (images + videos).
 // Hidden and temp entries (names starting with '.' or '~') are skipped
