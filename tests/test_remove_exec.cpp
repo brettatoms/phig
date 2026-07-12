@@ -43,6 +43,23 @@ class RemoveExecTest : public ::testing::Test {
         std::ofstream(p) << c;
     }
 
+    // Insert a minimal images row for `path`.
+    void insert_row(const std::string& path) {
+        ImageInfo info;
+        info.path = path;
+        info.filename = fs::path(path).filename().string();
+        info.extension = "jpg";
+        info.file_size = 1;
+        info.created_at = "2024-01-01T00:00:00Z";
+        info.modified_at = "2024-01-01T00:00:00Z";
+        info.sha256 = "s";
+        info.phash = 0;
+        info.width = 1;
+        info.height = 1;
+        info.metadata_json = "{}";
+        db->insert(info);
+    }
+
     // Count operation_entries rows of a given kind for a src path.
     int count_entries(const std::string& kind, const std::string& src) {
         std::string sql = "SELECT COUNT(*) FROM operation_entries WHERE kind='" + kind +
@@ -141,4 +158,79 @@ TEST_F(RemoveExecTest, RemoveMediaCarriesSidecarsNotSiblings) {
     EXPECT_EQ(acted[0], raw);
     EXPECT_EQ(count_entries("trash", raw), 1);
     EXPECT_EQ(count_entries("trash", xmp), 1);
+}
+
+TEST_F(RemoveExecTest, RmTrashRemovesFileAndRow) {
+    std::string p = (photos / "a.jpg").string();
+    write_file(p, "x");
+    insert_row(p);
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*a.jpg"};
+    opts.mode = RemoveMode::Trash;
+    opts.assume_yes = true;
+    opts.argv_str = "phig rm --match *a.jpg";
+
+    int rc = cmd_rm(opts);
+    EXPECT_EQ(rc, 0);
+    EXPECT_FALSE(fs::exists(p));                    // file trashed
+    EXPECT_EQ(db->get_all_images().size(), 0u);     // row gone
+}
+
+TEST_F(RemoveExecTest, RmDbOnlyKeepsFile) {
+    std::string p = (photos / "b.jpg").string();
+    write_file(p, "x");
+    insert_row(p);
+
+    RemoveOptions opts;
+    opts.db_path = db_path; opts.matches = {"*b.jpg"};
+    opts.mode = RemoveMode::DbOnly; opts.assume_yes = true;
+    opts.argv_str = "phig rm --db-only --match *b.jpg";
+
+    EXPECT_EQ(cmd_rm(opts), 0);
+    EXPECT_TRUE(fs::exists(p));                      // file kept
+    EXPECT_EQ(db->get_all_images().size(), 0u);      // row gone
+}
+
+TEST_F(RemoveExecTest, RmRequiresMatchExceptOrphans) {
+    RemoveOptions opts;
+    opts.db_path = db_path; opts.mode = RemoveMode::Trash; opts.assume_yes = true;
+    EXPECT_EQ(cmd_rm(opts), 1);                      // no --match, non-orphans → error
+
+    opts.mode = RemoveMode::Orphans;
+    EXPECT_EQ(cmd_rm(opts), 0);                      // orphans with no rows → "none found", ok
+}
+
+TEST_F(RemoveExecTest, RmDryRunTouchesNothing) {
+    std::string p = (photos / "c.jpg").string();
+    write_file(p, "x");
+    insert_row(p);
+
+    RemoveOptions opts;
+    opts.db_path = db_path; opts.matches = {"*c.jpg"};
+    opts.mode = RemoveMode::Trash; opts.dry_run = true; opts.assume_yes = true;
+
+    EXPECT_EQ(cmd_rm(opts), 0);
+    EXPECT_TRUE(fs::exists(p));                      // untouched
+    EXPECT_EQ(db->get_all_images().size(), 1u);      // row kept
+}
+
+TEST_F(RemoveExecTest, RmOrphansDropsMissingKeepsPresent) {
+    std::string present = (photos / "here.jpg").string();
+    std::string missing = (photos / "gone.jpg").string();
+    write_file(present, "x");
+    write_file(missing, "x");
+    insert_row(present);
+    insert_row(missing);
+    fs::remove(missing);  // now orphaned; parent dir still exists (mount-safe keeps present)
+
+    RemoveOptions opts;
+    opts.db_path = db_path; opts.mode = RemoveMode::Orphans; opts.assume_yes = true;
+    opts.argv_str = "phig rm --orphans";
+
+    EXPECT_EQ(cmd_rm(opts), 0);
+    auto rows = db->get_all_images();
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].path, present);                // present kept, missing dropped
 }

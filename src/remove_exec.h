@@ -26,3 +26,26 @@ void execute_hard_delete_action(Database& db, const std::string& path, int64_t o
 // Throws on the first disk error.
 std::vector<std::string> remove_media_with_sidecars(Database& db, const std::string& media_path,
                                                     bool hard, int64_t op_id);
+
+// ---- Remove command ----
+
+enum class RemoveMode { Trash, Hard, DbOnly, Orphans };
+
+struct RemoveOptions {
+    std::vector<std::string> matches;
+    std::vector<std::string> excludes;
+    RemoveMode mode = RemoveMode::Trash;
+    bool dry_run = false;
+    bool assume_yes = false;
+    std::string db_path;
+    bool log_enabled = true;
+    int log_max_entries = 100000;
+    std::string argv_str;
+};
+
+// Command-level logic for `phig rm`: selects matching rows, applies the guard
+// for broad/--hard removals, performs the per-file disk action (trash/hard,
+// via remove_media_with_sidecars) when applicable, and drops rows in one
+// logged operation. Returns 0 on success (including "nothing matched"), 1 on
+// a usage error, missing confirmation, or if any file failed.
+int cmd_rm(const RemoveOptions& opts);

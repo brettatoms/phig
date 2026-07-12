@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 
+// Current UTC time as an ISO-8601 timestamp ("YYYY-MM-DDTHH:MM:SSZ"), for
+// activity-log operation rows (plan 020).
+std::string iso_utc_now();
+
 // XDG base directories, each returning phig's per-application subdirectory.
 // Honor the corresponding XDG_* env var when set and non-empty; otherwise fall
 // back to the XDG default under $HOME (on all platforms). Throw
