@@ -127,3 +127,19 @@ TEST_F(SidecarTest, DatelessSidecarReturnsEmpty) {
 }
 
 TEST_F(SidecarTest, MissingFileReturnsEmpty) { EXPECT_EQ(sidecar_date(dir / "nope.xmp"), ""); }
+
+// Verifies the seam main.cpp's date fallback chain relies on: a media file
+// with no EXIF date but a dated sidecar must resolve to the sidecar's date
+// via find_sidecars + sidecar_date, not fall through to mtime. The chain's
+// wiring in get_best_date/get_best_date_str (file-local to main.cpp, not
+// reachable from tests) is covered end-to-end by the Task 5 porcelain test.
+TEST_F(SidecarTest, SidecarDatePreferredOverMtime) {
+    touch(dir / "IMG_1234.JPG");
+    write(dir / "IMG_1234.xmp",
+          R"(<x:xmpmeta><rdf:Description xmp:CreateDate="11/25/2010 8:34:57 AM">)"
+          R"(</rdf:Description></x:xmpmeta>)");
+
+    auto sidecars = find_sidecars(dir / "IMG_1234.JPG");
+    ASSERT_EQ(sidecars.size(), 1u);
+    EXPECT_EQ(sidecar_date(sidecars[0]), "2010:11:25 08:34:57");
+}

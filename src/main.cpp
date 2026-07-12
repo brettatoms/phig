@@ -36,6 +36,7 @@
 #include "paths.h"
 #include "relink.h"
 #include "scanner.h"
+#include "sidecar.h"
 #include "thumbs.h"
 #include "types.h"
 #include "version.h"
@@ -1049,7 +1050,15 @@ DateParts get_best_date(const ImageInfo& img) {
     d = parse_date(dt);
     if (d.valid) return d;
 
-    // 3. File modified time
+    // 3. Sidecar date (e.g. f-spot .xmp, Google Takeout .json). Only consulted
+    //    when the embedded EXIF has no date; a sidecar can be edited, so EXIF
+    //    wins. Sits before mtime so EXIF-stripped exports still date correctly.
+    for (const auto& side : find_sidecars(img.path)) {
+        d = parse_date(sidecar_date(side));
+        if (d.valid) return d;
+    }
+
+    // 4. File modified time
     d = parse_date(img.modified_at);
     if (d.valid) return d;
 
@@ -1405,6 +1414,14 @@ std::string get_best_date_str(const ImageInfo& img) {
     dt = json_get(img.metadata_json, "DateTimeDigitized");
     if (!dt.empty() && dt.size() >= 10 && dt.substr(0, 4) != "0000" && dt.substr(0, 4) != "1970") {
         return dt.substr(0, 10);
+    }
+    // Sidecar date (f-spot .xmp / Google Takeout .json) before mtime, so search
+    // display agrees with where organize files the photo.
+    for (const auto& side : find_sidecars(img.path)) {
+        std::string sd = sidecar_date(side);
+        if (sd.size() >= 10 && sd.substr(0, 4) != "0000" && sd.substr(0, 4) != "1970") {
+            return sd.substr(0, 10);
+        }
     }
     // Fall back to modified_at
     if (!img.modified_at.empty() && img.modified_at.size() >= 10) {
