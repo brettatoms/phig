@@ -196,7 +196,7 @@ void Database::init_schema() {
             // ONE transaction: a crash partway must not leave a versionless
             // partial schema that a later run misreads as still pre-migration
             // (whose re-run would then race the ALTER TABLE probe below).
-            exec("BEGIN TRANSACTION");
+            exec("BEGIN IMMEDIATE TRANSACTION");
             try {
                 exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
                 exec(R"(
@@ -249,7 +249,7 @@ void Database::init_schema() {
             // version in ONE transaction: a crash partway must not leave a
             // versionless partial schema that a later run misreads as a
             // pre-migration v1 DB (whose v2 migration would then fail).
-            exec("BEGIN TRANSACTION");
+            exec("BEGIN IMMEDIATE TRANSACTION");
             try {
                 exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
 
@@ -354,20 +354,24 @@ void Database::init_schema() {
     }
 
     if (db_version > 0 && db_version < CURRENT_SCHEMA_VERSION) {
-        // Run pending migrations
+        // Run pending migrations. Each step takes the write lock up front
+        // (IMMEDIATE) and re-reads the version inside the transaction, so if a
+        // concurrent process already applied this step we skip it instead of
+        // re-running non-idempotent DDL (e.g. ALTER TABLE ADD COLUMN).
         for (int v = db_version + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
-            if (!migrations[v].empty()) {
-                exec("BEGIN TRANSACTION");
-                try {
-                    exec(migrations[v]);
-                    set_schema_version(v);
+            exec("BEGIN IMMEDIATE TRANSACTION");
+            try {
+                if (get_schema_version() >= v) {
+                    // Another process already applied v while we waited.
                     exec("COMMIT");
-                } catch (...) {
-                    exec("ROLLBACK");
-                    throw;
+                    continue;
                 }
-            } else {
+                if (!migrations[v].empty()) exec(migrations[v]);
                 set_schema_version(v);
+                exec("COMMIT");
+            } catch (...) {
+                exec("ROLLBACK");
+                throw;
             }
         }
     }

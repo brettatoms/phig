@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
+#include <thread>
 
 #include "database.h"
 #include "types.h"
@@ -1030,5 +1032,54 @@ TEST(DatabaseConcurrency, BeginTransactionTakesWriteLockImmediately) {
     a.commit_transaction();  // release; now B can take it
     EXPECT_NO_THROW(raw_exec(b.db_ptr(), "BEGIN IMMEDIATE"));
     raw_exec(b.db_ptr(), "ROLLBACK");
+    fs::remove_all(dir);
+}
+
+TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "phig-db-migrate";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    std::string dbp = (dir / "m.db").string();
+
+    // Create a DB then roll its recorded schema_version back to force a
+    // migration on next init_schema(). (v5 is CURRENT; set to 4 to force the
+    // v5 migration to run.) The v5 tables created by the fresh-schema path
+    // must also be dropped, since the v5 migration's CREATE TABLE isn't
+    // IF NOT EXISTS (mirrors DatabaseTest.MigratesV4ToV5).
+    // Database::set_schema_version() is private, so drive it via raw SQL
+    // through the public db_ptr(), as other tests here do.
+    {
+        Database init(dbp);
+        init.init_schema();
+        raw_exec(init.db_ptr(),
+                 "DROP TABLE IF EXISTS operation_entries;"
+                 "DROP TABLE IF EXISTS operations;"
+                 "UPDATE meta SET value='4' WHERE key='schema_version'");
+    }
+
+    std::atomic<int> failures{0};
+    auto run = [&] {
+        try {
+            Database d(dbp);
+            d.init_schema();
+        } catch (...) {
+            failures.fetch_add(1);
+        }
+    };
+    std::thread t1(run), t2(run);
+    t1.join();
+    t2.join();
+
+    EXPECT_EQ(failures.load(), 0);
+    Database check(dbp);
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(check.db_ptr(), "SELECT value FROM meta WHERE key='schema_version'", -1,
+                       &stmt, nullptr);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    std::string version(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+    sqlite3_finalize(stmt);
+    EXPECT_EQ(version, "5");  // CURRENT_SCHEMA_VERSION
+
     fs::remove_all(dir);
 }
