@@ -576,10 +576,10 @@ int cmd_scan(const ScanOptions& opts) {
                     // Assemble the whole line so concurrent workers' messages
                     // don't interleave with each other or the progress line.
                     if (opts.fail_on_error) {
-                        std::cerr << "[error] " + rel_path(filepath) + " -- " + e.what() + "\n";
+                        log_error("scan: " + rel_path(filepath) + " -- " + e.what());
                         throw;
                     } else {
-                        std::cerr << "[warning] " + rel_path(filepath) + " -- " + e.what() + "\n";
+                        log_warn("scan: " + rel_path(filepath) + " -- " + e.what());
                     }
                 }
 
@@ -624,10 +624,10 @@ int cmd_scan(const ScanOptions& opts) {
     if (!removed_paths.empty()) {
         if (!db_paths.empty() && removed_paths.size() == db_paths.size() &&
             !opts.ignore_mount_warning) {
-            std::cerr << "\nWarning: All " << removed_paths.size()
-                      << " previously scanned files in this directory are missing.\n"
-                      << "This may indicate an unmounted drive or incorrect path.\n"
-                      << "Use --ignore-mount-warning to remove these entries from the database.\n";
+            log_warn("scan: all " + std::to_string(removed_paths.size()) +
+                     " previously scanned files in this directory are missing.\n"
+                     "This may indicate an unmounted drive or incorrect path.\n"
+                     "Use --ignore-mount-warning to remove these entries from the database.");
         } else {
             // Removing a row destroys user-authored metadata (tags, gallery,
             // faces) that a rescan cannot rebuild — record it like purge does,
@@ -679,6 +679,10 @@ int cmd_scan(const ScanOptions& opts) {
         std::cout << "  Thumbs:    " << thumb_count.load() << "\n";
     }
     std::cout << "  Total DB:  " << db.count() << " entries\n";
+
+    log_info("scan " + opts.directory + " done: processed=" + std::to_string(processed.load()) +
+             " skipped=" + std::to_string(skipped.load()) + " errors=" +
+             std::to_string(errors.load()) + " removed=" + std::to_string(removed_count));
 
     return 0;
 }
@@ -1554,7 +1558,7 @@ int cmd_search(const SearchOptions& opts) {
         preload_face_models();
         cv::Mat query_img = decode_image(face_path);
         if (query_img.empty()) {
-            std::cerr << "Cannot decode image: " << face_path << "\n";
+            log_error("Cannot decode image: " + face_path);
             return 1;
         }
         auto faces = detect_faces(query_img);
@@ -2032,7 +2036,7 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         preload_face_models();
         cv::Mat img = decode_image(image_path);
         if (img.empty()) {
-            std::cerr << "Cannot decode image: " << image_path << "\n";
+            log_error("Cannot decode image: " + image_path);
             return 1;
         }
         auto faces = detect_faces(img);

@@ -18,6 +18,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "log.h"
+
 // ---- SHA-256 (minimal implementation, no external dep) ----
 
 namespace {
@@ -205,7 +207,8 @@ cv::Mat decode_image(const std::string& path) {
     if (!result.warning.empty()) {
         // Build the whole message and write it in one operation so concurrent
         // scan workers' warnings don't interleave at newline boundaries.
-        std::cerr << "\n[warning] " + path + " -- " + result.warning + "\n";
+        std::cerr << '\n';  // break out of the scan progress line, as before
+        log_warn(path + " -- " + result.warning);
     }
     return result.img;
 }
