@@ -77,13 +77,14 @@ Notes:
 ### File locations
 
 phig follows the XDG base directory convention on all platforms (honoring
-`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` when set):
+`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME`/`XDG_STATE_HOME` when set):
 
 | What | Default location |
 |------|------------------|
 | Database | `~/.local/share/phig/phig.db` |
 | Face-recognition models | `~/.cache/phig/models/` |
 | Thumbnails | `~/.cache/phig/thumbs/` |
+| Diagnostic log | `~/.local/state/phig/phig.log` |
 | Config file | `~/.config/phig/config.ini` |
 
 The database is the source of truth for your collection; it always reflects the
@@ -125,7 +126,15 @@ threshold = 0.6
 [log]
 enabled = true         # record mv/cp/purge in an activity log for audit/rollback
 max_entries = 100000   # cap log size; 0 = unlimited, oldest operations pruned first
+file = true            # write the diagnostic log to ~/.local/state/phig/phig.log
+file_level = info      # info | warn | error — minimum level written to the file
 ```
+
+`enabled` and `max_entries` control the activity log (`mv`/`cp`/`purge` history
+in the database); `file` and `file_level` control the diagnostic log — a
+separate spdlog logger that writes warnings/errors to stderr and, unless
+`file = false`, also to a rotating file at `~/.local/state/phig/phig.log`
+(5 MB rotation to `phig.1.log`).
 
 Destructive or per-invocation options are deliberately **not** configurable and
 must be given on the command line: `--force`, `--dry-run`, `--on-conflict`,

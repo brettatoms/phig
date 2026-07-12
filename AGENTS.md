@@ -7,7 +7,7 @@ An image management power tool. CLI-first tool to scan image directories, build 
 - **Language:** C++20
 - **Build:** CMake
 - **Dev environment:** devenv + direnv (Nix)
-- **Dependencies:** OpenCV (image decode + phash + video keyframes), libexif (EXIF extraction), FFmpeg/libavformat (video metadata), SQLite (database), GoogleTest (tests)
+- **Dependencies:** OpenCV (image decode + phash + video keyframes), libexif (EXIF extraction), FFmpeg/libavformat (video metadata), SQLite (database), spdlog (diagnostic logging), GoogleTest (tests)
 
 ## Building
 
@@ -69,7 +69,8 @@ phig purge [--match <glob>] [--filter <glob>] [--path <dir>] [--dry-run] [--db <
 
 Paths follow XDG conventions (all resolved in `src/paths.cpp`): database at
 `~/.local/share/phig/phig.db`, models at `~/.cache/phig/models`, thumbnails at
-`~/.cache/phig/thumbs`, config at `~/.config/phig/config.ini`. An optional INI
+`~/.cache/phig/thumbs`, diagnostic log at `~/.local/state/phig/phig.log`, config
+at `~/.config/phig/config.ini`. An optional INI
 config file (parsed in `src/config.cpp` via vendored inih) sets defaults; a global
 `--config <path>` flag overrides its location. Precedence: CLI flag > config > default.
 
@@ -114,6 +115,13 @@ tests/
   the same transaction as the DB change it describes. Disable with `[log] enabled =
   false`; cap size with `[log] max_entries` (default 100000, `0` = unlimited, oldest
   operations pruned first). `--dry-run` writes nothing.
+- **Diagnostic log** — one spdlog logger, two sinks: stderr (warnings/errors,
+  `[warning]`/`[error]` prefix) and a rotating file at
+  `~/.local/state/phig/phig.log` (UTC-timestamped; one line per entry with
+  newlines escaped; 5 MB rotation to `phig.1.log`). Command invocations and
+  scan summaries log at INFO (file only). `[log] file = false` drops the file
+  sink; `[log] file_level = info|warn|error` sets its threshold. All logging
+  goes through `src/log.h` — no spdlog includes elsewhere.
 
 ## Plans
 
