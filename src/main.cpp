@@ -15,6 +15,7 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <set>
@@ -30,6 +31,7 @@
 #include "faces.h"
 #include "selection.h"
 #include "hasher.h"
+#include "lockfile.h"
 #include "log.h"
 #include "metadata.h"
 #include "models.h"
@@ -48,6 +50,19 @@ namespace fs = std::filesystem;
 // Graceful shutdown on Ctrl-C
 static volatile std::sig_atomic_t g_interrupted = 0;
 static void sigint_handler(int) { g_interrupted = 1; }
+
+// Acquire the process-wide writer lock for a mutating command. Prints a clear
+// message and exits nonzero if --no-wait was given and another op holds it.
+static std::unique_ptr<WriterLock> acquire_writer_lock(bool no_wait) {
+    std::string path = lock_path();
+    fs::create_directories(fs::path(path).parent_path());
+    try {
+        return std::make_unique<WriterLock>(path, no_wait);
+    } catch (const LockBusy& e) {
+        std::cerr << "Error: " << e.what() << " (use without --no-wait to wait)\n";
+        std::exit(1);
+    }
+}
 
 // Full invocation string, stored on the operation row for the audit trail.
 static std::string join_argv(int argc, char* argv[]) {
@@ -1679,7 +1694,8 @@ int cmd_search(const SearchOptions& opts) {
 
 // ---- Thumbs command ----
 
-int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_parallel) {
+int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_parallel,
+               bool no_wait) {
     if (argc < 3) {
         std::cerr << "Usage:\n"
                   << "  phig thumbs rebuild [flags]   Generate missing thumbnails\n"
@@ -1711,6 +1727,8 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
                 return 1;
             }
         }
+
+        auto lock = acquire_writer_lock(no_wait);
 
         auto start_time = std::chrono::steady_clock::now();
 
@@ -1832,6 +1850,8 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
             }
         }
 
+        auto lock = acquire_writer_lock(no_wait);
+
         Database db(db_path);
         db.init_schema();
 
@@ -1900,7 +1920,8 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
 
 // ---- Face command ----
 
-int cmd_face(int argc, char* argv[], const std::string& db_path, int default_parallel) {
+int cmd_face(int argc, char* argv[], const std::string& db_path, int default_parallel,
+             bool no_wait) {
     if (argc < 3) {
         std::cerr << "Usage:\n"
                   << "  phig face name <image> <name>     Name a face from a single-face photo\n"
@@ -1911,6 +1932,10 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
     }
 
     std::string subcmd = argv[2];
+    std::unique_ptr<WriterLock> lock;
+    if (subcmd == "name" || subcmd == "identify" || subcmd == "rebuild") {
+        lock = acquire_writer_lock(no_wait);
+    }
     Database db(db_path);
     db.init_schema();
 
@@ -2200,7 +2225,7 @@ static std::vector<std::string> select_paths(Database& db, const std::string& pa
     return paths;
 }
 
-int cmd_tag(int argc, char* argv[], const std::string& db_path) {
+int cmd_tag(int argc, char* argv[], const std::string& db_path, bool no_wait) {
     if (argc < 3) {
         std::cerr << "Usage:\n"
                   << "  phig tag add <tag> [--match|--exclude|--path]\n"
@@ -2246,6 +2271,7 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path) {
             std::cerr << "Error: tag " << subcmd << " requires --match or --path\n";
             return 1;
         }
+        auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
         int n = db.set_tag(select_paths(db, path_prefix, matches, excludes), tag, subcmd == "add");
@@ -2258,7 +2284,7 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path) {
     return 1;
 }
 
-int cmd_gallery(int argc, char* argv[], const std::string& db_path) {
+int cmd_gallery(int argc, char* argv[], const std::string& db_path, bool no_wait) {
     if (argc < 3) {
         std::cerr << "Usage:\n"
                   << "  phig gallery set <name> [--match|--exclude|--path] [--no-overwrite]\n"
@@ -2313,6 +2339,7 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path) {
             std::cerr << "Error: gallery " << subcmd << " requires --match or --path\n";
             return 1;
         }
+        auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
         auto paths = select_paths(db, path_prefix, matches, excludes);
@@ -2331,7 +2358,7 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path) {
 }
 
 // Favorites are the built-in `favorite` tag; these commands are ergonomic sugar.
-int cmd_fav(int argc, char* argv[], const std::string& db_path) {
+int cmd_fav(int argc, char* argv[], const std::string& db_path, bool no_wait) {
     if (argc < 3) {
         std::cerr
             << "Usage:\n"
@@ -2364,6 +2391,7 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path) {
             std::cerr << "Error: fav " << subcmd << " requires --match or --path\n";
             return 1;
         }
+        auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
         int n = db.set_tag(select_paths(db, path_prefix, matches, excludes), "favorite",
@@ -2445,6 +2473,7 @@ int main(int argc, char* argv[]) {
     // continue with it removed so the per-command parsers don't see it.
     std::string config_file;
     bool have_config_file = false;
+    bool no_wait = false;
     std::vector<char*> filtered_args;
     filtered_args.push_back(argv[0]);
     for (int i = 1; i < argc; i++) {
@@ -2452,6 +2481,8 @@ int main(int argc, char* argv[]) {
         if (a == "--config" && i + 1 < argc) {
             config_file = argv[++i];
             have_config_file = true;
+        } else if (a == "--no-wait") {
+            no_wait = true;
         } else {
             filtered_args.push_back(argv[i]);
         }
@@ -2585,6 +2616,7 @@ int main(int argc, char* argv[]) {
         }
 
         try {
+            auto lock = acquire_writer_lock(no_wait);
             return cmd_scan(opts);
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
@@ -2687,6 +2719,7 @@ int main(int argc, char* argv[]) {
         }
 
         try {
+            auto lock = acquire_writer_lock(no_wait);
             return cmd_organize(opts);
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
@@ -2732,6 +2765,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         try {
+            auto lock = acquire_writer_lock(no_wait);
             return cmd_rm(opts);
         } catch (const std::exception& e) {
             log_error(std::string("rm: ") + e.what());
@@ -2754,6 +2788,7 @@ int main(int argc, char* argv[]) {
             }
         }
         try {
+            auto lock = acquire_writer_lock(no_wait);
             return cmd_trash_empty(yes);
         } catch (const std::exception& e) {
             log_error(std::string("trash: ") + e.what());
@@ -2768,7 +2803,7 @@ int main(int argc, char* argv[]) {
             }
         }
         try {
-            return cmd_thumbs(argc, argv, thumbs_db, cfg.parallel.value_or(-1));
+            return cmd_thumbs(argc, argv, thumbs_db, cfg.parallel.value_or(-1), no_wait);
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
             return 1;
@@ -2782,9 +2817,9 @@ int main(int argc, char* argv[]) {
             }
         }
         try {
-            if (command == "tag") return cmd_tag(argc, argv, db_path);
-            if (command == "gallery") return cmd_gallery(argc, argv, db_path);
-            return cmd_fav(argc, argv, db_path);
+            if (command == "tag") return cmd_tag(argc, argv, db_path, no_wait);
+            if (command == "gallery") return cmd_gallery(argc, argv, db_path, no_wait);
+            return cmd_fav(argc, argv, db_path, no_wait);
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
             return 1;
@@ -2799,7 +2834,7 @@ int main(int argc, char* argv[]) {
             }
         }
         try {
-            return cmd_face(argc, argv, face_db, cfg.parallel.value_or(-1));
+            return cmd_face(argc, argv, face_db, cfg.parallel.value_or(-1), no_wait);
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
             return 1;
@@ -2810,6 +2845,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         try {
+            auto lock = acquire_writer_lock(no_wait);
             if (download_face_models()) {
                 std::cout << "All models downloaded successfully.\n";
                 return 0;
