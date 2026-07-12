@@ -63,8 +63,9 @@ phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [-
 # Move files into YYYY/MM structure
 phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
 
-# Remove entries from the database
-phig purge [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--db <path>]
+# Remove images from the database and/or disk
+phig rm [--match <glob>] [--exclude <glob>] [--hard|--db-only|--orphans] [--dry-run] [--yes] [--db <path>]
+phig trash empty [--yes]
 ```
 
 Paths follow XDG conventions (all resolved in `src/paths.cpp`): database at
@@ -78,7 +79,7 @@ config file (parsed in `src/config.cpp` via vendored inih) sets defaults; a glob
 
 ```
 src/
-├── main.cpp          CLI parsing, orchestration, organize/purge/duplicates commands
+├── main.cpp          CLI parsing, orchestration, organize/duplicates commands
 ├── scanner.h/cpp     Directory traversal, image extension filtering
 ├── hasher.h/cpp      SHA256 computation, OpenCV phash
 ├── exif.h/cpp        EXIF extraction to JSON via libexif
@@ -86,6 +87,7 @@ src/
 ├── selection.h/cpp   Glob matching, match/exclude logic
 ├── thumbs.h/cpp      Thumbnail generation (512px JPEG, SHA256-keyed cache)
 ├── metadata.h/cpp    Video metadata extraction via libavformat
+├── remove_exec.h/cpp rm command: trash/hard-delete/db-only/orphans, trash empty
 └── types.h           ImageInfo struct
 tests/
 ├── test_scanner.cpp
@@ -110,7 +112,7 @@ tests/
 - **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.
 - **Match/exclude system** — `--match` includes (repeatable), `--exclude` excludes (repeatable), exclude wins on overlap.
 - **Duplicates compare against full DB** — `--match` selects which groups to show, not which files to compare.
-- **Activity log** — `mv`/`cp`/`purge` record an operation plus per-file entries in
+- **Activity log** — `mv`/`cp`/`rm` record an operation plus per-file entries in
   `phig.db` (append-only; undo is a future logged operation). Each entry commits in
   the same transaction as the DB change it describes. Disable with `[log] enabled =
   false`; cap size with `[log] max_entries` (default 100000, `0` = unlimited, oldest

@@ -11,8 +11,8 @@ A command-line tool for managing image and video collections. Scan directories, 
 - **Face recognition** — detect faces, compute embeddings, name people, and search by person
 - **Tags, galleries, favorites** — label files with tags, assign a gallery, mark favorites, and use them in search and organize
 - **Thumbnails** — generate 512px JPEG thumbnails cached by SHA256
-- **Activity log** — record `mv`/`cp`/`purge` in the database for an audit trail
-- **Purge** — remove entries from the database by glob pattern
+- **Activity log** — record `mv`/`cp`/`rm` in the database for an audit trail
+- **Remove** — remove images by glob pattern: trash (default, recoverable), permanently delete, drop the DB row only, or drop rows for missing files
 - **Match/exclude** — repeatable `--match` and `--exclude` globs across commands, matching against full paths, with exclude taking precedence
 
 ## Building
@@ -124,13 +124,13 @@ threshold = 5          # 0-64
 threshold = 0.6
 
 [log]
-enabled = true         # record mv/cp/purge in an activity log for audit/rollback
+enabled = true         # record mv/cp/rm in an activity log for audit/rollback
 max_entries = 100000   # cap log size; 0 = unlimited, oldest operations pruned first
 file = true            # write the diagnostic log to ~/.local/state/phig/phig.log
 file_level = info      # info | warn | error — minimum level written to the file
 ```
 
-`enabled` and `max_entries` control the activity log (`mv`/`cp`/`purge` history
+`enabled` and `max_entries` control the activity log (`mv`/`cp`/`rm` history
 in the database); `file` and `file_level` control the diagnostic log — a
 separate spdlog logger that writes warnings/errors to stderr and, unless
 `file = false`, also to a rotating file at `~/.local/state/phig/phig.log`
@@ -324,7 +324,7 @@ Format tokens: `%Y` (year), `%m` (month), `%d` (day), `%camera` (EXIF model), `%
 path is already taken on disk, it renames around the conflict rather than
 overwriting.
 
-`mv`, `cp`, and `purge` are recorded in an activity log in the database for an
+`mv`, `cp`, and `rm` are recorded in an activity log in the database for an
 audit trail. Disable it with `[log] enabled = false`; cap its size with
 `[log] max_entries`.
 
@@ -333,12 +333,14 @@ thm, lrv) along with it, renaming them to match; organize and search also fall
 back to a sidecar's date when a file has no EXIF date, before falling back to
 its modified time.
 
-### Purging Database Entries
+### Removing Files
 
 ```bash
-phig purge --match "*/old-folder/*" --dry-run   # preview
-phig purge --match "*.tmp"                       # remove by pattern
-phig purge --match "*/Trash/*"                   # remove by directory
+phig rm --match "*/old-folder/*"            # trash (recoverable)
+phig rm --match "*.tmp" --hard --yes        # permanent delete
+phig rm --match "*/Trash/*" --db-only       # forget rows, keep files
+phig rm --orphans                            # drop rows for missing files
+phig trash empty --yes                       # empty the trash
 ```
 
 ### Match and Filter
@@ -357,7 +359,7 @@ phig search --match "~/Photos/*"
 
 # Globs match against the full path
 phig duplicates --match "*/2024/*"
-phig purge --match "*/old-backup/*"
+phig rm --match "*/old-backup/*"
 ```
 
 ## Running Tests
