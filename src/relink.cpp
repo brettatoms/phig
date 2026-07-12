@@ -50,6 +50,10 @@ std::vector<std::string> demote_jpeg_rows(Database& db, const std::string& scan_
                                           int64_t op_id) {
     std::vector<std::string> demoted;
     for (const auto& path : db.get_paths_with_prefix(scan_prefix)) {
+        std::error_code ec;
+        if (!fs::exists(path, ec) || ec)
+            continue;  // gone from disk -> removed_paths handles it, not demotion
+
         fs::path raw_path = sibling_raw_path(path);
         if (raw_path.empty()) continue;  // not a JPEG, or no sibling RAW on disk
 

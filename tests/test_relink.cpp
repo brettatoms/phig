@@ -162,6 +162,20 @@ TEST_F(RelinkTest, LoneJpegNotDemoted) {
     EXPECT_EQ(tags[0], "favorite");
 }
 
+TEST_F(RelinkTest, DeletedJpegWithIndexedRawNotDemoted) {
+    // JPEG row exists (indexed earlier) but its file is now gone from disk.
+    std::string jpeg_path = add_row("a.jpg", "jpegSha", /*on_disk=*/false);
+    std::string raw_path = add_row("a.cr2", "rawSha", /*on_disk=*/true);
+    db->set_tag({jpeg_path}, "favorite", true);
+
+    auto demoted = demote_jpeg_rows(*db, dir.string(), 0);
+
+    EXPECT_TRUE(demoted.empty());
+    auto tags = db->get_tags_for_image(jpeg_path);
+    ASSERT_EQ(tags.size(), 1u);
+    EXPECT_EQ(tags[0], "favorite");
+}
+
 TEST_F(RelinkTest, JpegWithRawRowMissingNotDemoted) {
     std::string jpeg_path = add_row("a.jpg", "jpegSha", /*on_disk=*/true);
     // RAW file on disk, but no DB row for it.
