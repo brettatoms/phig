@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -19,6 +20,8 @@
 #include <stdexcept>
 
 #include "log.h"
+#include "raw.h"
+#include "scanner.h"
 
 // ---- SHA-256 (minimal implementation, no external dep) ----
 
@@ -184,6 +187,14 @@ void install_cv_error_handler() {
 }  // namespace
 
 DecodeResult decode_image_with_warning(const std::string& path) {
+    DecodeResult result;
+
+    if (is_raw_extension(std::filesystem::path(path).extension().string())) {
+        result.img = raw_decode(path);
+        if (result.img.empty()) result.warning = "Cannot decode RAW file: " + path;
+        return result;
+    }
+
     install_cv_error_handler();
 
     // Suppress OpenCV's internal warnings (e.g., "Invalid SOS parameters") and
@@ -192,7 +203,6 @@ DecodeResult decode_image_with_warning(const std::string& path) {
 
     // Suppress libjpeg's direct stderr output (e.g., "Premature end of JPEG
     // file") by redirecting stderr to /dev/null for the duration of the read.
-    DecodeResult result;
     {
         StderrSuppressor suppress_stderr;
         result.img = cv::imread(path, cv::IMREAD_COLOR);

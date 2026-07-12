@@ -145,17 +145,33 @@ TEST_F(HasherTest, PhashPNG) {
 
 // ---- Concurrent warning attribution (imread-issue fix) ----
 
-// A truncated old-style-OJPEG Canon CR2: OpenCV's libtiff path decodes the
-// header, then fails during readData and raises its internal
-// "Internal imread issue" error. This is the one input that reliably routes
-// through cv::redirectError (unlike truncated JPEG/PNG, which only hit
-// libjpeg/libpng's own stderr).
+// A truncated old-style-OJPEG Canon CR2. RAW files are now routed through
+// raw_decode (Task 3), not cv::imread, so a truncated CR2 with no sidecar
+// fails gracefully at every raw_decode tier and reports a RAW-specific
+// warning rather than OpenCV's "Internal imread issue".
 static const char* kBadCr2 = "tests/data/truncated_ojpeg.cr2";
 
-TEST_F(HasherTest, DecodeWarningReportsInternalIssueForBadCr2) {
+TEST_F(HasherTest, DecodeWarningReportsRawFailureForBadCr2) {
     auto r = decode_image_with_warning(kBadCr2);
     EXPECT_TRUE(r.img.empty());
-    EXPECT_NE(r.warning.find("Internal imread"), std::string::npos) << r.warning;
+    EXPECT_NE(r.warning.find("Cannot decode RAW file"), std::string::npos) << r.warning;
+}
+
+// A CR2 with a same-basename sidecar JPEG resolves via raw_decode's tier 1
+// (sidecar JPEG) even though the CR2 itself is the truncated, undecodable
+// fixture -- proving decode_image_with_warning routes RAW extensions through
+// raw_decode rather than cv::imread.
+TEST_F(HasherTest, DecodeWarningUsesSidecarJpegForCr2) {
+    create_image("IMG_1.JPG", 64, 48, cv::Scalar(0, 128, 255));
+
+    fs::path fixture = fs::path(__FILE__).parent_path() / "data" / "truncated_ojpeg.cr2";
+    fs::path raw_path = fs::path(test_dir) / "IMG_1.CR2";
+    fs::copy_file(fixture, raw_path);
+
+    auto r = decode_image_with_warning(raw_path.string());
+
+    EXPECT_FALSE(r.img.empty());
+    EXPECT_TRUE(r.warning.empty()) << r.warning;
 }
 
 TEST_F(HasherTest, DecodeWarningEmptyForGoodImage) {
@@ -187,7 +203,7 @@ TEST_F(HasherTest, DecodeWarningNotMisattributedAcrossThreads) {
             for (int i = 0; i < kIters; i++) {
                 auto r = decode_image_with_warning(path);
                 if (decode_bad) {
-                    if (r.warning.find("Internal imread") == std::string::npos)
+                    if (r.warning.find("Cannot decode RAW file") == std::string::npos)
                         bad_missing_warning.fetch_add(1);
                 } else {
                     if (!r.warning.empty()) good_false_warning.fetch_add(1);

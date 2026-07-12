@@ -7,6 +7,7 @@
 #include <opencv2/objdetect/face.hpp>
 #include <stdexcept>
 
+#include "hasher.h"
 #include "models.h"
 
 // ---- FaceDetector (per-thread instance) ----
@@ -106,7 +107,7 @@ std::vector<FaceInfo> FaceDetector::detect(const cv::Mat& img) {
 }
 
 std::vector<FaceInfo> FaceDetector::detect(const std::string& image_path) {
-    cv::Mat img = cv::imread(image_path);
+    cv::Mat img = decode_image(image_path);
     if (img.empty()) return {};
     return detect(img);
 }
