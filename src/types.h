@@ -4,6 +4,7 @@
 #include <string>
 
 struct ImageInfo {
+    int64_t id = 0;
     std::string path;
     std::string filename;
     std::string extension;

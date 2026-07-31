@@ -1714,12 +1714,8 @@ std::string Database::auto_label_face(int64_t face_id, const std::array<float, 1
     return "";
 }
 
-std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
-    std::string sql =
-        "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, "
-        "width, height, metadata, media_type, duration_ms, blur_score FROM images WHERE 1=1";
-    std::vector<std::pair<std::string, bool>> binds;  // {value, is_int}
-
+void Database::build_filter_sql(const SearchCriteria& c, std::string& sql,
+                                std::vector<std::pair<std::string, bool>>& binds) {
     if (!c.extension.empty()) {
         sql += " AND LOWER(extension) = LOWER(?)";
         binds.push_back({c.extension, false});
@@ -1798,6 +1794,26 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
     if (c.max_sharpness >= 0) {
         sql += " AND blur_score <= " + std::to_string(c.max_sharpness);
     }
+}
+
+void Database::bind_filter_values(sqlite3_stmt* stmt,
+                                  const std::vector<std::pair<std::string, bool>>& binds,
+                                  int& idx) {
+    for (const auto& b : binds) {
+        if (b.second) {
+            sqlite3_bind_int64(stmt, idx++, std::stoll(b.first));
+        } else {
+            sqlite3_bind_text(stmt, idx++, b.first.c_str(), -1, SQLITE_TRANSIENT);
+        }
+    }
+}
+
+std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
+    std::string sql =
+        "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, "
+        "width, height, metadata, media_type, duration_ms, blur_score FROM images WHERE 1=1";
+    std::vector<std::pair<std::string, bool>> binds;  // {value, is_int}
+    build_filter_sql(c, sql, binds);
 
     sql += " ORDER BY path";
 
@@ -1811,9 +1827,8 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
         throw std::runtime_error("Failed to prepare search: " + std::string(sqlite3_errmsg(db_)));
     }
 
-    for (size_t i = 0; i < binds.size(); i++) {
-        sqlite3_bind_text(stmt, i + 1, binds[i].first.c_str(), -1, SQLITE_TRANSIENT);
-    }
+    int idx = 1;
+    bind_filter_values(stmt, binds, idx);
 
     std::vector<ImageInfo> results;
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
@@ -1842,6 +1857,98 @@ std::vector<ImageInfo> Database::search(const SearchCriteria& c) {
 
     sqlite3_finalize(stmt);
     return results;
+}
+
+namespace {
+const char* sort_column(Database::SortKey k) {
+    switch (k) {
+        case Database::SortKey::Path:
+            return "path";
+        case Database::SortKey::Size:
+            return "file_size";
+        case Database::SortKey::Filename:
+            return "filename";
+        case Database::SortKey::Date:
+        default:
+            return "effective_date";
+    }
+}
+}  // namespace
+
+// Column order must match the SELECT list in search_page().
+ImageInfo Database::row_to_image_info(sqlite3_stmt* stmt) {
+    auto text = [&](int col) -> std::string {
+        const unsigned char* p = sqlite3_column_text(stmt, col);
+        return p ? reinterpret_cast<const char*>(p) : "";
+    };
+    ImageInfo info;
+    info.id = sqlite3_column_int64(stmt, 0);
+    info.path = text(1);
+    info.filename = text(2);
+    info.extension = text(3);
+    info.file_size = sqlite3_column_int64(stmt, 4);
+    info.created_at = text(5);
+    info.modified_at = text(6);
+    info.effective_date = text(7);
+    info.sha256 = text(8);
+    info.phash = static_cast<uint64_t>(sqlite3_column_int64(stmt, 9));
+    info.width = sqlite3_column_int(stmt, 10);
+    info.height = sqlite3_column_int(stmt, 11);
+    info.metadata_json = text(12);
+    info.media_type = text(13);
+    info.duration_ms = sqlite3_column_int64(stmt, 14);
+    info.gallery = text(15);
+    info.blur_score =
+        sqlite3_column_type(stmt, 16) == SQLITE_NULL ? -1.0 : sqlite3_column_double(stmt, 16);
+    return info;
+}
+
+std::vector<ImageInfo> Database::search_page(const PageCriteria& c) {
+    std::string sql =
+        "SELECT id, path, filename, extension, file_size, created_at, modified_at, "
+        "effective_date, sha256, phash, width, height, metadata, media_type, "
+        "duration_ms, gallery, blur_score FROM images WHERE 1=1";
+    std::vector<std::pair<std::string, bool>> binds;
+    build_filter_sql(c.filter, sql, binds);
+
+    const char* dir = c.descending ? "DESC" : "ASC";
+    // id is the tiebreaker so equal sort keys never shuffle between pages.
+    sql += std::string(" ORDER BY ") + sort_column(c.sort) + " " + dir + ", id " + dir +
+           " LIMIT ? OFFSET ?";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare page query: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    int idx = 1;
+    bind_filter_values(stmt, binds, idx);
+    sqlite3_bind_int(stmt, idx++, c.limit);
+    sqlite3_bind_int64(stmt, idx++, c.offset);
+
+    std::vector<ImageInfo> out;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        out.push_back(row_to_image_info(stmt));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+int64_t Database::count_matching(const SearchCriteria& filter) {
+    std::string sql = "SELECT COUNT(*) FROM images WHERE 1=1";
+    std::vector<std::pair<std::string, bool>> binds;
+    build_filter_sql(filter, sql, binds);
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare count: " + std::string(sqlite3_errmsg(db_)));
+    }
+    int idx = 1;
+    bind_filter_values(stmt, binds, idx);
+    int64_t n = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) n = sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+    return n;
 }
 
 void Database::exec(const std::string& sql) {

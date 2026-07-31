@@ -130,6 +130,20 @@ class Database {
     };
     std::vector<ImageInfo> search(const SearchCriteria& criteria);
 
+    // Paginated search: same filters as SearchCriteria, plus sort/direction and
+    // offset/limit. id is always the tiebreaker so equal sort keys never
+    // shuffle rows between pages.
+    enum class SortKey { Date, Path, Size, Filename };
+    struct PageCriteria {
+        SearchCriteria filter;  // reuses the existing filter struct
+        SortKey sort = SortKey::Date;
+        bool descending = true;
+        int64_t offset = 0;
+        int32_t limit = 200;
+    };
+    std::vector<ImageInfo> search_page(const PageCriteria& c);
+    int64_t count_matching(const SearchCriteria& filter);
+
     // Tags (plan 011). set_tag adds/removes `tag` on the images at the given
     // paths (auto-creating the tag row on add) and returns the number of
     // existing images affected. Favorites use the built-in `favorite` tag.
@@ -186,4 +200,18 @@ class Database {
     void exec(const std::string& sql);
     int get_schema_version();
     void set_schema_version(int version);
+
+    // Builds the WHERE clause (without the "WHERE" keyword; always starts
+    // " AND ...") and appends the values to bind, in order.
+    // {value, is_int} matches the existing convention in search().
+    void build_filter_sql(const SearchCriteria& c, std::string& sql,
+                          std::vector<std::pair<std::string, bool>>& binds);
+
+    // Binds the values from build_filter_sql in order, advancing idx past the
+    // last one so the caller can bind its own trailing params (LIMIT/OFFSET).
+    void bind_filter_values(sqlite3_stmt* stmt,
+                            const std::vector<std::pair<std::string, bool>>& binds, int& idx);
+
+    // Column order must match the SELECT list in search_page().
+    ImageInfo row_to_image_info(sqlite3_stmt* stmt);
 };

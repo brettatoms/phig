@@ -129,3 +129,136 @@ TEST(Migration, BackfillsEffectiveDateForExistingRows) {
         EXPECT_EQ(find("/photos/c.jpg").effective_date, "2020-05-05 05:05:05");
     }
 }
+
+namespace {
+// Insert n images with predictable, distinct effective dates (ascending).
+void seed(Database& db, int n) {
+    for (int i = 0; i < n; ++i) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "2020-01-%02d 00:00:00", i + 1);
+        ImageInfo info;
+        info.path = "/photos/img" + std::to_string(i) + ".jpg";
+        info.filename = "img" + std::to_string(i) + ".jpg";
+        info.extension = "jpg";
+        info.file_size = 1000 + i;
+        info.modified_at = buf;
+        info.effective_date = buf;
+        info.sha256 = std::string(63, '0') + std::to_string(i % 10);
+        db.insert(info);
+    }
+}
+}  // namespace
+
+TEST(QueryPage, ReturnsRequestedPageSize) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    seed(db, 25);
+    Database::PageCriteria c;
+    c.limit = 10;
+    EXPECT_EQ(db.search_page(c).size(), 10u);
+}
+
+TEST(QueryPage, OffsetWalksWithoutOverlapOrGaps) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    seed(db, 25);
+    Database::PageCriteria c;
+    c.limit = 10;
+    std::vector<std::string> seen;
+    for (int64_t off = 0; off < 30; off += 10) {
+        c.offset = off;
+        for (const auto& r : db.search_page(c)) seen.push_back(r.path);
+    }
+    EXPECT_EQ(seen.size(), 25u);
+    std::set<std::string> uniq(seen.begin(), seen.end());
+    EXPECT_EQ(uniq.size(), 25u);  // no duplicates across pages
+}
+
+TEST(QueryPage, DateDescendingIsNewestFirst) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    seed(db, 5);
+    Database::PageCriteria c;
+    c.sort = Database::SortKey::Date;
+    c.descending = true;
+    auto rows = db.search_page(c);
+    ASSERT_EQ(rows.size(), 5u);
+    EXPECT_EQ(rows.front().effective_date, "2020-01-05 00:00:00");
+    EXPECT_EQ(rows.back().effective_date, "2020-01-01 00:00:00");
+}
+
+TEST(QueryPage, StableUnderEqualDates) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    for (int i = 0; i < 10; ++i) {
+        ImageInfo info;
+        info.path = "/photos/same" + std::to_string(i) + ".jpg";
+        info.filename = "same" + std::to_string(i) + ".jpg";
+        info.extension = "jpg";
+        info.modified_at = "2020-06-06 06:06:06";
+        info.effective_date = "2020-06-06 06:06:06";  // all identical
+        info.sha256 = std::string(64, 'b');
+        db.insert(info);
+    }
+    Database::PageCriteria c;
+    c.limit = 5;
+    auto p1 = db.search_page(c);
+    c.offset = 5;
+    auto p2 = db.search_page(c);
+    std::set<std::string> uniq;
+    for (const auto& r : p1) uniq.insert(r.path);
+    for (const auto& r : p2) uniq.insert(r.path);
+    EXPECT_EQ(uniq.size(), 10u);  // id tiebreaker prevents page shuffling
+}
+
+TEST(QueryPage, OffsetPastEndReturnsEmpty) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    seed(db, 5);
+    Database::PageCriteria c;
+    c.offset = 100;
+    EXPECT_TRUE(db.search_page(c).empty());
+}
+
+TEST(QueryPage, RowsWithNoDateSortLastDescending) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    seed(db, 3);
+    ImageInfo undated;
+    undated.path = "/photos/undated.jpg";
+    undated.filename = "undated.jpg";
+    undated.extension = "jpg";
+    undated.sha256 = std::string(64, 'c');
+    db.insert(undated);  // no modified_at, no metadata
+    Database::PageCriteria c;
+    c.descending = true;
+    auto rows = db.search_page(c);
+    ASSERT_EQ(rows.size(), 4u);
+    EXPECT_EQ(rows.back().path, "/photos/undated.jpg");
+}
+
+TEST(CountMatching, CountsWithoutFetching) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    seed(db, 25);
+    EXPECT_EQ(db.count_matching(Database::SearchCriteria{}), 25);
+}
+
+TEST(CountMatching, RespectsFilter) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    seed(db, 25);
+    Database::SearchCriteria f;
+    f.extension = "png";
+    EXPECT_EQ(db.count_matching(f), 0);
+    f.extension = "jpg";
+    EXPECT_EQ(db.count_matching(f), 25);
+}
