@@ -110,8 +110,9 @@ phig_status phig_query_count(phig_ctx* ctx, const phig_query* q, int64_t* out) {
 
 phig_status phig_query_page(phig_ctx* ctx, const phig_query* q, int64_t offset, int32_t limit,
                             phig_image_list** out) {
-    if (q == nullptr || out == nullptr) return PHIG_ERR_INVALID_ARG;
+    if (out == nullptr) return PHIG_ERR_INVALID_ARG;
     *out = nullptr;
+    if (q == nullptr) return PHIG_ERR_INVALID_ARG;
     if (limit <= 0 || offset < 0) return PHIG_ERR_INVALID_ARG;
     PHIG_TRY(ctx)
     Database::PageCriteria c = q->criteria;

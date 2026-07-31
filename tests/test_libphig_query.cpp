@@ -472,6 +472,12 @@ TEST(AbiQuery, NullArgumentsAreRejected) {
     EXPECT_EQ(phig_query_count(ctx, nullptr, &n), PHIG_ERR_INVALID_ARG);
     EXPECT_EQ(phig_query_count(ctx, q, nullptr), PHIG_ERR_INVALID_ARG);
     EXPECT_EQ(phig_query_page(ctx, q, 0, 10, nullptr), PHIG_ERR_INVALID_ARG);
+    // A NULL query with a valid, pre-poisoned out-param must still null it —
+    // a caller that only checks the return code and then unconditionally
+    // frees *out (a common FFI pattern) would otherwise free garbage.
+    list = reinterpret_cast<phig_image_list*>(0x1);
+    EXPECT_EQ(phig_query_page(ctx, nullptr, 0, 10, &list), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(list, nullptr);
     phig_query_set_extension(nullptr, "jpg");  // must not crash
     phig_query_free(nullptr);                  // must not crash
     phig_image_list_free(nullptr);             // must not crash
