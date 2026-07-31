@@ -148,6 +148,20 @@ PHIG_API phig_status phig_query_page(phig_ctx* ctx, const phig_query* q, int64_t
 PHIG_API phig_status phig_image_metadata(phig_ctx* ctx, int64_t id, char** json_out);
 PHIG_API void phig_string_free(char* s);
 
+/* Resolves the cache path for an image's thumbnail. Returns a PATH rather than
+ * bytes so a client can hand the file straight to its image loader with no
+ * copy through this ABI, and so the cache layout stays private to phig.
+ *
+ * `sha256` must be a 64-char hex digest. On PHIG_OK, out_path holds the path
+ * and *exists says whether the file is present; on false the client should
+ * request generation rather than reading it. Returns PHIG_ERR_INVALID_ARG if
+ * out_len is too small for the path plus its NUL.
+ *
+ * Resolves against phig's default thumbnail cache location; phig_config's
+ * thumbs_dir is not yet honored by this lookup. */
+PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, char* out_path,
+                                       size_t out_len, bool* exists);
+
 #ifdef __cplusplus
 }
 #endif

@@ -37,5 +37,13 @@ void phig_c_compile_check(void) {
     (void)phig_image_metadata(ctx, 1, &json);
     phig_string_free(json);
 
+    {
+        char path[4096];
+        bool exists = false;
+        (void)phig_thumb_lookup(ctx,
+                                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                                path, sizeof(path), &exists);
+    }
+
     phig_shutdown(ctx);
 }

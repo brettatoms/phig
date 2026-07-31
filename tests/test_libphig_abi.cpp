@@ -148,3 +148,44 @@ TEST(Abi, ReadWriteInitStillCreatesDatabase) {
     EXPECT_TRUE(std::filesystem::exists(tmp.path));
     phig_shutdown(ctx);
 }
+
+TEST(AbiThumb, ReturnsPathAndReportsMissing) {
+    TempDbPath tmp;
+    make_db(tmp.path);
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+
+    std::string sha(64, 'a');
+    char buf[4096];
+    bool exists = true;
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    EXPECT_NE(buf[0], '\0');
+    EXPECT_FALSE(exists);  // nothing generated for this digest
+    // Path must contain the digest so it is stable and cache-keyed by content.
+    EXPECT_NE(std::string(buf).find(sha), std::string::npos);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiThumb, RejectsBadDigestAndSmallBuffer) {
+    TempDbPath tmp;
+    make_db(tmp.path);
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+
+    char buf[4096];
+    bool exists = false;
+    EXPECT_EQ(phig_thumb_lookup(ctx, "nothex", buf, sizeof(buf), &exists), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(phig_thumb_lookup(ctx, nullptr, buf, sizeof(buf), &exists), PHIG_ERR_INVALID_ARG);
+
+    std::string sha(64, 'a');
+    char tiny[8];
+    EXPECT_EQ(phig_thumb_lookup(ctx, sha.c_str(), tiny, sizeof(tiny), &exists),
+              PHIG_ERR_INVALID_ARG);
+    phig_shutdown(ctx);
+}
