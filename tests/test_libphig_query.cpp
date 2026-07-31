@@ -52,6 +52,19 @@ struct TempDb {
         std::filesystem::remove(path + "-shm", ec);
     }
 };
+
+// Database::exec() is private; drive raw SQL through the public db_ptr(), as
+// tests/test_database.cpp's raw_exec() does (duplicated here since that one
+// is file-local static).
+void raw_exec(sqlite3* db, const char* sql) {
+    char* err = nullptr;
+    int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    if (rc != SQLITE_OK) {
+        std::string msg = err ? err : "sqlite error";
+        sqlite3_free(err);
+        throw std::runtime_error(msg);
+    }
+}
 }  // namespace
 
 TEST(Migration, BackfillsEffectiveDateForExistingRows) {
@@ -59,6 +72,7 @@ TEST(Migration, BackfillsEffectiveDateForExistingRows) {
     {
         Database db(tmp.path);
         db.init_schema();
+
         ImageInfo info;
         info.path = "/photos/a.jpg";
         info.filename = "a.jpg";
@@ -68,12 +82,50 @@ TEST(Migration, BackfillsEffectiveDateForExistingRows) {
         info.sha256 = std::string(64, 'a');
         info.metadata_json = R"({"DateTimeOriginal":"2019:07:07 07:07:07"})";
         db.insert(info);
+
+        // Empty metadata ("" is ImageInfo::metadata_json's default and what
+        // insert() binds unconditionally) must not abort the backfill with
+        // "malformed JSON" — it should fall back to modified_at.
+        ImageInfo empty_meta;
+        empty_meta.path = "/photos/b.jpg";
+        empty_meta.filename = "b.jpg";
+        empty_meta.extension = "jpg";
+        empty_meta.file_size = 100;
+        empty_meta.modified_at = "2020-04-04 04:04:04";
+        empty_meta.sha256 = std::string(64, 'b');
+        empty_meta.metadata_json = "";
+        db.insert(empty_meta);
+
+        // NULL metadata (e.g. a hand-crafted row, or one from a source that
+        // never set the column) must also fall back to modified_at.
+        std::string insert_c =
+            "INSERT INTO images (path, filename, extension, file_size, modified_at, "
+            "sha256, phash, metadata) VALUES ('/photos/c.jpg', 'c.jpg', 'jpg', 100, "
+            "'2020-05-05 05:05:05', '" +
+            std::string(64, 'c') + "', 0, NULL)";
+        raw_exec(db.db_ptr(), insert_c.c_str());
+
+        // Roll back to pre-v6 and clear effective_date so the v6 migration's
+        // SQL backfill actually runs on reopen, instead of insert() having
+        // already populated it (which would pass even with a broken migration).
+        raw_exec(db.db_ptr(),
+                 "UPDATE meta SET value='5' WHERE key='schema_version';"
+                 "UPDATE images SET effective_date = NULL");
     }
     {
         Database db(tmp.path);
-        db.init_schema();  // idempotent; must not lose data
+        db.init_schema();  // runs the v6 migration
         auto rows = db.get_all_images();
-        ASSERT_EQ(rows.size(), 1u);
-        EXPECT_EQ(rows[0].effective_date, "2019-07-07 07:07:07");
+        ASSERT_EQ(rows.size(), 3u);
+
+        auto find = [&](const std::string& path) {
+            for (auto& r : rows)
+                if (r.path == path) return r;
+            ADD_FAILURE() << "missing row " << path;
+            return rows[0];
+        };
+        EXPECT_EQ(find("/photos/a.jpg").effective_date, "2019-07-07 07:07:07");
+        EXPECT_EQ(find("/photos/b.jpg").effective_date, "2020-04-04 04:04:04");
+        EXPECT_EQ(find("/photos/c.jpg").effective_date, "2020-05-05 05:05:05");
     }
 }

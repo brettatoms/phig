@@ -65,8 +65,8 @@ static const std::vector<std::string> migrations = {
     // and then rolled back to v4/v5 for testing already has the column, and
     // SQLite's ALTER TABLE has no IF NOT EXISTS.
     R"(UPDATE images SET effective_date = COALESCE(
-                   json_extract(metadata, '$.DateTimeOriginal'),
-                   json_extract(metadata, '$.DateTimeDigitized'),
+                   CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.DateTimeOriginal') END,
+                   CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.DateTimeDigitized') END,
                    modified_at);
        UPDATE images SET effective_date =
                    substr(effective_date,1,4) || '-' || substr(effective_date,6,2) || '-' ||
@@ -880,11 +880,11 @@ int Database::delete_paths_logged(const std::vector<std::string>& paths, int64_t
         throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
     };
 
-    static const char* cols[] = {"path",        "filename",    "extension", "file_size",
-                                 "created_at",  "modified_at", "sha256",    "phash",
-                                 "width",       "height",      "metadata",  "media_type",
-                                 "duration_ms", "gallery",     "blur_score"};
-    const int kNumCols = 15;
+    static const char* cols[] = {"path",        "filename",    "extension",  "file_size",
+                                 "created_at",  "modified_at", "sha256",     "phash",
+                                 "width",       "height",      "metadata",   "media_type",
+                                 "duration_ms", "gallery",     "blur_score", "effective_date"};
+    const int kNumCols = 16;
 
     int deleted = 0;
     for (const auto& path : paths) {
@@ -894,7 +894,7 @@ int Database::delete_paths_logged(const std::vector<std::string>& paths, int64_t
             const char* sel =
                 "SELECT path, filename, extension, file_size, created_at, modified_at, "
                 "sha256, phash, width, height, metadata, media_type, duration_ms, gallery, "
-                "blur_score FROM images WHERE path = ?";
+                "blur_score, effective_date FROM images WHERE path = ?";
             sqlite3_stmt* s = nullptr;
             if (sqlite3_prepare_v2(db_, sel, -1, &s, nullptr) != SQLITE_OK)
                 fail("Failed to prepare snapshot select");
