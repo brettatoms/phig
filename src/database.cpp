@@ -137,28 +137,37 @@ std::string compute_effective_date(const std::string& metadata_json,
     return d;
 }
 
-Database::Database(const std::string& path) {
-    // Ensure parent directory exists
+Database::Database(const std::string& path, bool read_only) {
+    // Ensure parent directory exists. Skipped for read-only: creating a parent
+    // directory for a database we then refuse to create is the same
+    // contract violation one level up.
     fs::path db_path(path);
-    if (db_path.has_parent_path()) {
+    if (!read_only && db_path.has_parent_path()) {
         fs::create_directories(db_path.parent_path());
     }
 
-    int rc = sqlite3_open(path.c_str(), &db_);
+    // Read-only callers must not create a database; read-write keeps the
+    // historical create-if-missing behavior.
+    const int flags =
+        read_only ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
+    int rc = sqlite3_open_v2(path.c_str(), &db_, flags, nullptr);
     if (rc != SQLITE_OK) {
         std::string err = sqlite3_errmsg(db_);
         sqlite3_close(db_);
         throw std::runtime_error("Failed to open database: " + err);
     }
 
-    // Enable WAL mode for better concurrent read/write performance
-    exec("PRAGMA journal_mode=WAL");
-    exec("PRAGMA synchronous=NORMAL");
+    if (!read_only) {
+        // Enable WAL mode for better concurrent read/write performance
+        exec("PRAGMA journal_mode=WAL");
+        exec("PRAGMA synchronous=NORMAL");
+    }
     // Wait (rather than fail instantly with SQLITE_BUSY) when another phig
     // process holds the single WAL writer lock.
     sqlite3_busy_timeout(db_, 30000);
     // Enforce declared FK cascades (faces/image_tags ON DELETE CASCADE). SQLite
     // defaults foreign_keys OFF per-connection, so this must be set every open.
+    // Connection-local; does not write to the database file.
     exec("PRAGMA foreign_keys=ON");
 
     // Initialize sqlite-vec extension

@@ -82,3 +82,41 @@ TEST(Abi, LastErrorOnNullCtxReturnsEmptyString) {
     ASSERT_NE(msg, nullptr);
     EXPECT_STREQ(msg, "");
 }
+
+TEST(Abi, ReadOnlyInitDoesNotCreateDatabase) {
+    TempDbPath tmp;  // path does not exist yet
+    ASSERT_FALSE(std::filesystem::exists(tmp.path));
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    EXPECT_NE(phig_init(&cfg, &ctx), PHIG_OK);
+    EXPECT_EQ(ctx, nullptr);
+    // The whole point: a read-only open must not create the file.
+    EXPECT_FALSE(std::filesystem::exists(tmp.path));
+}
+
+TEST(Abi, ReadOnlyContextCannotWrite) {
+    TempDbPath tmp;
+    make_db(tmp.path);  // exists, migrated
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+    ASSERT_NE(ctx, nullptr);
+    phig_shutdown(ctx);
+}
+
+TEST(Abi, ReadWriteInitStillCreatesDatabase) {
+    TempDbPath tmp;
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.mode = PHIG_READ_WRITE;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+    EXPECT_TRUE(std::filesystem::exists(tmp.path));
+    phig_shutdown(ctx);
+}

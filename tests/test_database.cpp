@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -817,7 +818,8 @@ TEST_F(DatabaseTest, LogPruneUnlimitedIsNoOp) {
 
 TEST_F(DatabaseTest, PurgeLogsRestorableSnapshot) {
     db->insert(make_image("/x/a.jpg", "shaA"));
-    int64_t op = db->log_begin_operation("rm", "phig rm --db-only --match *", "2026-07-06T00:00:00Z");
+    int64_t op =
+        db->log_begin_operation("rm", "phig rm --db-only --match *", "2026-07-06T00:00:00Z");
     int n = db->delete_paths_logged({"/x/a.jpg"}, op);
     db->log_finish_operation(op, "completed");
     EXPECT_EQ(n, 1);
@@ -1082,4 +1084,40 @@ TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
     EXPECT_EQ(version, "6");  // CURRENT_SCHEMA_VERSION
 
     fs::remove_all(dir);
+}
+
+TEST_F(DatabaseTest, ReadOnlyOpenFailsOnMissingFileAndDoesNotCreateIt) {
+    auto path =
+        (std::filesystem::temp_directory_path() / ("phig_ro_" + std::to_string(::getpid()) + ".db"))
+            .string();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    ASSERT_FALSE(std::filesystem::exists(path));
+
+    EXPECT_THROW(Database(path, /*read_only=*/true), std::runtime_error);
+    EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST_F(DatabaseTest, ReadOnlyOpenRejectsWrites) {
+    auto path = (std::filesystem::temp_directory_path() /
+                 ("phig_ro2_" + std::to_string(::getpid()) + ".db"))
+                    .string();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    {
+        Database db(path);
+        db.init_schema();
+    }  // create read-write
+
+    Database ro(path, /*read_only=*/true);
+    ImageInfo info;
+    info.path = "/photos/nope.jpg";
+    info.filename = "nope.jpg";
+    info.extension = "jpg";
+    info.sha256 = std::string(64, 'f');
+    EXPECT_THROW(ro.insert(info), std::runtime_error);
+
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(path + "-wal", ec);
+    std::filesystem::remove(path + "-shm", ec);
 }

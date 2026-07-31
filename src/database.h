@@ -22,7 +22,10 @@ std::string compute_effective_date(const std::string& metadata_json,
 
 class Database {
    public:
-    explicit Database(const std::string& path);
+    // read_only opens with SQLITE_OPEN_READONLY: the file must already exist
+    // (no create-if-missing) and writes fail. Used by libphig's read-only
+    // contexts so a GUI can never contend for the writer lock.
+    explicit Database(const std::string& path, bool read_only = false);
     ~Database();
 
     Database(const Database&) = delete;
