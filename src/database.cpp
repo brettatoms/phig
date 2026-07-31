@@ -1908,6 +1908,7 @@ ImageInfo Database::row_to_image_info(sqlite3_stmt* stmt) {
     info.gallery = text(15);
     info.blur_score =
         sqlite3_column_type(stmt, 16) == SQLITE_NULL ? -1.0 : sqlite3_column_double(stmt, 16);
+    info.favorite = sqlite3_column_int(stmt, 17) != 0;
     return info;
 }
 
@@ -1915,7 +1916,10 @@ std::vector<ImageInfo> Database::search_page(const PageCriteria& c) {
     std::string sql =
         "SELECT id, path, filename, extension, file_size, created_at, modified_at, "
         "effective_date, sha256, phash, width, height, metadata, media_type, "
-        "duration_ms, gallery, blur_score FROM images WHERE 1=1";
+        "duration_ms, gallery, blur_score, "
+        "EXISTS(SELECT 1 FROM image_tags it JOIN tags t ON t.id = it.tag_id "
+        "WHERE it.image_id = images.id AND t.name = 'favorite') "
+        "FROM images WHERE 1=1";
     std::vector<std::pair<std::string, bool>> binds;
     build_filter_sql(c.filter, sql, binds);
 
@@ -1957,6 +1961,24 @@ int64_t Database::count_matching(const SearchCriteria& filter) {
     if (sqlite3_step(stmt) == SQLITE_ROW) n = sqlite3_column_int64(stmt, 0);
     sqlite3_finalize(stmt);
     return n;
+}
+
+bool Database::get_metadata_json(int64_t id, std::string& out) {
+    const char* sql = "SELECT metadata FROM images WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare metadata query: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    sqlite3_bind_int64(stmt, 1, id);
+    bool found = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char* p = sqlite3_column_text(stmt, 0);
+        out = p ? reinterpret_cast<const char*>(p) : "";
+        found = true;
+    }
+    sqlite3_finalize(stmt);
+    return found;
 }
 
 void Database::exec(const std::string& sql) {

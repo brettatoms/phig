@@ -269,3 +269,274 @@ TEST(CountMatching, RespectsFilter) {
     f.extension = "jpg";
     EXPECT_EQ(db.count_matching(f), 25);
 }
+
+#include "phig/phig.h"
+
+namespace {
+// Opens a read-only ABI context on `path`. Caller shuts it down.
+phig_ctx* open_ro(const std::string& path) {
+    phig_config cfg{};
+    cfg.db_path = path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+    return ctx;
+}
+}  // namespace
+
+TEST(AbiQuery, CountMatchesSeededRows) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed(db, 25);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    int64_t n = 0;
+    ASSERT_EQ(phig_query_count(ctx, q, &n), PHIG_OK);
+    EXPECT_EQ(n, 25);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, PageReturnsLimitAndPopulatesFields) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed(db, 25);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    phig_image_list* list = nullptr;
+    ASSERT_EQ(phig_query_page(ctx, q, 0, 10, &list), PHIG_OK);
+    ASSERT_NE(list, nullptr);
+    ASSERT_EQ(list->count, 10);
+    EXPECT_GT(list->items[0].id, 0);
+    EXPECT_NE(list->items[0].path[0], '\0');
+    EXPECT_NE(list->items[0].effective_date[0], '\0');
+    EXPECT_EQ(list->items[0].media_type, PHIG_MEDIA_IMAGE);
+    phig_image_list_free(list);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, NoStringFieldIsNull) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        ImageInfo info;  // minimal row: most text columns empty/NULL
+        info.path = "/photos/bare.jpg";
+        info.filename = "bare.jpg";
+        info.extension = "jpg";
+        info.sha256 = std::string(64, 'd');
+        db.insert(info);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    phig_image_list* list = nullptr;
+    ASSERT_EQ(phig_query_page(ctx, q, 0, 10, &list), PHIG_OK);
+    ASSERT_EQ(list->count, 1);
+    const phig_image& im = list->items[0];
+    EXPECT_NE(im.path, nullptr);
+    EXPECT_NE(im.filename, nullptr);
+    EXPECT_NE(im.extension, nullptr);
+    EXPECT_NE(im.sha256, nullptr);
+    EXPECT_NE(im.created_at, nullptr);
+    EXPECT_NE(im.modified_at, nullptr);
+    EXPECT_NE(im.effective_date, nullptr);
+    EXPECT_NE(im.gallery, nullptr);
+    phig_image_list_free(list);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, StringsStayValidUntilListFreed) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed(db, 3);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    phig_query_new(ctx, &q);
+    phig_image_list* list = nullptr;
+    ASSERT_EQ(phig_query_page(ctx, q, 0, 3, &list), PHIG_OK);
+    // Copy the pointer, then run another query; the first list must be intact.
+    const char* first_path = list->items[0].path;
+    std::string before(first_path);
+    phig_image_list* other = nullptr;
+    ASSERT_EQ(phig_query_page(ctx, q, 0, 3, &other), PHIG_OK);
+    EXPECT_EQ(before, std::string(first_path));
+    phig_image_list_free(other);
+    phig_image_list_free(list);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, PagePastEndIsEmptyNotError) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed(db, 3);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    phig_query_new(ctx, &q);
+    phig_image_list* list = nullptr;
+    ASSERT_EQ(phig_query_page(ctx, q, 500, 10, &list), PHIG_OK);
+    ASSERT_NE(list, nullptr);
+    EXPECT_EQ(list->count, 0);
+    phig_image_list_free(list);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, RejectsNonPositiveLimit) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    phig_query_new(ctx, &q);
+    phig_image_list* list = nullptr;
+    EXPECT_EQ(phig_query_page(ctx, q, 0, 0, &list), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(phig_query_page(ctx, q, 0, -5, &list), PHIG_ERR_INVALID_ARG);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, ExtensionFilterApplies) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed(db, 5);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    phig_query_new(ctx, &q);
+    phig_query_set_extension(q, "png");
+    int64_t n = -1;
+    ASSERT_EQ(phig_query_count(ctx, q, &n), PHIG_OK);
+    EXPECT_EQ(n, 0);
+    phig_query_set_extension(q, "jpg");
+    ASSERT_EQ(phig_query_count(ctx, q, &n), PHIG_OK);
+    EXPECT_EQ(n, 5);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, SortDateDescendingIsNewestFirst) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed(db, 5);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    phig_query_new(ctx, &q);
+    phig_query_set_sort(q, PHIG_SORT_DATE, true);
+    phig_image_list* list = nullptr;
+    ASSERT_EQ(phig_query_page(ctx, q, 0, 5, &list), PHIG_OK);
+    ASSERT_EQ(list->count, 5);
+    EXPECT_STREQ(list->items[0].effective_date, "2020-01-05 00:00:00");
+    EXPECT_STREQ(list->items[4].effective_date, "2020-01-01 00:00:00");
+    phig_image_list_free(list);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, NullArgumentsAreRejected) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    phig_query_new(ctx, &q);
+    int64_t n = 0;
+    phig_image_list* list = nullptr;
+    EXPECT_EQ(phig_query_count(nullptr, q, &n), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(phig_query_count(ctx, nullptr, &n), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(phig_query_count(ctx, q, nullptr), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(phig_query_page(ctx, q, 0, 10, nullptr), PHIG_ERR_INVALID_ARG);
+    phig_query_set_extension(nullptr, "jpg");  // must not crash
+    phig_query_free(nullptr);                  // must not crash
+    phig_image_list_free(nullptr);             // must not crash
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, MetadataFetchedOnDemand) {
+    TempDb tmp;
+    int64_t id = 0;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        ImageInfo info;
+        info.path = "/photos/meta.jpg";
+        info.filename = "meta.jpg";
+        info.extension = "jpg";
+        info.sha256 = std::string(64, 'e');
+        info.metadata_json = R"({"Model":"Canon EOS 5D"})";
+        db.insert(info);
+        id = db.get_image_id(info.path);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    char* json = nullptr;
+    ASSERT_EQ(phig_image_metadata(ctx, id, &json), PHIG_OK);
+    ASSERT_NE(json, nullptr);
+    EXPECT_NE(std::string(json).find("Canon EOS 5D"), std::string::npos);
+    phig_string_free(json);
+    phig_string_free(nullptr);  // must not crash
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, MetadataMissingIdIsNotFound) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    char* json = nullptr;
+    EXPECT_EQ(phig_image_metadata(ctx, 999999, &json), PHIG_ERR_NOT_FOUND);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, FavoriteIsPopulated) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        ImageInfo info;
+        info.path = "/photos/fav.jpg";
+        info.filename = "fav.jpg";
+        info.extension = "jpg";
+        info.sha256 = std::string(64, 'f');
+        db.insert(info);
+        db.set_tag({"/photos/fav.jpg"}, "favorite", true);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    phig_image_list* list = nullptr;
+    ASSERT_EQ(phig_query_page(ctx, q, 0, 10, &list), PHIG_OK);
+    ASSERT_EQ(list->count, 1);
+    EXPECT_TRUE(list->items[0].favorite);
+    phig_image_list_free(list);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}

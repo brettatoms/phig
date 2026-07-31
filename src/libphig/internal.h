@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "database.h"
 #include "phig/phig.h"
@@ -12,6 +13,14 @@ struct phig_ctx {
     std::string thumbs_dir;
     std::string last_error;
 };
+
+struct phig_query {
+    Database::PageCriteria criteria;
+};
+
+// Builds a phig_image_list (with its own string arena) from search results.
+// Defined in records.cpp.
+phig_image_list* phig_make_image_list(const std::vector<ImageInfo>& rows);
 
 // Every public entry point wraps its body in these so no exception escapes
 // the ABI boundary. Requires a `phig_ctx* ctx` in scope with a valid pointer.

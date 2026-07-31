@@ -147,6 +147,9 @@ class Database {
     std::vector<ImageInfo> search_page(const PageCriteria& c);
     int64_t count_matching(const SearchCriteria& filter);
 
+    // Reads images.metadata for one id. Returns false if no such row.
+    bool get_metadata_json(int64_t id, std::string& out);
+
     // Tags (plan 011). set_tag adds/removes `tag` on the images at the given
     // paths (auto-creating the tag row on add) and returns the number of
     // existing images affected. Favorites use the built-in `favorite` tag.

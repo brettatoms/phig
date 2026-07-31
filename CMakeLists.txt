@@ -118,6 +118,8 @@ target_compile_options(phig-lib PRIVATE ${PHIG_WARNINGS})
 # ---- libphig: C ABI shared library ----
 add_library(phig_abi SHARED
     src/libphig/context.cpp
+    src/libphig/query.cpp
+    src/libphig/records.cpp
 )
 set_target_properties(phig_abi PROPERTIES
     OUTPUT_NAME phig
