@@ -4,7 +4,7 @@
 
 void phig_c_compile_check(void) {
     phig_config cfg;
-    phig_ctx *ctx = NULL;
+    phig_ctx* ctx = NULL;
     cfg.db_path = "/nonexistent/phig.db";
     cfg.thumbs_dir = NULL;
     cfg.mode = PHIG_READ_ONLY;

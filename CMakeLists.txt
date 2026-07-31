@@ -138,9 +138,19 @@ target_include_directories(phig_abi
 # libphig-internal.a after the rename above).
 target_link_libraries(phig_abi PRIVATE phig-lib)
 # phig-lib and its dependencies (phig-vendor, etc.) are built with default
-# symbol visibility for use in the phig/phig-tests executables; without this,
-# their symbols would leak through into libphig.so's exported ABI.
-target_link_options(phig_abi PRIVATE "LINKER:--exclude-libs,ALL")
+# symbol visibility for use in the phig/phig-tests executables; without an
+# explicit export list, their symbols would leak through into libphig.so's
+# exported ABI. Declares exactly the phig_* surface instead of relying on
+# hiding everything else, so it stays correct even if a dependency's own
+# visibility settings change. ld64 (macOS) and GNU ld/gold (Linux) take this
+# via different flags and file formats (Mach-O prefixes C symbols with `_`).
+if(APPLE)
+    target_link_options(phig_abi PRIVATE
+        "LINKER:-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/src/libphig/phig.exported_symbols")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(phig_abi PRIVATE
+        "LINKER:--version-script,${CMAKE_CURRENT_SOURCE_DIR}/src/libphig/phig.version")
+endif()
 
 install(TARGETS phig_abi LIBRARY DESTINATION lib)
 install(DIRECTORY include/phig DESTINATION include)
@@ -178,6 +188,12 @@ add_executable(phig-tests
     tests/test_libphig_query.cpp
     tests/test_libphig_abi.cpp
     tests/test_libphig_c_compile.c
+)
+# Applies to phig-tests' C sources only (test_libphig_c_compile.c) — proves
+# include/phig/phig.h is valid C99, not just whatever gnu17 happens to allow.
+set_target_properties(phig-tests PROPERTIES
+    C_STANDARD 99
+    C_STANDARD_REQUIRED ON
 )
 
 target_link_libraries(phig-tests PRIVATE
