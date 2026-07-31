@@ -67,6 +67,13 @@ void raw_exec(sqlite3* db, const char* sql) {
 }
 }  // namespace
 
+// Creates an initialized, empty phig database at `path`. Used by
+// test_libphig_abi.cpp.
+void make_db(const std::string& path) {
+    Database db(path);
+    db.init_schema();
+}
+
 TEST(Migration, BackfillsEffectiveDateForExistingRows) {
     TempDb tmp;
     {

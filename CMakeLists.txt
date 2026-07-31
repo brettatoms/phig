@@ -43,6 +43,7 @@ target_include_directories(phig-vendor PUBLIC
     ${CMAKE_SOURCE_DIR}/vendor/inih
 )
 target_compile_definitions(phig-vendor PUBLIC SQLITE_VEC_STATIC SQLITE_CORE)
+set_target_properties(phig-vendor PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ---- Shared library (compiled once, used by binary + tests) ----
 add_library(phig-lib STATIC
@@ -65,6 +66,13 @@ add_library(phig-lib STATIC
     src/dates.cpp
     src/raw.cpp
     src/lockfile.cpp
+)
+
+set_target_properties(phig-lib PROPERTIES
+    OUTPUT_NAME phig-internal
+    # phig-lib is STATIC; linking it into a shared library requires
+    # position-independent code, which a static target does not get by default.
+    POSITION_INDEPENDENT_CODE ON
 )
 
 target_include_directories(phig-lib PUBLIC
@@ -107,6 +115,36 @@ target_link_directories(phig-lib PUBLIC
 
 target_compile_options(phig-lib PRIVATE ${PHIG_WARNINGS})
 
+# ---- libphig: C ABI shared library ----
+add_library(phig_abi SHARED
+    src/libphig/context.cpp
+)
+set_target_properties(phig_abi PROPERTIES
+    OUTPUT_NAME phig
+    VERSION 1.0.0
+    SOVERSION 1
+    # Hide everything not explicitly exported so the ABI surface is exactly
+    # what the header declares.
+    C_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
+target_include_directories(phig_abi
+    PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+# phig-lib is the existing internal static library target (output:
+# libphig-internal.a after the rename above).
+target_link_libraries(phig_abi PRIVATE phig-lib)
+# phig-lib and its dependencies (phig-vendor, etc.) are built with default
+# symbol visibility for use in the phig/phig-tests executables; without this,
+# their symbols would leak through into libphig.so's exported ABI.
+target_link_options(phig_abi PRIVATE "LINKER:--exclude-libs,ALL")
+
+install(TARGETS phig_abi LIBRARY DESTINATION lib)
+install(DIRECTORY include/phig DESTINATION include)
+
 # ---- Binary ----
 add_executable(phig src/main.cpp)
 target_link_libraries(phig PRIVATE phig-lib)
@@ -138,10 +176,13 @@ add_executable(phig-tests
     tests/test_raw.cpp
     tests/test_lockfile.cpp
     tests/test_libphig_query.cpp
+    tests/test_libphig_abi.cpp
+    tests/test_libphig_c_compile.c
 )
 
 target_link_libraries(phig-tests PRIVATE
     phig-lib
+    phig_abi
     GTest::gtest_main
 )
 
