@@ -12,12 +12,13 @@
 #ifndef SQLITE_CORE
 #define SQLITE_CORE
 #endif
+#include "dates.h"
 #include "sqlite-vec.h"
 
 namespace fs = std::filesystem;
 
 // Schema version this code expects. Bump when adding migrations.
-static const int CURRENT_SCHEMA_VERSION = 5;
+static const int CURRENT_SCHEMA_VERSION = 6;
 
 // migrations[N] upgrades from version N-1 to version N.
 // Version 1 = initial schema, created directly by init_schema().
@@ -58,6 +59,21 @@ static const std::vector<std::string> migrations = {
          dst          TEXT,
          restore_json TEXT);
        CREATE INDEX idx_op_entries ON operation_entries(op_id);)",
+    // v6: indexed effective_date for date-sorted pagination without a full
+    // scan/JSON-parse of every row. The ADD COLUMN happens in C++ (see the
+    // migration loop) because a DB created fresh at a later CURRENT_SCHEMA_VERSION
+    // and then rolled back to v4/v5 for testing already has the column, and
+    // SQLite's ALTER TABLE has no IF NOT EXISTS.
+    R"(UPDATE images SET effective_date = COALESCE(
+                   json_extract(metadata, '$.DateTimeOriginal'),
+                   json_extract(metadata, '$.DateTimeDigitized'),
+                   modified_at);
+       UPDATE images SET effective_date =
+                   substr(effective_date,1,4) || '-' || substr(effective_date,6,2) || '-' ||
+                   substr(effective_date,9)
+               WHERE effective_date LIKE '____:__:__%';
+       CREATE INDEX IF NOT EXISTS idx_effective_date
+               ON images(effective_date DESC, id DESC);)",
 };
 
 namespace {
@@ -100,6 +116,26 @@ std::string json_escape(const std::string& s) {
     return o;
 }
 }  // namespace
+
+std::string compute_effective_date(const std::string& metadata_json,
+                                   const std::string& modified_at) {
+    std::string d;
+    if (!metadata_json.empty()) {
+        d = json_get(metadata_json, "DateTimeOriginal");
+        if (d.empty()) d = json_get(metadata_json, "DateTimeDigitized");
+    }
+    if (d.empty()) d = modified_at;
+
+    // Normalize EXIF ':' date separators (positions 4 and 7, e.g.
+    // "2021:05:04 10:00:00") to '-' so all values sort in one family
+    // alongside modified_at's native "YYYY-MM-DD ..." form. The time
+    // portion's colons are left untouched.
+    if (d.size() >= 10 && d[4] == ':' && d[7] == ':') {
+        d[4] = '-';
+        d[7] = '-';
+    }
+    return d;
+}
 
 Database::Database(const std::string& path) {
     // Ensure parent directory exists
@@ -270,13 +306,17 @@ void Database::init_schema() {
                         media_type  TEXT NOT NULL DEFAULT 'image',
                         duration_ms INTEGER,
                         gallery     TEXT,
-                        blur_score  REAL
+                        blur_score  REAL,
+                        effective_date TEXT
                     )
                 )");
                 exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
                 exec("CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256)");
                 exec("CREATE INDEX IF NOT EXISTS idx_path ON images(path)");
                 exec("CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery)");
+                exec(
+                    "CREATE INDEX IF NOT EXISTS idx_effective_date "
+                    "ON images(effective_date DESC, id DESC)");
 
                 exec(R"(
                     CREATE TABLE IF NOT EXISTS tags (
@@ -366,6 +406,19 @@ void Database::init_schema() {
                     exec("COMMIT");
                     continue;
                 }
+                if (v == 6) {
+                    // Probe first (SQLite lacks IF NOT EXISTS for ALTER TABLE):
+                    // a DB created fresh at a later CURRENT_SCHEMA_VERSION already
+                    // has this column via init_schema()'s CREATE TABLE.
+                    sqlite3_stmt* stmt;
+                    int rc = sqlite3_prepare_v2(db_, "SELECT effective_date FROM images LIMIT 0",
+                                                -1, &stmt, nullptr);
+                    if (rc != SQLITE_OK) {
+                        exec("ALTER TABLE images ADD COLUMN effective_date TEXT");
+                    } else {
+                        sqlite3_finalize(stmt);
+                    }
+                }
                 if (!migrations[v].empty()) exec(migrations[v]);
                 set_schema_version(v);
                 exec("COMMIT");
@@ -406,8 +459,8 @@ void Database::insert(const ImageInfo& info) {
     // id. DO UPDATE keeps the id — tags survive — and never touches gallery.
     const char* sql = R"(
         INSERT INTO images
-            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score, effective_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
             filename = excluded.filename,
             extension = excluded.extension,
@@ -421,8 +474,13 @@ void Database::insert(const ImageInfo& info) {
             metadata = excluded.metadata,
             media_type = excluded.media_type,
             duration_ms = excluded.duration_ms,
-            blur_score = excluded.blur_score
+            blur_score = excluded.blur_score,
+            effective_date = excluded.effective_date
     )";
+
+    std::string effective_date = info.effective_date.empty()
+                                     ? compute_effective_date(info.metadata_json, info.modified_at)
+                                     : info.effective_date;
 
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -452,6 +510,7 @@ void Database::insert(const ImageInfo& info) {
     } else {
         sqlite3_bind_null(stmt, 14);
     }
+    sqlite3_bind_text(stmt, 15, effective_date.c_str(), -1, SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -484,8 +543,8 @@ void Database::insert_copy(const std::string& source_path, const std::string& de
 
     const char* sql = R"(
         INSERT OR REPLACE INTO images
-            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score)
-        SELECT ?, ?, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score
+            (path, filename, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score, effective_date)
+        SELECT ?, ?, extension, file_size, created_at, modified_at, sha256, phash, width, height, metadata, media_type, duration_ms, blur_score, effective_date
         FROM images WHERE path = ?
     )";
 
@@ -1077,7 +1136,8 @@ std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) 
         "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, "
         "width, height, metadata, media_type, duration_ms, gallery, "
         "EXISTS(SELECT 1 FROM image_tags it JOIN tags t ON t.id = it.tag_id "
-        "WHERE it.image_id = images.id AND t.name = 'favorite'), blur_score FROM images";
+        "WHERE it.image_id = images.id AND t.name = 'favorite'), blur_score, effective_date "
+        "FROM images";
     std::optional<std::string> upper;
     if (!path_prefix.empty()) {
         upper = prefix_upper_bound(path_prefix);
@@ -1119,6 +1179,7 @@ std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) 
         info.favorite = sqlite3_column_int(stmt, 14) != 0;
         info.blur_score =
             sqlite3_column_type(stmt, 15) == SQLITE_NULL ? -1.0 : sqlite3_column_double(stmt, 15);
+        info.effective_date = text(16);
         results.push_back(std::move(info));
     }
 

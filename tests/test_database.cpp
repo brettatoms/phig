@@ -1043,8 +1043,8 @@ TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
     std::string dbp = (dir / "m.db").string();
 
     // Create a DB then roll its recorded schema_version back to force a
-    // migration on next init_schema(). (v5 is CURRENT; set to 4 to force the
-    // v5 migration to run.) The v5 tables created by the fresh-schema path
+    // migration on next init_schema(). (set to 4 to force the v5 and v6
+    // migrations to run.) The v5 tables created by the fresh-schema path
     // must also be dropped, since the v5 migration's CREATE TABLE isn't
     // IF NOT EXISTS (mirrors DatabaseTest.MigratesV4ToV5).
     // Database::set_schema_version() is private, so drive it via raw SQL
@@ -1079,7 +1079,7 @@ TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
     ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
     std::string version(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
     sqlite3_finalize(stmt);
-    EXPECT_EQ(version, "5");  // CURRENT_SCHEMA_VERSION
+    EXPECT_EQ(version, "6");  // CURRENT_SCHEMA_VERSION
 
     fs::remove_all(dir);
 }

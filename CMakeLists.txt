@@ -137,6 +137,7 @@ add_executable(phig-tests
     tests/test_dates.cpp
     tests/test_raw.cpp
     tests/test_lockfile.cpp
+    tests/test_libphig_query.cpp
 )
 
 target_link_libraries(phig-tests PRIVATE

@@ -12,6 +12,14 @@
 #include "faces.h"
 #include "types.h"
 
+// phig's "best available date" for an image: EXIF DateTimeOriginal, then
+// DateTimeDigitized, then the file's modified_at. Returns "" if none apply.
+// ISO-8601 TEXT; EXIF form uses ':' date separators and sorts lexicographically
+// alongside modified_at's '-' form only within its own family, so callers must
+// not mix families when comparing. Stored in images.effective_date.
+std::string compute_effective_date(const std::string& metadata_json,
+                                   const std::string& modified_at);
+
 class Database {
    public:
     explicit Database(const std::string& path);
