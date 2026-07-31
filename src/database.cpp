@@ -138,9 +138,8 @@ std::string compute_effective_date(const std::string& metadata_json,
 }
 
 Database::Database(const std::string& path, bool read_only) {
-    // Ensure parent directory exists. Skipped for read-only: creating a parent
-    // directory for a database we then refuse to create is the same
-    // contract violation one level up.
+    // Read-only opens create nothing — neither the database nor its parent
+    // directory.
     fs::path db_path(path);
     if (!read_only && db_path.has_parent_path()) {
         fs::create_directories(db_path.parent_path());

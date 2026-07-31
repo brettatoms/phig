@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
 #include <filesystem>
 #include <string>
@@ -26,6 +27,24 @@ struct TempDbPath {
 // Creates a real phig database at `path` via the C++ API.
 // Defined in test_libphig_query.cpp.
 void make_db(const std::string& path);
+
+namespace {
+// Reads back PRAGMA journal_mode via a throwaway raw connection, independent
+// of libphig, to confirm a read-only phig_init did not change it.
+std::string journal_mode_of(const std::string& path) {
+    sqlite3* raw = nullptr;
+    sqlite3_open_v2(path.c_str(), &raw, SQLITE_OPEN_READONLY, nullptr);
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(raw, "PRAGMA journal_mode", -1, &stmt, nullptr);
+    std::string mode;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        mode = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(raw);
+    return mode;
+}
+}  // namespace
 
 TEST(Abi, VersionMajorMatchesHeader) {
     EXPECT_EQ(phig_abi_version() >> 16, PHIG_ABI_VERSION_MAJOR);
@@ -97,9 +116,15 @@ TEST(Abi, ReadOnlyInitDoesNotCreateDatabase) {
     EXPECT_FALSE(std::filesystem::exists(tmp.path));
 }
 
-TEST(Abi, ReadOnlyContextCannotWrite) {
+// The query ABI isn't exposed yet, so this can't prove a read-only context
+// can read application data through libphig itself. Instead it pins the
+// observable facts that matter for this task: init on an existing migrated
+// database succeeds, reports no error, and leaves the database's journal
+// mode (and therefore the file) unmutated by the read-only open.
+TEST(Abi, ReadOnlyInitSucceedsOnExistingDatabase) {
     TempDbPath tmp;
-    make_db(tmp.path);  // exists, migrated
+    make_db(tmp.path);  // exists, migrated, WAL mode
+    ASSERT_EQ(journal_mode_of(tmp.path), "wal");
 
     phig_config cfg{};
     cfg.db_path = tmp.path.c_str();
@@ -107,7 +132,10 @@ TEST(Abi, ReadOnlyContextCannotWrite) {
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
     ASSERT_NE(ctx, nullptr);
+    EXPECT_STREQ(phig_last_error(ctx), "");
     phig_shutdown(ctx);
+
+    EXPECT_EQ(journal_mode_of(tmp.path), "wal");
 }
 
 TEST(Abi, ReadWriteInitStillCreatesDatabase) {

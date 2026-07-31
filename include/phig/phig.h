@@ -56,7 +56,14 @@ PHIG_API uint32_t phig_abi_version(void);
 
 /* On success *out receives a context the caller must pass to phig_shutdown.
  * On failure *out is set to NULL and the return value says why; there is no
- * context to query for a message in that case. */
+ * context to query for a message in that case.
+ *
+ * PHIG_READ_ONLY opens the database with SQLITE_OPEN_READONLY: the file must
+ * already exist and writes fail. Because phig databases are WAL-mode, SQLite
+ * still needs to create a -shm file to service reads, so the directory
+ * containing db_path must be writable even in read-only mode. A read-only
+ * mount or a sandbox with no write access to that directory fails with
+ * PHIG_ERR_DB. */
 PHIG_API phig_status phig_init(const phig_config* cfg, phig_ctx** out);
 
 /* Safe to call with NULL. */
