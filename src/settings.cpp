@@ -5,6 +5,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "paths.h"
+
 namespace {
 std::string trim(const std::string& s) {
     size_t b = s.find_first_not_of(" \t\r");
@@ -98,8 +100,112 @@ std::vector<std::string> Settings::keys() const {
     return out;
 }
 
-void Settings::set(const std::string&, const std::string&) {
-    throw std::logic_error("not implemented");
+void Settings::set(const std::string& key, const std::string& value) {
+    auto it = index_.find(key);
+    if (it != index_.end()) {
+        Line& line = lines_[it->second];
+        // Rewrite only the value span: keep the original text up to and
+        // including '=', and any trailing comment after the old value.
+        size_t eq = line.text.find('=');
+        std::string head = line.text.substr(0, eq + 1);
+        std::string tail = line.text.substr(eq + 1);
+        // Find where the old value sits inside `tail` so a trailing comment,
+        // and the spacing before it, survive.
+        size_t vb = tail.find_first_not_of(" \t");
+        std::string lead = (vb == std::string::npos) ? " " : tail.substr(0, vb);
+        std::string rest;
+        if (vb != std::string::npos) {
+            size_t hash = tail.find_first_of("#;", vb);
+            if (hash != std::string::npos) rest = tail.substr(hash);
+            // Preserve the whitespace that sat between value and comment.
+            if (!rest.empty()) {
+                size_t ve = tail.find_last_not_of(" \t", hash - 1);
+                if (ve != std::string::npos && ve + 1 < hash) {
+                    rest = tail.substr(ve + 1);
+                }
+            }
+        }
+        line.text = head + lead + value + rest;
+        line.value = value;
+        return;
+    }
+
+    // New key. Split "section.name"; a key with no dot has no section.
+    size_t dot = key.find('.');
+    std::string section = (dot == std::string::npos) ? "" : key.substr(0, dot);
+    std::string name = (dot == std::string::npos) ? key : key.substr(dot + 1);
+
+    Line fresh;
+    fresh.kind = LineKind::KeyValue;
+    fresh.section = section;
+    fresh.key = key;
+    fresh.value = value;
+    fresh.text = name + " = " + value;
+
+    // Insert after the last line belonging to the section.
+    size_t insert_at = lines_.size();
+    bool found_section = section.empty();
+    for (size_t i = 0; i < lines_.size(); ++i) {
+        if (lines_[i].kind == LineKind::Section && lines_[i].section == section) {
+            found_section = true;
+            insert_at = i + 1;
+        } else if (found_section && lines_[i].section == section &&
+                   lines_[i].kind == LineKind::KeyValue) {
+            insert_at = i + 1;
+        }
+    }
+
+    if (!found_section) {
+        // Create the section at end of file, preceded by a blank line unless
+        // the file is empty.
+        if (!lines_.empty()) {
+            Line blank;
+            blank.kind = LineKind::Other;
+            lines_.push_back(blank);
+        }
+        Line hdr;
+        hdr.kind = LineKind::Section;
+        hdr.section = section;
+        hdr.text = "[" + section + "]";
+        lines_.push_back(hdr);
+        lines_.push_back(fresh);
+    } else {
+        lines_.insert(lines_.begin() + static_cast<long>(insert_at), fresh);
+    }
+    reindex();
 }
-void Settings::unset(const std::string&) { throw std::logic_error("not implemented"); }
-void Settings::save(const std::string&) const { throw std::logic_error("not implemented"); }
+
+void Settings::unset(const std::string& key) {
+    auto it = index_.find(key);
+    if (it == index_.end()) return;
+    lines_.erase(lines_.begin() + static_cast<long>(it->second));
+    reindex();
+}
+
+void Settings::save(const std::string& path) const {
+    namespace fs = std::filesystem;
+    fs::path dest(path);
+    fs::path tmp = temp_sibling(dest);
+
+    const std::string eol = crlf_ ? "\r\n" : "\n";
+    std::string out;
+    for (size_t i = 0; i < lines_.size(); ++i) {
+        out += lines_[i].text;
+        if (i + 1 < lines_.size() || trailing_newline_) out += eol;
+    }
+
+    {
+        std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
+        if (!o) throw std::runtime_error("Cannot write config: " + tmp.string());
+        o << out;
+        o.flush();
+        if (!o) throw std::runtime_error("Failed writing config: " + tmp.string());
+    }
+
+    std::error_code ec;
+    fs::rename(tmp, dest, ec);
+    if (ec) {
+        fs::remove(tmp, ec);
+        throw std::runtime_error("Cannot replace config: " + dest.string());
+    }
+}
