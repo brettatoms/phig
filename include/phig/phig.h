@@ -29,7 +29,7 @@ extern "C" {
 #endif
 
 #define PHIG_ABI_VERSION_MAJOR 1u
-#define PHIG_ABI_VERSION_MINOR 0u
+#define PHIG_ABI_VERSION_MINOR 1u
 
 /* Values are published ABI: append only, never renumber. */
 typedef enum {
@@ -63,6 +63,8 @@ typedef struct {
        subsequently fails. */
     const char* thumbs_dir;
     phig_access_mode mode;
+
+    const char* models_dir; /* NULL = phig's default (~/.cache/phig/models) */
 } phig_config;
 
 /* Returns (major << 16) | minor. Clients should compare the major half
@@ -211,6 +213,74 @@ PHIG_API phig_status phig_gallery_set(phig_ctx* ctx, const int64_t* ids, size_t 
                                       const char* gallery);
 PHIG_API phig_status phig_gallery_clear(phig_ctx* ctx, const int64_t* ids, size_t n);
 PHIG_API phig_status phig_favorite_set(phig_ctx* ctx, const int64_t* ids, size_t n, bool on);
+
+/* ---- Settings -----------------------------------------------------------
+ * phig's config file as key/value data. Keys are "section.name", e.g.
+ * "paths.db". Access is generic rather than a fixed struct so settings phig
+ * adds later are readable without recompiling against a new header.
+ *
+ * A phig_settings is NOT thread-safe; use one per thread or serialize access.
+ */
+
+typedef struct phig_settings phig_settings;
+
+/* Known keys. Arbitrary string keys work too — these exist for typo
+ * resistance on the documented ones. */
+#define PHIG_KEY_DB "paths.db"
+#define PHIG_KEY_THUMBS_DIR "paths.thumbs_dir"
+#define PHIG_KEY_MODELS_DIR "paths.models_dir"
+#define PHIG_KEY_PARALLEL "general.parallel"
+#define PHIG_KEY_LOG_ENABLED "log.enabled"
+#define PHIG_KEY_LOG_MAX "log.max_entries"
+#define PHIG_KEY_LOG_FILE "log.file"
+#define PHIG_KEY_LOG_LEVEL "log.file_level"
+
+/* Loads `path`, or phig's default config file when path is NULL
+ * (~/.config/phig/config.ini, honoring XDG_CONFIG_HOME).
+ *
+ * Returns PHIG_ERR_NOT_FOUND when no file exists — *out still receives a valid
+ * empty handle, so a caller wanting defaults can ignore that status and a
+ * caller creating a config can populate and save it. Returns PHIG_ERR_DB when
+ * the file exists but cannot be read, with *out set to NULL. */
+PHIG_API phig_status phig_settings_load(const char* path, phig_settings** out);
+
+/* Safe to call with NULL. */
+PHIG_API void phig_settings_free(phig_settings* s);
+
+/* Returns `fallback` when the key is absent. The returned pointer is owned by
+ * `s` and is valid until that key is set/unset or `s` is freed. Path values
+ * have a leading `~` expanded, matching the CLI; the unexpanded form is what
+ * phig_settings_save writes back. */
+PHIG_API const char* phig_settings_get(phig_settings* s, const char* key, const char* fallback);
+
+/* Return `fallback` when the key is absent or its value does not parse as the
+ * requested type. Bools accept true/false/yes/no/on/off/1/0, case-insensitive. */
+PHIG_API int64_t phig_settings_get_int(phig_settings* s, const char* key, int64_t fallback);
+PHIG_API bool phig_settings_get_bool(phig_settings* s, const char* key, bool fallback);
+
+PHIG_API bool phig_settings_has(phig_settings* s, const char* key);
+
+/* Enumeration, for building a settings UI without a compiled-in schema.
+ * Indices are stable until the next set/unset. key_at returns NULL when i is
+ * out of range. */
+PHIG_API size_t phig_settings_count(phig_settings* s);
+PHIG_API const char* phig_settings_key_at(phig_settings* s, size_t i);
+
+/* Sets or replaces a key. Keys phig does not know are allowed and preserved. */
+PHIG_API phig_status phig_settings_set(phig_settings* s, const char* key, const char* value);
+PHIG_API phig_status phig_settings_unset(phig_settings* s, const char* key);
+
+/* Writes to `path`, or the loaded/default path when NULL. Atomic: writes a
+ * temp sibling and renames, so an interrupted save cannot truncate the file.
+ * Comments, ordering, and keys phig does not model are preserved. */
+PHIG_API phig_status phig_settings_save(phig_settings* s, const char* path);
+
+/* Fills cfg->db_path/thumbs_dir/models_dir from settings, leaving fields the
+ * config does not set untouched so a caller can pre-seed defaults. Does NOT
+ * set cfg->mode — that is a per-context decision, not a user preference.
+ *
+ * The strings point into `s`, so `s` must outlive the phig_init call. */
+PHIG_API phig_status phig_settings_to_config(phig_settings* s, phig_config* cfg);
 
 #ifdef __cplusplus
 }

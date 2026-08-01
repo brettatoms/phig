@@ -2,11 +2,13 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "database.h"
 #include "lockfile.h"
 #include "phig/phig.h"
+#include "settings.h"
 
 struct phig_ctx {
     std::unique_ptr<Database> db;
@@ -18,6 +20,15 @@ struct phig_ctx {
 
 struct phig_query {
     Database::PageCriteria criteria;
+};
+
+struct phig_settings {
+    Settings s;
+    std::string load_path;  // for save(NULL)
+    // Expanded values handed out by phig_settings_get, kept alive until the
+    // key changes or the handle is freed. Keyed by the setting's key.
+    std::unordered_map<std::string, std::string> expanded;
+    std::vector<std::string> key_cache;  // backs phig_settings_key_at
 };
 
 // Builds a phig_image_list (with its own string arena) from search results.
