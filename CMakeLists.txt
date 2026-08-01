@@ -58,6 +58,7 @@ add_library(phig-lib STATIC
     src/metadata.cpp
     src/paths.cpp
     src/config.cpp
+    src/settings.cpp
     src/organize_exec.cpp
     src/remove_exec.cpp
     src/relink.cpp
@@ -182,6 +183,7 @@ add_executable(phig-tests
     tests/test_video.cpp
     tests/test_paths.cpp
     tests/test_config.cpp
+    tests/test_settings.cpp
     tests/test_organize_exec.cpp
     tests/test_remove_exec.cpp
     tests/test_relink.cpp
