@@ -344,3 +344,36 @@ TEST(SettingsWriter, AgreesWithInihOnInlineCommentSplit) {
     ASSERT_TRUE(c.organize_format.has_value());
     EXPECT_EQ(*s.get("organize.format"), *c.organize_format);
 }
+
+// set(key, get(key)) on a line with an empty value and an inline comment
+// must not widen the gap between '=' and the comment on every save. A
+// single round isn't enough to catch this — the defect (if present)
+// compounds, so this iterates and requires stability from the second save
+// onward.
+TEST(SettingsWriter, SetOfGetResultOnEmptyValueWithCommentDoesNotCompound) {
+    TempFile f("[general]\nparallel =  ; not yet tuned\n");
+    std::string previous;
+    for (int i = 0; i < 4; ++i) {
+        Settings s = Settings::load(f.path);
+        s.set("general.parallel", *s.get("general.parallel"));
+        s.save(f.path);
+        std::string out = f.read();
+        if (i > 0) EXPECT_EQ(out, previous) << "diverged on save " << (i + 1);
+        previous = out;
+    }
+}
+
+// Same defect, reachable when the value is empty and the line is nothing
+// but a bare comment marker.
+TEST(SettingsWriter, SetOfGetResultOnBareMarkerCommentDoesNotCompound) {
+    TempFile f("[s]\nk = ;\n");
+    std::string previous;
+    for (int i = 0; i < 4; ++i) {
+        Settings s = Settings::load(f.path);
+        s.set("s.k", *s.get("s.k"));
+        s.save(f.path);
+        std::string out = f.read();
+        if (i > 0) EXPECT_EQ(out, previous) << "diverged on save " << (i + 1);
+        previous = out;
+    }
+}

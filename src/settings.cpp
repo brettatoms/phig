@@ -137,11 +137,34 @@ void Settings::set(const std::string& key, const std::string& value) {
         // including '=', and the line's stored inline comment (never
         // re-derived from the new value — the new value may itself contain
         // '#' or ';', which must not be mistaken for a comment marker).
+        // Invariant: head, lead, value, and line.comment are disjoint slices
+        // of the original line — reconstruction (head + lead + value +
+        // comment) must never let one slice's bytes appear in another, or a
+        // read-modify-write (set(key, get(key))) would duplicate them on
+        // every save.
         size_t eq = line.text.find('=');
         std::string head = line.text.substr(0, eq + 1);
         std::string tail = line.text.substr(eq + 1);
-        size_t vb = tail.find_first_not_of(" \t");
-        std::string lead = (vb == std::string::npos) ? " " : tail.substr(0, vb);
+        // Only scan the part of tail before the stored comment for the old
+        // value's leading whitespace, so an empty value can never make the
+        // scan run into (and re-capture) the comment's own leading
+        // whitespace.
+        std::string tail_value = tail.substr(0, tail.size() - line.comment.size());
+        size_t vb = tail_value.find_first_not_of(" \t");
+        std::string lead;
+        if (vb != std::string::npos) {
+            lead = tail_value.substr(0, vb);
+        } else if (line.comment.empty()) {
+            // No old value and no comment to separate from (e.g. "k="):
+            // synthesize one space for readability.
+            lead = " ";
+        } else {
+            // No old value, but a comment follows immediately after
+            // `tail_value` — its own leading whitespace already separates
+            // value from marker, so `lead` must be exactly `tail_value`
+            // (however little or much whitespace that is) and not add more.
+            lead = tail_value;
+        }
         line.text = head + lead + value + line.comment;
         line.value = value;
         return;
