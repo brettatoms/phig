@@ -14,6 +14,7 @@ phig_status phig_init(const phig_config* cfg, phig_ctx** out) {
     try {
         auto ctx = std::make_unique<phig_ctx>();
         ctx->mode = cfg->mode;
+        ctx->db_path = cfg->db_path;
         ctx->thumbs_dir = cfg->thumbs_dir ? cfg->thumbs_dir : "";
         // thumbs_dir is process-wide (see paths.h): phig resolves the cache
         // location through a global override, the same one the CLI sets from

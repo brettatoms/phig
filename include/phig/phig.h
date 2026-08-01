@@ -180,7 +180,11 @@ PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, char* 
  * All require a PHIG_READ_WRITE context and return PHIG_ERR_READONLY on a
  * read-only one. Each call is one transaction: it applies to every id or to
  * none. Unknown ids are skipped, not an error. n == 0 is a no-op returning
- * PHIG_OK. Favorites are phig's built-in "favorite" tag. */
+ * PHIG_OK. Favorites are phig's built-in "favorite" tag.
+ *
+ * If another phig process holds the writer lock (e.g. a running scan), these
+ * return PHIG_ERR_DB immediately rather than blocking; phig_last_error explains.
+ * A GUI should surface that and retry, never freeze waiting. */
 PHIG_API phig_status phig_tag_add(phig_ctx* ctx, const int64_t* ids, size_t n, const char* tag);
 PHIG_API phig_status phig_tag_remove(phig_ctx* ctx, const int64_t* ids, size_t n, const char* tag);
 

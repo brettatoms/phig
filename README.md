@@ -159,6 +159,28 @@ The lock is per-machine (POSIX `flock`) and released automatically if phig
 crashes or is killed. It does not coordinate phig instances on different hosts
 sharing one database over a network filesystem.
 
+## libphig
+
+phig's functionality is available to other programs through `libphig`, a C ABI
+shared library installed alongside the CLI (`libphig.so` plus
+`include/phig/phig.h`). It covers paginated queries, per-image metadata,
+thumbnail path lookup, and tag/gallery/favorite writes.
+
+Clients link it instead of reading phig's database directly: the SQLite schema
+and the thumbnail cache layout are private and may change, while the header is
+a versioned contract (`phig_abi_version()`). Long-running operations — scan,
+organize, remove, face detection — are not in the ABI; run them through the
+CLI, which holds the writer lock and records the activity log.
+
+libphig's own metadata writes take the same writer lock as the CLI (see
+Concurrency, above), scoped to the database the caller opened, so they cannot
+interleave with a running CLI job. The call is non-blocking: a contended lock
+returns `PHIG_ERR_DB` immediately rather than freezing the caller.
+
+Pixel decoding is deliberately absent: phig decodes arbitrary user files with
+OpenCV, FFmpeg, and LibRaw, which can crash on malformed input, so a client
+that needs decoded images should run it out-of-process.
+
 ## Usage
 
 ### Scanning

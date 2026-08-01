@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "database.h"
+#include "lockfile.h"
 #include "phig/phig.h"
 
 namespace {
@@ -199,6 +200,41 @@ TEST(AbiMutate, UnknownIdsAreSkippedNotAnError) {
     phig_ctx* ctx = open_rw(tmp.path);
     std::vector<int64_t> mixed = {ids[0], 999999};
     EXPECT_EQ(phig_tag_add(ctx, mixed.data(), mixed.size(), "t"), PHIG_OK);
+    Database db(tmp.path);
+    EXPECT_EQ(db.get_tags_for_image("/photos/m0.jpg").size(), 1u);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiMutate, WriteFailsWhileAnotherProcessHoldsTheWriterLock) {
+    TempDbPath tmp;
+    auto ids = seed_three(tmp.path);
+    phig_ctx* ctx = open_rw(tmp.path);
+
+    // Hold the lock the way a running CLI job would, then attempt an ABI write.
+    // Construction succeeds or throws LockBusy; there is no acquired() method.
+    WriterLock held(tmp.path + ".lock", /*no_wait=*/true);
+
+    phig_status st = phig_tag_add(ctx, ids.data(), ids.size(), "contended");
+    EXPECT_EQ(st, PHIG_ERR_DB);
+    EXPECT_STRNE(phig_last_error(ctx), "");
+
+    Database db(tmp.path);
+    EXPECT_TRUE(db.get_tags_for_image("/photos/m0.jpg").empty());
+    phig_shutdown(ctx);
+}
+
+TEST(AbiMutate, WriteSucceedsAfterTheLockIsReleased) {
+    TempDbPath tmp;
+    auto ids = seed_three(tmp.path);
+    phig_ctx* ctx = open_rw(tmp.path);
+
+    {
+        WriterLock held(tmp.path + ".lock", /*no_wait=*/true);
+        EXPECT_EQ(phig_tag_add(ctx, ids.data(), 1, "blocked"), PHIG_ERR_DB);
+    }  // released here
+
+    // The ABI must recover, not stay wedged after a contended attempt.
+    EXPECT_EQ(phig_tag_add(ctx, ids.data(), 1, "allowed"), PHIG_OK);
     Database db(tmp.path);
     EXPECT_EQ(db.get_tags_for_image("/photos/m0.jpg").size(), 1u);
     phig_shutdown(ctx);
