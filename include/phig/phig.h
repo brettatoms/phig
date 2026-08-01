@@ -54,7 +54,9 @@ typedef struct {
        applies to every context in the process, not just this one. Set it once,
        at startup, before creating any context — the way a host reads its config
        once. Passing different values for two contexts in one process is not
-       supported; the last one set wins for all of them. */
+       supported; the last one set wins for all of them. The override is applied
+       before the database is opened, so it takes effect even if phig_init
+       subsequently fails. */
     const char* thumbs_dir;
     phig_access_mode mode;
 } phig_config;

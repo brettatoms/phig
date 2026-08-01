@@ -47,6 +47,14 @@ std::string journal_mode_of(const std::string& path) {
 }
 }  // namespace
 
+namespace {
+// Restores phig's process-wide path overrides when the test scope exits,
+// including on an ASSERT_* early return.
+struct PathOverrideGuard {
+    ~PathOverrideGuard() { set_path_overrides(std::nullopt, std::nullopt, std::nullopt); }
+};
+}  // namespace
+
 TEST(Abi, VersionMajorMatchesHeader) {
     EXPECT_EQ(phig_abi_version() >> 16, PHIG_ABI_VERSION_MAJOR);
 }
@@ -192,6 +200,7 @@ TEST(AbiThumb, RejectsBadDigestAndSmallBuffer) {
 }
 
 TEST(AbiThumb, HonorsConfiguredThumbsDir) {
+    PathOverrideGuard guard;
     TempDbPath tmp;
     make_db(tmp.path);
     auto custom =
@@ -213,10 +222,10 @@ TEST(AbiThumb, HonorsConfiguredThumbsDir) {
     EXPECT_FALSE(exists);
 
     phig_shutdown(ctx);
-    set_path_overrides(std::nullopt, std::nullopt, std::nullopt);  // reset global state
 }
 
 TEST(AbiThumb, NullThumbsDirLeavesDefaultInPlace) {
+    PathOverrideGuard guard;
     TempDbPath tmp;
     make_db(tmp.path);
 
@@ -234,5 +243,4 @@ TEST(AbiThumb, NullThumbsDirLeavesDefaultInPlace) {
     EXPECT_NE(std::string(buf).find("thumbs"), std::string::npos);
 
     phig_shutdown(ctx);
-    set_path_overrides(std::nullopt, std::nullopt, std::nullopt);
 }
