@@ -49,7 +49,9 @@ class Settings {
     std::vector<Line> lines_;
     std::unordered_map<std::string, size_t> index_;  // key -> index into lines_
     std::string source_path_;
-    bool crlf_ = false;  // preserve the file's line ending style
+    // Preserve the file's line ending style. A single file-wide flag: a file
+    // with mixed CRLF/LF endings normalizes to the dominant style on save.
+    bool crlf_ = false;
     bool trailing_newline_ = true;
 
     void reindex();

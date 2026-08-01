@@ -1,5 +1,6 @@
 #include "settings.h"
 
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -14,6 +15,10 @@ std::string trim(const std::string& s) {
 }  // namespace
 
 Settings Settings::load(const std::string& path) {
+    if (!std::filesystem::is_regular_file(path)) {
+        throw std::runtime_error("Cannot read config file: " + path);
+    }
+
     std::ifstream in(path, std::ios::binary);
     if (!in) throw std::runtime_error("Cannot read config file: " + path);
 
@@ -35,7 +40,7 @@ Settings Settings::load(const std::string& path) {
         if (!raw.empty() && raw.back() == '\r') raw.pop_back();
 
         // A trailing newline produces a final empty piece that is not a line.
-        if (last && raw.empty() && !content.empty()) break;
+        if (last && raw.empty()) break;
 
         Line line;
         line.text = raw;

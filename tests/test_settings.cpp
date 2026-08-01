@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -102,4 +104,23 @@ TEST(Settings, ValueKeepsInternalSpacesAndEquals) {
     Settings s = Settings::load(f.path);
     EXPECT_EQ(*s.get("organize.format"), "%Y/%m/%original");
     EXPECT_EQ(*s.get("organize.odd"), "a = b");  // split on the FIRST '='
+}
+
+// A 0-byte file must not synthesize a phantom blank line (regression test:
+// the guard in load()'s line-splitting loop previously suppressed its own
+// empty-content check, producing one Line with text == "" for a 0-byte file).
+// keys() can't distinguish "" from "\n" through the public API alone since
+// both are Other lines with zero keys, so this only proves keys() stays
+// empty; see the Task 1 report for why a stronger round-trip test waits on
+// Task 2's save().
+TEST(Settings, EmptyFileProducesNoLines) {
+    TempFile f("");
+    Settings s = Settings::load(f.path);
+    EXPECT_EQ(s.keys().size(), 0u);
+    EXPECT_FALSE(s.has(""));
+}
+
+TEST(Settings, DirectoryPathThrows) {
+    EXPECT_THROW(Settings::load(std::filesystem::temp_directory_path().string()),
+                 std::runtime_error);
 }
