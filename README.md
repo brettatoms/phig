@@ -181,6 +181,32 @@ Pixel decoding is deliberately absent: phig decodes arbitrary user files with
 OpenCV, FFmpeg, and LibRaw, which can crash on malformed input, so a client
 that needs decoded images should run it out-of-process.
 
+### Settings
+
+`libphig` can read and write phig's config file, so a client uses the same
+settings the CLI does instead of parsing `config.ini` itself:
+
+```c
+phig_settings *s = NULL;
+phig_settings_load(NULL, &s);           /* phig's config.ini */
+
+phig_config cfg = {0};
+phig_settings_to_config(s, &cfg);       /* paths from the config file */
+cfg.mode = PHIG_READ_ONLY;              /* per-context, never from config */
+
+phig_ctx *ctx = NULL;
+phig_init(&cfg, &ctx);
+```
+
+Settings are addressed as `"section.name"` strings rather than struct fields,
+so a setting phig adds later is readable without recompiling. `PHIG_KEY_*`
+macros cover the documented keys.
+
+Writes preserve the file: comments, ordering, and keys libphig does not model
+survive a `phig_settings_save`, and the save is atomic. Loading is a separate
+call from `phig_init`, so opening a collection does not touch the filesystem
+beyond the database.
+
 ## Usage
 
 ### Scanning
