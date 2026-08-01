@@ -45,8 +45,17 @@ typedef enum { PHIG_READ_ONLY = 0, PHIG_READ_WRITE = 1 } phig_access_mode;
 typedef struct phig_ctx phig_ctx;
 
 typedef struct {
-    const char* db_path;    /* required */
-    const char* thumbs_dir; /* NULL = phig's XDG default */
+    const char* db_path; /* required */
+
+    /* Thumbnail cache directory. NULL uses phig's default
+       (~/.cache/phig/thumbs, honoring XDG_CACHE_HOME).
+
+       PROCESS-WIDE: phig resolves the cache location through a global, so this
+       applies to every context in the process, not just this one. Set it once,
+       at startup, before creating any context — the way a host reads its config
+       once. Passing different values for two contexts in one process is not
+       supported; the last one set wins for all of them. */
+    const char* thumbs_dir;
     phig_access_mode mode;
 } phig_config;
 
@@ -157,8 +166,9 @@ PHIG_API void phig_string_free(char* s);
  * request generation rather than reading it. Returns PHIG_ERR_INVALID_ARG if
  * out_len is too small for the path plus its NUL.
  *
- * Resolves against phig's default thumbnail cache location; phig_config's
- * thumbs_dir is not yet honored by this lookup. */
+ * Resolves against the thumbnail cache directory configured via
+ * phig_config.thumbs_dir (process-wide; see that field's documentation), or
+ * phig's default if none was set. */
 PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, char* out_path,
                                        size_t out_len, bool* exists);
 

@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "paths.h"
 
 extern "C" {
 
@@ -14,6 +15,13 @@ phig_status phig_init(const phig_config* cfg, phig_ctx** out) {
         auto ctx = std::make_unique<phig_ctx>();
         ctx->mode = cfg->mode;
         ctx->thumbs_dir = cfg->thumbs_dir ? cfg->thumbs_dir : "";
+        // thumbs_dir is process-wide (see paths.h): phig resolves the cache
+        // location through a global override, the same one the CLI sets from
+        // config.ini. Only apply it when the caller supplied one, so a NULL
+        // leaves any existing override untouched.
+        if (cfg->thumbs_dir && cfg->thumbs_dir[0] != '\0') {
+            set_path_overrides(std::nullopt, std::nullopt, std::string(cfg->thumbs_dir));
+        }
         ctx->db = std::make_unique<Database>(cfg->db_path, cfg->mode == PHIG_READ_ONLY);
         // Read-only contexts must not migrate; a read-write one may.
         if (cfg->mode == PHIG_READ_WRITE) ctx->db->init_schema();

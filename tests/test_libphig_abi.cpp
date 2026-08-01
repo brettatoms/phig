@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <string>
 
+#include "paths.h"
 #include "phig/phig.h"
 
 namespace {
@@ -188,4 +189,50 @@ TEST(AbiThumb, RejectsBadDigestAndSmallBuffer) {
     EXPECT_EQ(phig_thumb_lookup(ctx, sha.c_str(), tiny, sizeof(tiny), &exists),
               PHIG_ERR_INVALID_ARG);
     phig_shutdown(ctx);
+}
+
+TEST(AbiThumb, HonorsConfiguredThumbsDir) {
+    TempDbPath tmp;
+    make_db(tmp.path);
+    auto custom =
+        (std::filesystem::temp_directory_path() / ("phig_thumbs_" + std::to_string(::getpid())))
+            .string();
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.thumbs_dir = custom.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+
+    std::string sha(64, 'a');
+    char buf[4096];
+    bool exists = true;
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    EXPECT_EQ(std::string(buf).rfind(custom, 0), 0u);  // path starts with custom dir
+    EXPECT_FALSE(exists);
+
+    phig_shutdown(ctx);
+    set_path_overrides(std::nullopt, std::nullopt, std::nullopt);  // reset global state
+}
+
+TEST(AbiThumb, NullThumbsDirLeavesDefaultInPlace) {
+    TempDbPath tmp;
+    make_db(tmp.path);
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.thumbs_dir = nullptr;  // must not clobber an existing override
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+
+    std::string sha(64, 'b');
+    char buf[4096];
+    bool exists = true;
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    EXPECT_NE(std::string(buf).find("thumbs"), std::string::npos);
+
+    phig_shutdown(ctx);
+    set_path_overrides(std::nullopt, std::nullopt, std::nullopt);
 }
