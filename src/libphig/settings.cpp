@@ -1,6 +1,4 @@
-#include <algorithm>
 #include <cctype>
-#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -36,7 +34,14 @@ phig_status phig_settings_load(const char* path, phig_settings** out) {
         try {
             h->s = Settings::load(p);
         } catch (const std::runtime_error&) {
-            // No readable file: hand back a usable empty handle so a caller can
+            if (std::filesystem::exists(p)) {
+                // The file exists but Settings::load could not read it (e.g.
+                // permissions, not a regular file): report PHIG_ERR_DB rather
+                // than treating it as "no config yet".
+                delete h;
+                return PHIG_ERR_DB;
+            }
+            // No file at all: hand back a usable empty handle so a caller can
             // populate and save one.
             *out = h;
             return PHIG_ERR_NOT_FOUND;
@@ -102,7 +107,10 @@ bool phig_settings_has(phig_settings* s, const char* key) {
 size_t phig_settings_count(phig_settings* s) {
     if (s == nullptr) return 0;
     try {
-        s->key_cache = s->s.keys();
+        if (s->key_cache_dirty) {
+            s->key_cache = s->s.keys();
+            s->key_cache_dirty = false;
+        }
         return s->key_cache.size();
     } catch (...) {
         return 0;
@@ -112,7 +120,10 @@ size_t phig_settings_count(phig_settings* s) {
 const char* phig_settings_key_at(phig_settings* s, size_t i) {
     if (s == nullptr) return nullptr;
     try {
-        s->key_cache = s->s.keys();
+        if (s->key_cache_dirty) {
+            s->key_cache = s->s.keys();
+            s->key_cache_dirty = false;
+        }
         if (i >= s->key_cache.size()) return nullptr;
         return s->key_cache[i].c_str();
     } catch (...) {
@@ -127,6 +138,7 @@ phig_status phig_settings_set(phig_settings* s, const char* key, const char* val
     try {
         s->s.set(key, value);
         s->expanded.erase(key);  // stale expansion
+        s->key_cache_dirty = true;
         return PHIG_OK;
     } catch (...) {
         return PHIG_ERR_INTERNAL;
@@ -138,6 +150,7 @@ phig_status phig_settings_unset(phig_settings* s, const char* key) {
     try {
         s->s.unset(key);
         s->expanded.erase(key);
+        s->key_cache_dirty = true;
         return PHIG_OK;
     } catch (...) {
         return PHIG_ERR_INTERNAL;

@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "phig/phig.h"
 
@@ -83,6 +86,20 @@ TEST(AbiSettings, MissingFileYieldsNotFoundWithUsableHandle) {
     std::filesystem::remove(missing, ec);
 }
 
+TEST(AbiSettings, UnreadableFileYieldsErrDbWithNullHandle) {
+    if (::geteuid() == 0) {
+        GTEST_SKIP() << "running as root: chmod 000 does not deny access";
+    }
+    TempIni f("[paths]\ndb = /x\n");
+    ASSERT_EQ(::chmod(f.path.c_str(), 0), 0);
+
+    phig_settings* s = reinterpret_cast<phig_settings*>(1);  // sentinel
+    EXPECT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_ERR_DB);
+    EXPECT_EQ(s, nullptr);
+
+    ::chmod(f.path.c_str(), 0644);  // let TempIni's destructor remove it
+}
+
 TEST(AbiSettings, EnumerationReturnsKeysInFileOrder) {
     TempIni f("[paths]\ndb = /x\nthumbs_dir = /t\n[general]\nparallel = 4\n");
     phig_settings* s = nullptr;
@@ -93,6 +110,31 @@ TEST(AbiSettings, EnumerationReturnsKeysInFileOrder) {
     EXPECT_STREQ(phig_settings_key_at(s, 2), "general.parallel");
     EXPECT_EQ(phig_settings_key_at(s, 3), nullptr);
     EXPECT_EQ(phig_settings_key_at(s, 9999), nullptr);
+    phig_settings_free(s);
+}
+
+TEST(AbiSettings, EnumerationPointersSurviveWholeLoop) {
+    // Keys must be at least 16 characters to exceed libstdc++'s small-string
+    // optimization buffer; shorter keys live inside the vector's element
+    // array and mask a use-after-free if key_cache is rebuilt mid-enumeration.
+    TempIni f(
+        "[paths]\nthumbs_dir = /t\n"
+        "[general]\nsome_long_key_name = 1\n"
+        "[log]\nyet_another_long_key = 2\n");
+    phig_settings* s = nullptr;
+    ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
+    size_t n = phig_settings_count(s);
+    ASSERT_EQ(n, 3u);
+
+    std::vector<const char*> ptrs(n);
+    for (size_t i = 0; i < n; i++) {
+        ptrs[i] = phig_settings_key_at(s, i);
+        ASSERT_NE(ptrs[i], nullptr);
+    }
+    // Only now, after the whole loop has run, dereference every pointer.
+    EXPECT_STREQ(ptrs[0], "paths.thumbs_dir");
+    EXPECT_STREQ(ptrs[1], "general.some_long_key_name");
+    EXPECT_STREQ(ptrs[2], "log.yet_another_long_key");
     phig_settings_free(s);
 }
 

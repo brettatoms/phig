@@ -29,6 +29,12 @@ struct phig_settings {
     // key changes or the handle is freed. Keyed by the setting's key.
     std::unordered_map<std::string, std::string> expanded;
     std::vector<std::string> key_cache;  // backs phig_settings_key_at
+    // True when key_cache needs rebuilding: on construction, and after any
+    // set/unset. Settings::keys() returns by value, so rebuilding key_cache
+    // frees the previous vector's backing storage — every pointer previously
+    // handed out by phig_settings_key_at would dangle if we rebuilt on every
+    // call instead of only when stale.
+    bool key_cache_dirty = true;
 };
 
 // Builds a phig_image_list (with its own string arena) from search results.
