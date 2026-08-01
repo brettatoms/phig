@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+project(libphig_install_check LANGUAGES C)
+find_library(PHIG_LIB phig REQUIRED)
+find_path(PHIG_INC phig/phig.h REQUIRED)
+add_executable(install_check main.c)
+target_include_directories(install_check PRIVATE ${PHIG_INC})
+target_link_libraries(install_check PRIVATE ${PHIG_LIB})

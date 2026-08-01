@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -438,6 +439,21 @@ TEST_F(DatabaseTest, GetAllImages) {
     EXPECT_EQ(all.size(), 2);
 }
 
+// get_all_images() long omitted id from its SELECT, so every row came back
+// with id == 0 while search_page() populated it. Both must agree.
+TEST_F(DatabaseTest, GetAllImagesPopulatesId) {
+    db->insert(make_image("/test/a.jpg", "sha1"));
+    db->insert(make_image("/test/b.jpg", "sha2"));
+
+    auto all = db->get_all_images();
+    ASSERT_EQ(all.size(), 2u);
+    for (const auto& img : all) {
+        EXPECT_GT(img.id, 0) << img.path;
+        EXPECT_EQ(img.id, db->get_image_id(img.path));
+    }
+    EXPECT_NE(all[0].id, all[1].id);
+}
+
 TEST_F(DatabaseTest, GetAllImagesWithPrefix) {
     db->insert(make_image("/photos/a.jpg", "sha1"));
     db->insert(make_image("/photos/b.jpg", "sha2"));
@@ -817,7 +833,8 @@ TEST_F(DatabaseTest, LogPruneUnlimitedIsNoOp) {
 
 TEST_F(DatabaseTest, PurgeLogsRestorableSnapshot) {
     db->insert(make_image("/x/a.jpg", "shaA"));
-    int64_t op = db->log_begin_operation("rm", "phig rm --db-only --match *", "2026-07-06T00:00:00Z");
+    int64_t op =
+        db->log_begin_operation("rm", "phig rm --db-only --match *", "2026-07-06T00:00:00Z");
     int n = db->delete_paths_logged({"/x/a.jpg"}, op);
     db->log_finish_operation(op, "completed");
     EXPECT_EQ(n, 1);
@@ -1043,8 +1060,8 @@ TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
     std::string dbp = (dir / "m.db").string();
 
     // Create a DB then roll its recorded schema_version back to force a
-    // migration on next init_schema(). (v5 is CURRENT; set to 4 to force the
-    // v5 migration to run.) The v5 tables created by the fresh-schema path
+    // migration on next init_schema(). (set to 4 to force every later
+    // migration to run.) The v5 tables created by the fresh-schema path
     // must also be dropped, since the v5 migration's CREATE TABLE isn't
     // IF NOT EXISTS (mirrors DatabaseTest.MigratesV4ToV5).
     // Database::set_schema_version() is private, so drive it via raw SQL
@@ -1079,7 +1096,45 @@ TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
     ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
     std::string version(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
     sqlite3_finalize(stmt);
-    EXPECT_EQ(version, "5");  // CURRENT_SCHEMA_VERSION
+    // Read the expected version from the library rather than hardcoding it, so
+    // adding a migration does not silently break an unrelated concurrency test.
+    EXPECT_EQ(version, std::to_string(Database::expected_schema_version()));
 
     fs::remove_all(dir);
+}
+
+TEST_F(DatabaseTest, ReadOnlyOpenFailsOnMissingFileAndDoesNotCreateIt) {
+    auto path =
+        (std::filesystem::temp_directory_path() / ("phig_ro_" + std::to_string(::getpid()) + ".db"))
+            .string();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    ASSERT_FALSE(std::filesystem::exists(path));
+
+    EXPECT_THROW(Database(path, /*read_only=*/true), std::runtime_error);
+    EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST_F(DatabaseTest, ReadOnlyOpenRejectsWrites) {
+    auto path = (std::filesystem::temp_directory_path() /
+                 ("phig_ro2_" + std::to_string(::getpid()) + ".db"))
+                    .string();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    {
+        Database db(path);
+        db.init_schema();
+    }  // create read-write
+
+    Database ro(path, /*read_only=*/true);
+    ImageInfo info;
+    info.path = "/photos/nope.jpg";
+    info.filename = "nope.jpg";
+    info.extension = "jpg";
+    info.sha256 = std::string(64, 'f');
+    EXPECT_THROW(ro.insert(info), std::runtime_error);
+
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(path + "-wal", ec);
+    std::filesystem::remove(path + "-shm", ec);
 }

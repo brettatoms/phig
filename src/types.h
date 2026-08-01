@@ -4,6 +4,7 @@
 #include <string>
 
 struct ImageInfo {
+    int64_t id = 0;
     std::string path;
     std::string filename;
     std::string extension;
@@ -20,4 +21,5 @@ struct ImageInfo {
     std::string gallery;               // gallery name, empty if none
     bool favorite = false;             // has the built-in favorite tag
     double blur_score = -1.0;          // sharpness (Laplacian variance); -1 = not computed
+    std::string effective_date;        // best available date; see compute_effective_date
 };

@@ -12,15 +12,37 @@
 #include "faces.h"
 #include "types.h"
 
+// phig's "best available date" for an image: EXIF DateTimeOriginal, then
+// DateTimeDigitized, then the file's modified_at. Returns "" if none apply.
+// Normalized to one canonical form, "YYYY-MM-DD HH:MM:SS", so every value
+// compares lexicographically against every other: EXIF ':' date separators
+// become '-', and format_time()'s "YYYY-MM-DDTHH:MM:SSZ" mtime form loses its
+// 'T' and 'Z'. Values that match neither shape pass through unchanged.
+// Stored in images.effective_date; the v7 migration rewrites older rows into
+// this form and its SQL must stay byte-identical to this function.
+std::string compute_effective_date(const std::string& metadata_json,
+                                   const std::string& modified_at);
+
 class Database {
    public:
-    explicit Database(const std::string& path);
+    // read_only opens with SQLITE_OPEN_READONLY: the file must already exist
+    // (no create-if-missing) and writes fail. Used by libphig's read-only
+    // contexts so a GUI can never contend for the writer lock.
+    explicit Database(const std::string& path, bool read_only = false);
     ~Database();
 
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
     void init_schema();
+
+    // Schema version recorded in the database (0 = fresh/pre-migration), and
+    // the version this build's queries assume. init_schema() reconciles them,
+    // but a read-only connection cannot migrate, so libphig compares the two
+    // itself and refuses to serve queries against a mismatched file.
+    int schema_version();
+    static int expected_schema_version();
+
     void insert(const ImageInfo& info);
     void insert_batch(const std::vector<ImageInfo>& infos);
     void insert_copy(const std::string& source_path, const std::string& dest_path);
@@ -122,6 +144,23 @@ class Database {
     };
     std::vector<ImageInfo> search(const SearchCriteria& criteria);
 
+    // Paginated search: same filters as SearchCriteria, plus sort/direction and
+    // offset/limit. id is always the tiebreaker so equal sort keys never
+    // shuffle rows between pages.
+    enum class SortKey { Date, Path, Size, Filename };
+    struct PageCriteria {
+        SearchCriteria filter;  // reuses the existing filter struct
+        SortKey sort = SortKey::Date;
+        bool descending = true;
+        int64_t offset = 0;
+        int32_t limit = 200;
+    };
+    std::vector<ImageInfo> search_page(const PageCriteria& c);
+    int64_t count_matching(const SearchCriteria& filter);
+
+    // Reads images.metadata for one id. Returns false if no such row.
+    bool get_metadata_json(int64_t id, std::string& out);
+
     // Tags (plan 011). set_tag adds/removes `tag` on the images at the given
     // paths (auto-creating the tag row on add) and returns the number of
     // existing images affected. Favorites use the built-in `favorite` tag.
@@ -129,12 +168,27 @@ class Database {
     std::vector<std::string> get_tags_for_image(const std::string& path);
     std::vector<std::pair<std::string, int64_t>> get_tag_counts();
 
+    // Id-based sibling of set_tag, for libphig callers that already hold a
+    // concrete image id (a GUI selection). Adds or removes `tag` on the given
+    // image ids, auto-creating the tag row on add. Unknown ids are skipped.
+    // Runs in one transaction. Returns the number of image_tags rows actually
+    // inserted/deleted, NOT the number of images touched: on the add path,
+    // sqlite3_changes reports 0 for an id/tag pair that already existed
+    // (INSERT OR IGNORE hit a duplicate), unlike the unconditional counter in
+    // the path-based set_tag.
+    int set_tag_by_ids(const std::vector<int64_t>& ids, const std::string& tag, bool add);
+
     // Galleries (plan 011): at most one per image, stored as a column. set_gallery
     // returns the number of images updated; with no_overwrite it skips images that
     // already have a gallery. clear_gallery returns the number cleared.
     int set_gallery(const std::vector<std::string>& paths, const std::string& gallery,
                     bool no_overwrite);
     int clear_gallery(const std::vector<std::string>& paths);
+
+    // Id-based sibling of set_gallery/clear_gallery. Sets gallery on the given
+    // ids; an empty string clears it (stores NULL). Unknown ids are skipped.
+    // Runs in one transaction. Returns the number of rows affected.
+    int set_gallery_by_ids(const std::vector<int64_t>& ids, const std::string& gallery);
     std::vector<std::pair<std::string, int64_t>> get_gallery_counts();
 
     // Face operations
@@ -178,4 +232,18 @@ class Database {
     void exec(const std::string& sql);
     int get_schema_version();
     void set_schema_version(int version);
+
+    // Builds the WHERE clause (without the "WHERE" keyword; always starts
+    // " AND ...") and appends the values to bind, in order.
+    // {value, is_int} matches the existing convention in search().
+    void build_filter_sql(const SearchCriteria& c, std::string& sql,
+                          std::vector<std::pair<std::string, bool>>& binds);
+
+    // Binds the values from build_filter_sql in order, advancing idx past the
+    // last one so the caller can bind its own trailing params (LIMIT/OFFSET).
+    void bind_filter_values(sqlite3_stmt* stmt,
+                            const std::vector<std::pair<std::string, bool>>& binds, int& idx);
+
+    // Column order must match the SELECT list in search_page().
+    ImageInfo row_to_image_info(sqlite3_stmt* stmt);
 };

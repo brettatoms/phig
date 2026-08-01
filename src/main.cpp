@@ -315,6 +315,8 @@ ProcessResult process_file(const fs::path& filepath, FaceDetector* face_detector
         info.metadata_json = extract_exif_json(info.path);
     }
 
+    info.effective_date = compute_effective_date(info.metadata_json, info.modified_at);
+
     return result;
 }
 
