@@ -160,7 +160,11 @@ class Database {
     // Id-based sibling of set_tag, for libphig callers that already hold a
     // concrete image id (a GUI selection). Adds or removes `tag` on the given
     // image ids, auto-creating the tag row on add. Unknown ids are skipped.
-    // Runs in one transaction. Returns the number of rows affected.
+    // Runs in one transaction. Returns the number of image_tags rows actually
+    // inserted/deleted, NOT the number of images touched: on the add path,
+    // sqlite3_changes reports 0 for an id/tag pair that already existed
+    // (INSERT OR IGNORE hit a duplicate), unlike the unconditional counter in
+    // the path-based set_tag.
     int set_tag_by_ids(const std::vector<int64_t>& ids, const std::string& tag, bool add);
 
     // Galleries (plan 011): at most one per image, stored as a column. set_gallery

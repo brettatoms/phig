@@ -183,6 +183,11 @@ PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, char* 
  * PHIG_OK. Favorites are phig's built-in "favorite" tag. */
 PHIG_API phig_status phig_tag_add(phig_ctx* ctx, const int64_t* ids, size_t n, const char* tag);
 PHIG_API phig_status phig_tag_remove(phig_ctx* ctx, const int64_t* ids, size_t n, const char* tag);
+
+/* gallery must be a non-empty string; an empty string returns
+ * PHIG_ERR_INVALID_ARG rather than clearing it, so a GUI text field the user
+ * blanked out cannot silently clear the gallery. Use phig_gallery_clear to
+ * remove an image's gallery. */
 PHIG_API phig_status phig_gallery_set(phig_ctx* ctx, const int64_t* ids, size_t n,
                                       const char* gallery);
 PHIG_API phig_status phig_gallery_clear(phig_ctx* ctx, const int64_t* ids, size_t n);

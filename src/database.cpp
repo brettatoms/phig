@@ -1380,8 +1380,7 @@ int Database::set_tag_by_ids(const std::vector<int64_t>& ids, const std::string&
                 throw std::runtime_error("prepare tag insert: " + std::string(sqlite3_errmsg(db_)));
             }
             sqlite3_bind_text(st, 1, tag.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_step(st);
-            sqlite3_finalize(st);
+            step_write_or_throw(db_, st, "Failed to create tag");
         }
         // The add-path's SELECT filters to images that exist so an unknown id
         // is silently skipped rather than tripping image_tags' FK constraint

@@ -33,7 +33,7 @@ phig_status phig_tag_remove(phig_ctx* ctx, const int64_t* ids, size_t n, const c
 }
 
 phig_status phig_gallery_set(phig_ctx* ctx, const int64_t* ids, size_t n, const char* gallery) {
-    if (bad_ids(ids, n) || gallery == nullptr) return PHIG_ERR_INVALID_ARG;
+    if (bad_ids(ids, n) || gallery == nullptr || gallery[0] == '\0') return PHIG_ERR_INVALID_ARG;
     PHIG_TRY(ctx)
     if (ctx->mode != PHIG_READ_WRITE) return PHIG_ERR_READONLY;
     if (n == 0) return PHIG_OK;

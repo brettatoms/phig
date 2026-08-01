@@ -167,6 +167,22 @@ TEST(AbiMutate, RejectsBadArguments) {
     phig_shutdown(ctx);
 }
 
+TEST(AbiMutate, GallerySetRejectsEmptyString) {
+    TempDbPath tmp;
+    auto ids = seed_three(tmp.path);
+    phig_ctx* ctx = open_rw(tmp.path);
+
+    ASSERT_EQ(phig_gallery_set(ctx, ids.data(), 1, "Trip 2024"), PHIG_OK);
+    EXPECT_EQ(phig_gallery_set(ctx, ids.data(), 1, ""), PHIG_ERR_INVALID_ARG);
+    {
+        Database db(tmp.path);
+        for (const auto& r : db.get_all_images()) {
+            if (r.path == "/photos/m0.jpg") EXPECT_EQ(r.gallery, "Trip 2024");
+        }
+    }
+    phig_shutdown(ctx);
+}
+
 TEST(AbiMutate, EmptyIdListIsNoOp) {
     TempDbPath tmp;
     seed_three(tmp.path);
