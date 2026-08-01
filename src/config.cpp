@@ -1,24 +1,20 @@
 #include "config.h"
 
-#include <cctype>
 #include <initializer_list>
 #include <iostream>
 #include <stdexcept>
 
 #include "INIReader.h"
+#include "key_normalize.h"
 #include "paths.h"
 
 namespace {
 
 // Lowercase and map '-' to '_' so keys/sections match regardless of the
-// separator style the user chose (INIReader already lowercases).
-std::string normalize(std::string s) {
-    for (char& c : s) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (c == '-') c = '_';
-    }
-    return s;
-}
+// separator style the user chose (INIReader already lowercases). Shares its
+// implementation with Settings::normalize_key via key_normalize.h so libphig
+// and the CLI cannot silently disagree about key identity.
+std::string normalize(const std::string& s) { return normalize_key(s); }
 
 [[noreturn]] void fail(const std::string& path, const std::string& section, const std::string& key,
                        const std::string& msg) {

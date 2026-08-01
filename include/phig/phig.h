@@ -258,9 +258,14 @@ PHIG_API phig_status phig_settings_load(const char* path, phig_settings** out);
 PHIG_API void phig_settings_free(phig_settings* s);
 
 /* Returns `fallback` when the key is absent. The returned pointer is owned by
- * `s` and stays valid until `s` is freed; setting or unsetting the key updates
- * the pointed-to string in place rather than freeing it. Path values have a
- * leading `~` expanded, matching the CLI; the unexpanded form is what
+ * `s` and stays valid until `s` is freed. Setting or unsetting the key updates
+ * the pointed-to string in place rather than freeing it, and for any value up
+ * to PATH_MAX bytes (the realistic case for the paths and settings this API
+ * carries) the update lands in the SAME buffer, so the pointer also stays
+ * CURRENT. A value longer than PATH_MAX instead moves to a new buffer; the old
+ * one is kept alive rather than freed, so the pointer remains safe to read but
+ * reports the value as of when it was fetched, not the new one. Path values
+ * have a leading `~` expanded, matching the CLI; the unexpanded form is what
  * phig_settings_save writes back. */
 PHIG_API const char* phig_settings_get(phig_settings* s, const char* key, const char* fallback);
 
@@ -299,9 +304,13 @@ PHIG_API phig_status phig_settings_save(phig_settings* s, const char* path);
  * set cfg->mode — that is a per-context decision, not a user preference.
  *
  * The strings point into `s`, so `s` must outlive the phig_init call. They
- * survive a later set/unset of the same key — the cached string is rewritten
- * in place, never freed — so a load/to_config/edit/save/phig_init sequence is
- * safe. */
+ * survive a later set/unset of the same key — the cached string is never
+ * freed — so a load/to_config/edit/save/phig_init sequence is safe. For any
+ * new value up to PATH_MAX bytes, the string is rewritten in place, so the
+ * pointer also reflects the edit. A value longer than PATH_MAX instead moves
+ * to a new buffer, and the pointer keeps reading the pre-edit value rather
+ * than dangling or picking up the new one — safe, but stale; re-run
+ * phig_settings_to_config if you need the current value in that case. */
 PHIG_API phig_status phig_settings_to_config(phig_settings* s, phig_config* cfg);
 
 #ifdef __cplusplus

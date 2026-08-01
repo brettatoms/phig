@@ -2,6 +2,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <climits>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -260,6 +261,76 @@ TEST(AbiSettings, GetPointerSurvivesALaterSetOfTheSameKey) {
     ASSERT_NE(v, nullptr);
     ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, "/photos/another-fairly-long-path.db"), PHIG_OK);
     EXPECT_STREQ(v, "/photos/another-fairly-long-path.db");
+    phig_settings_free(s);
+}
+
+// The exact scenario the header's lifetime promise is built around: load,
+// to_config, the user edits the db path to something long in a settings
+// dialog, save. The reservation must be generous enough that this ordinary
+// edit rewrites the cell in place rather than retiring it, so the pointer
+// to_config already handed out reads the NEW value. 81 characters is chosen
+// to exceed the pre-fix cap of 80 (default "/a/b.db" -> (7+1)*2+64) while
+// staying under PATH_MAX, so this specifically exercises the reservation
+// change rather than the retire-and-grow safety net.
+TEST(AbiSettings, ToConfigPointerReflectsALongPathAfterSet) {
+    TempIni f("[paths]\ndb = /a/b.db\n");
+    phig_settings* s = nullptr;
+    ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
+
+    phig_config cfg{};
+    ASSERT_EQ(phig_settings_to_config(s, &cfg), PHIG_OK);
+    ASSERT_STREQ(cfg.db_path, "/a/b.db");
+
+    const std::string long_path =
+        "/home/brett/Pictures/Photo Library 2019-2026/masters/originals/phig-collection.db";
+    ASSERT_EQ(long_path.size(), 81u);
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, long_path.c_str()), PHIG_OK);
+
+    EXPECT_STREQ(cfg.db_path, long_path.c_str());
+    phig_settings_free(s);
+}
+
+// Same rule for phig_settings_get's returned pointer.
+TEST(AbiSettings, GetPointerReflectsALongPathAfterSet) {
+    TempIni f("[paths]\ndb = /a/b.db\n");
+    phig_settings* s = nullptr;
+    ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
+    const char* v = phig_settings_get(s, PHIG_KEY_DB, "fb");
+    ASSERT_STREQ(v, "/a/b.db");
+
+    const std::string long_path =
+        "/home/brett/Pictures/Photo Library 2019-2026/masters/originals/phig-collection.db";
+    ASSERT_EQ(long_path.size(), 81u);
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, long_path.c_str()), PHIG_OK);
+
+    EXPECT_STREQ(v, long_path.c_str());
+    phig_settings_free(s);
+}
+
+// A value that genuinely exceeds even the PATH_MAX reservation must still be
+// memory-safe to read through a previously-handed-out pointer: the retire
+// path keeps the old buffer alive rather than freeing it. Currency is not
+// expected here (that is the documented, qualified exception) — only that
+// the old pointer stays readable and still reports the value it had when it
+// was fetched.
+TEST(AbiSettings, PointerStaysReadableAfterAValueLargerThanPathMax) {
+    TempIni f("[paths]\ndb = /a/b.db\n");
+    phig_settings* s = nullptr;
+    ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
+    const char* v = phig_settings_get(s, PHIG_KEY_DB, "fb");
+    ASSERT_STREQ(v, "/a/b.db");
+
+    const std::string huge_path = "/" + std::string(PATH_MAX + 100, 'x');
+    ASSERT_GT(huge_path.size(), static_cast<size_t>(PATH_MAX));
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, huge_path.c_str()), PHIG_OK);
+
+    // Memory safety: the old pointer is still readable and unchanged (retired,
+    // not freed). It does NOT reflect the new value — that is the accepted,
+    // documented exception to currency at this extreme.
+    EXPECT_STREQ(v, "/a/b.db");
+
+    const char* v2 = phig_settings_get(s, PHIG_KEY_DB, "fb");
+    EXPECT_STREQ(v2, huge_path.c_str());
     phig_settings_free(s);
 }
 

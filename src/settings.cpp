@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "key_normalize.h"
 #include "paths.h"
 
 namespace {
@@ -39,14 +40,7 @@ std::string strip_bom(const std::string& s) {
 }
 }  // namespace
 
-std::string Settings::normalize_key(const std::string& key) {
-    std::string out = key;
-    for (char& c : out) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (c == '-') c = '_';
-    }
-    return out;
-}
+std::string Settings::normalize_key(const std::string& key) { return ::normalize_key(key); }
 
 Settings Settings::load(const std::string& path) {
     if (!std::filesystem::is_regular_file(path)) {

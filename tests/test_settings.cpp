@@ -389,6 +389,22 @@ TEST(SettingsWriter, SetOfGetResultOnBareMarkerCommentDoesNotCompound) {
 // something the CLI refuses to parse. These tests pin the two views together.
 
 namespace {
+// Independent of Settings::normalize_key on purpose: this is the "other side"
+// of the differential test, and it must apply its own literal transform
+// rather than calling into the code under test. If it called
+// Settings::normalize_key here, a transform injected into that function would
+// be applied to BOTH sides of every comparison below and cancel out — a
+// one-sided drift (Settings doing something inih-matching code does not, or
+// vice versa) would go undetected even though it corrupts real config files.
+std::string inih_key_normalize(const std::string& key) {
+    std::string out = key;
+    for (char& c : out) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (c == '-') c = '_';
+    }
+    return out;
+}
+
 // Every key inih sees, as normalized "section.name" -> value.
 std::map<std::string, std::string> inih_view(const std::string& path) {
     INIReader r(path);
@@ -396,7 +412,7 @@ std::map<std::string, std::string> inih_view(const std::string& path) {
     std::map<std::string, std::string> out;
     for (const std::string& section : r.Sections()) {
         for (const std::string& key : r.Keys(section)) {
-            std::string k = Settings::normalize_key(section.empty() ? key : section + "." + key);
+            std::string k = inih_key_normalize(section.empty() ? key : section + "." + key);
             out[k] = r.Get(section, key, "");
         }
     }
@@ -448,6 +464,14 @@ std::vector<Shape> shapes() {
          "# header\n\n[Paths]\n; note\ndb = ~/photos/phig.db  ; inline\n\n[general]\nparallel = "
          "4\n",
          "general.parallel", "8"},
+        // A key containing a space, alongside its underscore spelling. inih
+        // treats `my key` and `my_key` as two distinct keys. If Settings ever
+        // mapped ' ' -> '_' (a transform it must NOT apply), the two would
+        // collide, reporting one fewer key than inih on load and, on an edit
+        // to `my_key`, silently overwriting `my key` instead — the drift the
+        // reviewer specifically probed for.
+        {"space in key", "[general]\nmy key = 2\nmy_key = 9\nparallel = 4\n", "general.my_key",
+         "8"},
     };
 }
 }  // namespace

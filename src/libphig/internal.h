@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <climits>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -27,13 +29,14 @@ struct phig_query {
 struct phig_settings {
     Settings s;
     std::string load_path;  // for save(NULL)
-    // A C string handed out to a caller. The bytes live in a fixed-size heap
-    // buffer that is allocated once and never reallocated, so the `const char*`
-    // a caller holds stays valid — and stays correct — for the handle's whole
-    // life. phig_settings_to_config gives cfg->db_path a pointer in here, and
-    // the documented contract only asks that `s` outlive phig_init; it never
-    // tells the caller to re-read after an edit. A std::string would defeat
-    // this: assigning a longer value moves its buffer.
+    // A C string handed out to a caller. The bytes live in a heap buffer
+    // reserved to at least PATH_MAX, so the `const char*` a caller holds
+    // stays valid — and stays current — across any edit whose new value is a
+    // realistic path or setting. phig_settings_to_config gives cfg->db_path a
+    // pointer in here, and the documented contract only asks that `s`
+    // outlive phig_init; it never tells the caller to re-read after an edit.
+    // A std::string would defeat this: assigning a longer value moves its
+    // buffer.
     struct Cell {
         std::unique_ptr<char[]> buf;
         size_t cap = 0;  // bytes allocated, including the NUL
@@ -41,8 +44,8 @@ struct phig_settings {
         // a pointer handed out before the grow is still safe to read — it
         // reports the value as of when it was fetched instead of the newer
         // one. Strictly better than freeing it; growing past the headroom
-        // takes a value more than twice as long as the one it replaces, which
-        // a settings edit essentially never does.
+        // takes a value longer than PATH_MAX, which is not a realistic
+        // setting value.
         std::vector<std::unique_ptr<char[]>> retired;
 
         explicit Cell(const std::string& v) { assign(v); }
@@ -53,9 +56,16 @@ struct phig_settings {
                 return;
             }
             // Over-allocate so ordinary edits (a path getting a bit longer)
-            // rewrite the existing buffer rather than stranding it.
+            // rewrite the existing buffer rather than stranding it. The
+            // values this API carries are filesystem paths, so PATH_MAX is
+            // the natural floor: it makes every realistic edit reuse the
+            // buffer, keeping a held pointer current rather than stale.
+            // `cap` only grows (never shrinks), so a cell that has already
+            // grown for one long value keeps handling short values too,
+            // without shedding the headroom it earned.
             if (buf != nullptr) retired.push_back(std::move(buf));
-            cap = (v.size() + 1) * 2 + 64;
+            size_t want = (v.size() + 1) * 2 + 64;
+            cap = std::max<size_t>({cap, want, PATH_MAX});
             buf = std::make_unique<char[]>(cap);
             std::memcpy(buf.get(), v.c_str(), v.size() + 1);
         }
