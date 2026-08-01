@@ -1,5 +1,6 @@
 #include "settings.h"
 
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -13,6 +14,19 @@ std::string trim(const std::string& s) {
     if (b == std::string::npos) return "";
     size_t e = s.find_last_not_of(" \t\r");
     return s.substr(b, e - b + 1);
+}
+
+// Find the start of an inline comment in `s`, matching inih's
+// ini_find_chars_or_comment: only ';' preceded by a whitespace character
+// starts an inline comment. '#' is never an inline comment marker (it only
+// starts a whole-line comment, handled elsewhere). Returns npos if none.
+size_t find_inline_comment(const std::string& s) {
+    bool was_space = false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (was_space && s[i] == ';') return i;
+        was_space = std::isspace(static_cast<unsigned char>(s[i])) != 0;
+    }
+    return std::string::npos;
 }
 }  // namespace
 
@@ -62,7 +76,22 @@ Settings Settings::load(const std::string& path) {
                 line.section = current_section;
                 std::string name = trim(t.substr(0, eq));
                 line.key = current_section.empty() ? name : current_section + "." + name;
-                line.value = trim(t.substr(eq + 1));
+                std::string tail = t.substr(eq + 1);
+                size_t comment_at = find_inline_comment(tail);
+                if (comment_at == std::string::npos) {
+                    line.value = trim(tail);
+                } else {
+                    // Include the whitespace run right before the marker in
+                    // the comment, so the value/comment split point matches
+                    // where the value actually ends.
+                    size_t ws_start = comment_at;
+                    while (ws_start > 0 &&
+                           std::isspace(static_cast<unsigned char>(tail[ws_start - 1]))) {
+                        --ws_start;
+                    }
+                    line.value = trim(tail.substr(0, ws_start));
+                    line.comment = tail.substr(ws_start);
+                }
             }
         }
         s.lines_.push_back(std::move(line));
@@ -105,27 +134,15 @@ void Settings::set(const std::string& key, const std::string& value) {
     if (it != index_.end()) {
         Line& line = lines_[it->second];
         // Rewrite only the value span: keep the original text up to and
-        // including '=', and any trailing comment after the old value.
+        // including '=', and the line's stored inline comment (never
+        // re-derived from the new value — the new value may itself contain
+        // '#' or ';', which must not be mistaken for a comment marker).
         size_t eq = line.text.find('=');
         std::string head = line.text.substr(0, eq + 1);
         std::string tail = line.text.substr(eq + 1);
-        // Find where the old value sits inside `tail` so a trailing comment,
-        // and the spacing before it, survive.
         size_t vb = tail.find_first_not_of(" \t");
         std::string lead = (vb == std::string::npos) ? " " : tail.substr(0, vb);
-        std::string rest;
-        if (vb != std::string::npos) {
-            size_t hash = tail.find_first_of("#;", vb);
-            if (hash != std::string::npos) rest = tail.substr(hash);
-            // Preserve the whitespace that sat between value and comment.
-            if (!rest.empty()) {
-                size_t ve = tail.find_last_not_of(" \t", hash - 1);
-                if (ve != std::string::npos && ve + 1 < hash) {
-                    rest = tail.substr(ve + 1);
-                }
-            }
-        }
-        line.text = head + lead + value + rest;
+        line.text = head + lead + value + line.comment;
         line.value = value;
         return;
     }

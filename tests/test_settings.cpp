@@ -6,6 +6,7 @@
 #include <fstream>
 #include <string>
 
+#include "config.h"
 #include "settings.h"
 
 namespace {
@@ -162,13 +163,16 @@ TEST(SettingsWriter, PreservesUnknownKeys) {
 }
 
 TEST(SettingsWriter, PreservesTrailingCommentOnARewrittenLine) {
-    TempFile f("[general]\nparallel = 4  # tuned for this box\n");
+    // '#' is never an inline comment marker per inih (only whole-line); ';'
+    // is, but only when preceded by whitespace. Use ';' here to exercise a
+    // genuine inline comment.
+    TempFile f("[general]\nparallel = 4  ; tuned for this box\n");
     Settings s = Settings::load(f.path);
     s.set("general.parallel", "8");
     EXPECT_EQ(f.read().empty(), false);
     s.save(f.path);
     std::string out = f.read();
-    EXPECT_NE(out.find("# tuned for this box"), std::string::npos);
+    EXPECT_NE(out.find("; tuned for this box"), std::string::npos);
     EXPECT_NE(out.find("parallel = 8"), std::string::npos);
 }
 
@@ -266,4 +270,77 @@ TEST(SettingsWriter, SetNeverRewritesABareEqualsLine) {
     s.set("paths.db", "/y");
     s.save(f.path);
     EXPECT_EQ(f.read(), "[paths]\n=\ndb = /y\n");
+}
+
+// Round-trip: set(key, get(key)) must be a no-op across repeated saves. This
+// is the shape a GUI's read-modify-write actually takes; using a fresh
+// literal (as every test above does) can't catch a comment getting
+// re-appended on every save.
+TEST(SettingsWriter, SetOfGetResultDoesNotDoubleTheComment) {
+    TempFile f("[general]\nparallel = 4  ; tuned\n");
+    Settings s1 = Settings::load(f.path);
+    s1.set("general.parallel", *s1.get("general.parallel"));
+    s1.save(f.path);
+    std::string after_first = f.read();
+
+    Settings s2 = Settings::load(f.path);
+    s2.set("general.parallel", *s2.get("general.parallel"));
+    s2.save(f.path);
+    std::string after_second = f.read();
+
+    EXPECT_EQ(after_first, after_second);
+    EXPECT_EQ(after_second, "[general]\nparallel = 4  ; tuned\n");
+}
+
+// '#' never starts an inline comment per inih (INI_INLINE_COMMENT_PREFIXES is
+// ';' only); it's part of the value. set() must not weld the old value's
+// tail onto the new one.
+TEST(SettingsWriter, SetOnValueContainingHashDoesNotWeldOldTail) {
+    TempFile f("[s]\nformat = %Y#%m\n");
+    Settings s = Settings::load(f.path);
+    ASSERT_EQ(*s.get("s.format"), "%Y#%m");
+    s.set("s.format", "%d-%m");
+    s.save(f.path);
+    Settings reloaded = Settings::load(f.path);
+    EXPECT_EQ(*reloaded.get("s.format"), "%d-%m");
+}
+
+// A ';' not preceded by whitespace is part of the value, not a comment
+// marker (inih requires a preceding whitespace character).
+TEST(SettingsWriter, SemicolonWithoutPrecedingSpaceIsPartOfValue) {
+    TempFile f("[s]\nlist = a;b;c\n");
+    Settings s = Settings::load(f.path);
+    ASSERT_EQ(*s.get("s.list"), "a;b;c");
+    s.set("s.list", "x;y");
+    s.save(f.path);
+    Settings reloaded = Settings::load(f.path);
+    EXPECT_EQ(*reloaded.get("s.list"), "x;y");
+}
+
+// A genuine inline comment (';' preceded by whitespace) survives a set()
+// exactly once, and the value itself is exactly what was set.
+TEST(SettingsWriter, GenuineInlineCommentSurvivesExactlyOnce) {
+    TempFile f("[s]\nk = v ; note\n");
+    Settings s = Settings::load(f.path);
+    ASSERT_EQ(*s.get("s.k"), "v");
+    s.set("s.k", "w");
+    s.save(f.path);
+    std::string out = f.read();
+    EXPECT_EQ(out, "[s]\nk = w ; note\n");
+
+    Settings reloaded = Settings::load(f.path);
+    EXPECT_EQ(*reloaded.get("s.k"), "w");
+}
+
+// libphig's Settings and phig's own inih-based config loader must agree on
+// where a value ends and an inline comment begins, since both read the same
+// file for different purposes.
+TEST(SettingsWriter, AgreesWithInihOnInlineCommentSplit) {
+    TempFile f("[organize]\nformat = %Y#%m ; keep this comment\n");
+    Settings s = Settings::load(f.path);
+    ASSERT_NE(s.get("organize.format"), nullptr);
+
+    Config c = load_config(f.path);
+    ASSERT_TRUE(c.organize_format.has_value());
+    EXPECT_EQ(*s.get("organize.format"), *c.organize_format);
 }

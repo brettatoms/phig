@@ -31,7 +31,8 @@ class Settings {
     // Keys in file order.
     std::vector<std::string> keys() const;
 
-    // Atomic: writes a temp sibling, fsyncs, renames. Throws on failure.
+    // Atomic: writes a temp sibling, then renames over the destination.
+    // Throws on failure.
     void save(const std::string& path) const;
 
     const std::string& source_path() const { return source_path_; }
@@ -43,7 +44,12 @@ class Settings {
         std::string text;     // the full original line, no newline
         std::string section;  // for Section and KeyValue
         std::string key;      // for KeyValue: the dotted key
-        std::string value;    // for KeyValue: the trimmed value
+        std::string value;    // for KeyValue: the trimmed value, comment stripped
+        // for KeyValue: the inline comment, including its leading whitespace
+        // and marker (e.g. "  ; note"); empty when there is none. Matches
+        // inih's rule: only ';' preceded by whitespace starts an inline
+        // comment; '#' never does.
+        std::string comment;
     };
 
     std::vector<Line> lines_;
