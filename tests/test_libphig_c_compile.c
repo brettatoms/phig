@@ -45,5 +45,14 @@ void phig_c_compile_check(void) {
                                 path, sizeof(path), &exists);
     }
 
+    {
+        int64_t ids[2] = {1, 2};
+        (void)phig_tag_add(ctx, ids, 2, "tag");
+        (void)phig_tag_remove(ctx, ids, 2, "tag");
+        (void)phig_gallery_set(ctx, ids, 2, "gallery");
+        (void)phig_gallery_clear(ctx, ids, 2);
+        (void)phig_favorite_set(ctx, ids, 2, true);
+    }
+
     phig_shutdown(ctx);
 }

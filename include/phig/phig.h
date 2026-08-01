@@ -174,6 +174,20 @@ PHIG_API void phig_string_free(char* s);
 PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, char* out_path,
                                        size_t out_len, bool* exists);
 
+/* Metadata writes. These take ids because a GUI always has a concrete
+ * selection; the CLI's glob-based paths are unchanged.
+ *
+ * All require a PHIG_READ_WRITE context and return PHIG_ERR_READONLY on a
+ * read-only one. Each call is one transaction: it applies to every id or to
+ * none. Unknown ids are skipped, not an error. n == 0 is a no-op returning
+ * PHIG_OK. Favorites are phig's built-in "favorite" tag. */
+PHIG_API phig_status phig_tag_add(phig_ctx* ctx, const int64_t* ids, size_t n, const char* tag);
+PHIG_API phig_status phig_tag_remove(phig_ctx* ctx, const int64_t* ids, size_t n, const char* tag);
+PHIG_API phig_status phig_gallery_set(phig_ctx* ctx, const int64_t* ids, size_t n,
+                                      const char* gallery);
+PHIG_API phig_status phig_gallery_clear(phig_ctx* ctx, const int64_t* ids, size_t n);
+PHIG_API phig_status phig_favorite_set(phig_ctx* ctx, const int64_t* ids, size_t n, bool on);
+
 #ifdef __cplusplus
 }
 #endif

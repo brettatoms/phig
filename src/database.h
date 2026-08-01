@@ -157,12 +157,23 @@ class Database {
     std::vector<std::string> get_tags_for_image(const std::string& path);
     std::vector<std::pair<std::string, int64_t>> get_tag_counts();
 
+    // Id-based sibling of set_tag, for libphig callers that already hold a
+    // concrete image id (a GUI selection). Adds or removes `tag` on the given
+    // image ids, auto-creating the tag row on add. Unknown ids are skipped.
+    // Runs in one transaction. Returns the number of rows affected.
+    int set_tag_by_ids(const std::vector<int64_t>& ids, const std::string& tag, bool add);
+
     // Galleries (plan 011): at most one per image, stored as a column. set_gallery
     // returns the number of images updated; with no_overwrite it skips images that
     // already have a gallery. clear_gallery returns the number cleared.
     int set_gallery(const std::vector<std::string>& paths, const std::string& gallery,
                     bool no_overwrite);
     int clear_gallery(const std::vector<std::string>& paths);
+
+    // Id-based sibling of set_gallery/clear_gallery. Sets gallery on the given
+    // ids; an empty string clears it (stores NULL). Unknown ids are skipped.
+    // Runs in one transaction. Returns the number of rows affected.
+    int set_gallery_by_ids(const std::vector<int64_t>& ids, const std::string& gallery);
     std::vector<std::pair<std::string, int64_t>> get_gallery_counts();
 
     // Face operations

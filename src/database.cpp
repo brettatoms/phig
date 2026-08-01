@@ -1368,6 +1368,53 @@ std::vector<std::pair<std::string, int64_t>> Database::get_tag_counts() {
     return counts;
 }
 
+int Database::set_tag_by_ids(const std::vector<int64_t>& ids, const std::string& tag, bool add) {
+    if (ids.empty()) return 0;
+    int affected = 0;
+    begin_transaction();
+    try {
+        if (add) {
+            const char* ins_tag = "INSERT OR IGNORE INTO tags (name) VALUES (?)";
+            sqlite3_stmt* st = nullptr;
+            if (sqlite3_prepare_v2(db_, ins_tag, -1, &st, nullptr) != SQLITE_OK) {
+                throw std::runtime_error("prepare tag insert: " + std::string(sqlite3_errmsg(db_)));
+            }
+            sqlite3_bind_text(st, 1, tag.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_step(st);
+            sqlite3_finalize(st);
+        }
+        // The add-path's SELECT filters to images that exist so an unknown id
+        // is silently skipped rather than tripping image_tags' FK constraint
+        // (INSERT OR IGNORE does not suppress foreign-key violations).
+        const char* sql = add ? "INSERT OR IGNORE INTO image_tags (image_id, tag_id) "
+                                "SELECT ?, id FROM tags WHERE name = ? "
+                                "AND EXISTS (SELECT 1 FROM images WHERE id = ?)"
+                              : "DELETE FROM image_tags WHERE image_id = ? AND tag_id = "
+                                "(SELECT id FROM tags WHERE name = ?)";
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+            throw std::runtime_error("prepare image_tags: " + std::string(sqlite3_errmsg(db_)));
+        }
+        for (int64_t id : ids) {
+            sqlite3_reset(st);
+            sqlite3_bind_int64(st, 1, id);
+            sqlite3_bind_text(st, 2, tag.c_str(), -1, SQLITE_TRANSIENT);
+            if (add) sqlite3_bind_int64(st, 3, id);
+            if (sqlite3_step(st) != SQLITE_DONE) {
+                sqlite3_finalize(st);
+                throw std::runtime_error("apply tag: " + std::string(sqlite3_errmsg(db_)));
+            }
+            affected += sqlite3_changes(db_);
+        }
+        sqlite3_finalize(st);
+        commit_transaction();
+    } catch (...) {
+        rollback_transaction();
+        throw;
+    }
+    return affected;
+}
+
 int Database::set_gallery(const std::vector<std::string>& paths, const std::string& gallery,
                           bool no_overwrite) {
     if (paths.empty()) {
@@ -1408,6 +1455,39 @@ int Database::clear_gallery(const std::vector<std::string>& paths) {
         affected += sqlite3_changes(db_);
     }
     exec("COMMIT");
+    return affected;
+}
+
+int Database::set_gallery_by_ids(const std::vector<int64_t>& ids, const std::string& gallery) {
+    if (ids.empty()) return 0;
+    int affected = 0;
+    begin_transaction();
+    try {
+        const char* sql = "UPDATE images SET gallery = ? WHERE id = ?";
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+            throw std::runtime_error("prepare gallery update: " + std::string(sqlite3_errmsg(db_)));
+        }
+        for (int64_t id : ids) {
+            sqlite3_reset(st);
+            if (gallery.empty()) {
+                sqlite3_bind_null(st, 1);
+            } else {
+                sqlite3_bind_text(st, 1, gallery.c_str(), -1, SQLITE_TRANSIENT);
+            }
+            sqlite3_bind_int64(st, 2, id);
+            if (sqlite3_step(st) != SQLITE_DONE) {
+                sqlite3_finalize(st);
+                throw std::runtime_error("apply gallery: " + std::string(sqlite3_errmsg(db_)));
+            }
+            affected += sqlite3_changes(db_);
+        }
+        sqlite3_finalize(st);
+        commit_transaction();
+    } catch (...) {
+        rollback_transaction();
+        throw;
+    }
     return affected;
 }
 

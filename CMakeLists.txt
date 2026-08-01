@@ -121,6 +121,7 @@ add_library(phig_abi SHARED
     src/libphig/query.cpp
     src/libphig/records.cpp
     src/libphig/thumbs.cpp
+    src/libphig/mutate.cpp
 )
 set_target_properties(phig_abi PROPERTIES
     OUTPUT_NAME phig
@@ -190,6 +191,7 @@ add_executable(phig-tests
     tests/test_lockfile.cpp
     tests/test_libphig_query.cpp
     tests/test_libphig_abi.cpp
+    tests/test_libphig_mutate.cpp
     tests/test_libphig_c_compile.c
 )
 # Applies to phig-tests' C sources only (test_libphig_c_compile.c) — proves
