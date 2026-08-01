@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "database.h"
+#include "phig/phig.h"
 
 TEST(EffectiveDate, PrefersDateTimeOriginal) {
     std::string meta = R"({"DateTimeOriginal":"2021:05:04 10:00:00",
@@ -29,6 +30,35 @@ TEST(EffectiveDate, SortsAcrossExifAndMtimeForms) {
     std::string a = compute_effective_date(exif, "");
     std::string b = compute_effective_date("", "2022-01-01 00:00:00");
     EXPECT_LT(a, b);
+}
+
+// format_time() (src/main.cpp) writes mtimes as "YYYY-MM-DDTHH:MM:SSZ". That
+// form must be folded into the canonical space-separated one, or every
+// mtime-dated row outranks every EXIF-dated row from the same day.
+TEST(EffectiveDate, NormalizesMtimeIsoZForm) {
+    EXPECT_EQ(compute_effective_date("", "2026-08-01T15:00:19Z"), "2026-08-01 15:00:19");
+}
+
+TEST(EffectiveDate, MtimeIsoZSortsAgainstExifSameDay) {
+    std::string exif = R"({"DateTimeOriginal":"2021:06:15 23:00:00"})";
+    std::string later_exif = compute_effective_date(exif, "");
+    std::string earlier_mtime = compute_effective_date("", "2021-06-15T22:00:00Z");
+    EXPECT_LT(earlier_mtime, later_exif);
+}
+
+TEST(EffectiveDate, LeavesNonMatchingShapesAlone) {
+    // Already canonical.
+    EXPECT_EQ(compute_effective_date("", "2021-06-15 23:00:00"), "2021-06-15 23:00:00");
+    // Nothing at all.
+    EXPECT_EQ(compute_effective_date("", ""), "");
+    // Too short to be either shape; must not read out of bounds or mangle.
+    EXPECT_EQ(compute_effective_date("", "2021"), "2021");
+    EXPECT_EQ(compute_effective_date("", "x"), "x");
+    EXPECT_EQ(compute_effective_date("", "garbage"), "garbage");
+    // Right length, wrong shape: a 'T' that is not the date/time separator.
+    EXPECT_EQ(compute_effective_date("", "a string with a T!!"), "a string with a T!!");
+    // 'T' in place but no trailing 'Z' — not format_time()'s output.
+    EXPECT_EQ(compute_effective_date("", "2021-06-15T23:00:00"), "2021-06-15T23:00:00");
 }
 
 #include <cstdio>
@@ -64,6 +94,34 @@ void raw_exec(sqlite3* db, const char* sql) {
         sqlite3_free(err);
         throw std::runtime_error(msg);
     }
+}
+
+// Insert one image whose date comes from EXIF, in the real EXIF ':' form.
+void insert_exif_dated(Database& db, const std::string& path, const std::string& exif_date,
+                       char sha_fill) {
+    ImageInfo info;
+    info.path = path;
+    info.filename = path.substr(path.rfind('/') + 1);
+    info.extension = "jpg";
+    info.sha256 = std::string(64, sha_fill);
+    // A real scan always has an mtime; make it a distant one so a regression
+    // that ignores EXIF and falls back to modified_at is visible.
+    info.modified_at = "2099-12-31T00:00:00Z";
+    info.metadata_json = R"({"DateTimeOriginal":")" + exif_date + R"("})";
+    db.insert(info);
+}
+
+// Insert one image dated only by its file mtime, in format_time()'s real
+// "YYYY-MM-DDTHH:MM:SSZ" form (src/main.cpp).
+void insert_mtime_dated(Database& db, const std::string& path, const std::string& mtime,
+                        char sha_fill) {
+    ImageInfo info;
+    info.path = path;
+    info.filename = path.substr(path.rfind('/') + 1);
+    info.extension = "jpg";
+    info.sha256 = std::string(64, sha_fill);
+    info.modified_at = mtime;
+    db.insert(info);
 }
 }  // namespace
 
@@ -138,18 +196,241 @@ TEST(Migration, BackfillsEffectiveDateForExistingRows) {
 }
 
 namespace {
+// Reads one column back as a quoted SQL literal so NULL and '' stay
+// distinguishable in an assertion message.
+std::string quoted_effective_date(sqlite3* db, const std::string& path) {
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT quote(effective_date) FROM images WHERE path = ?", -1, &stmt,
+                           nullptr) != SQLITE_OK) {
+        throw std::runtime_error(sqlite3_errmsg(db));
+    }
+    sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    std::string out = "<no row>";
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        out = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+// Every effective_date value shape the v7 migration has to survive, as
+// {path, raw stored value as a SQL literal, expected value after migration}.
+struct DateShape {
+    const char* path;
+    const char* stored_sql;
+    const char* expected_sql;
+};
+const std::vector<DateShape>& v7_shapes() {
+    static const std::vector<DateShape> shapes = {
+        // Already canonical — must be left byte-for-byte alone.
+        {"/s/canonical.jpg", "'2021-06-15 23:00:00'", "'2021-06-15 23:00:00'"},
+        // format_time()'s mtime form — the whole point of the migration.
+        {"/s/isoz.jpg", "'2026-08-01T15:00:19Z'", "'2026-08-01 15:00:19'"},
+        // EXIF ':' form, in case an old insert() stored one un-normalized.
+        {"/s/exif.jpg", "'2021:06:15 23:00:00'", "'2021-06-15 23:00:00'"},
+        // Absent values, both spellings.
+        {"/s/empty.jpg", "''", "''"},
+        {"/s/null.jpg", "NULL", "NULL"},
+        // Malformed / short — must pass through, not crash or truncate.
+        {"/s/garbage.jpg", "'garbage'", "'garbage'"},
+        {"/s/short.jpg", "'2021'", "'2021'"},
+        // Exactly 19 chars with a 'T': one short of the guarded length.
+        {"/s/tnoz.jpg", "'2021-06-15T23:00:00'", "'2021-06-15T23:00:00'"},
+        // 20 chars, 'T' at 10, but no trailing 'Z'.
+        {"/s/tnozlong.jpg", "'2021-06-15T23:00:00x'", "'2021-06-15T23:00:00x'"},
+        // 20 chars ending in 'Z' but no 'T' separator.
+        {"/s/noz.jpg", "'2021-06-15 23:00:00Z'", "'2021-06-15 23:00:00Z'"},
+        // A 'T' elsewhere in a long value must not be treated as a separator.
+        {"/s/othert.jpg", "'a string with a T!!!!'", "'a string with a T!!!!'"},
+    };
+    return shapes;
+}
+
+// Writes the v7_shapes() rows directly, then rolls the recorded schema version
+// back to 6 so init_schema() runs the v7 migration on the next open.
+void seed_v6_with_all_shapes(const std::string& db_path) {
+    Database db(db_path);
+    db.init_schema();
+    int i = 0;
+    for (const auto& s : v7_shapes()) {
+        std::string sql =
+            "INSERT INTO images (path, filename, extension, file_size, modified_at, sha256, "
+            "phash, metadata, effective_date) VALUES ('" +
+            std::string(s.path) + "', 'f.jpg', 'jpg', 100, NULL, '" +
+            std::string(64, static_cast<char>('a' + (i % 26))) + "', 0, NULL, " + s.stored_sql +
+            ")";
+        raw_exec(db.db_ptr(), sql.c_str());
+        ++i;
+    }
+    raw_exec(db.db_ptr(), "UPDATE meta SET value='6' WHERE key='schema_version'");
+}
+}  // namespace
+
+TEST(MigrationV7, CanonicalizesEveryValueShape) {
+    TempDb tmp;
+    seed_v6_with_all_shapes(tmp.path);
+    Database db(tmp.path);
+    db.init_schema();  // runs the v7 migration
+    for (const auto& s : v7_shapes()) {
+        EXPECT_EQ(quoted_effective_date(db.db_ptr(), s.path), s.expected_sql)
+            << "shape " << s.path << " stored as " << s.stored_sql;
+    }
+}
+
+// The migration SQL and compute_effective_date() are two implementations of
+// one rule. They must not drift: run the same inputs through both.
+TEST(MigrationV7, SqlAgreesWithComputeEffectiveDate) {
+    TempDb tmp;
+    seed_v6_with_all_shapes(tmp.path);
+    Database db(tmp.path);
+    db.init_schema();
+    for (const auto& s : v7_shapes()) {
+        std::string stored = s.stored_sql;
+        if (stored == "NULL") continue;  // C++ has no NULL input; SQL leaves it alone
+        std::string raw = stored.substr(1, stored.size() - 2);  // strip the quotes
+        std::string via_cpp = "'" + compute_effective_date("", raw) + "'";
+        EXPECT_EQ(quoted_effective_date(db.db_ptr(), s.path), via_cpp)
+            << "SQL/C++ divergence for input " << stored;
+    }
+}
+
+TEST(MigrationV7, IsIdempotent) {
+    TempDb tmp;
+    seed_v6_with_all_shapes(tmp.path);
+    {
+        Database db(tmp.path);
+        db.init_schema();
+    }
+    // A second init_schema() is a no-op (version already current); force the
+    // migration to run a second time over its own output to prove the SQL is
+    // idempotent even if it were re-applied.
+    {
+        Database db(tmp.path);
+        raw_exec(db.db_ptr(), "UPDATE meta SET value='6' WHERE key='schema_version'");
+        db.init_schema();
+    }
+    {
+        Database db(tmp.path);
+        db.init_schema();  // third open: nothing left to do
+        for (const auto& s : v7_shapes()) {
+            EXPECT_EQ(quoted_effective_date(db.db_ptr(), s.path), s.expected_sql)
+                << "shape " << s.path << " drifted on re-run";
+        }
+    }
+}
+
+// A v5 database has no effective_date column at all. The v6+v7 chain must
+// backfill it in the canonical form straight from a T...Z modified_at.
+TEST(MigrationV7, V5DatabaseMigratesStraightToCanonical) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        insert_mtime_dated(db, "/photos/v5.jpg", "2026-08-01T15:00:19Z", 'a');
+        raw_exec(db.db_ptr(),
+                 "UPDATE meta SET value='5' WHERE key='schema_version';"
+                 "UPDATE images SET effective_date = NULL");
+    }
+    Database db(tmp.path);
+    db.init_schema();
+    EXPECT_EQ(quoted_effective_date(db.db_ptr(), "/photos/v5.jpg"), "'2026-08-01 15:00:19'");
+}
+
+// A GUI pointed at a not-yet-migrated collection must be told so at init,
+// not handed a context whose every page fails with "no such column".
+TEST(AbiSchema, ReadOnlyInitRejectsOlderDatabase) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        insert_mtime_dated(db, "/photos/old.jpg", "2021-06-15T22:00:00Z", 'a');
+        // A real v5 database: no effective_date column at all.
+        raw_exec(db.db_ptr(),
+                 "DROP INDEX idx_effective_date;"
+                 "ALTER TABLE images DROP COLUMN effective_date;"
+                 "UPDATE meta SET value='5' WHERE key='schema_version'");
+    }
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_ERR_SCHEMA);
+    EXPECT_EQ(ctx, nullptr);
+}
+
+TEST(AbiSchema, ReadOnlyInitRejectsNewerDatabase) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        raw_exec(db.db_ptr(), "UPDATE meta SET value='999' WHERE key='schema_version'");
+    }
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_ERR_SCHEMA);
+    EXPECT_EQ(ctx, nullptr);
+
+    // Read-write cannot migrate downward either, so it must refuse the same way
+    // rather than reporting a generic PHIG_ERR_DB.
+    cfg.mode = PHIG_READ_WRITE;
+    EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_ERR_SCHEMA);
+    EXPECT_EQ(ctx, nullptr);
+}
+
+// The read-write path is allowed to migrate, so the same older database that
+// read-only rejects must open cleanly and serve queries here.
+TEST(AbiSchema, ReadWriteInitMigratesOlderDatabase) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        insert_mtime_dated(db, "/photos/old.jpg", "2021-06-15T22:00:00Z", 'a');
+        raw_exec(db.db_ptr(),
+                 "DROP INDEX idx_effective_date;"
+                 "ALTER TABLE images DROP COLUMN effective_date;"
+                 "UPDATE meta SET value='5' WHERE key='schema_version'");
+    }
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.mode = PHIG_READ_WRITE;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    phig_image_list* list = nullptr;
+    ASSERT_EQ(phig_query_page(ctx, q, 0, 10, &list), PHIG_OK);
+    ASSERT_EQ(list->count, 1);
+    EXPECT_STREQ(list->items[0].effective_date, "2021-06-15 22:00:00");
+    phig_image_list_free(list);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+
+    // And afterwards a read-only context opens fine, because it is now current.
+    cfg.mode = PHIG_READ_ONLY;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+    phig_shutdown(ctx);
+}
+
+namespace {
 // Insert n images with predictable, distinct effective dates (ascending).
+//
+// modified_at is written in format_time()'s real "YYYY-MM-DDTHH:MM:SSZ" shape
+// and effective_date is left empty so insert() derives it through
+// compute_effective_date(), exactly as a scan does. Seeding a hand-written
+// canonical literal here is what let the two-date-family bug survive nine
+// reviews — do not reintroduce it.
 void seed(Database& db, int n) {
     for (int i = 0; i < n; ++i) {
         char buf[32];
-        std::snprintf(buf, sizeof(buf), "2020-01-%02d 00:00:00", i + 1);
+        std::snprintf(buf, sizeof(buf), "2020-01-%02dT00:00:00Z", i + 1);
         ImageInfo info;
         info.path = "/photos/img" + std::to_string(i) + ".jpg";
         info.filename = "img" + std::to_string(i) + ".jpg";
         info.extension = "jpg";
         info.file_size = 1000 + i;
         info.modified_at = buf;
-        info.effective_date = buf;
         info.sha256 = std::string(63, '0') + std::to_string(i % 10);
         db.insert(info);
     }
@@ -206,8 +487,7 @@ TEST(QueryPage, StableUnderEqualDates) {
         info.path = "/photos/same" + std::to_string(i) + ".jpg";
         info.filename = "same" + std::to_string(i) + ".jpg";
         info.extension = "jpg";
-        info.modified_at = "2020-06-06 06:06:06";
-        info.effective_date = "2020-06-06 06:06:06";  // all identical
+        info.modified_at = "2020-06-06T06:06:06Z";  // all identical
         info.sha256 = std::string(64, 'b');
         db.insert(info);
     }
@@ -269,8 +549,6 @@ TEST(CountMatching, RespectsFilter) {
     f.extension = "jpg";
     EXPECT_EQ(db.count_matching(f), 25);
 }
-
-#include "phig/phig.h"
 
 namespace {
 // Opens a read-only ABI context on `path`. Caller shuts it down.
@@ -455,6 +733,133 @@ TEST(AbiQuery, SortDateDescendingIsNewestFirst) {
     phig_image_list_free(list);
     phig_query_free(q);
     phig_shutdown(ctx);
+}
+
+namespace {
+// One collection holding both date families on the SAME day, interleaved so
+// any single-family sort gets it wrong. Returns the expected DESC order of
+// effective_date values.
+//
+// This is the shape that Blocker 1 got wrong: ' ' (0x20) < 'T' (0x54), so
+// before canonicalization every mtime-dated row outranked every EXIF-dated
+// row from the same day regardless of the actual time.
+std::vector<std::string> seed_mixed_families(Database& db) {
+    insert_exif_dated(db, "/photos/exif_2300.jpg", "2021:06:15 23:00:00", 'a');
+    insert_mtime_dated(db, "/photos/mtime_2200.jpg", "2021-06-15T22:00:00Z", 'b');
+    insert_exif_dated(db, "/photos/exif_0200.jpg", "2021:06:15 02:00:00", 'c');
+    insert_mtime_dated(db, "/photos/mtime_0100.jpg", "2021-06-15T01:00:00Z", 'd');
+    return {"2021-06-15 23:00:00", "2021-06-15 22:00:00", "2021-06-15 02:00:00",
+            "2021-06-15 01:00:00"};
+}
+}  // namespace
+
+TEST(MixedDateFamilies, StoredCanonicallyRegardlessOfSource) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    seed_mixed_families(db);
+    for (const auto& r : db.get_all_images()) {
+        EXPECT_EQ(r.effective_date.size(), 19u) << r.path << " -> " << r.effective_date;
+        EXPECT_EQ(r.effective_date.find('T'), std::string::npos) << r.path;
+        EXPECT_EQ(r.effective_date.find('Z'), std::string::npos) << r.path;
+        EXPECT_EQ(r.effective_date[10], ' ') << r.path;
+    }
+}
+
+TEST(MixedDateFamilies, SortsCorrectlyAcrossTheBoundary) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    auto expected_desc = seed_mixed_families(db);
+
+    Database::PageCriteria c;
+    c.sort = Database::SortKey::Date;
+    c.descending = true;
+    std::vector<std::string> got;
+    for (const auto& r : db.search_page(c)) got.push_back(r.effective_date);
+    EXPECT_EQ(got, expected_desc);
+
+    c.descending = false;
+    std::vector<std::string> expected_asc(expected_desc.rbegin(), expected_desc.rend());
+    got.clear();
+    for (const auto& r : db.search_page(c)) got.push_back(r.effective_date);
+    EXPECT_EQ(got, expected_asc);
+}
+
+TEST(MixedDateFamilies, AbiSortMatchesAcrossTheBoundary) {
+    TempDb tmp;
+    std::vector<std::string> expected_desc;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        expected_desc = seed_mixed_families(db);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    phig_query_set_sort(q, PHIG_SORT_DATE, true);
+    phig_image_list* list = nullptr;
+    ASSERT_EQ(phig_query_page(ctx, q, 0, 10, &list), PHIG_OK);
+    ASSERT_EQ(list->count, 4);
+    for (int64_t i = 0; i < list->count; ++i) {
+        EXPECT_STREQ(list->items[i].effective_date, expected_desc[static_cast<size_t>(i)].c_str());
+    }
+    phig_image_list_free(list);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(MixedDateFamilies, DateFilterKeepsBothFamilies) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed_mixed_families(db);  // all four are dated 2021-06-15
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+
+    // "after 2021-06-15" must keep all four, not just the EXIF-derived ones.
+    phig_query_set_date_range(q, "2021-06-15", nullptr);
+    int64_t n = -1;
+    ASSERT_EQ(phig_query_count(ctx, q, &n), PHIG_OK);
+    EXPECT_EQ(n, 4);
+
+    // A bound after the whole day excludes all four, from both families.
+    phig_query_set_date_range(q, "2021-06-16", nullptr);
+    ASSERT_EQ(phig_query_count(ctx, q, &n), PHIG_OK);
+    EXPECT_EQ(n, 0);
+
+    // A mid-day bound splits the collection by real time, not by family.
+    phig_query_set_date_range(q, "2021-06-15 12:00:00", nullptr);
+    ASSERT_EQ(phig_query_count(ctx, q, &n), PHIG_OK);
+    EXPECT_EQ(n, 2);  // 23:00 (exif) and 22:00 (mtime)
+
+    phig_query_set_date_range(q, nullptr, "2021-06-15 12:00:00");
+    ASSERT_EQ(phig_query_count(ctx, q, &n), PHIG_OK);
+    EXPECT_EQ(n, 2);  // 02:00 (exif) and 01:00 (mtime)
+
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(MixedDateFamilies, CliSearchDateFilterKeepsBothFamilies) {
+    TempDb tmp;
+    Database db(tmp.path);
+    db.init_schema();
+    seed_mixed_families(db);
+
+    Database::SearchCriteria c;
+    c.after = "2021-06-15";
+    EXPECT_EQ(db.search(c).size(), 4u);
+
+    c.after = "2021-06-15 12:00:00";
+    EXPECT_EQ(db.search(c).size(), 2u);
+
+    // A caller passing the EXIF ':' form is normalized the same way.
+    c.after = "2021:06:15 12:00:00";
+    EXPECT_EQ(db.search(c).size(), 2u);
 }
 
 TEST(AbiQuery, NullArgumentsAreRejected) {

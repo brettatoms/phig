@@ -133,6 +133,7 @@ set_target_properties(phig_abi PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
 )
+target_compile_options(phig_abi PRIVATE ${PHIG_WARNINGS})
 target_include_directories(phig_abi
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:include>

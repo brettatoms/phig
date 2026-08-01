@@ -2,6 +2,20 @@
  * Also links every symbol so a missing definition fails the build. */
 #include "phig/phig.h"
 
+/* phig_status values are published ABI. Pin every one of them so a renumber
+ * (rather than an append) fails the build instead of silently changing what a
+ * compiled client sees. C99 has no static_assert, so use a negative-width
+ * bitfield, which is a constraint violation the compiler must diagnose. */
+struct phig_status_abi_pin {
+    int ok : (PHIG_OK == 0) ? 1 : -1;
+    int invalid_arg : (PHIG_ERR_INVALID_ARG == 1) ? 1 : -1;
+    int not_found : (PHIG_ERR_NOT_FOUND == 2) ? 1 : -1;
+    int db : (PHIG_ERR_DB == 3) ? 1 : -1;
+    int readonly : (PHIG_ERR_READONLY == 4) ? 1 : -1;
+    int internal : (PHIG_ERR_INTERNAL == 5) ? 1 : -1;
+    int schema : (PHIG_ERR_SCHEMA == 6) ? 1 : -1;
+};
+
 void phig_c_compile_check(void) {
     phig_config cfg;
     phig_ctx* ctx = NULL;

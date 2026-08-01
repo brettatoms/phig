@@ -24,8 +24,20 @@ phig_status phig_init(const phig_config* cfg, phig_ctx** out) {
             set_path_overrides(std::nullopt, std::nullopt, std::string(cfg->thumbs_dir));
         }
         ctx->db = std::make_unique<Database>(cfg->db_path, cfg->mode == PHIG_READ_ONLY);
+        // A database newer than this build is unreadable either way, and
+        // init_schema() would report it as a generic failure — check before
+        // calling it so the caller gets PHIG_ERR_SCHEMA.
+        if (ctx->db->schema_version() > Database::expected_schema_version()) {
+            return PHIG_ERR_SCHEMA;
+        }
         // Read-only contexts must not migrate; a read-write one may.
         if (cfg->mode == PHIG_READ_WRITE) ctx->db->init_schema();
+        // Every query below assumes this build's schema. A read-only context
+        // could not migrate, so reject an older database here instead of
+        // failing on the first phig_query_page with "no such column".
+        if (ctx->db->schema_version() != Database::expected_schema_version()) {
+            return PHIG_ERR_SCHEMA;
+        }
         *out = ctx.release();
         return PHIG_OK;
     } catch (...) {

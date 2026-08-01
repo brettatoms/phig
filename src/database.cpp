@@ -18,7 +18,7 @@
 namespace fs = std::filesystem;
 
 // Schema version this code expects. Bump when adding migrations.
-static const int CURRENT_SCHEMA_VERSION = 6;
+static const int CURRENT_SCHEMA_VERSION = 7;
 
 // migrations[N] upgrades from version N-1 to version N.
 // Version 1 = initial schema, created directly by init_schema().
@@ -74,6 +74,26 @@ static const std::vector<std::string> migrations = {
                WHERE effective_date LIKE '____:__:__%';
        CREATE INDEX IF NOT EXISTS idx_effective_date
                ON images(effective_date DESC, id DESC);)",
+    // v7: canonicalize effective_date to "YYYY-MM-DD HH:MM:SS". v6 backfilled
+    // from modified_at, which format_time() writes as "YYYY-MM-DDTHH:MM:SSZ",
+    // so the column ended up holding two families that do not sort against
+    // each other (' ' < 'T'). Both UPDATEs must produce byte-identical output
+    // to compute_effective_date() in this file.
+    //
+    // The EXIF pass repeats v6's rewrite because a v6 database can still hold
+    // ':' values written by an insert() from before that normalization landed.
+    // The mtime pass is gated on the exact 20-char T...Z shape, so a value
+    // that merely contains a 'T' is left alone. Rows that are NULL, empty, or
+    // match neither shape are untouched by both.
+    R"(UPDATE images SET effective_date =
+                   substr(effective_date,1,4) || '-' || substr(effective_date,6,2) || '-' ||
+                   substr(effective_date,9)
+               WHERE effective_date LIKE '____:__:__%';
+       UPDATE images SET effective_date =
+                   substr(effective_date,1,10) || ' ' || substr(effective_date,12,8)
+               WHERE length(effective_date) >= 20
+                 AND substr(effective_date,11,1) = 'T'
+                 AND substr(effective_date,20,1) = 'Z';)",
 };
 
 namespace {
@@ -126,13 +146,22 @@ std::string compute_effective_date(const std::string& metadata_json,
     }
     if (d.empty()) d = modified_at;
 
-    // Normalize EXIF ':' date separators (positions 4 and 7, e.g.
-    // "2021:05:04 10:00:00") to '-' so all values sort in one family
-    // alongside modified_at's native "YYYY-MM-DD ..." form. The time
-    // portion's colons are left untouched.
+    // Canonical effective_date form is "YYYY-MM-DD HH:MM:SS". Two source
+    // families have to be folded into it, or lexicographic comparison mixes
+    // them wrongly (' ' 0x20 sorts below 'T' 0x54, so an mtime-dated row would
+    // outrank every EXIF-dated row from the same day).
+
+    // EXIF ':' date separators (positions 4 and 7, e.g. "2021:05:04 10:00:00").
+    // The time portion's colons are left untouched.
     if (d.size() >= 10 && d[4] == ':' && d[7] == ':') {
         d[4] = '-';
         d[7] = '-';
+    }
+    // File mtimes, written by format_time() as "YYYY-MM-DDTHH:MM:SSZ". Matched
+    // on the exact shape so a value that merely contains a 'T' is left alone.
+    if (d.size() >= 20 && d[10] == 'T' && d[19] == 'Z') {
+        d[10] = ' ';
+        d.resize(19);
     }
     return d;
 }
@@ -194,6 +223,10 @@ int Database::get_schema_version() {
     sqlite3_finalize(stmt);
     return version;
 }
+
+int Database::schema_version() { return get_schema_version(); }
+
+int Database::expected_schema_version() { return CURRENT_SCHEMA_VERSION; }
 
 void Database::set_schema_version(int version) {
     exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
@@ -1144,7 +1177,7 @@ std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) 
         "SELECT path, filename, extension, file_size, created_at, modified_at, sha256, phash, "
         "width, height, metadata, media_type, duration_ms, gallery, "
         "EXISTS(SELECT 1 FROM image_tags it JOIN tags t ON t.id = it.tag_id "
-        "WHERE it.image_id = images.id AND t.name = 'favorite'), blur_score, effective_date "
+        "WHERE it.image_id = images.id AND t.name = 'favorite'), blur_score, effective_date, id "
         "FROM images";
     std::optional<std::string> upper;
     if (!path_prefix.empty()) {
@@ -1188,6 +1221,7 @@ std::vector<ImageInfo> Database::get_all_images(const std::string& path_prefix) 
         info.blur_score =
             sqlite3_column_type(stmt, 15) == SQLITE_NULL ? -1.0 : sqlite3_column_double(stmt, 15);
         info.effective_date = text(16);
+        info.id = sqlite3_column_int64(stmt, 17);
         results.push_back(std::move(info));
     }
 
@@ -1807,28 +1841,19 @@ void Database::build_filter_sql(const SearchCriteria& c, std::string& sql,
         sql += " AND LOWER(extension) = LOWER(?)";
         binds.push_back({c.extension, false});
     }
+    // Date bounds compare against the canonical effective_date column rather
+    // than recomputing COALESCE-over-JSON per row: the column is already
+    // normalized to one sortable family (see compute_effective_date) and is
+    // indexed, which the expression form was not. The caller's bound is run
+    // through the same normalizer so a "YYYY:MM:DD" or "...T...Z" input
+    // compares in the same family as the stored values.
     if (!c.after.empty()) {
-        // Compare against best available date
-        std::string meta_date = c.after;
-        if (meta_date.size() >= 10) {
-            meta_date[4] = ':';
-            meta_date[7] = ':';
-        }
-        sql +=
-            " AND COALESCE(json_extract(metadata, '$.DateTimeOriginal'), json_extract(metadata, "
-            "'$.DateTimeDigitized'), modified_at) >= ?";
-        binds.push_back({meta_date, false});
+        sql += " AND effective_date >= ?";
+        binds.push_back({compute_effective_date("", c.after), false});
     }
     if (!c.before.empty()) {
-        std::string meta_date = c.before;
-        if (meta_date.size() >= 10) {
-            meta_date[4] = ':';
-            meta_date[7] = ':';
-        }
-        sql +=
-            " AND COALESCE(json_extract(metadata, '$.DateTimeOriginal'), json_extract(metadata, "
-            "'$.DateTimeDigitized'), modified_at) <= ?";
-        binds.push_back({meta_date, false});
+        sql += " AND effective_date <= ?";
+        binds.push_back({compute_effective_date("", c.before), false});
     }
     if (!c.camera.empty()) {
         sql += " AND json_extract(metadata, '$.Model') LIKE '%' || ? || '%'";
@@ -2018,10 +2043,16 @@ std::vector<ImageInfo> Database::search_page(const PageCriteria& c) {
     sqlite3_bind_int64(stmt, idx++, c.offset);
 
     std::vector<ImageInfo> out;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         out.push_back(row_to_image_info(stmt));
     }
     sqlite3_finalize(stmt);
+    // A mid-iteration SQLITE_ERROR/SQLITE_BUSY would otherwise end the loop and
+    // return a short page as if it were the whole result.
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error("Failed to read page: " + std::string(sqlite3_errmsg(db_)));
+    }
     return out;
 }
 
@@ -2037,8 +2068,15 @@ int64_t Database::count_matching(const SearchCriteria& filter) {
     int idx = 1;
     bind_filter_values(stmt, binds, idx);
     int64_t n = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW) n = sqlite3_column_int64(stmt, 0);
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) n = sqlite3_column_int64(stmt, 0);
     sqlite3_finalize(stmt);
+    // COUNT(*) always yields exactly one row; anything else is a real failure
+    // (SQLITE_BUSY on a contended WAL, a corrupt page) and must not be
+    // reported as a count of 0.
+    if (rc != SQLITE_ROW) {
+        throw std::runtime_error("Failed to count matches: " + std::string(sqlite3_errmsg(db_)));
+    }
     return n;
 }
 

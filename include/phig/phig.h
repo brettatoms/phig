@@ -31,13 +31,17 @@ extern "C" {
 #define PHIG_ABI_VERSION_MAJOR 1u
 #define PHIG_ABI_VERSION_MINOR 0u
 
+/* Values are published ABI: append only, never renumber. */
 typedef enum {
     PHIG_OK = 0,
     PHIG_ERR_INVALID_ARG = 1,
     PHIG_ERR_NOT_FOUND = 2,
     PHIG_ERR_DB = 3,
     PHIG_ERR_READONLY = 4,
-    PHIG_ERR_INTERNAL = 5
+    PHIG_ERR_INTERNAL = 5,
+    /* The database's schema version does not match what this build of libphig
+       queries. See phig_init. */
+    PHIG_ERR_SCHEMA = 6
 } phig_status;
 
 typedef enum { PHIG_READ_ONLY = 0, PHIG_READ_WRITE = 1 } phig_access_mode;
@@ -74,7 +78,18 @@ PHIG_API uint32_t phig_abi_version(void);
  * still needs to create a -shm file to service reads, so the directory
  * containing db_path must be writable even in read-only mode. A read-only
  * mount or a sandbox with no write access to that directory fails with
- * PHIG_ERR_DB. */
+ * PHIG_ERR_DB.
+ *
+ * A read-only context cannot run migrations, so phig_init checks the schema
+ * version and returns PHIG_ERR_SCHEMA rather than handing back a context whose
+ * queries would fail one call later. An older database needs a read-write
+ * phig operation (any CLI command, or phig_init with PHIG_READ_WRITE) to
+ * migrate it first; a newer one needs a newer libphig. Because a failed init
+ * produces no context, there is nothing to call phig_last_error on — the
+ * status code is the whole diagnosis.
+ *
+ * PHIG_READ_WRITE migrates the database up to the version this build expects,
+ * and still fails with PHIG_ERR_SCHEMA if the database is newer. */
 PHIG_API phig_status phig_init(const phig_config* cfg, phig_ctx** out);
 
 /* Safe to call with NULL. */

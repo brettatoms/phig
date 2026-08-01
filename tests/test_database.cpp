@@ -439,6 +439,21 @@ TEST_F(DatabaseTest, GetAllImages) {
     EXPECT_EQ(all.size(), 2);
 }
 
+// get_all_images() long omitted id from its SELECT, so every row came back
+// with id == 0 while search_page() populated it. Both must agree.
+TEST_F(DatabaseTest, GetAllImagesPopulatesId) {
+    db->insert(make_image("/test/a.jpg", "sha1"));
+    db->insert(make_image("/test/b.jpg", "sha2"));
+
+    auto all = db->get_all_images();
+    ASSERT_EQ(all.size(), 2u);
+    for (const auto& img : all) {
+        EXPECT_GT(img.id, 0) << img.path;
+        EXPECT_EQ(img.id, db->get_image_id(img.path));
+    }
+    EXPECT_NE(all[0].id, all[1].id);
+}
+
 TEST_F(DatabaseTest, GetAllImagesWithPrefix) {
     db->insert(make_image("/photos/a.jpg", "sha1"));
     db->insert(make_image("/photos/b.jpg", "sha2"));
@@ -1045,8 +1060,8 @@ TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
     std::string dbp = (dir / "m.db").string();
 
     // Create a DB then roll its recorded schema_version back to force a
-    // migration on next init_schema(). (set to 4 to force the v5 and v6
-    // migrations to run.) The v5 tables created by the fresh-schema path
+    // migration on next init_schema(). (set to 4 to force every later
+    // migration to run.) The v5 tables created by the fresh-schema path
     // must also be dropped, since the v5 migration's CREATE TABLE isn't
     // IF NOT EXISTS (mirrors DatabaseTest.MigratesV4ToV5).
     // Database::set_schema_version() is private, so drive it via raw SQL
@@ -1081,7 +1096,9 @@ TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
     ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
     std::string version(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
     sqlite3_finalize(stmt);
-    EXPECT_EQ(version, "6");  // CURRENT_SCHEMA_VERSION
+    // Read the expected version from the library rather than hardcoding it, so
+    // adding a migration does not silently break an unrelated concurrency test.
+    EXPECT_EQ(version, std::to_string(Database::expected_schema_version()));
 
     fs::remove_all(dir);
 }

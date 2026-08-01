@@ -34,13 +34,12 @@ std::vector<int64_t> seed_three(const std::string& db_path) {
         info.path = "/photos/m" + std::to_string(i) + ".jpg";
         info.filename = "m" + std::to_string(i) + ".jpg";
         info.extension = "jpg";
-        info.modified_at = "2021-01-01 00:00:00";
+        // format_time()'s real mtime shape, so effective_date is derived the
+        // same way a scan derives it.
+        info.modified_at = "2021-01-01T00:00:00Z";
         info.sha256 = std::string(63, '1') + std::to_string(i);
         db.insert(info);
     }
-    // NOTE: do NOT use get_all_images() to collect ids — it does not SELECT the
-    // id column, so every ImageInfo::id comes back 0 and the tests would assert
-    // against nothing. get_image_id(path) is the correct lookup.
     std::vector<int64_t> ids;
     for (int i = 0; i < 3; ++i) {
         ids.push_back(db.get_image_id("/photos/m" + std::to_string(i) + ".jpg"));

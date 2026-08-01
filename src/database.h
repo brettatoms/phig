@@ -14,9 +14,12 @@
 
 // phig's "best available date" for an image: EXIF DateTimeOriginal, then
 // DateTimeDigitized, then the file's modified_at. Returns "" if none apply.
-// ISO-8601 TEXT; EXIF form uses ':' date separators and sorts lexicographically
-// alongside modified_at's '-' form only within its own family, so callers must
-// not mix families when comparing. Stored in images.effective_date.
+// Normalized to one canonical form, "YYYY-MM-DD HH:MM:SS", so every value
+// compares lexicographically against every other: EXIF ':' date separators
+// become '-', and format_time()'s "YYYY-MM-DDTHH:MM:SSZ" mtime form loses its
+// 'T' and 'Z'. Values that match neither shape pass through unchanged.
+// Stored in images.effective_date; the v7 migration rewrites older rows into
+// this form and its SQL must stay byte-identical to this function.
 std::string compute_effective_date(const std::string& metadata_json,
                                    const std::string& modified_at);
 
@@ -32,6 +35,14 @@ class Database {
     Database& operator=(const Database&) = delete;
 
     void init_schema();
+
+    // Schema version recorded in the database (0 = fresh/pre-migration), and
+    // the version this build's queries assume. init_schema() reconciles them,
+    // but a read-only connection cannot migrate, so libphig compares the two
+    // itself and refuses to serve queries against a mismatched file.
+    int schema_version();
+    static int expected_schema_version();
+
     void insert(const ImageInfo& info);
     void insert_batch(const std::vector<ImageInfo>& infos);
     void insert_copy(const std::string& source_path, const std::string& dest_path);
