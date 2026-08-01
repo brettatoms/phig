@@ -127,7 +127,9 @@ add_library(phig_abi SHARED
 )
 set_target_properties(phig_abi PROPERTIES
     OUTPUT_NAME phig
-    VERSION 1.0.0
+    # Must track PHIG_ABI_VERSION_MAJOR.MINOR in include/phig/phig.h.
+    # SOVERSION is the major alone, so an additive minor bump keeps the soname.
+    VERSION 1.1.0
     SOVERSION 1
     # Hide everything not explicitly exported so the ABI surface is exactly
     # what the header declares.

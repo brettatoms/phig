@@ -219,6 +219,16 @@ PHIG_API phig_status phig_favorite_set(phig_ctx* ctx, const int64_t* ids, size_t
  * "paths.db". Access is generic rather than a fixed struct so settings phig
  * adds later are readable without recompiling against a new header.
  *
+ * Keys are matched the way phig's own config loader matches them: lowercased,
+ * with '-' mapped to '_', on both the section and the name. So "General.Parallel"
+ * and "general.parallel" are the same key, and a file written as `[General]`
+ * is found by `get("general.parallel")` and rewritten in place. Enumeration
+ * returns this normalized form, which is the form get/set expect.
+ *
+ * These calls take no phig_ctx, so they have no phig_last_error to consult:
+ * the status code (or the fallback value) is the whole error report. That is
+ * deliberate — a settings handle is usable before any context exists.
+ *
  * A phig_settings is NOT thread-safe; use one per thread or serialize access.
  */
 
@@ -248,10 +258,17 @@ PHIG_API phig_status phig_settings_load(const char* path, phig_settings** out);
 PHIG_API void phig_settings_free(phig_settings* s);
 
 /* Returns `fallback` when the key is absent. The returned pointer is owned by
- * `s` and is valid until that key is set/unset or `s` is freed. Path values
- * have a leading `~` expanded, matching the CLI; the unexpanded form is what
+ * `s` and stays valid until `s` is freed; setting or unsetting the key updates
+ * the pointed-to string in place rather than freeing it. Path values have a
+ * leading `~` expanded, matching the CLI; the unexpanded form is what
  * phig_settings_save writes back. */
 PHIG_API const char* phig_settings_get(phig_settings* s, const char* key, const char* fallback);
+
+/* The value exactly as stored in the file, with no `~` expansion. A settings
+ * dialog wants this: showing the expanded form and writing it back would
+ * hard-code one machine's home directory over the portable `~`. Ownership and
+ * lifetime match phig_settings_get. */
+PHIG_API const char* phig_settings_get_raw(phig_settings* s, const char* key, const char* fallback);
 
 /* Return `fallback` when the key is absent or its value does not parse as the
  * requested type. Bools accept true/false/yes/no/on/off/1/0, case-insensitive. */
@@ -270,16 +287,21 @@ PHIG_API const char* phig_settings_key_at(phig_settings* s, size_t i);
 PHIG_API phig_status phig_settings_set(phig_settings* s, const char* key, const char* value);
 PHIG_API phig_status phig_settings_unset(phig_settings* s, const char* key);
 
-/* Writes to `path`, or the loaded/default path when NULL. Atomic: writes a
- * temp sibling and renames, so an interrupted save cannot truncate the file.
- * Comments, ordering, and keys phig does not model are preserved. */
+/* Writes to `path`, or the loaded/default path when NULL. Writes a temp
+ * sibling and renames over the destination, so a crash mid-save leaves the
+ * previous file intact rather than a truncated one. The bytes are not fsynced,
+ * so a power loss just after the rename can still lose them. Comments,
+ * ordering, and keys phig does not model are preserved. */
 PHIG_API phig_status phig_settings_save(phig_settings* s, const char* path);
 
 /* Fills cfg->db_path/thumbs_dir/models_dir from settings, leaving fields the
  * config does not set untouched so a caller can pre-seed defaults. Does NOT
  * set cfg->mode — that is a per-context decision, not a user preference.
  *
- * The strings point into `s`, so `s` must outlive the phig_init call. */
+ * The strings point into `s`, so `s` must outlive the phig_init call. They
+ * survive a later set/unset of the same key — the cached string is rewritten
+ * in place, never freed — so a load/to_config/edit/save/phig_init sequence is
+ * safe. */
 PHIG_API phig_status phig_settings_to_config(phig_settings* s, phig_config* cfg);
 
 #ifdef __cplusplus

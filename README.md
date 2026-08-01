@@ -200,12 +200,21 @@ phig_init(&cfg, &ctx);
 
 Settings are addressed as `"section.name"` strings rather than struct fields,
 so a setting phig adds later is readable without recompiling. `PHIG_KEY_*`
-macros cover the documented keys.
+macros cover the documented keys. Keys are matched the way the CLI matches
+them — lowercased, with `-` mapped to `_` — so a config written as `[General]`
+resolves to `general.parallel` and is rewritten in place rather than
+duplicated.
+
+`phig_settings_get` expands a leading `~`; `phig_settings_get_raw` returns the
+value exactly as stored. A settings dialog wants the raw form, so displaying a
+path and writing it back keeps the portable `~` instead of hard-coding one
+machine's home directory.
 
 Writes preserve the file: comments, ordering, and keys libphig does not model
-survive a `phig_settings_save`, and the save is atomic. Loading is a separate
-call from `phig_init`, so opening a collection does not touch the filesystem
-beyond the database.
+survive a `phig_settings_save`. The save writes a temp sibling and renames, so
+a crash cannot leave a truncated config. Loading is a separate call from
+`phig_init`, so opening a collection does not touch the filesystem beyond the
+database.
 
 ## Usage
 

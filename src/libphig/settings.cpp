@@ -61,8 +61,18 @@ const char* phig_settings_get(phig_settings* s, const char* key, const char* fal
         const std::string* raw = s->s.get(key);
         if (raw == nullptr) return fallback;
         // Expand ~ on read; cache so the returned pointer stays valid.
-        s->expanded[key] = expand_tilde(*raw);
-        return s->expanded[key].c_str();
+        return s->put(s->expanded, Settings::normalize_key(key), expand_tilde(*raw));
+    } catch (...) {
+        return fallback;
+    }
+}
+
+const char* phig_settings_get_raw(phig_settings* s, const char* key, const char* fallback) {
+    if (s == nullptr || key == nullptr) return fallback;
+    try {
+        const std::string* raw = s->s.get(key);
+        if (raw == nullptr) return fallback;
+        return s->put(s->raw_cache, Settings::normalize_key(key), *raw);
     } catch (...) {
         return fallback;
     }
@@ -137,7 +147,7 @@ phig_status phig_settings_set(phig_settings* s, const char* key, const char* val
     }
     try {
         s->s.set(key, value);
-        s->expanded.erase(key);  // stale expansion
+        s->refresh_cached(key);
         s->key_cache_dirty = true;
         return PHIG_OK;
     } catch (...) {
@@ -149,7 +159,7 @@ phig_status phig_settings_unset(phig_settings* s, const char* key) {
     if (s == nullptr || key == nullptr) return PHIG_ERR_INVALID_ARG;
     try {
         s->s.unset(key);
-        s->expanded.erase(key);
+        s->refresh_cached(key);
         s->key_cache_dirty = true;
         return PHIG_OK;
     } catch (...) {
@@ -190,8 +200,7 @@ phig_status phig_settings_to_config(phig_settings* s, phig_config* cfg) {
             if (*m.field != nullptr) continue;
             const std::string* raw = s->s.get(m.key);
             if (raw == nullptr) continue;
-            s->expanded[m.key] = expand_tilde(*raw);
-            *m.field = s->expanded[m.key].c_str();
+            *m.field = s->put(s->expanded, Settings::normalize_key(m.key), expand_tilde(*raw));
         }
         return PHIG_OK;  // cfg->mode deliberately untouched
     } catch (...) {

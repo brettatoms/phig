@@ -215,6 +215,104 @@ TEST(AbiSettings, NullArgumentsAreRejected) {
     phig_settings_free(s);
 }
 
+// The documented GTK startup flow: load, to_config, let the user edit the db
+// path, save, then hand cfg to phig_init. The header only promises that `s`
+// outlives phig_init — it does not tell the caller to re-run to_config after a
+// set — so the pointers to_config handed out must survive the set. They used
+// to dangle: set() erased the cache entry that backed them. Run this under
+// valgrind; gtest alone will pass on freed-but-unrecycled memory.
+TEST(AbiSettings, ToConfigPointersSurviveALaterSetOfTheSameKey) {
+    TempIni f("[paths]\ndb = /photos/phig.db\nthumbs_dir = /ssd/thumbs\n");
+    phig_settings* s = nullptr;
+    ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
+
+    phig_config cfg{};
+    ASSERT_EQ(phig_settings_to_config(s, &cfg), PHIG_OK);
+    const char* db = cfg.db_path;
+    const char* thumbs = cfg.thumbs_dir;
+    ASSERT_NE(db, nullptr);
+    ASSERT_NE(thumbs, nullptr);
+
+    // The user edits the db path in the settings dialog and saves.
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, "/new/place/phig.db"), PHIG_OK);
+    ASSERT_EQ(phig_settings_save(s, nullptr), PHIG_OK);
+
+    // Both pointers must still be readable. The edited one reflects the new
+    // value (the cache is refreshed in place, not freed); the untouched one is
+    // unchanged.
+    EXPECT_STREQ(db, "/new/place/phig.db");
+    EXPECT_STREQ(thumbs, "/ssd/thumbs");
+    EXPECT_EQ(cfg.db_path, db);  // same storage, not reallocated
+
+    // An unset must not free it either.
+    ASSERT_EQ(phig_settings_unset(s, PHIG_KEY_THUMBS_DIR), PHIG_OK);
+    EXPECT_STREQ(thumbs, "");
+
+    phig_settings_free(s);
+}
+
+// Same lifetime rule for phig_settings_get's returned pointer.
+TEST(AbiSettings, GetPointerSurvivesALaterSetOfTheSameKey) {
+    TempIni f("[paths]\ndb = /photos/a-fairly-long-database-path.db\n");
+    phig_settings* s = nullptr;
+    ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
+    const char* v = phig_settings_get(s, PHIG_KEY_DB, "fb");
+    ASSERT_NE(v, nullptr);
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, "/photos/another-fairly-long-path.db"), PHIG_OK);
+    EXPECT_STREQ(v, "/photos/another-fairly-long-path.db");
+    phig_settings_free(s);
+}
+
+TEST(AbiSettings, GetRawDoesNotExpandTildeAndRoundTrips) {
+    TempIni f("[paths]\ndb = ~/photos/phig.db\n");
+    phig_settings* s = nullptr;
+    ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
+
+    // get expands; get_raw does not.
+    const char* expanded = phig_settings_get(s, PHIG_KEY_DB, "");
+    ASSERT_NE(expanded, nullptr);
+    EXPECT_EQ(std::string(expanded).find('~'), std::string::npos);
+
+    const char* raw = phig_settings_get_raw(s, PHIG_KEY_DB, "");
+    ASSERT_NE(raw, nullptr);
+    EXPECT_STREQ(raw, "~/photos/phig.db");
+
+    // A settings dialog writes back exactly what it displayed: the `~` must
+    // survive rather than being replaced by this machine's home directory.
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, raw), PHIG_OK);
+    ASSERT_EQ(phig_settings_save(s, nullptr), PHIG_OK);
+    EXPECT_NE(f.read().find("~/photos/phig.db"), std::string::npos);
+
+    EXPECT_STREQ(phig_settings_get_raw(s, "paths.nope", "fb"), "fb");
+    EXPECT_STREQ(phig_settings_get_raw(nullptr, PHIG_KEY_DB, "fb"), "fb");
+    EXPECT_STREQ(phig_settings_get_raw(s, nullptr, "fb"), "fb");
+    phig_settings_free(s);
+}
+
+// libphig must resolve keys the way the CLI does, or a GUI save appends a
+// duplicate line instead of rewriting the existing one.
+TEST(AbiSettings, KeyLookupIsCaseAndSeparatorInsensitive) {
+    TempIni f("[General]\nparallel = 2\n[Paths]\nthumbs-dir = /ssd\n");
+    phig_settings* s = nullptr;
+    ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
+
+    EXPECT_TRUE(phig_settings_has(s, PHIG_KEY_PARALLEL));
+    EXPECT_EQ(phig_settings_get_int(s, PHIG_KEY_PARALLEL, 0), 2);
+    EXPECT_STREQ(phig_settings_get(s, PHIG_KEY_THUMBS_DIR, "fb"), "/ssd");
+    EXPECT_STREQ(phig_settings_get(s, "PATHS.Thumbs-Dir", "fb"), "/ssd");
+
+    // Enumeration reports the normalized form, which is the form get accepts.
+    ASSERT_EQ(phig_settings_count(s), 2u);
+    EXPECT_STREQ(phig_settings_key_at(s, 0), "general.parallel");
+    EXPECT_STREQ(phig_settings_key_at(s, 1), "paths.thumbs_dir");
+
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_PARALLEL, "8"), PHIG_OK);
+    ASSERT_EQ(phig_settings_save(s, nullptr), PHIG_OK);
+    // Rewritten in place: one `parallel` line, still under [General].
+    EXPECT_EQ(f.read(), "[General]\nparallel = 8\n[Paths]\nthumbs-dir = /ssd\n");
+    phig_settings_free(s);
+}
+
 TEST(AbiSettings, LoadsDefaultPathWhenNull) {
     // NULL path means phig's default config location. It may or may not exist
     // on this machine; either outcome is valid, and the handle must be usable.

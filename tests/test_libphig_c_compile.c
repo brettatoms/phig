@@ -73,6 +73,7 @@ void phig_c_compile_check(void) {
         phig_settings* st = NULL;
         (void)phig_settings_load(NULL, &st);
         (void)phig_settings_get(st, PHIG_KEY_DB, "fallback");
+        (void)phig_settings_get_raw(st, PHIG_KEY_DB, "fallback");
         (void)phig_settings_get_int(st, PHIG_KEY_PARALLEL, 4);
         (void)phig_settings_get_bool(st, PHIG_KEY_LOG_ENABLED, true);
         (void)phig_settings_has(st, PHIG_KEY_THUMBS_DIR);
