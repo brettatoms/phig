@@ -10,10 +10,18 @@
 // unknown key byte-identical.
 //
 // Keys are "section.name"; a key appearing before any section header is just
-// "name". Lookup is case-sensitive. On a duplicate key the last one wins,
+// "name". Keys are normalized for identity — lowercased with '-' mapped to
+// '_', on both the section and the name — matching config.cpp's normalize()
+// and inih, so libphig and the CLI resolve the same file to the same keys. The
+// normalization affects lookup and keys() only; the line's original text is
+// preserved byte-for-byte on save. On a duplicate key the last one wins,
 // matching how a sequential parser would resolve it.
 class Settings {
    public:
+    // Lowercase and map '-' to '_'. Public so callers can present the same
+    // key form the index uses.
+    static std::string normalize_key(const std::string& key);
+
     // Throws std::runtime_error if the file cannot be read. A file that exists
     // but is empty is valid and yields no keys.
     static Settings load(const std::string& path);
@@ -23,12 +31,14 @@ class Settings {
     const std::string* get(const std::string& key) const;
 
     // Rewrites the key's existing line in place, or appends it to its section
-    // (creating the section at end of file when absent).
+    // (creating the section at end of file when absent). A dotless key belongs
+    // to no section, so a new one is inserted before the first section header
+    // — the only position where it parses back as dotless.
     void set(const std::string& key, const std::string& value);
     // Removes the key's line. No-op when absent.
     void unset(const std::string& key);
 
-    // Keys in file order.
+    // Keys in file order, in normalized form (what get/set expect).
     std::vector<std::string> keys() const;
 
     // Atomic: writes a temp sibling, then renames over the destination.

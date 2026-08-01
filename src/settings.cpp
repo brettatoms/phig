@@ -28,7 +28,25 @@ size_t find_inline_comment(const std::string& s) {
     }
     return std::string::npos;
 }
+
+// Strip a leading UTF-8 BOM, as inih does before parsing the first line. The
+// bytes stay in Line::text so the file still round-trips byte-identically;
+// only the parsed key drops them.
+const char kBom[] = "\xEF\xBB\xBF";
+std::string strip_bom(const std::string& s) {
+    if (s.compare(0, 3, kBom) == 0) return s.substr(3);
+    return s;
+}
 }  // namespace
+
+std::string Settings::normalize_key(const std::string& key) {
+    std::string out = key;
+    for (char& c : out) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (c == '-') c = '_';
+    }
+    return out;
+}
 
 Settings Settings::load(const std::string& path) {
     if (!std::filesystem::is_regular_file(path)) {
@@ -60,9 +78,11 @@ Settings Settings::load(const std::string& path) {
 
         Line line;
         line.text = raw;
-        std::string t = trim(raw);
+        // inih strips a UTF-8 BOM from the very start of the file before
+        // parsing; do the same so the first key is not "\xEF\xBB\xBFpaths.db".
+        std::string t = trim(s.lines_.empty() ? strip_bom(raw) : raw);
         if (t.size() >= 2 && t.front() == '[' && t.back() == ']') {
-            current_section = trim(t.substr(1, t.size() - 2));
+            current_section = normalize_key(trim(t.substr(1, t.size() - 2)));
             line.kind = LineKind::Section;
             line.section = current_section;
         } else if (t.empty() || t[0] == '#' || t[0] == ';') {
@@ -74,7 +94,7 @@ Settings Settings::load(const std::string& path) {
             } else {
                 line.kind = LineKind::KeyValue;
                 line.section = current_section;
-                std::string name = trim(t.substr(0, eq));
+                std::string name = normalize_key(trim(t.substr(0, eq)));
                 line.key = current_section.empty() ? name : current_section + "." + name;
                 std::string tail = t.substr(eq + 1);
                 size_t comment_at = find_inline_comment(tail);
@@ -113,10 +133,10 @@ void Settings::reindex() {
     }
 }
 
-bool Settings::has(const std::string& key) const { return index_.count(key) > 0; }
+bool Settings::has(const std::string& key) const { return index_.count(normalize_key(key)) > 0; }
 
 const std::string* Settings::get(const std::string& key) const {
-    auto it = index_.find(key);
+    auto it = index_.find(normalize_key(key));
     if (it == index_.end()) return nullptr;
     return &lines_[it->second].value;
 }
@@ -129,7 +149,8 @@ std::vector<std::string> Settings::keys() const {
     return out;
 }
 
-void Settings::set(const std::string& key, const std::string& value) {
+void Settings::set(const std::string& raw_key, const std::string& value) {
+    const std::string key = normalize_key(raw_key);
     auto it = index_.find(key);
     if (it != index_.end()) {
         Line& line = lines_[it->second];
@@ -182,9 +203,33 @@ void Settings::set(const std::string& key, const std::string& value) {
     fresh.value = value;
     fresh.text = name + " = " + value;
 
+    if (section.empty()) {
+        // A dotless key belongs to no section. Appending it at end of file
+        // would put it under whatever section happens to be last, so it would
+        // reload as "<last_section>.name". Before the first section header is
+        // the only position where it parses back as dotless.
+        size_t insert_at = lines_.size();
+        for (size_t i = 0; i < lines_.size(); ++i) {
+            if (lines_[i].kind == LineKind::Section) {
+                insert_at = i;
+                break;
+            }
+        }
+        // A BOM only counts as a BOM on the first line. Inserting ahead of the
+        // line that carries it must carry it along, or the BOM becomes stray
+        // bytes mid-file and the new first line keeps a phantom prefix.
+        if (insert_at == 0 && !lines_.empty() && lines_[0].text.compare(0, 3, kBom) == 0) {
+            lines_[0].text.erase(0, 3);
+            fresh.text = std::string(kBom) + fresh.text;
+        }
+        lines_.insert(lines_.begin() + static_cast<long>(insert_at), fresh);
+        reindex();
+        return;
+    }
+
     // Insert after the last line belonging to the section.
     size_t insert_at = lines_.size();
-    bool found_section = section.empty();
+    bool found_section = false;
     for (size_t i = 0; i < lines_.size(); ++i) {
         if (lines_[i].kind == LineKind::Section && lines_[i].section == section) {
             found_section = true;
@@ -216,7 +261,7 @@ void Settings::set(const std::string& key, const std::string& value) {
 }
 
 void Settings::unset(const std::string& key) {
-    auto it = index_.find(key);
+    auto it = index_.find(normalize_key(key));
     if (it == index_.end()) return;
     lines_.erase(lines_.begin() + static_cast<long>(it->second));
     reindex();

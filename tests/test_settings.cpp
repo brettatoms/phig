@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
+#include <vector>
 
+#include "INIReader.h"
 #include "config.h"
 #include "settings.h"
 
@@ -376,4 +380,225 @@ TEST(SettingsWriter, SetOfGetResultOnBareMarkerCommentDoesNotCompound) {
         if (i > 0) EXPECT_EQ(out, previous) << "diverged on save " << (i + 1);
         previous = out;
     }
+}
+
+// ---- Differential: Settings vs inih -------------------------------------
+// Settings and phig's own config loader read the same file. If they disagree
+// on what a key *is*, a GUI save appends a duplicate instead of rewriting the
+// existing line, and INI_ALLOW_MULTILINE then concatenates the two values into
+// something the CLI refuses to parse. These tests pin the two views together.
+
+namespace {
+// Every key inih sees, as normalized "section.name" -> value.
+std::map<std::string, std::string> inih_view(const std::string& path) {
+    INIReader r(path);
+    EXPECT_LE(r.ParseError(), 0) << "inih failed to parse " << path;
+    std::map<std::string, std::string> out;
+    for (const std::string& section : r.Sections()) {
+        for (const std::string& key : r.Keys(section)) {
+            std::string k = Settings::normalize_key(section.empty() ? key : section + "." + key);
+            out[k] = r.Get(section, key, "");
+        }
+    }
+    return out;
+}
+
+// Every key Settings sees, same shape. keys() is already normalized.
+std::map<std::string, std::string> settings_view(const Settings& s) {
+    std::map<std::string, std::string> out;
+    for (const std::string& k : s.keys()) {
+        const std::string* v = s.get(k);
+        out[k] = (v == nullptr) ? "" : *v;
+    }
+    return out;
+}
+
+// The config shapes a user might actually hand-write. Each must survive a
+// round trip with libphig and the CLI agreeing on the key set.
+struct Shape {
+    const char* name;
+    std::string content;
+    const char* edit_key;  // an existing key, in canonical lowercase form
+    const char* edit_to;
+    // inih's INI_ALLOW_MULTILINE folds an indented continuation into the
+    // previous value; Settings deliberately does not model that (it preserves
+    // the lines verbatim instead). The two therefore agree on the key SET but
+    // not on that one key's value. Accepted, tracked, and harmless now that
+    // key identity matches — a duplicate key is what made it dangerous.
+    bool multiline_value_diverges = false;
+};
+
+std::vector<Shape> shapes() {
+    return {
+        {"canonical", "[paths]\ndb = /photos/phig.db\n[general]\nparallel = 4\n",
+         "general.parallel", "8"},
+        {"titlecase section", "[Paths]\ndb = /photos/phig.db\n[General]\nparallel = 4\n",
+         "general.parallel", "8"},
+        {"uppercase section", "[PATHS]\ndb = /photos/phig.db\n[GENERAL]\nparallel = 4\n",
+         "general.parallel", "8"},
+        {"titlecase key", "[paths]\nDb = /photos/phig.db\n[general]\nParallel = 4\n",
+         "general.parallel", "8"},
+        {"dashed key", "[paths]\nthumbs-dir = /ssd/thumbs\n[general]\nparallel = 4\n",
+         "paths.thumbs_dir", "/hdd/thumbs"},
+        {"bom", "\xEF\xBB\xBF[paths]\ndb = /photos/phig.db\n[general]\nparallel = 4\n",
+         "general.parallel", "8"},
+        {"continuation line", "[organize]\nformat = %Y/%m\n   continued\n[general]\nparallel = 4\n",
+         "general.parallel", "8", /*multiline_value_diverges=*/true},
+        {"comments and blanks",
+         "# header\n\n[Paths]\n; note\ndb = ~/photos/phig.db  ; inline\n\n[general]\nparallel = "
+         "4\n",
+         "general.parallel", "8"},
+    };
+}
+}  // namespace
+
+// Property 1: on load, Settings and inih agree on the key set.
+TEST(SettingsDifferential, KeySetMatchesInihOnLoad) {
+    for (const Shape& shape : shapes()) {
+        SCOPED_TRACE(shape.name);
+        TempFile f(shape.content);
+        Settings s = Settings::load(f.path);
+
+        std::map<std::string, std::string> mine = settings_view(s);
+        std::map<std::string, std::string> theirs = inih_view(f.path);
+
+        std::vector<std::string> my_keys;
+        std::vector<std::string> their_keys;
+        for (const auto& kv : mine) my_keys.push_back(kv.first);
+        for (const auto& kv : theirs) their_keys.push_back(kv.first);
+        EXPECT_EQ(my_keys, their_keys);
+    }
+}
+
+// Property 2 (the durable one): load through Settings, change one existing
+// key, save — and inih must then see exactly the same keys with exactly the
+// same values as before, except the one that changed. This is the property the
+// duplicate-key corruption violated.
+TEST(SettingsDifferential, EditingOneKeyLeavesEveryOtherKeyUnchangedForInih) {
+    for (const Shape& shape : shapes()) {
+        SCOPED_TRACE(shape.name);
+        TempFile f(shape.content);
+
+        std::map<std::string, std::string> before = inih_view(f.path);
+        ASSERT_GT(before.count(shape.edit_key), 0u)
+            << "test shape's edit_key is not a key inih sees: " << shape.edit_key;
+
+        Settings s = Settings::load(f.path);
+        ASSERT_TRUE(s.has(shape.edit_key)) << "Settings does not see " << shape.edit_key;
+        s.set(shape.edit_key, shape.edit_to);
+        s.save(f.path);
+
+        std::map<std::string, std::string> after = inih_view(f.path);
+
+        std::map<std::string, std::string> expected = before;
+        expected[shape.edit_key] = shape.edit_to;
+        EXPECT_EQ(after, expected);
+
+        // And Settings' own view still agrees with inih's after the write.
+        Settings reloaded = Settings::load(f.path);
+        std::map<std::string, std::string> mine = settings_view(reloaded);
+        if (shape.multiline_value_diverges) {
+            // Key sets must still match exactly; only the continued value differs.
+            std::vector<std::string> my_keys;
+            std::vector<std::string> their_keys;
+            for (const auto& kv : mine) my_keys.push_back(kv.first);
+            for (const auto& kv : after) their_keys.push_back(kv.first);
+            EXPECT_EQ(my_keys, their_keys);
+        } else {
+            EXPECT_EQ(mine, after);
+        }
+    }
+}
+
+// A save with no edits must not touch a single byte, for every shape —
+// including the BOM'd file and the one with a continuation line.
+TEST(SettingsDifferential, NoEditRoundTripIsByteIdenticalForEveryShape) {
+    for (const Shape& shape : shapes()) {
+        SCOPED_TRACE(shape.name);
+        TempFile f(shape.content);
+        Settings s = Settings::load(f.path);
+        s.save(f.path);
+        EXPECT_EQ(f.read(), shape.content);
+    }
+}
+
+// The specific corruption the differential test exists to prevent: a titlecase
+// section plus a canonical-form set() must rewrite the existing line, not
+// append a second one that INI_ALLOW_MULTILINE then welds together.
+TEST(SettingsDifferential, SetOnTitlecaseSectionRewritesInsteadOfDuplicating) {
+    TempFile f("[General]\nparallel = 2\n");
+    Settings s = Settings::load(f.path);
+    ASSERT_TRUE(s.has("general.parallel"));
+    s.set("general.parallel", "8");
+    s.save(f.path);
+
+    EXPECT_EQ(f.read(), "[General]\nparallel = 8\n");
+    // The CLI must still parse it, and see 8 — not "2\n8".
+    Config c = load_config(f.path);
+    ASSERT_TRUE(c.parallel.has_value());
+    EXPECT_EQ(*c.parallel, 8);
+}
+
+// The BOM is stripped for key identity but preserved in the file.
+TEST(SettingsDifferential, BomIsStrippedFromKeysAndPreservedOnDisk) {
+    const std::string original = "\xEF\xBB\xBF[paths]\ndb = /x\n";
+    TempFile f(original);
+    Settings s = Settings::load(f.path);
+    EXPECT_TRUE(s.has("paths.db"));
+    std::vector<std::string> expected = {"paths.db"};
+    EXPECT_EQ(s.keys(), expected);
+    s.set("paths.db", "/y");
+    s.save(f.path);
+    EXPECT_EQ(f.read(), "\xEF\xBB\xBF[paths]\ndb = /y\n");
+}
+
+// Keys differing only in case or '-' vs '_' are one key, for lookup and for
+// enumeration. keys() returns the normalized form, which is the form get()
+// accepts — a form that did not round-trip through get() would be its own trap.
+TEST(SettingsDifferential, LookupIsCaseAndSeparatorInsensitive) {
+    TempFile f("[Paths]\nThumbs-Dir = /ssd\n");
+    Settings s = Settings::load(f.path);
+    for (const char* spelling :
+         {"paths.thumbs_dir", "Paths.Thumbs_Dir", "PATHS.THUMBS-DIR", "paths.thumbs-dir"}) {
+        SCOPED_TRACE(spelling);
+        ASSERT_TRUE(s.has(spelling));
+        ASSERT_NE(s.get(spelling), nullptr);
+        EXPECT_EQ(*s.get(spelling), "/ssd");
+    }
+    std::vector<std::string> expected = {"paths.thumbs_dir"};
+    EXPECT_EQ(s.keys(), expected);
+
+    // A set() through any spelling rewrites the one line.
+    s.set("PATHS.Thumbs-Dir", "/hdd");
+    s.save(f.path);
+    EXPECT_EQ(f.read(), "[Paths]\nThumbs-Dir = /hdd\n");
+}
+
+// A dotless key must round-trip as a dotless key. Appending it at end of file
+// would land it inside whatever section is last, so it would reload under that
+// section and has() would go false.
+TEST(SettingsWriter, DotlessKeyRoundTripsAsDotless) {
+    TempFile f("[a]\nx = 1\n");
+    Settings s = Settings::load(f.path);
+    s.set("loose", "1");
+    ASSERT_TRUE(s.has("loose"));
+    s.save(f.path);
+
+    Settings reloaded = Settings::load(f.path);
+    EXPECT_TRUE(reloaded.has("loose")) << "file is now:\n" << f.read();
+    ASSERT_NE(reloaded.get("loose"), nullptr);
+    EXPECT_EQ(*reloaded.get("loose"), "1");
+    EXPECT_FALSE(reloaded.has("a.loose"));
+    // The pre-existing section and its key are untouched.
+    ASSERT_NE(reloaded.get("a.x"), nullptr);
+    EXPECT_EQ(*reloaded.get("a.x"), "1");
+}
+
+TEST(SettingsWriter, DotlessKeyOnFileWithNoSectionsAppends) {
+    TempFile f("# just a comment\n");
+    Settings s = Settings::load(f.path);
+    s.set("loose", "1");
+    s.save(f.path);
+    Settings reloaded = Settings::load(f.path);
+    EXPECT_TRUE(reloaded.has("loose"));
 }
