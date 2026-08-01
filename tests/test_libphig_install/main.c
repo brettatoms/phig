@@ -16,6 +16,18 @@ int main(void) {
         phig_shutdown(ctx);
         return 1;
     }
+    phig_settings* st = NULL;
+    phig_status sst = phig_settings_load("/nonexistent/phig-config.ini", &st);
+    if (sst != PHIG_ERR_NOT_FOUND || st == NULL) {
+        fprintf(stderr, "expected NOT_FOUND with a usable handle\n");
+        return 1;
+    }
+    if (phig_settings_count(st) != 0) {
+        fprintf(stderr, "expected an empty settings handle\n");
+        return 1;
+    }
+    phig_settings_free(st);
+
     printf("ok\n");
     return 0;
 }

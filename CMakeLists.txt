@@ -58,6 +58,7 @@ add_library(phig-lib STATIC
     src/metadata.cpp
     src/paths.cpp
     src/config.cpp
+    src/settings.cpp
     src/organize_exec.cpp
     src/remove_exec.cpp
     src/relink.cpp
@@ -122,10 +123,13 @@ add_library(phig_abi SHARED
     src/libphig/records.cpp
     src/libphig/thumbs.cpp
     src/libphig/mutate.cpp
+    src/libphig/settings.cpp
 )
 set_target_properties(phig_abi PROPERTIES
     OUTPUT_NAME phig
-    VERSION 1.0.0
+    # Must track PHIG_ABI_VERSION_MAJOR.MINOR in include/phig/phig.h.
+    # SOVERSION is the major alone, so an additive minor bump keeps the soname.
+    VERSION 1.1.0
     SOVERSION 1
     # Hide everything not explicitly exported so the ABI surface is exactly
     # what the header declares.
@@ -182,6 +186,7 @@ add_executable(phig-tests
     tests/test_video.cpp
     tests/test_paths.cpp
     tests/test_config.cpp
+    tests/test_settings.cpp
     tests/test_organize_exec.cpp
     tests/test_remove_exec.cpp
     tests/test_relink.cpp
@@ -193,6 +198,7 @@ add_executable(phig-tests
     tests/test_libphig_query.cpp
     tests/test_libphig_abi.cpp
     tests/test_libphig_mutate.cpp
+    tests/test_libphig_settings.cpp
     tests/test_libphig_c_compile.c
 )
 # Applies to phig-tests' C sources only (test_libphig_c_compile.c) — proves

@@ -27,6 +27,7 @@ void phig_c_compile_check(void) {
     cfg.db_path = "/nonexistent/phig.db";
     cfg.thumbs_dir = NULL;
     cfg.mode = PHIG_READ_ONLY;
+    cfg.models_dir = NULL;
     (void)phig_abi_version();
     (void)phig_init(&cfg, &ctx);
     (void)phig_last_error(ctx);
@@ -66,6 +67,23 @@ void phig_c_compile_check(void) {
         (void)phig_gallery_set(ctx, ids, 2, "gallery");
         (void)phig_gallery_clear(ctx, ids, 2);
         (void)phig_favorite_set(ctx, ids, 2, true);
+    }
+
+    {
+        phig_settings* st = NULL;
+        (void)phig_settings_load(NULL, &st);
+        (void)phig_settings_get(st, PHIG_KEY_DB, "fallback");
+        (void)phig_settings_get_raw(st, PHIG_KEY_DB, "fallback");
+        (void)phig_settings_get_int(st, PHIG_KEY_PARALLEL, 4);
+        (void)phig_settings_get_bool(st, PHIG_KEY_LOG_ENABLED, true);
+        (void)phig_settings_has(st, PHIG_KEY_THUMBS_DIR);
+        (void)phig_settings_count(st);
+        (void)phig_settings_key_at(st, 0);
+        (void)phig_settings_set(st, PHIG_KEY_MODELS_DIR, "/models");
+        (void)phig_settings_unset(st, PHIG_KEY_MODELS_DIR);
+        (void)phig_settings_save(st, "/tmp/phig-c-compile-check.ini");
+        (void)phig_settings_to_config(st, &cfg);
+        phig_settings_free(st);
     }
 
     phig_shutdown(ctx);
