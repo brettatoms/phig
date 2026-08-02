@@ -66,6 +66,7 @@ add_library(phig-core STATIC
     src/log.cpp
     src/sidecar.cpp
     src/dates.cpp
+    src/duplicates.cpp
     src/raw.cpp
     src/lockfile.cpp
     src/parallel.cpp
@@ -194,6 +195,7 @@ add_executable(phig-tests
     tests/test_log.cpp
     tests/test_sidecar.cpp
     tests/test_dates.cpp
+    tests/test_duplicates.cpp
     tests/test_raw.cpp
     tests/test_lockfile.cpp
     tests/test_parallel.cpp
