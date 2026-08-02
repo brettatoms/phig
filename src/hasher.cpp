@@ -113,6 +113,10 @@ void sha256_update(Sha256Ctx& ctx, const uint8_t* data, size_t len) {
         ctx.block_len += take;
         data += take;
         len -= take;
+        // `<` not `<=` is load-bearing: it makes block_len saturate at exactly
+        // 64, which is what keeps `block[64]` from overrunning when a 64-byte
+        // chunk lands in the carry buffer. Widening this guard would also make
+        // the `len >= 64` loop below behave differently from `len > 64`.
         if (ctx.block_len < 64) return;  // still short of a full block
         sha256_compress(ctx.h, ctx.block);
         ctx.block_len = 0;
