@@ -29,17 +29,18 @@
 #include "dates.h"
 #include "exif.h"
 #include "faces.h"
-#include "selection.h"
 #include "hasher.h"
 #include "lockfile.h"
 #include "log.h"
 #include "metadata.h"
 #include "models.h"
 #include "organize_exec.h"
+#include "organize_plan.h"
 #include "paths.h"
 #include "relink.h"
 #include "remove_exec.h"
 #include "scanner.h"
+#include "selection.h"
 #include "sidecar.h"
 #include "thumbs.h"
 #include "types.h"
@@ -1039,51 +1040,6 @@ struct OrganizeOptions {
     std::string argv_str;  // full invocation, for the audit trail
 };
 
-namespace {
-
-std::string apply_format(const std::string& fmt, const ImageInfo& img, const DateParts& date) {
-    std::string result;
-    for (size_t i = 0; i < fmt.size(); i++) {
-        if (fmt[i] == '%' && i + 1 < fmt.size()) {
-            // Check for multi-char tokens first
-            if (fmt.substr(i, 9) == "%original") {
-                result += img.filename;
-                i += 8;
-            } else if (fmt.substr(i, 7) == "%camera") {
-                std::string cam = json_get(img.metadata_json, "Model");
-                result += cam.empty() ? "unknown-camera" : cam;
-                i += 6;
-            } else if (fmt.substr(i, 5) == "%make") {
-                std::string make = json_get(img.metadata_json, "Make");
-                result += make.empty() ? "unknown-make" : make;
-                i += 4;
-            } else if (fmt.substr(i, 8) == "%gallery") {
-                result += img.gallery.empty() ? "no-gallery" : img.gallery;
-                i += 7;
-            } else if (fmt.substr(i, 4) == "%fav") {
-                result += img.favorite ? "favorites" : "unfavorited";
-                i += 3;
-            } else if (fmt[i + 1] == 'Y') {
-                result += date.valid ? date.year : "unsorted";
-                i += 1;
-            } else if (fmt[i + 1] == 'm') {
-                result += date.valid ? date.month : "unsorted";
-                i += 1;
-            } else if (fmt[i + 1] == 'd') {
-                result += date.valid ? date.day : "unsorted";
-                i += 1;
-            } else {
-                result += fmt[i];  // unknown token, keep as-is
-            }
-        } else {
-            result += fmt[i];
-        }
-    }
-    return result;
-}
-
-}  // anonymous namespace
-
 int cmd_organize(const OrganizeOptions& opts) {
     Database db(opts.db_path);
     db.init_schema();
@@ -1102,7 +1058,7 @@ int cmd_organize(const OrganizeOptions& opts) {
         images.erase(std::remove_if(images.begin(), images.end(),
                                     [&](const ImageInfo& img) {
                                         return !passes_selection(img.path, opts.matches,
-                                                               opts.excludes);
+                                                                 opts.excludes);
                                     }),
                      images.end());
         std::cout << "After match/filter: " << images.size() << " images\n";
@@ -1610,7 +1566,7 @@ int cmd_search(const SearchOptions& opts) {
         results.erase(std::remove_if(results.begin(), results.end(),
                                      [&](const ImageInfo& img) {
                                          return !passes_selection(img.path, opts.matches,
-                                                                opts.excludes);
+                                                                  opts.excludes);
                                      }),
                       results.end());
     }

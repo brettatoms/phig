@@ -60,6 +60,7 @@ add_library(phig-core STATIC
     src/config.cpp
     src/settings.cpp
     src/organize_exec.cpp
+    src/organize_plan.cpp
     src/remove_exec.cpp
     src/relink.cpp
     src/log.cpp
