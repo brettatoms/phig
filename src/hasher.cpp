@@ -39,18 +39,9 @@ const uint32_t K[64] = {
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 
-// Incremental SHA-256 so files can be hashed in fixed-size blocks rather than
-// read whole into memory. sha256_compress is the single implementation of the
-// block step; init/update/final are the only way to reach it, so there is no
-// second code path that could drift from it.
-struct Sha256Ctx {
-    uint32_t h[8];
-    uint64_t total_len;  // total bytes fed in, for the length field
-    uint8_t block[64];   // partial block carried between updates
-    size_t block_len;    // bytes currently buffered in `block`
-};
-
-// Compress one 512-bit block into the running state.
+// Compress one 512-bit block into the running state. The single implementation
+// of the block step: sha256_init/update/final are the only way to reach it, so
+// there is no second code path that could drift from it.
 void sha256_compress(uint32_t h[8], const uint8_t* block) {
     uint32_t w[64];
     for (int i = 0; i < 16; i++) {
@@ -92,6 +83,8 @@ void sha256_compress(uint32_t h[8], const uint8_t* block) {
     h[6] += g;
     h[7] += hh;
 }
+
+}  // anonymous namespace
 
 void sha256_init(Sha256Ctx& ctx) {
     ctx.h[0] = 0x6a09e667;
@@ -163,6 +156,8 @@ std::string sha256_final(Sha256Ctx& ctx) {
     return oss.str();
 }
 
+namespace {
+
 // RAII guard that redirects the process-global stderr to /dev/null for its
 // lifetime. Because STDERR_FILENO is shared across threads, concurrent scan
 // workers must not overlap save/restore or stderr can be left pointing at
@@ -228,10 +223,14 @@ std::string compute_sha256(const std::string& path) {
         sha256_update(ctx, buf.data(), static_cast<size_t>(got));
     }
 
-    // A short read (I/O error, file shrank mid-scan) must not produce a
-    // silently wrong hash — duplicates output drives user deletions.
+    // Reading more or less than the size measured up front means the file
+    // changed under us (or I/O failed). Either way it must not produce a
+    // silently wrong hash — duplicates output drives user deletions. Note this
+    // rejects a file that grew mid-scan, which the caller must treat as a
+    // failure for that file rather than storing a hash of a torn read.
     if (total_read != size) {
-        throw std::runtime_error("Short read while hashing (file changed or I/O error): " + path);
+        throw std::runtime_error(
+            "File changed size while hashing (grew or shrank, or I/O error): " + path);
     }
 
     return sha256_final(ctx);

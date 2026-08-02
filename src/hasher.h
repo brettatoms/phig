@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <opencv2/core.hpp>
 #include <string>
@@ -7,6 +8,30 @@
 
 // Compute SHA256 of a file's contents
 std::string compute_sha256(const std::string& path);
+
+// Incremental SHA-256. compute_sha256 streams files through this rather than
+// reading them whole, so peak memory does not scale with file size.
+//
+// Exposed here (rather than kept private to hasher.cpp) so tests can drive it
+// with chunk sizes that are not multiples of 64. compute_sha256 always reads
+// 64-aligned 1 MiB blocks, which never exercises the partial-block carry in
+// sha256_update; only a direct test can reach that path.
+struct Sha256Ctx {
+    uint32_t h[8];
+    uint64_t total_len;  // total bytes fed in, for the length field
+    uint8_t block[64];   // partial block carried between updates
+    size_t block_len;    // bytes currently buffered in `block`
+};
+
+void sha256_init(Sha256Ctx& ctx);
+
+// Feed arbitrary-length input. Any bytes that do not complete a 64-byte block
+// are carried to the next call, so the digest does not depend on how the input
+// is split across calls.
+void sha256_update(Sha256Ctx& ctx, const uint8_t* data, size_t len);
+
+// Append padding and the length field, then return the lowercase hex digest.
+std::string sha256_final(Sha256Ctx& ctx);
 
 // Decode image and compute perceptual hash
 struct PhashResult {
