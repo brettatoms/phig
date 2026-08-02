@@ -8,6 +8,12 @@
 // two operations run concurrently, and a library caller cannot set one. The
 // caller owns the token and signals it (from a signal handler, a GUI button, a
 // test); the operation polls stop() and returns early.
+//
+// Only the flag itself is synchronized (relaxed atomics — no ordering
+// guarantee beyond the flag's own value). Data written before cancel() is NOT
+// guaranteed visible to a thread that observes stop() == true; a caller
+// needing to publish state alongside cancellation must synchronize it
+// separately (e.g. a mutex, or an atomic with acquire/release ordering).
 struct CancelToken {
     std::atomic<bool> cancelled{false};
 

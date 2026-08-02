@@ -17,6 +17,10 @@
 // lambda calls std::terminate, which is how `phig scan --fail-on-error`
 // currently aborts the process mid-write.
 //
+// Returns false if cancellation stopped the run before every item was
+// processed, true if all `count` items ran. Re-polling the token after the
+// call is ambiguous when cancellation lands as the final item completes.
+//
 // num_threads <= 0 is treated as 1.
-void parallel_for_each(size_t count, int num_threads, const CancelToken& cancel,
+bool parallel_for_each(size_t count, int num_threads, const CancelToken& cancel,
                        const std::function<void(size_t)>& fn);

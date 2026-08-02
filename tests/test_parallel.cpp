@@ -106,3 +106,32 @@ TEST(Parallel, AlreadyCancelledRunsNothing) {
     parallel_for_each(100, 4, tok, [&](size_t) { ++calls; });
     EXPECT_EQ(calls, 0);
 }
+
+TEST(Parallel, ReturnsTrueWhenAllItemsRun) {
+    CancelToken tok;
+    EXPECT_TRUE(parallel_for_each(500, 4, tok, [&](size_t) {}));
+}
+
+TEST(Parallel, ReturnsFalseWhenAlreadyCancelled) {
+    CancelToken tok;
+    tok.cancel();
+    EXPECT_FALSE(parallel_for_each(100, 4, tok, [&](size_t) {}));
+}
+
+TEST(Parallel, ReturnsFalseWhenCancelledMidRun) {
+    const size_t n = 10000;
+    std::atomic<size_t> done{0};
+    CancelToken tok;
+
+    bool result = parallel_for_each(n, 4, tok, [&](size_t) {
+        size_t d = done.fetch_add(1) + 1;
+        if (d == 100) tok.cancel();
+    });
+
+    EXPECT_FALSE(result);
+}
+
+TEST(Parallel, ReturnsTrueForZeroCount) {
+    CancelToken tok;
+    EXPECT_TRUE(parallel_for_each(0, 4, tok, [&](size_t) {}));
+}
