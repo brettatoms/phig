@@ -87,6 +87,105 @@ TEST_F(HasherTest, Sha256ThrowsOnUnreadableInput) {
     fs::remove_all(dir);
 }
 
+// ---- SHA256 padding-boundary characterization ----
+//
+// The digest in images.sha256 is the key for duplicate detection, thumbnail
+// cache lookup and relink-on-rescan, so it must never change for any input.
+// These vectors are the published FIPS 180-2 values, cross-checked against
+// sha256sum; they pin the digest independently of phig's own implementation.
+
+// Write `content` to a file with no trailing newline or text translation.
+static std::string write_binary(const std::string& dir, const std::string& name,
+                                const std::string& content) {
+    auto path = (fs::path(dir) / name).string();
+    std::ofstream out(path, std::ios::binary);
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    out.close();
+    return path;
+}
+
+TEST_F(HasherTest, Sha256MatchesKnownVectorAbc) {
+    auto path = write_binary(test_dir, "abc.bin", "abc");
+    EXPECT_EQ(compute_sha256(path),
+              "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+}
+
+// 56 bytes: length mod 64 == 56, so the 8-byte length field does not fit and
+// padding must spill into a second block. The classic off-by-one case.
+TEST_F(HasherTest, Sha256MatchesKnownVectorTwoBlockPadding) {
+    auto path = write_binary(test_dir, "two_block.bin",
+                             "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
+    EXPECT_EQ(compute_sha256(path),
+              "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+}
+
+// Every length from 0 to 200 bytes sweeps every padding boundary that matters:
+// 55/56 (length field just fits / just does not), 63/64/65 (block edge) and
+// 119/120 (the same boundaries one block up). Expected digests are the ones
+// the implementation produced before it was made incremental, each verified
+// against sha256sum.
+TEST_F(HasherTest, Sha256AllLengthsUpTo200MatchReference) {
+    // Deterministic pseudo-random bytes so the sweep is not all-ASCII.
+    std::string data;
+    data.reserve(200);
+    uint32_t state = 12345;
+    for (int i = 0; i < 200; i++) {
+        state = state * 1103515245u + 12345u;
+        data += static_cast<char>((state >> 16) & 0xFF);
+    }
+
+    // Reference digests for prefixes of `data`, indexed by length, generated
+    // with sha256sum. See tests/data/sha256_length_sweep.txt.
+    auto ref_path = fs::path(__FILE__).parent_path() / "data" / "sha256_length_sweep.txt";
+    std::ifstream ref(ref_path);
+    ASSERT_TRUE(ref.is_open()) << "missing reference file " << ref_path;
+
+    std::vector<std::string> expected;
+    std::string line;
+    while (std::getline(ref, line)) {
+        if (!line.empty()) expected.push_back(line);
+    }
+    ASSERT_EQ(expected.size(), 201u) << "expected digests for lengths 0..200";
+
+    for (size_t len = 0; len <= 200; len++) {
+        auto path = write_binary(test_dir, "sweep.bin", data.substr(0, len));
+        EXPECT_EQ(compute_sha256(path), expected[len]) << "length " << len;
+    }
+}
+
+// A file several blocks long whose size is not a multiple of any plausible
+// block size, so a carry-over bug in the streaming reader shows up.
+TEST_F(HasherTest, Sha256ManyBlocksMatchesReference) {
+    std::string data;
+    data.reserve(200000);
+    for (int i = 0; i < 200000; ++i) data += static_cast<char>('a' + (i % 26));
+    auto path = write_binary(test_dir, "many_blocks.bin", data);
+    EXPECT_EQ(compute_sha256(path),
+              "215fd793b3307b85788c29cd609b538beebaf5fb352bdf7c549fb6951ce0314d");
+}
+
+// A file larger than the streaming read block so the loop runs more than once,
+// with a final partial read.
+TEST_F(HasherTest, Sha256LargerThanReadBlockMatchesReference) {
+    const size_t kSize = (1u << 20) + 12345;  // 1 MiB + a partial tail
+    std::string data;
+    data.reserve(kSize);
+    uint32_t state = 987654321u;
+    for (size_t i = 0; i < kSize; i++) {
+        state = state * 1103515245u + 12345u;
+        data += static_cast<char>((state >> 16) & 0xFF);
+    }
+    auto path = write_binary(test_dir, "big.bin", data);
+
+    auto ref_path = fs::path(__FILE__).parent_path() / "data" / "sha256_large_file.txt";
+    std::ifstream ref(ref_path);
+    ASSERT_TRUE(ref.is_open()) << "missing reference file " << ref_path;
+    std::string expected;
+    std::getline(ref, expected);
+
+    EXPECT_EQ(compute_sha256(path), expected);
+}
+
 // ---- PHash tests ----
 
 TEST_F(HasherTest, PhashBasicImage) {
