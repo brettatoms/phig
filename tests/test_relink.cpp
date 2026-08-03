@@ -190,3 +190,43 @@ TEST_F(RelinkTest, JpegWithRawRowMissingNotDemoted) {
     ASSERT_EQ(tags.size(), 1u);
     EXPECT_EQ(tags[0], "favorite");
 }
+
+TEST_F(RelinkTest, RelinkRunsBeforeDemoteOnSharedTarget) {
+    // A RAW file moved (old/a.cr2 -> new/a.cr2) in the same scan that also
+    // finds a JPEG sitting next to the RAW's new location. relink_moved_rows
+    // and demote_jpeg_rows both target the RAW row at new/a.cr2: relink fills
+    // its gallery from the moved row, demote fills it from the JPEG. Gallery
+    // transfer only fills a NULL target, so whichever call runs first wins —
+    // row/demoted counts are identical in both orders, only the surviving
+    // gallery value differs.
+    std::string raw_old = add_row("old/a.cr2", "rawSha", /*on_disk=*/false);
+    std::string raw_new = add_row("new/a.cr2", "rawSha", /*on_disk=*/true);
+    std::string jpeg = add_row("new/a.jpg", "jpegSha", /*on_disk=*/true);
+    db->set_tag({raw_old}, "favorite", true);
+    db->set_gallery({raw_old}, "trip1", false);
+    db->set_gallery({jpeg}, "trip2", false);
+
+    int64_t op_id = db->log_begin_operation("scan", "phig scan test", "2026-07-11T00:00:00Z");
+    int relinked = relink_moved_rows(*db, {raw_old}, op_id);
+    auto demoted = demote_jpeg_rows(*db, dir.string(), op_id);
+    db->log_finish_operation(op_id, "completed");
+
+    EXPECT_EQ(relinked, 1);
+    ASSERT_EQ(demoted.size(), 1u);
+    EXPECT_EQ(demoted[0], jpeg);
+
+    auto tags = db->get_tags_for_image(raw_new);
+    ASSERT_EQ(tags.size(), 1u);
+    EXPECT_EQ(tags[0], "favorite");
+
+    std::string gallery;
+    for (const auto& img : db->get_all_images()) {
+        if (img.path == raw_new) gallery = img.gallery;
+    }
+    EXPECT_EQ(gallery, "trip1") << "relink must fill the gallery before demote sees it, "
+                                   "otherwise the JPEG's gallery wins instead";
+
+    EXPECT_EQ(
+        count_rows(db->db_ptr(), "SELECT COUNT(*) FROM operation_entries WHERE kind = 'relink'"),
+        2);
+}
