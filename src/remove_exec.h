@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -43,9 +44,19 @@ struct RemoveOptions {
     std::string argv_str;
 };
 
+// Asks the caller to confirm a destructive operation. Returns true to proceed.
+// The core cannot prompt: a library has no terminal, and a GUI needs a dialog.
+// The CLI supplies a stdin prompt; a GUI supplies its own confirmation.
+using ConfirmFn = std::function<bool(const std::string& prompt)>;
+
 // Command-level logic for `phig rm`: selects matching rows, applies the guard
 // for broad/--hard removals, performs the per-file disk action (trash/hard,
 // via remove_media_with_sidecars) when applicable, and drops rows in one
 // logged operation. Returns 0 on success (including "nothing matched"), 1 on
 // a usage error, missing confirmation, or if any file failed.
-int cmd_rm(const RemoveOptions& opts);
+//
+// When confirmation is required (--hard or a broad removal) and assume_yes is
+// not set, `confirm` is called with the composed warning text; returning
+// false aborts. A null `confirm` is treated as a refusal, so callers that
+// don't supply one never proceed without consent.
+int cmd_rm(const RemoveOptions& opts, ConfirmFn confirm = nullptr);

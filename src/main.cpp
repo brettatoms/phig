@@ -2642,9 +2642,25 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: --hard, --db-only, and --orphans are mutually exclusive\n";
             return 1;
         }
+        ConfirmFn confirm = [](const std::string& prompt) {
+            std::cout << prompt;
+            if (!::isatty(fileno(stdin))) {
+                std::cerr << "Refusing without confirmation.\n"
+                             "Re-run with --yes to proceed, or --dry-run to preview.\n";
+                return false;
+            }
+            std::cout << "Type 'yes' to proceed: " << std::flush;
+            std::string answer;
+            std::getline(std::cin, answer);
+            if (answer != "yes") {
+                std::cout << "Aborted.\n";
+                return false;
+            }
+            return true;
+        };
         try {
             auto lock = acquire_writer_lock(no_wait);
-            return cmd_rm(opts);
+            return cmd_rm(opts, confirm);
         } catch (const std::exception& e) {
             log_error(std::string("rm: ") + e.what());
             return 1;

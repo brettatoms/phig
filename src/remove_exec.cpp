@@ -1,8 +1,5 @@
 #include "remove_exec.h"
 
-#include <unistd.h>
-
-#include <cstdio>
 #include <filesystem>
 #include <iostream>
 #include <system_error>
@@ -65,7 +62,7 @@ std::vector<std::string> remove_media_with_sidecars(Database& db, const std::str
     return acted;
 }
 
-int cmd_rm(const RemoveOptions& opts) {
+int cmd_rm(const RemoveOptions& opts, ConfirmFn confirm) {
     const bool needs_match = opts.mode == RemoveMode::Trash || opts.mode == RemoveMode::Hard ||
                              opts.mode == RemoveMode::DbOnly;
     if (needs_match && opts.matches.empty()) {
@@ -111,23 +108,15 @@ int cmd_rm(const RemoveOptions& opts) {
     const bool broad = total > 0 && matched.size() * 2 >= total && matched.size() >= 20;
     const bool needs_confirm = opts.mode == RemoveMode::Hard || broad;
     if (needs_confirm && !opts.assume_yes) {
+        std::string warning;
         if (opts.mode == RemoveMode::Hard)
-            std::cout << "\nThis will PERMANENTLY delete " << matched.size() << " file(s).\n";
+            warning =
+                "\nThis will PERMANENTLY delete " + std::to_string(matched.size()) + " file(s).\n";
         else
-            std::cout << "\nThis will remove " << matched.size() << " of " << total
-                      << " database entries (" << (matched.size() * 100 / total) << "%).\n";
-        if (!::isatty(fileno(stdin))) {
-            std::cerr << "Refusing without confirmation.\n"
-                         "Re-run with --yes to proceed, or --dry-run to preview.\n";
-            return 1;
-        }
-        std::cout << "Type 'yes' to proceed: " << std::flush;
-        std::string answer;
-        std::getline(std::cin, answer);
-        if (answer != "yes") {
-            std::cout << "Aborted.\n";
-            return 1;
-        }
+            warning = "\nThis will remove " + std::to_string(matched.size()) + " of " +
+                      std::to_string(total) + " database entries (" +
+                      std::to_string(matched.size() * 100 / total) + "%).\n";
+        if (!confirm || !confirm(warning)) return 1;
     }
 
     const bool does_disk = opts.mode == RemoveMode::Trash || opts.mode == RemoveMode::Hard;
