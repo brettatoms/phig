@@ -46,6 +46,7 @@
 #include "selection.h"
 #include "sidecar.h"
 #include "thumbs.h"
+#include "thumbs_engine.h"
 #include "types.h"
 #include "version.h"
 
@@ -1276,64 +1277,51 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
 
         std::cout << "Generating thumbnails for " << images.size() << " images...\n";
 
-        int num_threads;
-        if (parallel > 0) {
-            num_threads = parallel;
-        } else {
-            num_threads = std::max(1u, std::thread::hardware_concurrency());
-        }
-
         CancelToken cancel;
         ScopedInterruptHandler interrupt_guard(cancel);
 
-        std::atomic<size_t> generated{0};
-        std::atomic<size_t> skipped{0};
-        std::atomic<size_t> errors{0};
+        ThumbsOptions opts;
+        opts.matches = matches;
+        opts.excludes = excludes;
+        opts.force = force;
+        opts.parallel = parallel;
 
-        auto worker = [&](size_t idx, int) {
-            const auto& img = images[idx];
-            if (img.sha256.empty()) {
-                skipped.fetch_add(1);
-                return;
-            }
+        // The engine runs on a worker thread and this thread renders, so a
+        // per-file progress write can never be interleaved with the engine's
+        // own state updates.
+        ProgressQueue<ThumbsProgress> progress(1024);
+        ThumbsEngine engine(opts, db);
 
-            if (!force && thumb_exists(img.sha256)) {
-                skipped.fetch_add(1);
-                size_t done = generated.load() + skipped.load() + errors.load();
-                std::cout << "\r[" << done << "/" << images.size() << "] " << std::flush;
-                return;
-            }
-
+        ThumbsResult result;
+        std::exception_ptr engine_error;
+        std::thread worker([&] {
             try {
-                bool ok = false;
-                if (img.media_type == "video") {
-                    // Extract keyframe for video thumbnail
-                    auto kf = extract_video_keyframe(img.path);
-                    if (!kf.frame.empty()) {
-                        ok = generate_thumb(kf.frame, img.sha256);
-                    }
-                } else {
-                    ok = generate_thumb(img.path, img.sha256);
-                }
-                if (ok) {
-                    generated.fetch_add(1);
-                } else {
-                    errors.fetch_add(1);
-                }
+                result = engine.run(cancel, &progress);
             } catch (...) {
-                errors.fetch_add(1);
+                engine_error = std::current_exception();
             }
+            progress.close();
+        });
 
-            size_t done = generated.load() + skipped.load() + errors.load();
-            fs::path p(img.path);
-            std::string display = (p.parent_path().filename() / p.filename()).string();
-            std::cout << "\r\033[K[" << done << "/" << images.size() << "] " << display
-                      << std::flush;
-        };
+        ThumbsProgress p;
+        while (progress.pop(p)) {
+            if (p.stage != ThumbsStage::FileDone) continue;
+            if (p.show_path) {
+                fs::path path(p.path);
+                std::string display = (path.parent_path().filename() / path.filename()).string();
+                std::cout << "\r\033[K[" << p.done << "/" << p.total << "] " << display
+                          << std::flush;
+            } else {
+                std::cout << "\r[" << p.done << "/" << p.total << "] " << std::flush;
+            }
+        }
+        worker.join();
 
-        bool completed = parallel_for_each(images.size(), num_threads, cancel, worker);
+        if (engine_error) {
+            std::rethrow_exception(engine_error);
+        }
 
-        if (!completed) {
+        if (!result.completed) {
             std::cout << "\n\nInterrupted. Progress saved.\n";
         }
 
@@ -1341,9 +1329,9 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
         auto secs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() / 1000.0;
 
         std::cout << "\n\nDone in " << secs << "s\n"
-                  << "  Generated: " << generated.load() << "\n"
-                  << "  Skipped:   " << skipped.load() << "\n"
-                  << "  Errors:    " << errors.load() << "\n";
+                  << "  Generated: " << result.generated << "\n"
+                  << "  Skipped:   " << result.skipped << "\n"
+                  << "  Errors:    " << result.errors << "\n";
 
         return 0;
 
