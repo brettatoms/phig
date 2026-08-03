@@ -1,0 +1,51 @@
+#include <gtest/gtest.h>
+#include <unistd.h>
+
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <regex>
+#include <string>
+
+#include "dates.h"
+
+namespace {
+// Creates a file and returns its path; removed by the caller.
+std::string make_temp_file() {
+    auto p = std::filesystem::temp_directory_path() /
+             ("phig_fmttime_" + std::to_string(::getpid()) + ".txt");
+    std::ofstream(p) << "x";
+    return p.string();
+}
+}  // namespace
+
+TEST(FormatTime, ProducesIso8601UtcWithZSuffix) {
+    auto path = make_temp_file();
+    auto ftime = std::filesystem::last_write_time(path);
+    std::string s = format_time(ftime);
+
+    // "YYYY-MM-DDTHH:MM:SSZ" — exactly 20 characters.
+    EXPECT_EQ(s.size(), 20u) << s;
+    EXPECT_TRUE(std::regex_match(s, std::regex(R"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"))) << s;
+
+    std::filesystem::remove(path);
+}
+
+TEST(FormatTime, IsStableAcrossRepeatedCalls) {
+    auto path = make_temp_file();
+    auto ftime = std::filesystem::last_write_time(path);
+    // The mtime-skip check in scan compares a fresh format against a stored
+    // one, so the same input must always produce the same string.
+    EXPECT_EQ(format_time(ftime), format_time(ftime));
+    std::filesystem::remove(path);
+}
+
+TEST(FormatTime, LaterFileSortsAfterEarlierFile) {
+    auto a = make_temp_file();
+    auto ta = std::filesystem::last_write_time(a);
+    // Move one file's mtime a day forward; the formatted strings must order
+    // the same way, since modified_at is compared lexicographically.
+    auto tb = ta + std::chrono::hours(24);
+    EXPECT_LT(format_time(ta), format_time(tb));
+    std::filesystem::remove(a);
+}
