@@ -49,10 +49,6 @@
 
 namespace fs = std::filesystem;
 
-// Graceful shutdown on Ctrl-C
-static volatile std::sig_atomic_t g_interrupted = 0;
-static void sigint_handler(int) { g_interrupted = 1; }
-
 namespace {
 // The CLI installs a SIGINT handler that cancels whichever operation is
 // running. A signal handler cannot take arguments, so the active token is
@@ -1676,70 +1672,57 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
             num_threads = std::max(1u, std::thread::hardware_concurrency());
         }
 
-        g_interrupted = 0;
-        auto prev_handler = std::signal(SIGINT, sigint_handler);
+        CancelToken cancel;
+        ScopedInterruptHandler interrupt_guard(cancel);
 
-        std::atomic<size_t> next_img{0};
         std::atomic<size_t> generated{0};
         std::atomic<size_t> skipped{0};
         std::atomic<size_t> errors{0};
 
-        auto worker = [&](int) {
-            while (!g_interrupted) {
-                size_t idx = next_img.fetch_add(1);
-                if (idx >= images.size()) break;
+        auto worker = [&](size_t idx, int) {
+            const auto& img = images[idx];
+            if (img.sha256.empty()) {
+                skipped.fetch_add(1);
+                return;
+            }
 
-                const auto& img = images[idx];
-                if (img.sha256.empty()) {
-                    skipped.fetch_add(1);
-                    continue;
-                }
+            if (!force && thumb_exists(img.sha256)) {
+                skipped.fetch_add(1);
+                size_t done = generated.load() + skipped.load() + errors.load();
+                std::cout << "\r[" << done << "/" << images.size() << "] " << std::flush;
+                return;
+            }
 
-                if (!force && thumb_exists(img.sha256)) {
-                    skipped.fetch_add(1);
-                    size_t done = generated.load() + skipped.load() + errors.load();
-                    std::cout << "\r[" << done << "/" << images.size() << "] " << std::flush;
-                    continue;
-                }
-
-                try {
-                    bool ok = false;
-                    if (img.media_type == "video") {
-                        // Extract keyframe for video thumbnail
-                        auto kf = extract_video_keyframe(img.path);
-                        if (!kf.frame.empty()) {
-                            ok = generate_thumb(kf.frame, img.sha256);
-                        }
-                    } else {
-                        ok = generate_thumb(img.path, img.sha256);
+            try {
+                bool ok = false;
+                if (img.media_type == "video") {
+                    // Extract keyframe for video thumbnail
+                    auto kf = extract_video_keyframe(img.path);
+                    if (!kf.frame.empty()) {
+                        ok = generate_thumb(kf.frame, img.sha256);
                     }
-                    if (ok) {
-                        generated.fetch_add(1);
-                    } else {
-                        errors.fetch_add(1);
-                    }
-                } catch (...) {
+                } else {
+                    ok = generate_thumb(img.path, img.sha256);
+                }
+                if (ok) {
+                    generated.fetch_add(1);
+                } else {
                     errors.fetch_add(1);
                 }
-
-                size_t done = generated.load() + skipped.load() + errors.load();
-                fs::path p(img.path);
-                std::string display = (p.parent_path().filename() / p.filename()).string();
-                std::cout << "\r\033[K[" << done << "/" << images.size() << "] " << display
-                          << std::flush;
+            } catch (...) {
+                errors.fetch_add(1);
             }
+
+            size_t done = generated.load() + skipped.load() + errors.load();
+            fs::path p(img.path);
+            std::string display = (p.parent_path().filename() / p.filename()).string();
+            std::cout << "\r\033[K[" << done << "/" << images.size() << "] " << display
+                      << std::flush;
         };
 
-        std::vector<std::thread> threads;
-        threads.reserve(num_threads);
-        for (int i = 0; i < num_threads; i++) {
-            threads.emplace_back(worker, i);
-        }
-        for (auto& t : threads) t.join();
+        bool completed = parallel_for_each(images.size(), num_threads, cancel, worker);
 
-        std::signal(SIGINT, prev_handler);
-
-        if (g_interrupted) {
+        if (!completed) {
             std::cout << "\n\nInterrupted. Progress saved.\n";
         }
 
@@ -2044,64 +2027,51 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
             detectors.push_back(std::make_unique<FaceDetector>());
         }
 
-        std::atomic<size_t> next_img{0};
         std::atomic<size_t> total_faces{0};
         std::mutex db_mutex;
 
-        auto worker = [&](int thread_id) {
-            while (!g_interrupted) {
-                size_t idx = next_img.fetch_add(1);
-                if (idx >= images.size()) break;
+        CancelToken cancel;
+        ScopedInterruptHandler interrupt_guard(cancel);
 
-                const auto& img_info = images[idx];
-                cv::Mat img = decode_image(img_info.path);
-                if (img.empty()) continue;
+        auto worker = [&](size_t idx, int worker_id) {
+            const auto& img_info = images[idx];
+            cv::Mat img = decode_image(img_info.path);
+            if (img.empty()) return;
 
-                auto faces = detectors[thread_id]->detect(img);
+            auto faces = detectors[worker_id]->detect(img);
 
-                {
-                    std::lock_guard<std::mutex> lock(db_mutex);
-                    int64_t image_id = db.get_image_id(img_info.path);
-                    if (image_id >= 0) {
-                        // Delete-then-reinsert must be atomic: if the delete ran
-                        // outside the transaction and we were interrupted before
-                        // commit, the old faces would be gone with no re-detection.
-                        db.begin_transaction();
-                        try {
-                            db.delete_faces_for_image(image_id);
-                            for (const auto& face : faces) {
-                                int64_t face_id = db.insert_face(image_id, face);
-                                db.auto_label_face(face_id, face.embedding);
-                            }
-                            db.commit_transaction();
-                            total_faces.fetch_add(faces.size());
-                        } catch (...) {
-                            db.rollback_transaction();
-                            throw;
+            {
+                std::lock_guard<std::mutex> lock(db_mutex);
+                int64_t image_id = db.get_image_id(img_info.path);
+                if (image_id >= 0) {
+                    // Delete-then-reinsert must be atomic: if the delete ran
+                    // outside the transaction and we were interrupted before
+                    // commit, the old faces would be gone with no re-detection.
+                    db.begin_transaction();
+                    try {
+                        db.delete_faces_for_image(image_id);
+                        for (const auto& face : faces) {
+                            int64_t face_id = db.insert_face(image_id, face);
+                            db.auto_label_face(face_id, face.embedding);
                         }
+                        db.commit_transaction();
+                        total_faces.fetch_add(faces.size());
+                    } catch (...) {
+                        db.rollback_transaction();
+                        throw;
                     }
                 }
-
-                fs::path p(img_info.path);
-                std::string display = (p.parent_path().filename() / p.filename()).string();
-                std::cout << "\r\033[K[" << (idx + 1) << "/" << images.size() << "] " << display
-                          << std::flush;
             }
+
+            fs::path p(img_info.path);
+            std::string display = (p.parent_path().filename() / p.filename()).string();
+            std::cout << "\r\033[K[" << (idx + 1) << "/" << images.size() << "] " << display
+                      << std::flush;
         };
 
-        g_interrupted = 0;
-        auto prev_handler = std::signal(SIGINT, sigint_handler);
+        bool completed = parallel_for_each(images.size(), num_threads, cancel, worker);
 
-        std::vector<std::thread> threads;
-        threads.reserve(num_threads);
-        for (int i = 0; i < num_threads; i++) {
-            threads.emplace_back(worker, i);
-        }
-        for (auto& t : threads) t.join();
-
-        std::signal(SIGINT, prev_handler);
-
-        if (g_interrupted) {
+        if (!completed) {
             std::cout << "\n\nInterrupted. Progress saved.\n";
         }
 
