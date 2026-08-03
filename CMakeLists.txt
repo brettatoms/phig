@@ -224,3 +224,21 @@ include(GoogleTest)
 gtest_discover_tests(phig-tests
     DISCOVERY_TIMEOUT 30
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# ---- Performance tests ----
+# Kept out of phig-tests: each of these times an O(n^2) brute-force baseline
+# alongside the code under test, which is what removed their flakiness (see
+# tests/perf_duplicates.cpp) but also makes them dominate phig-tests' runtime
+# if left in the default suite. Still built and run by ctest, so CI keeps
+# gating on them; just not part of the fast local loop.
+add_executable(phig-perf-tests
+    tests/perf_duplicates.cpp
+)
+target_link_libraries(phig-perf-tests PRIVATE
+    phig-core
+    phig_abi
+    GTest::gtest_main
+)
+gtest_discover_tests(phig-perf-tests
+    DISCOVERY_TIMEOUT 30
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
