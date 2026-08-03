@@ -30,3 +30,9 @@ struct DuplicateGroup {
 std::vector<DuplicateGroup> find_near_duplicates(const std::vector<ImageInfo>& all_images,
                                                  int threshold,
                                                  const std::set<std::string>& exact_sha256s);
+
+// All-pairs reference implementation, kept as the oracle the equivalence tests
+// compare `find_near_duplicates` against. O(n^2); not used by the CLI.
+std::vector<DuplicateGroup> find_near_duplicates_bruteforce(
+    const std::vector<ImageInfo>& all_images, int threshold,
+    const std::set<std::string>& exact_sha256s);
