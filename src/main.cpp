@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <set>
 #include <sstream>
@@ -397,9 +398,12 @@ int cmd_scan(const ScanOptions& opts) {
         }
     }
 
-    // Install signal handler for graceful Ctrl-C
+    // Install signal handler for graceful Ctrl-C. Only covers the worker phase
+    // below: the guard is reset before the post-join cleanup phase that deletes
+    // rows, so a SIGINT there aborts the process instead of being silently
+    // absorbed by a token nothing in that phase reads.
     CancelToken cancel;
-    ScopedInterruptHandler interrupt_guard(cancel);
+    std::optional<ScopedInterruptHandler> interrupt_guard(cancel);
 
     // Process files with thread pool
     std::atomic<size_t> processed{0};
@@ -630,12 +634,25 @@ int cmd_scan(const ScanOptions& opts) {
         try {
             completed = parallel_for_each(files.size(), num_threads, cancel, process_one);
         } catch (const std::exception& e) {
-            // --fail-on-error: flush what completed, then report and exit
+            // --on-error fail: flush what completed, then report and exit
             // non-zero. This exception used to escape a std::thread lambda and
             // call std::terminate, aborting mid-write with an uncheckpointed WAL.
+            //
+            // If the original failure came from inside flush_batch itself (a DB
+            // or face-insert error, not a decode error), the batch that caused it
+            // is still sitting there un-cleared, so this recovery flush would
+            // re-run the same failing work and throw again — before the
+            // "Error: " below ever runs. Catch that second failure and log it
+            // rather than let it escape; the batch's rows are left unflushed and
+            // reported as such instead of being silently dropped.
             {
                 std::lock_guard<std::mutex> lock(db_mutex);
-                flush_batch();
+                try {
+                    flush_batch();
+                } catch (const std::exception& flush_e) {
+                    log_error("scan: recovery flush also failed, " + std::to_string(batch.size()) +
+                              " row(s) unflushed -- " + flush_e.what());
+                }
             }
             std::cerr << "Error: " << e.what() << "\n";
             return 1;
@@ -644,6 +661,12 @@ int cmd_scan(const ScanOptions& opts) {
         // Flush remaining
         flush_batch();
     }  // end if (!files.empty())
+
+    // Restore the plain SIGINT behavior before the cleanup phase below, which
+    // deletes user-authored metadata (tags, gallery, faces) for missing files —
+    // it reads no CancelToken, so a signal during it must kill the process
+    // rather than be swallowed.
+    interrupt_guard.reset();
 
     if (!completed) {
         std::cout << "\n\nInterrupted. Progress saved.\n";
