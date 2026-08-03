@@ -200,6 +200,7 @@ add_executable(phig-tests
     tests/test_raw.cpp
     tests/test_lockfile.cpp
     tests/test_parallel.cpp
+    tests/test_progress_queue.cpp
     tests/test_libphig_query.cpp
     tests/test_libphig_abi.cpp
     tests/test_libphig_mutate.cpp
