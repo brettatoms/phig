@@ -4,91 +4,13 @@
 #include <string>
 #include <vector>
 
-#include "selection.h"
+#include "dates.h"
+#include "organize_plan.h"
 #include "paths.h"
+#include "selection.h"
 #include "types.h"
 
 namespace fs = std::filesystem;
-
-namespace organize_helpers {
-
-struct DateParts {
-    std::string year = "unknown";
-    std::string month = "unknown";
-    std::string day = "unknown";
-    bool valid = false;
-};
-
-DateParts parse_date(const std::string& date_str) {
-    DateParts d;
-    if (date_str.empty()) return d;
-
-    if (date_str.size() >= 10 && date_str[4] == ':' && date_str[7] == ':') {
-        d.year = date_str.substr(0, 4);
-        d.month = date_str.substr(5, 2);
-        d.day = date_str.substr(8, 2);
-        d.valid = (d.year != "0000" && d.year != "1970");
-        return d;
-    }
-
-    if (date_str.size() >= 10 && date_str[4] == '-' && date_str[7] == '-') {
-        d.year = date_str.substr(0, 4);
-        d.month = date_str.substr(5, 2);
-        d.day = date_str.substr(8, 2);
-        d.valid = (d.year != "0000" && d.year != "1970");
-        return d;
-    }
-
-    return d;
-}
-
-std::string json_get(const std::string& json, const std::string& key) {
-    std::string search = "\"" + key + "\":\"";
-    auto pos = json.find(search);
-    if (pos == std::string::npos) return "";
-    pos += search.size();
-    auto end = json.find('"', pos);
-    if (end == std::string::npos) return "";
-    return json.substr(pos, end - pos);
-}
-
-std::string apply_format(const std::string& fmt, const ImageInfo& img, const DateParts& date) {
-    std::string result;
-    for (size_t i = 0; i < fmt.size(); i++) {
-        if (fmt[i] == '%' && i + 1 < fmt.size()) {
-            if (fmt.substr(i, 9) == "%original") {
-                result += img.filename;
-                i += 8;
-            } else if (fmt.substr(i, 7) == "%camera") {
-                std::string cam = json_get(img.metadata_json, "Model");
-                result += cam.empty() ? "unknown-camera" : cam;
-                i += 6;
-            } else if (fmt.substr(i, 5) == "%make") {
-                std::string make = json_get(img.metadata_json, "Make");
-                result += make.empty() ? "unknown-make" : make;
-                i += 4;
-            } else if (fmt[i + 1] == 'Y') {
-                result += date.valid ? date.year : "unsorted";
-                i += 1;
-            } else if (fmt[i + 1] == 'm') {
-                result += date.valid ? date.month : "unsorted";
-                i += 1;
-            } else if (fmt[i + 1] == 'd') {
-                result += date.valid ? date.day : "unsorted";
-                i += 1;
-            } else {
-                result += fmt[i];
-            }
-        } else {
-            result += fmt[i];
-        }
-    }
-    return result;
-}
-
-}  // namespace organize_helpers
-
-using namespace organize_helpers;
 
 // ---- Glob matching tests ----
 
@@ -354,4 +276,47 @@ TEST(FormatTest, PlainText) {
 
     auto result = apply_format("organized/%Y-%m/%original", img, date);
     EXPECT_EQ(result, "organized/2023-08/photo.jpg");
+}
+
+TEST(FormatTest, GalleryTokenUsesTheGalleryName) {
+    ImageInfo img;
+    img.filename = "photo.jpg";
+    img.gallery = "holiday";
+    DateParts d;
+    d.valid = true;
+    d.year = "2024";
+    d.month = "06";
+    d.day = "15";
+    EXPECT_EQ(apply_format("%gallery/%original", img, d), "holiday/photo.jpg");
+}
+
+TEST(FormatTest, GalleryTokenFallsBackWhenUnset) {
+    ImageInfo img;
+    img.filename = "photo.jpg";  // gallery left empty
+    DateParts d;
+    d.valid = true;
+    EXPECT_EQ(apply_format("%gallery/%original", img, d), "no-gallery/photo.jpg");
+}
+
+TEST(FormatTest, FavTokenDistinguishesFavorites) {
+    ImageInfo img;
+    img.filename = "photo.jpg";
+    DateParts d;
+    d.valid = true;
+
+    img.favorite = true;
+    EXPECT_EQ(apply_format("%fav/%original", img, d), "favorites/photo.jpg");
+
+    img.favorite = false;
+    EXPECT_EQ(apply_format("%fav/%original", img, d), "unfavorited/photo.jpg");
+}
+
+TEST(FormatTest, GalleryAndFavCombine) {
+    ImageInfo img;
+    img.filename = "i0.png";
+    img.gallery = "holiday";
+    img.favorite = false;
+    DateParts d;
+    d.valid = true;
+    EXPECT_EQ(apply_format("%gallery/%fav/%original", img, d), "holiday/unfavorited/i0.png");
 }

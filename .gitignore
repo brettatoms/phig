@@ -16,3 +16,9 @@ compile_commands.json
 
 # clangd index cache
 .cache/
+
+# Editor tag index
+TAGS
+
+# Stale build directory
+build.old/

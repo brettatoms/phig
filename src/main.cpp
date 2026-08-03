@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -27,19 +26,21 @@
 #include "config.h"
 #include "database.h"
 #include "dates.h"
+#include "duplicates.h"
 #include "exif.h"
 #include "faces.h"
-#include "selection.h"
 #include "hasher.h"
 #include "lockfile.h"
 #include "log.h"
 #include "metadata.h"
 #include "models.h"
 #include "organize_exec.h"
+#include "organize_plan.h"
 #include "paths.h"
 #include "relink.h"
 #include "remove_exec.h"
 #include "scanner.h"
+#include "selection.h"
 #include "sidecar.h"
 #include "thumbs.h"
 #include "types.h"
@@ -748,72 +749,6 @@ struct DuplicatesOptions {
     std::string db_path;
 };
 
-int hamming_distance(uint64_t a, uint64_t b) { return std::popcount(a ^ b); }
-
-struct DuplicateGroup {
-    std::string type;  // "exact" or "near"
-    int distance;      // 0 for exact
-    std::vector<ImageInfo> images;
-};
-
-std::vector<DuplicateGroup> find_near_duplicates(const std::vector<ImageInfo>& all_images,
-                                                 int threshold,
-                                                 const std::set<std::string>& exact_sha256s) {
-    std::vector<DuplicateGroup> groups;
-
-    // Union-find to group near duplicates
-    std::vector<int> parent(all_images.size());
-    std::vector<int> min_dist(all_images.size(), 0);
-    for (size_t i = 0; i < parent.size(); i++) parent[i] = i;
-
-    std::function<int(int)> find = [&](int x) -> int {
-        while (parent[x] != x) {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        return x;
-    };
-
-    auto unite = [&](int a, int b) {
-        a = find(a);
-        b = find(b);
-        if (a != b) parent[a] = b;
-    };
-
-    for (size_t i = 0; i < all_images.size(); i++) {
-        for (size_t j = i + 1; j < all_images.size(); j++) {
-            // Skip pairs that are exact duplicates
-            if (all_images[i].sha256 == all_images[j].sha256 &&
-                exact_sha256s.count(all_images[i].sha256)) {
-                continue;
-            }
-            int dist = hamming_distance(all_images[i].phash, all_images[j].phash);
-            if (dist <= threshold) {
-                unite(i, j);
-            }
-        }
-    }
-
-    // Collect groups
-    std::map<int, std::vector<size_t>> group_map;
-    for (size_t i = 0; i < all_images.size(); i++) {
-        group_map[find(i)].push_back(i);
-    }
-
-    for (const auto& [root, indices] : group_map) {
-        if (indices.size() < 2) continue;
-        DuplicateGroup g;
-        g.type = "near";
-        g.distance = threshold;
-        for (size_t idx : indices) {
-            g.images.push_back(all_images[idx]);
-        }
-        groups.push_back(std::move(g));
-    }
-
-    return groups;
-}
-
 void output_text(std::ostream& out, const std::vector<DuplicateGroup>& exact,
                  const std::vector<DuplicateGroup>& near) {
     if (!exact.empty()) {
@@ -1039,51 +974,6 @@ struct OrganizeOptions {
     std::string argv_str;  // full invocation, for the audit trail
 };
 
-namespace {
-
-std::string apply_format(const std::string& fmt, const ImageInfo& img, const DateParts& date) {
-    std::string result;
-    for (size_t i = 0; i < fmt.size(); i++) {
-        if (fmt[i] == '%' && i + 1 < fmt.size()) {
-            // Check for multi-char tokens first
-            if (fmt.substr(i, 9) == "%original") {
-                result += img.filename;
-                i += 8;
-            } else if (fmt.substr(i, 7) == "%camera") {
-                std::string cam = json_get(img.metadata_json, "Model");
-                result += cam.empty() ? "unknown-camera" : cam;
-                i += 6;
-            } else if (fmt.substr(i, 5) == "%make") {
-                std::string make = json_get(img.metadata_json, "Make");
-                result += make.empty() ? "unknown-make" : make;
-                i += 4;
-            } else if (fmt.substr(i, 8) == "%gallery") {
-                result += img.gallery.empty() ? "no-gallery" : img.gallery;
-                i += 7;
-            } else if (fmt.substr(i, 4) == "%fav") {
-                result += img.favorite ? "favorites" : "unfavorited";
-                i += 3;
-            } else if (fmt[i + 1] == 'Y') {
-                result += date.valid ? date.year : "unsorted";
-                i += 1;
-            } else if (fmt[i + 1] == 'm') {
-                result += date.valid ? date.month : "unsorted";
-                i += 1;
-            } else if (fmt[i + 1] == 'd') {
-                result += date.valid ? date.day : "unsorted";
-                i += 1;
-            } else {
-                result += fmt[i];  // unknown token, keep as-is
-            }
-        } else {
-            result += fmt[i];
-        }
-    }
-    return result;
-}
-
-}  // anonymous namespace
-
 int cmd_organize(const OrganizeOptions& opts) {
     Database db(opts.db_path);
     db.init_schema();
@@ -1102,7 +992,7 @@ int cmd_organize(const OrganizeOptions& opts) {
         images.erase(std::remove_if(images.begin(), images.end(),
                                     [&](const ImageInfo& img) {
                                         return !passes_selection(img.path, opts.matches,
-                                                               opts.excludes);
+                                                                 opts.excludes);
                                     }),
                      images.end());
         std::cout << "After match/filter: " << images.size() << " images\n";
@@ -1567,7 +1457,7 @@ int cmd_search(const SearchOptions& opts) {
         std::vector<ScoredImage> scored;
 
         for (auto& img : all_images) {
-            int dist = std::popcount(query_phash ^ img.phash);
+            int dist = hamming_distance(query_phash, img.phash);
             if (dist <= opts.threshold) {
                 scored.push_back({std::move(img), dist});
             }
@@ -1610,7 +1500,7 @@ int cmd_search(const SearchOptions& opts) {
         results.erase(std::remove_if(results.begin(), results.end(),
                                      [&](const ImageInfo& img) {
                                          return !passes_selection(img.path, opts.matches,
-                                                                opts.excludes);
+                                                                  opts.excludes);
                                      }),
                       results.end());
     }

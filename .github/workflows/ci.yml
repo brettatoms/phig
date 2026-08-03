@@ -46,6 +46,9 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
+      # Runs both phig-tests and phig-perf-tests: gtest_discover_tests
+      # registers each target's cases into the same ctest run, so this one
+      # invocation gates on the perf suite too, not just the fast default one.
       - name: Test
         run: ctest --test-dir build --output-on-failure
 

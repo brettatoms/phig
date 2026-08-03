@@ -39,69 +39,128 @@ const uint32_t K[64] = {
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 
-std::string sha256_bytes(const uint8_t* data, size_t len) {
-    uint32_t h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
-    uint32_t h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
-
-    // Pre-processing: pad message
-    size_t orig_len = len;
-    size_t padded_len = ((len + 8) / 64 + 1) * 64;
-    std::vector<uint8_t> msg(padded_len, 0);
-    std::memcpy(msg.data(), data, len);
-    msg[len] = 0x80;
-    uint64_t bit_len = static_cast<uint64_t>(orig_len) * 8;
-    for (int i = 0; i < 8; i++) {
-        msg[padded_len - 1 - i] = static_cast<uint8_t>(bit_len >> (i * 8));
+// Compress one 512-bit block into the running state. The single implementation
+// of the block step: sha256_init/update/final are the only way to reach it, so
+// there is no second code path that could drift from it.
+void sha256_compress(uint32_t h[8], const uint8_t* block) {
+    uint32_t w[64];
+    for (int i = 0; i < 16; i++) {
+        w[i] = (uint32_t(block[static_cast<size_t>(i * 4)]) << 24) |
+               (uint32_t(block[static_cast<size_t>(i * 4) + 1]) << 16) |
+               (uint32_t(block[static_cast<size_t>(i * 4) + 2]) << 8) |
+               uint32_t(block[static_cast<size_t>(i * 4) + 3]);
+    }
+    for (int i = 16; i < 64; i++) {
+        uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
     }
 
-    // Process each 512-bit block
-    for (size_t offset = 0; offset < padded_len; offset += 64) {
-        uint32_t w[64];
-        for (int i = 0; i < 16; i++) {
-            w[i] = (uint32_t(msg[offset + static_cast<size_t>(i * 4)]) << 24) |
-                   (uint32_t(msg[offset + static_cast<size_t>(i * 4) + 1]) << 16) |
-                   (uint32_t(msg[offset + static_cast<size_t>(i * 4) + 2]) << 8) |
-                   uint32_t(msg[offset + static_cast<size_t>(i * 4) + 3]);
-        }
-        for (int i = 16; i < 64; i++) {
-            uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
-            uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
-        }
+    uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+    uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (int i = 0; i < 64; i++) {
+        uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t temp1 = hh + S1 + ch + K[i] + w[i];
+        uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = S0 + maj;
+        hh = g;
+        g = f;
+        f = e;
+        e = d + temp1;
+        d = c;
+        c = b;
+        b = a;
+        a = temp1 + temp2;
+    }
+    h[0] += a;
+    h[1] += b;
+    h[2] += c;
+    h[3] += d;
+    h[4] += e;
+    h[5] += f;
+    h[6] += g;
+    h[7] += hh;
+}
 
-        uint32_t a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
-        for (int i = 0; i < 64; i++) {
-            uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-            uint32_t ch = (e & f) ^ (~e & g);
-            uint32_t temp1 = h + S1 + ch + K[i] + w[i];
-            uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
-            uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-            uint32_t temp2 = S0 + maj;
-            h = g;
-            g = f;
-            f = e;
-            e = d + temp1;
-            d = c;
-            c = b;
-            b = a;
-            a = temp1 + temp2;
-        }
-        h0 += a;
-        h1 += b;
-        h2 += c;
-        h3 += d;
-        h4 += e;
-        h5 += f;
-        h6 += g;
-        h7 += h;
+}  // anonymous namespace
+
+void sha256_init(Sha256Ctx& ctx) {
+    ctx.h[0] = 0x6a09e667;
+    ctx.h[1] = 0xbb67ae85;
+    ctx.h[2] = 0x3c6ef372;
+    ctx.h[3] = 0xa54ff53a;
+    ctx.h[4] = 0x510e527f;
+    ctx.h[5] = 0x9b05688c;
+    ctx.h[6] = 0x1f83d9ab;
+    ctx.h[7] = 0x5be0cd19;
+    ctx.total_len = 0;
+    ctx.block_len = 0;
+}
+
+// Feed arbitrary-length input. Buffers whatever does not complete a 64-byte
+// block and carries it to the next call, so the digest does not depend on how
+// the input is chunked.
+void sha256_update(Sha256Ctx& ctx, const uint8_t* data, size_t len) {
+    ctx.total_len += len;
+
+    // Top up a partial block left by a previous update.
+    if (ctx.block_len > 0) {
+        size_t take = 64 - ctx.block_len;
+        if (take > len) take = len;
+        std::memcpy(ctx.block + ctx.block_len, data, take);
+        ctx.block_len += take;
+        data += take;
+        len -= take;
+        // `<` not `<=` is load-bearing: it makes block_len saturate at exactly
+        // 64, which is what keeps `block[64]` from overrunning when a 64-byte
+        // chunk lands in the carry buffer. Widening this guard would also make
+        // the `len >= 64` loop below behave differently from `len > 64`.
+        if (ctx.block_len < 64) return;  // still short of a full block
+        sha256_compress(ctx.h, ctx.block);
+        ctx.block_len = 0;
+    }
+
+    while (len >= 64) {
+        sha256_compress(ctx.h, data);
+        data += 64;
+        len -= 64;
+    }
+
+    if (len > 0) {
+        std::memcpy(ctx.block, data, len);
+        ctx.block_len = len;
+    }
+}
+
+// Append the 0x80 marker, zero-pad, write the big-endian 64-bit *bit* length
+// and emit the hex digest. When the buffered tail leaves fewer than 8 bytes of
+// room the length field spills into a second padding block.
+std::string sha256_final(Sha256Ctx& ctx) {
+    uint64_t bit_len = ctx.total_len * 8;
+
+    uint8_t pad[128] = {0};
+    size_t pad_len = (ctx.block_len < 56) ? 64 : 128;
+    std::memcpy(pad, ctx.block, ctx.block_len);
+    pad[ctx.block_len] = 0x80;
+    for (int i = 0; i < 8; i++) {
+        pad[pad_len - 1 - static_cast<size_t>(i)] = static_cast<uint8_t>(bit_len >> (i * 8));
+    }
+
+    for (size_t offset = 0; offset < pad_len; offset += 64) {
+        sha256_compress(ctx.h, pad + offset);
     }
 
     std::ostringstream oss;
     oss << std::hex << std::setfill('0');
-    oss << std::setw(8) << h0 << std::setw(8) << h1 << std::setw(8) << h2 << std::setw(8) << h3
-        << std::setw(8) << h4 << std::setw(8) << h5 << std::setw(8) << h6 << std::setw(8) << h7;
+    for (uint32_t word : ctx.h) {
+        oss << std::setw(8) << word;
+    }
     return oss.str();
 }
+
+namespace {
 
 // RAII guard that redirects the process-global stderr to /dev/null for its
 // lifetime. Because STDERR_FILENO is shared across threads, concurrent scan
@@ -143,7 +202,6 @@ std::string compute_sha256(const std::string& path) {
         throw std::runtime_error("Cannot open file for hashing: " + path);
     }
 
-    // Read entire file
     file.seekg(0, std::ios::end);
     std::streampos end = file.tellg();
     if (end < 0) {
@@ -152,15 +210,34 @@ std::string compute_sha256(const std::string& path) {
     size_t size = static_cast<size_t>(end);
     file.seekg(0, std::ios::beg);
 
-    std::vector<uint8_t> buffer(size);
-    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(size));
-    // A short read (I/O error, file shrank mid-scan) must not produce a
-    // silently wrong hash — duplicates output drives user deletions.
-    if (static_cast<size_t>(file.gcount()) != size) {
-        throw std::runtime_error("Short read while hashing (file changed or I/O error): " + path);
+    // Stream in fixed blocks: buffering the whole file costs ~2x its size in
+    // RSS per worker thread, and scan runs one worker per core.
+    constexpr size_t kBlock = 1 << 20;  // 1 MiB
+    std::vector<uint8_t> buf(kBlock);
+    size_t total_read = 0;
+
+    Sha256Ctx ctx;
+    sha256_init(ctx);
+
+    while (file) {
+        file.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(kBlock));
+        std::streamsize got = file.gcount();
+        if (got <= 0) break;
+        total_read += static_cast<size_t>(got);
+        sha256_update(ctx, buf.data(), static_cast<size_t>(got));
     }
 
-    return sha256_bytes(buffer.data(), buffer.size());
+    // Reading more or less than the size measured up front means the file
+    // changed under us (or I/O failed). Either way it must not produce a
+    // silently wrong hash — duplicates output drives user deletions. Note this
+    // rejects a file that grew mid-scan, which the caller must treat as a
+    // failure for that file rather than storing a hash of a torn read.
+    if (total_read != size) {
+        throw std::runtime_error(
+            "File changed size while hashing (grew or shrank, or I/O error): " + path);
+    }
+
+    return sha256_final(ctx);
 }
 
 namespace {
