@@ -89,6 +89,39 @@ TEST(ProgressQueue, CloseWakesABlockedConsumer) {
     EXPECT_TRUE(returned.load());
 }
 
+TEST(ProgressQueue, PushAloneWakesABlockedConsumer) {
+    // close() calls notify_all, so a test that blocks a consumer and then closes
+    // cannot tell whether push() notifies at all. This one can: the only thing
+    // that may wake the consumer is the push itself.
+    ProgressQueue<int> q(4);
+    std::atomic<int> got{-1};
+    std::thread consumer([&] {
+        int v = 0;
+        if (q.pop(v)) got.store(v);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ASSERT_EQ(got.load(), -1) << "consumer should still be blocked";
+
+    q.push(99);
+    consumer.join();  // must return without close() being called
+    EXPECT_EQ(got.load(), 99);
+    q.close();  // only after the join, so it cannot mask anything
+}
+
+TEST(ProgressQueue, TryPopDrainsAClosedQueueThenReturnsFalse) {
+    ProgressQueue<int> q(8);
+    q.push(1);
+    q.push(2);
+    q.close();
+    int v = 0;
+    // A closed queue is still drainable; try_pop only reports false once empty.
+    ASSERT_TRUE(q.try_pop(v));
+    EXPECT_EQ(v, 1);
+    ASSERT_TRUE(q.try_pop(v));
+    EXPECT_EQ(v, 2);
+    EXPECT_FALSE(q.try_pop(v));
+}
+
 TEST(ProgressQueue, PushAfterCloseIsANoOp) {
     ProgressQueue<int> q(4);
     q.close();
