@@ -1178,3 +1178,51 @@ TEST_F(DatabaseTest, ReadOnlyOpenRejectsWrites) {
     std::filesystem::remove(path + "-wal", ec);
     std::filesystem::remove(path + "-shm", ec);
 }
+
+TEST_F(DatabaseTest, RollbackLeavesNoPartialBatch) {
+    // A transaction that inserts images then throws must leave the DB as it
+    // was — this is the guarantee cmd_scan's flush_batch transaction provides.
+    ImageInfo a = make_image("/photos/batch_a.jpg", std::string(64, 'c'));
+    ImageInfo b = make_image("/photos/batch_b.jpg", std::string(64, 'd'));
+
+    int64_t before = db->count();
+    db->begin_transaction();
+    try {
+        db->insert(a);
+        db->insert(b);
+        throw std::runtime_error("simulated mid-batch failure");
+    } catch (const std::runtime_error&) {
+        db->rollback_transaction();
+    }
+    EXPECT_EQ(db->count(), before) << "rolled-back inserts must not persist";
+    EXPECT_EQ(db->get_image_id("/photos/batch_a.jpg"), -1);
+    EXPECT_EQ(db->get_image_id("/photos/batch_b.jpg"), -1);
+
+    // The failed transaction must not leave one open, or every later write in
+    // the process fails with "cannot start a transaction within a transaction".
+    db->begin_transaction();
+    db->insert(a);
+    db->commit_transaction();
+    EXPECT_EQ(db->count(), before + 1);
+}
+
+TEST_F(DatabaseTest, InsertBatchCannotNestInsideATransaction) {
+    // insert_batch opens its own BEGIN IMMEDIATE, so calling it inside a
+    // caller-held transaction throws. cmd_scan's flush_batch therefore loops
+    // insert() under one transaction of its own instead of calling
+    // insert_batch. If insert_batch ever becomes nest-safe this test fails and
+    // that constraint can be revisited.
+    ImageInfo a = make_image("/photos/nest_a.jpg", std::string(64, '1'));
+
+    db->begin_transaction();
+    EXPECT_THROW(db->insert_batch({a}), std::runtime_error);
+    db->rollback_transaction();
+    EXPECT_EQ(db->count(), 0) << "the nested attempt must not have written";
+
+    // Looping insert() under one transaction — what flush_batch does instead —
+    // works and commits.
+    db->begin_transaction();
+    db->insert(a);
+    db->commit_transaction();
+    EXPECT_EQ(db->count(), 1);
+}

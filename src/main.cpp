@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 
+#include "cancel.h"
 #include "config.h"
 #include "database.h"
 #include "dates.h"
@@ -35,6 +36,7 @@
 #include "models.h"
 #include "organize_exec.h"
 #include "organize_plan.h"
+#include "parallel.h"
 #include "paths.h"
 #include "relink.h"
 #include "remove_exec.h"
@@ -50,6 +52,37 @@ namespace fs = std::filesystem;
 // Graceful shutdown on Ctrl-C
 static volatile std::sig_atomic_t g_interrupted = 0;
 static void sigint_handler(int) { g_interrupted = 1; }
+
+namespace {
+// The CLI installs a SIGINT handler that cancels whichever operation is
+// running. A signal handler cannot take arguments, so the active token is
+// reachable through this pointer. Only main.cpp touches it; the core takes a
+// CancelToken by reference and knows nothing about signals.
+std::atomic<CancelToken*> g_active_cancel{nullptr};
+
+extern "C" void cli_sigint_handler(int) {
+    CancelToken* t = g_active_cancel.load(std::memory_order_relaxed);
+    if (t != nullptr) t->cancel();
+}
+
+// Installs the handler for the duration of the scope and restores it after.
+class ScopedInterruptHandler {
+   public:
+    explicit ScopedInterruptHandler(CancelToken& token) {
+        g_active_cancel.store(&token, std::memory_order_relaxed);
+        prev_ = std::signal(SIGINT, cli_sigint_handler);
+    }
+    ~ScopedInterruptHandler() {
+        std::signal(SIGINT, prev_);
+        g_active_cancel.store(nullptr, std::memory_order_relaxed);
+    }
+    ScopedInterruptHandler(const ScopedInterruptHandler&) = delete;
+    ScopedInterruptHandler& operator=(const ScopedInterruptHandler&) = delete;
+
+   private:
+    void (*prev_)(int) = nullptr;
+};
+}  // namespace
 
 // Acquire the process-wide writer lock for a mutating command. Prints a clear
 // message and exits nonzero if --no-wait was given and another op holds it.
@@ -369,8 +402,8 @@ int cmd_scan(const ScanOptions& opts) {
     }
 
     // Install signal handler for graceful Ctrl-C
-    g_interrupted = 0;
-    auto prev_handler = std::signal(SIGINT, sigint_handler);
+    CancelToken cancel;
+    ScopedInterruptHandler interrupt_guard(cancel);
 
     // Process files with thread pool
     std::atomic<size_t> processed{0};
@@ -380,238 +413,243 @@ int cmd_scan(const ScanOptions& opts) {
     std::atomic<size_t> thumb_count{0};
     std::atomic<size_t> video_count{0};
 
+    bool completed = true;
     if (!files.empty()) {
-        std::atomic<size_t> next_file{0};
-
         std::mutex db_mutex;
         std::vector<ProcessResult> batch;
         const size_t batch_size = 10;  // small batches so Ctrl-C loses less work
 
         auto flush_batch = [&]() {
             if (batch.empty()) return;
-            // Insert image metadata
-            std::vector<ImageInfo> infos;
-            infos.reserve(batch.size());
-            for (auto& r : batch) infos.push_back(r.info);
-            db.insert_batch(infos);
 
-            // Insert faces (need image_id from DB) and auto-label known people
-            for (auto& r : batch) {
-                if (!r.faces.empty()) {
-                    int64_t image_id = db.get_image_id(r.info.path);
-                    // Rows whose bytes didn't change kept their existing faces
-                    // (and person labels) through insert(); re-adding this
-                    // run's detections would duplicate them. insert() cleared
-                    // faces when the content changed, so has_faces == false
-                    // means these detections are needed. `face rebuild` is the
-                    // path for forced re-detection.
-                    if (image_id >= 0 && !db.has_faces(r.info.path)) {
-                        for (const auto& face : r.faces) {
-                            int64_t face_id = db.insert_face(image_id, face);
-                            db.auto_label_face(face_id, face.embedding);
+            // One transaction for the images and their faces: a throw partway
+            // through the face loop would otherwise leave some rows committed
+            // and others not, with batch never cleared. insert() is called
+            // directly rather than via insert_batch(), which opens its own
+            // transaction and cannot nest inside this one.
+            db.begin_transaction();
+            try {
+                for (auto& r : batch) db.insert(r.info);
+
+                // Insert faces (need image_id from DB) and auto-label known people
+                for (auto& r : batch) {
+                    if (!r.faces.empty()) {
+                        int64_t image_id = db.get_image_id(r.info.path);
+                        // Rows whose bytes didn't change kept their existing faces
+                        // (and person labels) through insert(); re-adding this
+                        // run's detections would duplicate them. insert() cleared
+                        // faces when the content changed, so has_faces == false
+                        // means these detections are needed. `face rebuild` is the
+                        // path for forced re-detection.
+                        if (image_id >= 0 && !db.has_faces(r.info.path)) {
+                            for (const auto& face : r.faces) {
+                                int64_t face_id = db.insert_face(image_id, face);
+                                db.auto_label_face(face_id, face.embedding);
+                            }
+                            face_count.fetch_add(r.faces.size());
                         }
-                        face_count.fetch_add(r.faces.size());
                     }
                 }
+                db.commit_transaction();
+            } catch (...) {
+                db.rollback_transaction();
+                throw;
             }
             batch.clear();
         };
 
-        auto worker = [&](int thread_id) {
+        auto process_one = [&](size_t idx, int worker_id) {
             FaceDetector* detector =
-                (!face_detectors.empty()) ? face_detectors[thread_id].get() : nullptr;
-            while (!g_interrupted) {
-                size_t idx = next_file.fetch_add(1);
-                if (idx >= files.size()) break;
+                (!face_detectors.empty()) ? face_detectors[worker_id].get() : nullptr;
 
-                const auto& filepath = files[idx];
-                std::string canonical;
+            const auto& filepath = files[idx];
+            std::string canonical;
+            try {
+                canonical = fs::canonical(filepath).string();
+            } catch (...) {
+                errors.fetch_add(1);
+                return;
+            }
+
+            if (has_sibling_raw(filepath)) {
+                skipped.fetch_add(1);
+                return;
+            }
+
+            // Check if we should skip (path + mtime match)
+            bool needs_faces_only = false;
+            bool needs_thumbs_only = false;
+
+            if (!opts.force.hash) {
+                std::string mtime;
                 try {
-                    canonical = fs::canonical(filepath).string();
+                    mtime = format_time(fs::last_write_time(filepath));
                 } catch (...) {
-                    errors.fetch_add(1);
-                    continue;
+                    // Can't stat, will fail later
                 }
 
-                if (has_sibling_raw(filepath)) {
-                    skipped.fetch_add(1);
-                    continue;
-                }
-
-                // Check if we should skip (path + mtime match)
-                bool needs_faces_only = false;
-                bool needs_thumbs_only = false;
-
-                if (!opts.force.hash) {
-                    std::string mtime;
-                    try {
-                        mtime = format_time(fs::last_write_time(filepath));
-                    } catch (...) {
-                        // Can't stat, will fail later
+                std::lock_guard<std::mutex> lock(db_mutex);
+                auto existing_mtime = db.get_modified_at(canonical);
+                if (existing_mtime && *existing_mtime == mtime) {
+                    // File unchanged — check if we need faces or thumbs
+                    bool need_faces = detector && !db.has_faces(canonical);
+                    bool need_thumbs = false;
+                    if (opts.thumbs) {
+                        auto sha = db.get_sha256(canonical);
+                        if (sha && !sha->empty()) {
+                            need_thumbs = opts.force.thumbs || !thumb_exists(*sha);
+                        }
                     }
 
-                    std::lock_guard<std::mutex> lock(db_mutex);
-                    auto existing_mtime = db.get_modified_at(canonical);
-                    if (existing_mtime && *existing_mtime == mtime) {
-                        // File unchanged — check if we need faces or thumbs
-                        bool need_faces = detector && !db.has_faces(canonical);
-                        bool need_thumbs = false;
-                        if (opts.thumbs) {
-                            auto sha = db.get_sha256(canonical);
-                            if (sha && !sha->empty()) {
-                                need_thumbs = opts.force.thumbs || !thumb_exists(*sha);
-                            }
-                        }
-
-                        if (need_faces) {
-                            needs_faces_only = true;
-                        } else if (need_thumbs && !need_faces) {
-                            needs_thumbs_only = true;
-                        } else {
-                            skipped.fetch_add(1);
-                            size_t done = processed.load() + skipped.load() + errors.load();
-                            std::cout << "\r[" << done << "/" << files.size() << "] " << std::flush;
-                            continue;
-                        }
+                    if (need_faces) {
+                        needs_faces_only = true;
+                    } else if (need_thumbs && !need_faces) {
+                        needs_thumbs_only = true;
+                    } else {
+                        skipped.fetch_add(1);
+                        size_t done = processed.load() + skipped.load() + errors.load();
+                        std::cout << "\r[" << done << "/" << files.size() << "] " << std::flush;
+                        return;
                     }
                 }
+            }
 
-                try {
-                    if (needs_thumbs_only) {
-                        // Only generate thumbnail — file is unchanged and faces are done
-                        std::string sha;
-                        {
-                            std::lock_guard<std::mutex> lock(db_mutex);
-                            auto s = db.get_sha256(canonical);
-                            if (s) sha = *s;
-                        }
-                        if (!sha.empty()) {
-                            generate_thumb(canonical, sha);
-                            thumb_count.fetch_add(1);
-                        }
-                        processed.fetch_add(1);
-                    } else if (needs_faces_only) {
-                        // Only decode and detect faces — skip hash/phash/EXIF
-                        cv::Mat img = decode_image(canonical);
-                        if (!img.empty()) {
-                            if (detector) {
-                                auto faces = detector->detect(img);
-                                if (!faces.empty()) {
-                                    std::lock_guard<std::mutex> lock(db_mutex);
-                                    // Flush any pending batch first, then insert faces in a
-                                    // transaction
-                                    flush_batch();
-                                    // Another thread's flush_batch() may have inserted faces
-                                    // for this row already; don't duplicate them.
-                                    if (!db.has_faces(canonical)) {
-                                        db.begin_transaction();
-                                        try {
-                                            int64_t image_id = db.get_image_id(canonical);
-                                            if (image_id >= 0) {
-                                                for (const auto& face : faces) {
-                                                    int64_t face_id =
-                                                        db.insert_face(image_id, face);
-                                                    db.auto_label_face(face_id, face.embedding);
-                                                }
-                                                face_count.fetch_add(faces.size());
+            try {
+                if (needs_thumbs_only) {
+                    // Only generate thumbnail — file is unchanged and faces are done
+                    std::string sha;
+                    {
+                        std::lock_guard<std::mutex> lock(db_mutex);
+                        auto s = db.get_sha256(canonical);
+                        if (s) sha = *s;
+                    }
+                    if (!sha.empty()) {
+                        generate_thumb(canonical, sha);
+                        thumb_count.fetch_add(1);
+                    }
+                    processed.fetch_add(1);
+                } else if (needs_faces_only) {
+                    // Only decode and detect faces — skip hash/phash/EXIF
+                    cv::Mat img = decode_image(canonical);
+                    if (!img.empty()) {
+                        if (detector) {
+                            auto faces = detector->detect(img);
+                            if (!faces.empty()) {
+                                std::lock_guard<std::mutex> lock(db_mutex);
+                                // Flush any pending batch first, then insert faces in a
+                                // transaction
+                                flush_batch();
+                                // Another thread's flush_batch() may have inserted faces
+                                // for this row already; don't duplicate them.
+                                if (!db.has_faces(canonical)) {
+                                    db.begin_transaction();
+                                    try {
+                                        int64_t image_id = db.get_image_id(canonical);
+                                        if (image_id >= 0) {
+                                            for (const auto& face : faces) {
+                                                int64_t face_id = db.insert_face(image_id, face);
+                                                db.auto_label_face(face_id, face.embedding);
                                             }
-                                            db.commit_transaction();
-                                        } catch (...) {
-                                            db.rollback_transaction();
-                                            throw;
+                                            face_count.fetch_add(faces.size());
                                         }
+                                        db.commit_transaction();
+                                    } catch (...) {
+                                        db.rollback_transaction();
+                                        throw;
                                     }
                                 }
                             }
-                            // Also generate thumbnail if needed
-                            if (opts.thumbs) {
-                                std::string sha;
-                                {
-                                    std::lock_guard<std::mutex> lock(db_mutex);
-                                    auto s = db.get_sha256(canonical);
-                                    if (s) sha = *s;
+                        }
+                        // Also generate thumbnail if needed
+                        if (opts.thumbs) {
+                            std::string sha;
+                            {
+                                std::lock_guard<std::mutex> lock(db_mutex);
+                                auto s = db.get_sha256(canonical);
+                                if (s) sha = *s;
+                            }
+                            if (!sha.empty() && (opts.force.thumbs || !thumb_exists(sha))) {
+                                generate_thumb(img, sha);
+                                thumb_count.fetch_add(1);
+                            }
+                        }
+                    }
+                    processed.fetch_add(1);
+                } else {
+                    auto result = process_file(filepath, detector);
+
+                    if (result.info.media_type == "video") {
+                        video_count.fetch_add(1);
+                    }
+
+                    // Generate thumbnail if requested
+                    if (opts.thumbs && !result.info.sha256.empty()) {
+                        if (opts.force.thumbs || !thumb_exists(result.info.sha256)) {
+                            if (result.info.media_type == "video") {
+                                // For videos, extract keyframe for thumbnail
+                                try {
+                                    auto kf = extract_video_keyframe(canonical);
+                                    if (!kf.frame.empty()) {
+                                        generate_thumb(kf.frame, result.info.sha256);
+                                        thumb_count.fetch_add(1);
+                                    }
+                                } catch (...) {
                                 }
-                                if (!sha.empty() && (opts.force.thumbs || !thumb_exists(sha))) {
-                                    generate_thumb(img, sha);
+                            } else {
+                                cv::Mat img = decode_image(canonical);
+                                if (!img.empty()) {
+                                    generate_thumb(img, result.info.sha256);
                                     thumb_count.fetch_add(1);
                                 }
                             }
                         }
-                        processed.fetch_add(1);
-                    } else {
-                        auto result = process_file(filepath, detector);
-
-                        if (result.info.media_type == "video") {
-                            video_count.fetch_add(1);
-                        }
-
-                        // Generate thumbnail if requested
-                        if (opts.thumbs && !result.info.sha256.empty()) {
-                            if (opts.force.thumbs || !thumb_exists(result.info.sha256)) {
-                                if (result.info.media_type == "video") {
-                                    // For videos, extract keyframe for thumbnail
-                                    try {
-                                        auto kf = extract_video_keyframe(canonical);
-                                        if (!kf.frame.empty()) {
-                                            generate_thumb(kf.frame, result.info.sha256);
-                                            thumb_count.fetch_add(1);
-                                        }
-                                    } catch (...) {
-                                    }
-                                } else {
-                                    cv::Mat img = decode_image(canonical);
-                                    if (!img.empty()) {
-                                        generate_thumb(img, result.info.sha256);
-                                        thumb_count.fetch_add(1);
-                                    }
-                                }
-                            }
-                        }
-
-                        std::lock_guard<std::mutex> lock(db_mutex);
-                        batch.push_back(std::move(result));
-                        if (batch.size() >= batch_size) {
-                            flush_batch();
-                        }
-                        processed.fetch_add(1);
                     }
-                } catch (const std::exception& e) {
-                    errors.fetch_add(1);
-                    // Clear progress line, print warning, then resume progress
-                    std::cout << "\r\033[K" << std::flush;
-                    // Assemble the whole line so concurrent workers' messages
-                    // don't interleave with each other or the progress line.
-                    if (opts.fail_on_error) {
-                        log_error("scan: " + rel_path(filepath) + " -- " + e.what());
-                        throw;
-                    } else {
-                        log_warn("scan: " + rel_path(filepath) + " -- " + e.what());
+
+                    std::lock_guard<std::mutex> lock(db_mutex);
+                    batch.push_back(std::move(result));
+                    if (batch.size() >= batch_size) {
+                        flush_batch();
                     }
+                    processed.fetch_add(1);
                 }
-
-                size_t done = processed.load() + skipped.load() + errors.load();
-                std::cout << "\r\033[K[" << done << "/" << files.size() << "] "
-                          << rel_path(filepath) << std::flush;
+            } catch (const std::exception& e) {
+                errors.fetch_add(1);
+                // Clear progress line, print warning, then resume progress
+                std::cout << "\r\033[K" << std::flush;
+                // Assemble the whole line so concurrent workers' messages
+                // don't interleave with each other or the progress line.
+                if (opts.fail_on_error) {
+                    log_error("scan: " + rel_path(filepath) + " -- " + e.what());
+                    throw;
+                } else {
+                    log_warn("scan: " + rel_path(filepath) + " -- " + e.what());
+                }
             }
+
+            size_t done = processed.load() + skipped.load() + errors.load();
+            std::cout << "\r\033[K[" << done << "/" << files.size() << "] " << rel_path(filepath)
+                      << std::flush;
         };
 
-        std::vector<std::thread> threads;
-        threads.reserve(num_threads);
-        for (int i = 0; i < num_threads; i++) {
-            threads.emplace_back(worker, i);
-        }
-        for (auto& t : threads) {
-            t.join();
+        try {
+            completed = parallel_for_each(files.size(), num_threads, cancel, process_one);
+        } catch (const std::exception& e) {
+            // --fail-on-error: flush what completed, then report and exit
+            // non-zero. This exception used to escape a std::thread lambda and
+            // call std::terminate, aborting mid-write with an uncheckpointed WAL.
+            {
+                std::lock_guard<std::mutex> lock(db_mutex);
+                flush_batch();
+            }
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
         }
 
         // Flush remaining
         flush_batch();
     }  // end if (!files.empty())
 
-    // Restore previous signal handler
-    std::signal(SIGINT, prev_handler);
-
-    if (g_interrupted) {
+    if (!completed) {
         std::cout << "\n\nInterrupted. Progress saved.\n";
     }
 
@@ -1059,47 +1097,51 @@ int cmd_organize(const OrganizeOptions& opts) {
 
     // Execute. Handle SIGINT so Ctrl-C stops cleanly at a file boundary rather
     // than killing the process between a move and its DB update.
-    g_interrupted = 0;
-    auto prev_handler = std::signal(SIGINT, sigint_handler);
-
-    // Open a log operation for this run unless logging is disabled. Entries are
-    // appended per file inside the same transaction as each DB change (plan 020).
+    CancelToken cancel;
     int64_t op_id = 0;
     const bool logging = opts.log_enabled;
-    if (logging) {
-        op_id = db.log_begin_operation(opts.is_move ? "mv" : "cp", opts.argv_str, iso_utc_now());
-    }
-
     size_t done = 0, errs = 0;
-    for (const auto& a : actions) {
-        if (g_interrupted) break;
-        if (a.skipped) continue;
+    {
+        // The handler covers log_begin_operation too, so a Ctrl-C there is
+        // absorbed by the token and the run finishes as "interrupted" rather
+        // than killing the process.
+        ScopedInterruptHandler interrupt_guard(cancel);
 
-        try {
-            // Disk op + DB update + optional log entry, committed together with
-            // on-failure compensation so disk and DB never disagree (plan 020).
-            execute_organize_action(db, a.source, a.dest.string(), opts.is_move,
-                                    logging ? op_id : 0);
-            done++;
+        // Open a log operation for this run unless logging is disabled. Entries are
+        // appended per file inside the same transaction as each DB change (plan 020).
+        if (logging) {
+            op_id =
+                db.log_begin_operation(opts.is_move ? "mv" : "cp", opts.argv_str, iso_utc_now());
+        }
 
-            carry_sidecars(db, a.source, a.dest.string(), opts.is_move, logging ? op_id : 0);
+        for (const auto& a : actions) {
+            if (cancel.stop()) break;
+            if (a.skipped) continue;
 
-            std::cout << "\r[" << done << "/" << to_process << "] " << std::flush;
-        } catch (const std::exception& e) {
-            std::cerr << "\nError: " << a.source << " → " << a.dest << ": " << e.what() << "\n";
-            errs++;
+            try {
+                // Disk op + DB update + optional log entry, committed together with
+                // on-failure compensation so disk and DB never disagree (plan 020).
+                execute_organize_action(db, a.source, a.dest.string(), opts.is_move,
+                                        logging ? op_id : 0);
+                done++;
+
+                carry_sidecars(db, a.source, a.dest.string(), opts.is_move, logging ? op_id : 0);
+
+                std::cout << "\r[" << done << "/" << to_process << "] " << std::flush;
+            } catch (const std::exception& e) {
+                std::cerr << "\nError: " << a.source << " → " << a.dest << ": " << e.what() << "\n";
+                errs++;
+            }
         }
     }
 
-    std::signal(SIGINT, prev_handler);
-
     if (logging) {
-        db.log_finish_operation(op_id, g_interrupted ? "interrupted" : "completed");
+        db.log_finish_operation(op_id, cancel.stop() ? "interrupted" : "completed");
         db.log_prune(opts.log_max_entries);
     }
 
     std::cout << "\n\n";
-    if (g_interrupted) std::cout << "Interrupted. Stopped at a file boundary.\n";
+    if (cancel.stop()) std::cout << "Interrupted. Stopped at a file boundary.\n";
     std::cout << "Done.\n"
               << "  Done: " << done << "\n"
               << "  Skipped: " << to_skip << "\n"
