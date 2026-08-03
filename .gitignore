@@ -22,6 +22,3 @@ TAGS
 
 # Stale build directory
 build.old/
-
-# Design specs and implementation plans (kept local)
-docs/
