@@ -474,6 +474,99 @@ TEST(ScanEngine, IgnoreMountWarningOverridesTheGuard) {
     EXPECT_EQ(db.count(), 0);
 }
 
+// Inserts a row directly (no real scan) so a "file moved" state can be built
+// without decoding anything: extension alone drives RAW/JPEG classification.
+// When on_disk, also writes the file the row points at.
+static std::string insert_row(Database& db, const fs::path& dir, const std::string& rel,
+                              const std::string& sha, bool on_disk) {
+    fs::path p = dir / rel;
+    if (on_disk) {
+        fs::create_directories(p.parent_path());
+        std::ofstream(p) << "bytes-" << sha;
+    } else {
+        fs::create_directories(p.parent_path());  // parent must exist for reconcile to delete it
+    }
+    ImageInfo info;
+    info.path = p.string();
+    info.filename = p.filename().string();
+    info.extension = p.extension().string().substr(1);
+    info.file_size = 10;
+    info.created_at = "2024-01-01T00:00:00Z";
+    info.modified_at = "2024-01-01T00:00:00Z";
+    info.sha256 = sha;
+    info.media_type = "image";
+    db.insert(info);
+    return p.string();
+}
+
+TEST(ScanEngine, ReconcileRunsRelinkBeforeDemoteOnSharedTarget) {
+    // Integration-level sibling of RelinkTest.RelinkRunsBeforeDemoteOnSharedTarget
+    // (tests/test_relink.cpp): same overlap state, driven through
+    // ScanEngine::run_reconcile instead of calling relink_moved_rows/
+    // demote_jpeg_rows directly, so a swap of the two calls inside reconcile's
+    // logged branch (log_enabled = true) is observable here.
+    //
+    // A RAW file moved (old/a.cr2 -> new/a.cr2, same sha) in the same scan
+    // that also finds a JPEG sitting next to the RAW's new location. Both
+    // relink and demote transfer metadata onto the RAW row at new/a.cr2;
+    // gallery transfer only fills a NULL target, so whichever runs first
+    // determines the surviving gallery.
+    fs::path dir =
+        fs::temp_directory_path() / ("phig_reconcile_order_" + std::to_string(::getpid()) + "_" +
+                                     std::to_string(reinterpret_cast<uintptr_t>(&dir)));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    std::string db_path = (dir / "phig.db").string();
+    Database db(db_path);
+    db.init_schema();
+
+    std::string raw_old = insert_row(db, dir, "old/a.cr2", "rawSha", /*on_disk=*/false);
+    std::string raw_new = insert_row(db, dir, "new/a.cr2", "rawSha", /*on_disk=*/true);
+    std::string jpeg = insert_row(db, dir, "new/a.jpg", "jpegSha", /*on_disk=*/true);
+    db.set_tag({raw_old}, "favorite", true);
+    db.set_gallery({raw_old}, "trip1", false);
+    db.set_gallery({jpeg}, "trip2", false);
+
+    const char* orig_state = std::getenv("XDG_STATE_HOME");
+    std::string had_state = orig_state ? orig_state : "";
+    setenv("XDG_STATE_HOME", dir.c_str(), 1);
+
+    ScanOptions o;
+    o.directory = dir.string();
+    o.db_path = db_path;
+    o.log_enabled = true;  // exercises the logged branch at scan_engine.cpp:522-545
+    o.argv_str = "phig scan test";
+
+    ScanEngine engine(o, db);
+    ScanResult r;
+    engine.run_reconcile(r);
+
+    if (orig_state) {
+        setenv("XDG_STATE_HOME", had_state.c_str(), 1);
+    } else {
+        unsetenv("XDG_STATE_HOME");
+    }
+
+    EXPECT_FALSE(r.mount_warning);
+    EXPECT_EQ(r.relinked, 1u);
+    EXPECT_EQ(r.demoted, 1u);
+    EXPECT_EQ(r.removed, 1u);  // raw_old; demoted rows are counted separately in r.demoted
+    ASSERT_EQ(db.count(), 1);
+
+    auto tags = db.get_tags_for_image(raw_new);
+    ASSERT_EQ(tags.size(), 1u);
+    EXPECT_EQ(tags[0], "favorite");
+
+    std::string gallery;
+    for (const auto& img : db.get_all_images()) {
+        if (img.path == raw_new) gallery = img.gallery;
+    }
+    EXPECT_EQ(gallery, "trip1") << "relink must fill the gallery before demote sees it, "
+                                   "otherwise the JPEG's gallery wins instead";
+
+    fs::remove_all(dir);
+}
+
 TEST(ScanEngine, MediaFilterExcludesTheOtherType) {
     ScratchCollection c(3);
     {
