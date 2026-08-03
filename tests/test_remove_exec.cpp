@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
+#include <sys/wait.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -336,6 +338,71 @@ TEST_F(RemoveExecTest, ConfirmCallbackBroadRemovalWarningTextIsExact) {
     EXPECT_EQ(rc, 1);
     EXPECT_EQ(seen_prompt, "\nThis will remove 20 of 20 database entries (100%).\n");
     EXPECT_EQ(db->get_all_images().size(), static_cast<size_t>(N));  // untouched
+}
+
+// The isatty-based non-interactive refusal is CLI code (src/main.cpp), which
+// isn't linked into phig-tests, so nothing above exercises it. Invoke the
+// built `phig` binary as a subprocess to pin that the guard is still there.
+TEST_F(RemoveExecTest, CliRefusesNonInteractiveConfirmationEvenWithPipedYes) {
+    fs::path exe_dir = fs::canonical("/proc/self/exe").parent_path();
+    fs::path phig_bin = exe_dir / "phig";
+    if (!fs::exists(phig_bin)) phig_bin = "./build/phig";
+    if (!fs::exists(phig_bin)) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+
+    // A small scratch collection scanned into its own DB, independent of the
+    // fixture's `db` (this test drives the real `phig scan`/`phig rm` CLI).
+    fs::path cli_root = fs::temp_directory_path() / "phig-remove-exec-cli-test";
+    fs::remove_all(cli_root);
+    fs::path cli_photos = cli_root / "photos";
+    fs::create_directories(cli_photos);
+    const int N = 25;
+    for (int i = 0; i < N; i++) {
+        write_file(cli_photos / ("img" + std::to_string(i) + ".jpg"), "not-really-a-jpeg");
+    }
+    std::string cli_db = (cli_root / "cli.db").string();
+    {
+        Database cli(cli_db);
+        cli.init_schema();
+        for (int i = 0; i < N; i++) {
+            ImageInfo info;
+            info.path = (cli_photos / ("img" + std::to_string(i) + ".jpg")).string();
+            info.filename = "img" + std::to_string(i) + ".jpg";
+            info.extension = "jpg";
+            info.file_size = 1;
+            info.created_at = "2024-01-01T00:00:00Z";
+            info.modified_at = "2024-01-01T00:00:00Z";
+            info.sha256 = "s" + std::to_string(i);
+            info.phash = 0;
+            info.width = 1;
+            info.height = 1;
+            info.metadata_json = "{}";
+            cli.insert(info);
+        }
+    }
+
+    fs::path out_path = cli_root / "out.txt";
+    std::string cmd = "echo yes | " + phig_bin.string() + " rm --match '*' --hard --db " + cli_db +
+                      " > " + out_path.string() + " 2>&1";
+    int rc = std::system(cmd.c_str());
+    int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+
+    std::ifstream in(out_path);
+    std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    EXPECT_EQ(exit_code, 1) << "output was:\n" << output;
+    EXPECT_NE(output.find("Refusing without confirmation."), std::string::npos) << "output was:\n"
+                                                                                << output;
+
+    int surviving = 0;
+    for (int i = 0; i < N; i++) {
+        if (fs::exists(cli_photos / ("img" + std::to_string(i) + ".jpg"))) surviving++;
+    }
+    EXPECT_EQ(surviving, N) << "piped 'yes' must not bypass the non-interactive refusal";
+
+    fs::remove_all(cli_root);
 }
 
 TEST_F(RemoveExecTest, RmOrphansDropsMissingKeepsPresent) {
