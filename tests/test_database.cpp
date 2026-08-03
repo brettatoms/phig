@@ -157,6 +157,44 @@ TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
     EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 0);
 }
 
+TEST_F(DatabaseTest, InsertFaceReturnsTheNewRowid) {
+    db->insert(make_image("/test/face1.jpg", "sha1"));
+    int64_t image_id = db->get_image_id("/test/face1.jpg");
+    ASSERT_GT(image_id, 0);
+
+    FaceInfo face{};
+    face.x = 10;
+    face.y = 20;
+    face.width = 30;
+    face.height = 40;
+    face.embedding.fill(0.5f);
+
+    int64_t id1 = db->insert_face(image_id, face);
+    int64_t id2 = db->insert_face(image_id, face);
+    EXPECT_GT(id1, 0);
+    EXPECT_GT(id2, id1) << "each insert must return its own distinct rowid";
+}
+
+TEST_F(DatabaseTest, InsertFaceReturnValueMatchesLastInsertRowid) {
+    db->insert(make_image("/test/face2.jpg", "sha2"));
+    int64_t image_id = db->get_image_id("/test/face2.jpg");
+
+    FaceInfo face{};
+    face.x = 1;
+    face.y = 2;
+    face.width = 3;
+    face.height = 4;
+    face.embedding.fill(0.25f);
+
+    // The faces-table insert is not vec_faces's last statement on this
+    // connection: insert_face() also writes to the vec_faces virtual table
+    // afterward. This proves the returned id still equals what the old
+    // call-site pattern would have observed immediately after insert_face()
+    // returned, so replacing that pattern cannot change behavior.
+    int64_t returned = db->insert_face(image_id, face);
+    EXPECT_EQ(returned, sqlite3_last_insert_rowid(db->db_ptr()));
+}
+
 // Mirrors cmd_scan's needs_faces_only branch in main.cpp: mtime unchanged, but
 // the detector re-runs (e.g. faces were requested for the first time on a
 // re-scan). The branch must check has_faces() before inserting, or a re-scan

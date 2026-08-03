@@ -1580,7 +1580,7 @@ void Database::delete_faces_for_image(int64_t image_id) {
     step_write_or_throw(db_, stmt, "Failed to delete faces");
 }
 
-void Database::insert_face(int64_t image_id, const FaceInfo& face) {
+int64_t Database::insert_face(int64_t image_id, const FaceInfo& face) {
     // Insert into faces table
     const char* sql = R"(
         INSERT INTO faces (image_id, embedding, x, y, width, height)
@@ -1625,6 +1625,8 @@ void Database::insert_face(int64_t image_id, const FaceInfo& face) {
     if (rc != SQLITE_DONE) {
         throw std::runtime_error("Failed to insert vec face: " + std::string(sqlite3_errmsg(db_)));
     }
+
+    return face_id;
 }
 
 std::vector<Database::FaceSearchResult> Database::search_faces(

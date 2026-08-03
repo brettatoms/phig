@@ -407,8 +407,7 @@ int cmd_scan(const ScanOptions& opts) {
                     // path for forced re-detection.
                     if (image_id >= 0 && !db.has_faces(r.info.path)) {
                         for (const auto& face : r.faces) {
-                            db.insert_face(image_id, face);
-                            int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
+                            int64_t face_id = db.insert_face(image_id, face);
                             db.auto_label_face(face_id, face.embedding);
                         }
                         face_count.fetch_add(r.faces.size());
@@ -510,9 +509,8 @@ int cmd_scan(const ScanOptions& opts) {
                                             int64_t image_id = db.get_image_id(canonical);
                                             if (image_id >= 0) {
                                                 for (const auto& face : faces) {
-                                                    db.insert_face(image_id, face);
                                                     int64_t face_id =
-                                                        sqlite3_last_insert_rowid(db.db_ptr());
+                                                        db.insert_face(image_id, face);
                                                     db.auto_label_face(face_id, face.embedding);
                                                 }
                                                 face_count.fetch_add(faces.size());
@@ -2030,8 +2028,7 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
                         try {
                             db.delete_faces_for_image(image_id);
                             for (const auto& face : faces) {
-                                db.insert_face(image_id, face);
-                                int64_t face_id = sqlite3_last_insert_rowid(db.db_ptr());
+                                int64_t face_id = db.insert_face(image_id, face);
                                 db.auto_label_face(face_id, face.embedding);
                             }
                             db.commit_transaction();

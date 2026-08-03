@@ -192,7 +192,10 @@ class Database {
     std::vector<std::pair<std::string, int64_t>> get_gallery_counts();
 
     // Face operations
-    void insert_face(int64_t image_id, const FaceInfo& face);
+    // Inserts a face row and returns its rowid. Returning the id directly means
+    // callers need not follow with sqlite3_last_insert_rowid(), which is only
+    // correct while no other statement runs on this connection in between.
+    int64_t insert_face(int64_t image_id, const FaceInfo& face);
     bool has_faces(const std::string& path);
     void delete_faces_for_image(int64_t image_id);
     int64_t get_image_id(const std::string& path);
