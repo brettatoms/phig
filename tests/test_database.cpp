@@ -1226,3 +1226,72 @@ TEST_F(DatabaseTest, InsertBatchCannotNestInsideATransaction) {
     db->commit_transaction();
     EXPECT_EQ(db->count(), 1);
 }
+
+TEST_F(DatabaseTest, GetFaceEmbeddingsForPersonReturnsOnlyThatPersonsFaces) {
+    db->insert(make_image("/test/p1.jpg", "shaP1"));
+    int64_t image_id = db->get_image_id("/test/p1.jpg");
+
+    FaceInfo a{};
+    a.x = 1;
+    a.y = 1;
+    a.width = 10;
+    a.height = 10;
+    a.embedding.fill(0.1f);
+    FaceInfo b{};
+    b.x = 2;
+    b.y = 2;
+    b.width = 10;
+    b.height = 10;
+    b.embedding.fill(0.2f);
+
+    int64_t fa = db->insert_face(image_id, a);
+    int64_t fb = db->insert_face(image_id, b);
+
+    int64_t person = db->get_or_create_person("Alice");
+    db->set_face_person(fa, person);
+    // fb deliberately left unlabeled.
+
+    auto rows = db->get_face_embeddings_for_person(person);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].face_id, fa);
+    EXPECT_FLOAT_EQ(rows[0].embedding[0], 0.1f);
+
+    auto unlabeled = db->get_unlabeled_face_embeddings();
+    ASSERT_EQ(unlabeled.size(), 1u);
+    EXPECT_EQ(unlabeled[0].face_id, fb);
+    EXPECT_FLOAT_EQ(unlabeled[0].embedding[0], 0.2f);
+}
+
+TEST_F(DatabaseTest, EmbeddingQueriesSkipRowsWithATruncatedBlob) {
+    db->insert(make_image("/test/p2.jpg", "shaP2"));
+    int64_t image_id = db->get_image_id("/test/p2.jpg");
+
+    FaceInfo good{};
+    good.x = 1;
+    good.y = 1;
+    good.width = 10;
+    good.height = 10;
+    good.embedding.fill(0.5f);
+    int64_t good_id = db->insert_face(image_id, good);
+
+    // Corrupt one row's embedding to 4 bytes. Reading 128 floats from it would
+    // run 508 bytes past the end of the blob.
+    {
+        sqlite3_stmt* st = nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(db->db_ptr(),
+                                     "INSERT INTO faces (image_id, embedding, x, y, width, height) "
+                                     "VALUES (?, ?, 0, 0, 1, 1)",
+                                     -1, &st, nullptr),
+                  SQLITE_OK);
+        sqlite3_bind_int64(st, 1, image_id);
+        const char junk[4] = {1, 2, 3, 4};
+        sqlite3_bind_blob(st, 2, junk, sizeof(junk), SQLITE_TRANSIENT);
+        ASSERT_EQ(sqlite3_step(st), SQLITE_DONE);
+        sqlite3_finalize(st);
+    }
+
+    // The truncated row must be skipped, not read past.
+    auto rows = db->get_unlabeled_face_embeddings();
+    ASSERT_EQ(rows.size(), 1u) << "the short-blob row must be skipped";
+    EXPECT_EQ(rows[0].face_id, good_id);
+}

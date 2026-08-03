@@ -1944,57 +1944,26 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
 
         // Get embeddings of named faces
         // For each named face, search for similar untagged faces
-        const char* ref_sql = R"(
-            SELECT f.id, f.embedding FROM faces f
-            WHERE f.person_id = ?
-        )";
-        sqlite3_stmt* stmt;
-        int rc = sqlite3_prepare_v2(db.db_ptr(), ref_sql, -1, &stmt, nullptr);
-        if (rc != SQLITE_OK) {
-            std::cerr << "Error querying reference faces\n";
-            return 1;
-        }
-        sqlite3_bind_int64(stmt, 1, person_id);
-
+        auto ref_rows = db.get_face_embeddings_for_person(person_id);
         std::vector<std::array<float, 128>> ref_embeddings;
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            std::array<float, 128> emb;
-            const float* data = static_cast<const float*>(sqlite3_column_blob(stmt, 1));
-            if (data) {
-                std::copy(data, data + 128, emb.begin());
-                ref_embeddings.push_back(emb);
-            }
+        for (const auto& row : ref_rows) {
+            ref_embeddings.push_back(row.embedding);
         }
-        sqlite3_finalize(stmt);
 
         // Scan all untagged faces and check each against the reference embeddings.
         size_t labeled = 0;
-        const char* untagged_sql = "SELECT id, embedding FROM faces WHERE person_id IS NULL";
-        rc = sqlite3_prepare_v2(db.db_ptr(), untagged_sql, -1, &stmt, nullptr);
-        if (rc != SQLITE_OK) {
-            std::cerr << "Error querying faces\n";
-            return 1;
-        }
-
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            int64_t face_id = sqlite3_column_int64(stmt, 0);
-            const float* data = static_cast<const float*>(sqlite3_column_blob(stmt, 1));
-            if (!data) continue;
-
-            std::array<float, 128> emb;
-            std::copy(data, data + 128, emb.begin());
-
+        auto untagged_rows = db.get_unlabeled_face_embeddings();
+        for (const auto& row : untagged_rows) {
             // Check against all reference embeddings
             for (const auto& ref_emb : ref_embeddings) {
-                float dist = embedding_distance(ref_emb, emb);
+                float dist = embedding_distance(ref_emb, row.embedding);
                 if (dist <= 0.6) {
-                    db.set_face_person(face_id, person_id);
+                    db.set_face_person(row.face_id, person_id);
                     labeled++;
                     break;
                 }
             }
         }
-        sqlite3_finalize(stmt);
 
         std::cout << "Labeled " << labeled << " additional faces as \"" << name << "\"\n";
         return 0;

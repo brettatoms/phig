@@ -213,6 +213,19 @@ class Database {
     void set_face_person(int64_t face_id, int64_t person_id);
     int64_t find_closest_face(const std::array<float, 128>& embedding, float threshold);
 
+    // One face's id and its embedding, read only when the stored blob is
+    // exactly 128 floats — a short blob means a corrupt or partially written
+    // row, and reading 128 floats from it would run off the end.
+    struct FaceEmbeddingRow {
+        int64_t face_id;
+        std::array<float, 128> embedding;
+    };
+
+    // Reference embeddings for a named person, and every face with no person
+    // assigned. Rows whose embedding blob is the wrong size are skipped.
+    std::vector<FaceEmbeddingRow> get_face_embeddings_for_person(int64_t person_id);
+    std::vector<FaceEmbeddingRow> get_unlabeled_face_embeddings();
+
     struct PersonInfo {
         int64_t id;
         std::string name;

@@ -1792,6 +1792,59 @@ std::vector<std::string> Database::get_images_for_person(const std::string& name
     return paths;
 }
 
+std::vector<Database::FaceEmbeddingRow> Database::get_face_embeddings_for_person(
+    int64_t person_id) {
+    const char* sql = R"(
+        SELECT f.id, f.embedding FROM faces f
+        WHERE f.person_id = ?
+    )";
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare query: " + std::string(sqlite3_errmsg(db_)));
+    }
+    sqlite3_bind_int64(stmt, 1, person_id);
+
+    std::vector<FaceEmbeddingRow> rows;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const void* data = sqlite3_column_blob(stmt, 1);
+        int bytes = sqlite3_column_bytes(stmt, 1);
+        if (data == nullptr || bytes != static_cast<int>(128 * sizeof(float))) continue;
+
+        FaceEmbeddingRow row;
+        row.face_id = sqlite3_column_int64(stmt, 0);
+        std::copy(static_cast<const float*>(data), static_cast<const float*>(data) + 128,
+                  row.embedding.begin());
+        rows.push_back(row);
+    }
+    sqlite3_finalize(stmt);
+    return rows;
+}
+
+std::vector<Database::FaceEmbeddingRow> Database::get_unlabeled_face_embeddings() {
+    const char* sql = "SELECT id, embedding FROM faces WHERE person_id IS NULL";
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare query: " + std::string(sqlite3_errmsg(db_)));
+    }
+
+    std::vector<FaceEmbeddingRow> rows;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const void* data = sqlite3_column_blob(stmt, 1);
+        int bytes = sqlite3_column_bytes(stmt, 1);
+        if (data == nullptr || bytes != static_cast<int>(128 * sizeof(float))) continue;
+
+        FaceEmbeddingRow row;
+        row.face_id = sqlite3_column_int64(stmt, 0);
+        std::copy(static_cast<const float*>(data), static_cast<const float*>(data) + 128,
+                  row.embedding.begin());
+        rows.push_back(row);
+    }
+    sqlite3_finalize(stmt);
+    return rows;
+}
+
 std::string Database::auto_label_face(int64_t face_id, const std::array<float, 128>& embedding,
                                       float threshold) {
     // Get all reference embeddings from named faces
@@ -1810,8 +1863,10 @@ std::string Database::auto_label_face(int64_t face_id, const std::array<float, 1
     std::string best_name;
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const float* ref_data = static_cast<const float*>(sqlite3_column_blob(stmt, 0));
-        if (!ref_data) continue;
+        const void* blob = sqlite3_column_blob(stmt, 0);
+        int bytes = sqlite3_column_bytes(stmt, 0);
+        if (blob == nullptr || bytes != static_cast<int>(128 * sizeof(float))) continue;
+        const float* ref_data = static_cast<const float*>(blob);
 
         // Compute distance
         float dist = 0;
