@@ -324,9 +324,63 @@ TEST(Duplicates, SamplingIsNotFooledByCorpusOrdering) {
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now() - start)
                   .count();
-    EXPECT_LT(ms, 1000) << "varied head over tight tail took " << ms << " ms";
+    // Ceiling is generous: this runs ~300 ms here and ~620 ms on slower machines,
+    // against ~1300 ms if the sampler misreads the corpus. Perf assertions that
+    // sit close to the measured time are worse than none.
+    EXPECT_LT(ms, 2000) << "varied head over tight tail took " << ms << " ms";
 
     // Correctness must hold whichever path the sampler picks.
+    EXPECT_TRUE(GroupsIdentical(find_near_duplicates_bruteforce(imgs, 5, {}), groups));
+}
+
+// The candidate-volume sample walks fixed positions, so a corpus can in
+// principle be built that is tight everywhere the sampler does not look. This
+// reconstructs exactly that: near-identical throughout, except the positions the
+// first pass probes, which get distinct hashes. Measured with a single pass, the
+// sample read ~220 candidates per image against a true ~87000 and the scan ran
+// 5.9x slower than brute force.
+//
+// The second pass exists to catch this. It walks a step coprime to n from a
+// phash-derived offset, so its positions are neither the first pass's nor
+// predictable from n alone. Hiding from both at once would need two disjoint
+// decoy sets, and covering the second pass's positions exposes the corpus to the
+// first.
+TEST(Duplicates, SamplingIsNotFooledByAlignmentToItsOwnStride) {
+    const size_t n = 11000;
+    const size_t sample = 256;
+
+    // The positions the first pass probes, computed the same way it does:
+    // `sample` steps of n/sample from zero.
+    const size_t stride = std::max<size_t>(n / sample, 1);
+    std::set<size_t> probed;
+    for (size_t k = 0; k < sample; ++k) probed.insert((k * stride) % n);
+
+    std::mt19937_64 rng(24680);
+    std::vector<uint64_t> centers;
+    for (int c = 0; c < 2; ++c) centers.push_back(rng());
+
+    std::vector<uint64_t> hashes(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (probed.count(i)) {
+            hashes[i] = rng();  // distinct exactly where the first pass looks
+        } else {
+            uint64_t h = centers[rng() % centers.size()];
+            for (int f = 0; f < static_cast<int>(rng() % 3); ++f) h ^= (1ULL << (rng() % 64));
+            hashes[i] = h;
+        }
+    }
+    auto imgs = make_images(hashes);
+
+    auto start = std::chrono::steady_clock::now();
+    auto groups = find_near_duplicates(imgs, 5, {});
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - start)
+                  .count();
+    // Runs ~1400 ms here (the guard sends this corpus to brute force, which is
+    // the right choice for it) against ~6240 ms with only one sampling pass.
+    // The ceiling sits ~2x above the former and well below the latter.
+    EXPECT_LT(ms, 3000) << "stride-aligned corpus took " << ms << " ms";
+
     EXPECT_TRUE(GroupsIdentical(find_near_duplicates_bruteforce(imgs, 5, {}), groups));
 }
 

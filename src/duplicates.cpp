@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <numeric>
 #include <unordered_map>
 
 int hamming_distance(uint64_t a, uint64_t b) { return std::popcount(a ^ b); }
@@ -157,19 +158,69 @@ std::vector<DuplicateGroup> find_near_duplicates(const std::vector<ImageInfo>& a
     // random and whose remainder is near-identical, a prefix sample reported 69
     // candidates per image against a true 14495, missed the fallback entirely
     // and ran 4.4x slower than brute force. A stride sees both regions.
-    // Striding keeps the decision deterministic for a given input.
+    //
+    // Two passes at different offsets, taking the higher estimate.
+    //
+    // One pass at a fixed stride is defeated by a corpus that is tight
+    // everywhere except at exactly the positions it probes: measured, such a
+    // corpus reported ~150-470 candidates per image against a true 26000-105000
+    // and ran up to 6.6x slower than brute force.
+    //
+    // A second pass at a *fixed* offset only moves the target — aligning against
+    // two fixed position sets is no harder than aligning against one, and still
+    // does 7.7x. The second pass therefore differs in two ways.
+    //
+    // Its step is coprime to n, so its positions are spread over all residues
+    // instead of landing on multiples of n/256. Pass 0's positions form a coset
+    // of a subgroup, so shifting that same stride leaves offsets whose entire
+    // probe set is decoy — 64 of 40000 at n=40000. With a coprime step there are
+    // zero such offsets at every size measured (20k, 40k, 80k), so no periodic
+    // decoy set can hide from it.
+    //
+    // Its offset is derived from the phashes, so an attacker cannot pre-compute
+    // which positions get probed: the decoys they place change the digest, which
+    // moves the offset. Mixing every phash means any edit reaches it.
+    //
+    // Neither is a security boundary — a phash digest is not a keyed MAC. They
+    // raise the cost of a deliberately adversarial collection from "compute
+    // n/256 and index a set" to "find a fixpoint against a coprime walk".
+    // Sampling cost is unmeasurable, so the second pass is free, and both passes
+    // stay deterministic for a given input.
     {
         const size_t n = all_images.size();
         const size_t sample = std::min<size_t>(n, 256);
-        size_t total = 0;
         std::vector<uint32_t> probe;
-        for (size_t k = 0; k < sample; k++) {
-            // Spread k over [0, n) so the draw spans the whole corpus.
-            const size_t i = (n <= sample) ? k : (k * n) / sample;
-            probe.clear();
-            index.collect_candidates(all_images[i].phash, probe);
-            total += probe.size();
+
+        // Walks `sample` positions `step` apart, starting at `offset`.
+        auto mean_candidates = [&](size_t offset, size_t step) {
+            size_t total = 0;
+            for (size_t k = 0; k < sample; k++) {
+                const size_t i = (n <= sample) ? k : (offset + k * step) % n;
+                probe.clear();
+                index.collect_candidates(all_images[i].phash, probe);
+                total += probe.size();
+            }
+            return total;
+        };
+
+        // splitmix64-style mixing of every phash, so the offset depends on the
+        // whole corpus rather than on n alone.
+        uint64_t digest = 0x9E3779B97F4A7C15ULL;
+        for (const auto& im : all_images) {
+            digest ^= im.phash;
+            digest *= 0xBF58476D1CE4E5B9ULL;
+            digest ^= digest >> 31;
         }
+
+        const size_t stride = (sample > 0) ? std::max<size_t>(n / sample, 1) : 1;
+        size_t coprime_step = stride;
+        while (coprime_step < n && std::gcd(coprime_step, n) != 1) coprime_step++;
+        if (coprime_step >= n) coprime_step = 1;  // n <= sample; step is unused
+
+        const size_t offset = (n > 0) ? static_cast<size_t>(digest % n) : 0;
+        const size_t total =
+            std::max(mean_candidates(0, stride), mean_candidates(offset, coprime_step));
+
         if (sample > 0 && total > sample * (n / kMaxCandidatesPerImageDivisor)) {
             return find_near_duplicates_bruteforce(all_images, threshold, exact_sha256s);
         }
