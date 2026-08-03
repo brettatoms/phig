@@ -7,7 +7,7 @@
 #include <vector>
 
 bool parallel_for_each(size_t count, int num_threads, const CancelToken& cancel,
-                       const std::function<void(size_t)>& fn) {
+                       const std::function<void(size_t, int)>& fn) {
     if (count == 0) return true;
     if (num_threads < 1) num_threads = 1;
     if (static_cast<size_t>(num_threads) > count) {
@@ -20,13 +20,13 @@ bool parallel_for_each(size_t count, int num_threads, const CancelToken& cancel,
     std::exception_ptr first_error;
     std::mutex error_mutex;
 
-    auto worker = [&]() {
+    auto worker = [&](int worker_id) {
         for (;;) {
             if (cancel.stop() || failed.load(std::memory_order_relaxed)) return;
             size_t i = next.fetch_add(1);
             if (i >= count) return;
             try {
-                fn(i);
+                fn(i, worker_id);
                 completed.fetch_add(1, std::memory_order_relaxed);
             } catch (...) {
                 // Keep only the first failure; the rest are consequences.
@@ -42,7 +42,7 @@ bool parallel_for_each(size_t count, int num_threads, const CancelToken& cancel,
 
     std::vector<std::thread> threads;
     threads.reserve(static_cast<size_t>(num_threads));
-    for (int t = 0; t < num_threads; ++t) threads.emplace_back(worker);
+    for (int t = 0; t < num_threads; ++t) threads.emplace_back(worker, t);
     for (auto& th : threads) th.join();
 
     // Rethrow on the caller's thread, after every worker has been joined.
