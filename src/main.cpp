@@ -1265,18 +1265,6 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
             return 1;
         }
 
-        auto images = db.get_all_images();
-
-        if (!matches.empty() || !excludes.empty()) {
-            images.erase(std::remove_if(images.begin(), images.end(),
-                                        [&](const ImageInfo& img) {
-                                            return !passes_selection(img.path, matches, excludes);
-                                        }),
-                         images.end());
-        }
-
-        std::cout << "Generating thumbnails for " << images.size() << " images...\n";
-
         CancelToken cancel;
         ScopedInterruptHandler interrupt_guard(cancel);
 
@@ -1305,14 +1293,21 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
 
         ThumbsProgress p;
         while (progress.pop(p)) {
-            if (p.stage != ThumbsStage::FileDone) continue;
-            if (p.show_path) {
-                fs::path path(p.path);
-                std::string display = (path.parent_path().filename() / path.filename()).string();
-                std::cout << "\r\033[K[" << p.done << "/" << p.total << "] " << display
-                          << std::flush;
-            } else {
-                std::cout << "\r[" << p.done << "/" << p.total << "] " << std::flush;
+            switch (p.stage) {
+                case ThumbsStage::Selected:
+                    std::cout << "Generating thumbnails for " << p.total << " images...\n";
+                    break;
+                case ThumbsStage::FileDone:
+                    if (p.show_path) {
+                        fs::path path(p.path);
+                        std::string display =
+                            (path.parent_path().filename() / path.filename()).string();
+                        std::cout << "\r\033[K[" << p.done << "/" << p.total << "] " << display
+                                  << std::flush;
+                    } else {
+                        std::cout << "\r[" << p.done << "/" << p.total << "] " << std::flush;
+                    }
+                    break;
             }
         }
         worker.join();
