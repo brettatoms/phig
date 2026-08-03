@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 
 #include "types.h"
@@ -24,3 +25,9 @@ DateParts get_best_date(const ImageInfo& img);
 // Best date for display (e.g. search output), same ordering as
 // get_best_date, returned as a "YYYY:MM:DD" (or similar) string.
 std::string get_best_date_str(const ImageInfo& img);
+
+// Formats a filesystem timestamp as "YYYY-MM-DDTHH:MM:SSZ" (UTC). This is the
+// form stored in images.modified_at, and scan's mtime-skip check compares a
+// freshly formatted value against the stored one — changing the format would
+// make every tracked file look modified.
+std::string format_time(std::filesystem::file_time_type ftime);

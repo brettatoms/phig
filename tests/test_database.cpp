@@ -157,6 +157,46 @@ TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
     EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 0);
 }
 
+TEST_F(DatabaseTest, InsertFaceReturnsTheNewRowid) {
+    db->insert(make_image("/test/face1.jpg", "sha1"));
+    int64_t image_id = db->get_image_id("/test/face1.jpg");
+    ASSERT_GT(image_id, 0);
+
+    FaceInfo face{};
+    face.x = 10;
+    face.y = 20;
+    face.width = 30;
+    face.height = 40;
+    face.embedding.fill(0.5f);
+
+    int64_t id1 = db->insert_face(image_id, face);
+    int64_t id2 = db->insert_face(image_id, face);
+    EXPECT_GT(id1, 0);
+    EXPECT_GT(id2, id1) << "each insert must return its own distinct rowid";
+}
+
+TEST_F(DatabaseTest, InsertFaceReturnValueMatchesLastInsertRowid) {
+    db->insert(make_image("/test/face2.jpg", "sha2"));
+    int64_t image_id = db->get_image_id("/test/face2.jpg");
+
+    FaceInfo face{};
+    face.x = 1;
+    face.y = 2;
+    face.width = 3;
+    face.height = 4;
+    face.embedding.fill(0.25f);
+
+    // insert_face returns the faces-table rowid it captured before inserting
+    // into the vec_faces virtual table. This asserts that value still matches
+    // last_insert_rowid() after the call - true only because vec_faces is
+    // declared `face_id INTEGER PRIMARY KEY`, so vec0's shadow-table insert
+    // reuses the same key. Drop that declaration and the two diverge, which is
+    // why insert_face returns the captured id rather than re-reading it. If
+    // this test starts failing, the vec_faces schema changed.
+    int64_t returned = db->insert_face(image_id, face);
+    EXPECT_EQ(returned, sqlite3_last_insert_rowid(db->db_ptr()));
+}
+
 // Mirrors cmd_scan's needs_faces_only branch in main.cpp: mtime unchanged, but
 // the detector re-runs (e.g. faces were requested for the first time on a
 // re-scan). The branch must check has_faces() before inserting, or a re-scan
@@ -1137,4 +1177,52 @@ TEST_F(DatabaseTest, ReadOnlyOpenRejectsWrites) {
     std::filesystem::remove(path, ec);
     std::filesystem::remove(path + "-wal", ec);
     std::filesystem::remove(path + "-shm", ec);
+}
+
+TEST_F(DatabaseTest, RollbackLeavesNoPartialBatch) {
+    // A transaction that inserts images then throws must leave the DB as it
+    // was — this is the guarantee cmd_scan's flush_batch transaction provides.
+    ImageInfo a = make_image("/photos/batch_a.jpg", std::string(64, 'c'));
+    ImageInfo b = make_image("/photos/batch_b.jpg", std::string(64, 'd'));
+
+    int64_t before = db->count();
+    db->begin_transaction();
+    try {
+        db->insert(a);
+        db->insert(b);
+        throw std::runtime_error("simulated mid-batch failure");
+    } catch (const std::runtime_error&) {
+        db->rollback_transaction();
+    }
+    EXPECT_EQ(db->count(), before) << "rolled-back inserts must not persist";
+    EXPECT_EQ(db->get_image_id("/photos/batch_a.jpg"), -1);
+    EXPECT_EQ(db->get_image_id("/photos/batch_b.jpg"), -1);
+
+    // The failed transaction must not leave one open, or every later write in
+    // the process fails with "cannot start a transaction within a transaction".
+    db->begin_transaction();
+    db->insert(a);
+    db->commit_transaction();
+    EXPECT_EQ(db->count(), before + 1);
+}
+
+TEST_F(DatabaseTest, InsertBatchCannotNestInsideATransaction) {
+    // insert_batch opens its own BEGIN IMMEDIATE, so calling it inside a
+    // caller-held transaction throws. cmd_scan's flush_batch therefore loops
+    // insert() under one transaction of its own instead of calling
+    // insert_batch. If insert_batch ever becomes nest-safe this test fails and
+    // that constraint can be revisited.
+    ImageInfo a = make_image("/photos/nest_a.jpg", std::string(64, '1'));
+
+    db->begin_transaction();
+    EXPECT_THROW(db->insert_batch({a}), std::runtime_error);
+    db->rollback_transaction();
+    EXPECT_EQ(db->count(), 0) << "the nested attempt must not have written";
+
+    // Looping insert() under one transaction — what flush_batch does instead —
+    // works and commits.
+    db->begin_transaction();
+    db->insert(a);
+    db->commit_transaction();
+    EXPECT_EQ(db->count(), 1);
 }

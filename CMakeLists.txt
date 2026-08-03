@@ -195,6 +195,7 @@ add_executable(phig-tests
     tests/test_log.cpp
     tests/test_sidecar.cpp
     tests/test_dates.cpp
+    tests/test_dates_format.cpp
     tests/test_duplicates.cpp
     tests/test_raw.cpp
     tests/test_lockfile.cpp

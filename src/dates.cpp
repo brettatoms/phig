@@ -1,5 +1,8 @@
 #include "dates.h"
 
+#include <chrono>
+#include <ctime>
+
 #include "sidecar.h"
 
 DateParts parse_date(const std::string& date_str) {
@@ -88,4 +91,18 @@ std::string get_best_date_str(const ImageInfo& img) {
         return img.modified_at.substr(0, 10);
     }
     return "unknown";
+}
+
+std::string format_time(std::filesystem::file_time_type ftime) {
+    // Portable conversion: compute offset between file_clock and system_clock
+    auto file_now = decltype(ftime)::clock::now();
+    auto sys_now = std::chrono::system_clock::now();
+    auto sys_tp = sys_now + (ftime - file_now);
+    auto sctp = std::chrono::time_point_cast<std::chrono::seconds>(sys_tp);
+    auto time_t = std::chrono::system_clock::to_time_t(sctp);
+    std::tm tm;
+    gmtime_r(&time_t, &tm);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return std::string(buf);
 }

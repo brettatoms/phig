@@ -160,8 +160,12 @@ TEST(Parallel, WorkerIdsAreInRangeDistinctAndStable) {
         EXPECT_GE(id, 0);
         EXPECT_LT(id, num_threads);
     }
-    // With 20000 items spread over 8 workers, every worker id should appear.
-    EXPECT_EQ(ids_seen.size(), static_cast<size_t>(num_threads));
+    // Not every worker id is guaranteed to appear: the work cursor is shared, so
+    // threads that start first can drain a trivial workload before the rest are
+    // scheduled. What must hold is that at least one worker ran and no id is out
+    // of range — asserting all N appear makes this test fail on a loaded machine.
+    EXPECT_FALSE(ids_seen.empty());
+    EXPECT_LE(ids_seen.size(), static_cast<size_t>(num_threads));
 
     for (size_t i = 0; i < n; ++i) {
         EXPECT_GE(item_worker[i], 0) << "item " << i << " never ran";
