@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -1458,7 +1457,7 @@ int cmd_search(const SearchOptions& opts) {
         std::vector<ScoredImage> scored;
 
         for (auto& img : all_images) {
-            int dist = std::popcount(query_phash ^ img.phash);
+            int dist = hamming_distance(query_phash, img.phash);
             if (dist <= opts.threshold) {
                 scored.push_back({std::move(img), dist});
             }
