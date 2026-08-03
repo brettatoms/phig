@@ -70,6 +70,7 @@ add_library(phig-core STATIC
     src/raw.cpp
     src/lockfile.cpp
     src/parallel.cpp
+    src/scan_engine.cpp
 )
 
 set_target_properties(phig-core PROPERTIES
