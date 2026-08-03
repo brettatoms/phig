@@ -1608,6 +1608,8 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
             std::rethrow_exception(engine_error);
         }
 
+        // "No matching images found." was already printed above from the
+        // Selected update (p.total == 0); stop here so nothing below it prints.
         if (result.total_selected == 0) {
             return 0;
         }

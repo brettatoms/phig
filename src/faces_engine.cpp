@@ -34,6 +34,11 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
     }
     if (images.empty()) return result;
 
+    if (cancel.stop()) {
+        result.completed = false;
+        return result;
+    }
+
     int num_threads;
     if (opts_.parallel > 0) {
         num_threads = opts_.parallel;

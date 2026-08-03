@@ -95,12 +95,24 @@ TEST(FacesEngineRun, DetectsFacesInEveryImageAcrossWorkers) {
     opts.parallel = 2;
     FacesEngine engine(opts, *coll.db);
     CancelToken tok;
+    ProgressQueue<FacesProgress> q(64);
 
-    FacesResult r = engine.run(tok, nullptr);
+    FacesResult r = engine.run(tok, &q);
+    q.close();
 
     EXPECT_EQ(r.total_selected, 4u);
-    EXPECT_GT(r.faces_detected, 0u);
+    // 6 is the deterministic count for two faces_small.jpg + two
+    // faces_large.jpg copies (confirmed across repeated runs); a partial-
+    // processing bug that only ran one of the four images would report fewer.
+    EXPECT_EQ(r.faces_detected, 6u);
     EXPECT_TRUE(r.completed);
+
+    size_t files = 0;
+    FacesProgress p;
+    while (q.pop(p)) {
+        if (p.stage == FacesStage::FileDone) ++files;
+    }
+    EXPECT_EQ(files, 4u);
 }
 
 TEST(FacesEngineRun, RerunReplacesRatherThanAccumulatesFaceRows) {
