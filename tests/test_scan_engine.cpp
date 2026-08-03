@@ -499,23 +499,45 @@ static std::string insert_row(Database& db, const fs::path& dir, const std::stri
     return p.string();
 }
 
-TEST(ScanEngine, ReconcileRunsRelinkBeforeDemoteOnSharedTarget) {
-    // Integration-level sibling of RelinkTest.RelinkRunsBeforeDemoteOnSharedTarget
-    // (tests/test_relink.cpp): same overlap state, driven through
-    // ScanEngine::run_reconcile instead of calling relink_moved_rows/
-    // demote_jpeg_rows directly, so a swap of the two calls inside reconcile's
-    // logged branch (log_enabled = true) is observable here.
-    //
-    // A RAW file moved (old/a.cr2 -> new/a.cr2, same sha) in the same scan
-    // that also finds a JPEG sitting next to the RAW's new location. Both
-    // relink and demote transfer metadata onto the RAW row at new/a.cr2;
-    // gallery transfer only fills a NULL target, so whichever runs first
-    // determines the surviving gallery.
-    fs::path dir =
-        fs::temp_directory_path() / ("phig_reconcile_order_" + std::to_string(::getpid()) + "_" +
-                                     std::to_string(reinterpret_cast<uintptr_t>(&dir)));
-    fs::remove_all(dir);
-    fs::create_directories(dir);
+// Scratch dir + XDG_STATE_HOME redirect for one reconcile-ordering test.
+// Destructor covers every exit path (normal return, ASSERT early-return,
+// thrown exception) so a failure never leaves the env var pointing at a
+// removed directory or leaks the directory itself.
+struct ReconcileOrderScratch {
+    fs::path dir;
+    std::string orig_state;
+    bool had_orig_state;
+
+    ReconcileOrderScratch() {
+        dir = fs::temp_directory_path() / ("phig_reconcile_order_" + std::to_string(::getpid()) +
+                                           "_" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+
+        const char* xdg = std::getenv("XDG_STATE_HOME");
+        had_orig_state = xdg != nullptr;
+        if (xdg) orig_state = xdg;
+        setenv("XDG_STATE_HOME", dir.c_str(), 1);
+    }
+    ~ReconcileOrderScratch() {
+        if (had_orig_state) {
+            setenv("XDG_STATE_HOME", orig_state.c_str(), 1);
+        } else {
+            unsetenv("XDG_STATE_HOME");
+        }
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+    }
+};
+
+// Drives the same relink/demote overlap through ScanEngine::run_reconcile
+// with the given log_enabled setting, and returns the surviving gallery value
+// on the RAW row both operations target. Shared by the logged- and
+// unlogged-branch tests below.
+static std::string run_reconcile_order_probe(bool log_enabled) {
+    ReconcileOrderScratch scratch;
+    const fs::path& dir = scratch.dir;
+
     std::string db_path = (dir / "phig.db").string();
     Database db(db_path);
     db.init_schema();
@@ -527,44 +549,57 @@ TEST(ScanEngine, ReconcileRunsRelinkBeforeDemoteOnSharedTarget) {
     db.set_gallery({raw_old}, "trip1", false);
     db.set_gallery({jpeg}, "trip2", false);
 
-    const char* orig_state = std::getenv("XDG_STATE_HOME");
-    std::string had_state = orig_state ? orig_state : "";
-    setenv("XDG_STATE_HOME", dir.c_str(), 1);
-
     ScanOptions o;
     o.directory = dir.string();
     o.db_path = db_path;
-    o.log_enabled = true;  // exercises the logged branch at scan_engine.cpp:522-545
+    o.log_enabled = log_enabled;
     o.argv_str = "phig scan test";
 
     ScanEngine engine(o, db);
     ScanResult r;
     engine.run_reconcile(r);
 
-    if (orig_state) {
-        setenv("XDG_STATE_HOME", had_state.c_str(), 1);
-    } else {
-        unsetenv("XDG_STATE_HOME");
-    }
-
     EXPECT_FALSE(r.mount_warning);
     EXPECT_EQ(r.relinked, 1u);
     EXPECT_EQ(r.demoted, 1u);
     EXPECT_EQ(r.removed, 1u);  // raw_old; demoted rows are counted separately in r.demoted
-    ASSERT_EQ(db.count(), 1);
+    EXPECT_EQ(db.count(), 1);
 
     auto tags = db.get_tags_for_image(raw_new);
-    ASSERT_EQ(tags.size(), 1u);
-    EXPECT_EQ(tags[0], "favorite");
+    EXPECT_EQ(tags.size(), 1u);
+    if (!tags.empty()) EXPECT_EQ(tags[0], "favorite");
 
     std::string gallery;
     for (const auto& img : db.get_all_images()) {
         if (img.path == raw_new) gallery = img.gallery;
     }
+    return gallery;
+}
+
+TEST(ScanEngine, ReconcileRunsRelinkBeforeDemoteOnSharedTarget) {
+    // Integration-level sibling of RelinkTest.RelinkRunsBeforeDemoteOnSharedTarget
+    // (tests/test_relink.cpp): same overlap state, driven through
+    // ScanEngine::run_reconcile instead of calling relink_moved_rows/
+    // demote_jpeg_rows directly, so a swap of the two calls inside reconcile's
+    // logged branch is observable here.
+    //
+    // A RAW file moved (old/a.cr2 -> new/a.cr2, same sha) in the same scan
+    // that also finds a JPEG sitting next to the RAW's new location. Both
+    // relink and demote transfer metadata onto the RAW row at new/a.cr2;
+    // gallery transfer only fills a NULL target, so whichever runs first
+    // determines the surviving gallery.
+    std::string gallery = run_reconcile_order_probe(/*log_enabled=*/true);
     EXPECT_EQ(gallery, "trip1") << "relink must fill the gallery before demote sees it, "
                                    "otherwise the JPEG's gallery wins instead";
+}
 
-    fs::remove_all(dir);
+TEST(ScanEngine, ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged) {
+    // Same state and ordering claim as the logged-branch test above, but with
+    // log_enabled = false, which takes reconcile's other branch — a separate
+    // relink_moved_rows/demote_jpeg_rows call pair with the same ordering.
+    std::string gallery = run_reconcile_order_probe(/*log_enabled=*/false);
+    EXPECT_EQ(gallery, "trip1") << "relink must fill the gallery before demote sees it, "
+                                   "otherwise the JPEG's gallery wins instead";
 }
 
 TEST(ScanEngine, MediaFilterExcludesTheOtherType) {
