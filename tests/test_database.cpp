@@ -186,11 +186,13 @@ TEST_F(DatabaseTest, InsertFaceReturnValueMatchesLastInsertRowid) {
     face.height = 4;
     face.embedding.fill(0.25f);
 
-    // The faces-table insert is not vec_faces's last statement on this
-    // connection: insert_face() also writes to the vec_faces virtual table
-    // afterward. This proves the returned id still equals what the old
-    // call-site pattern would have observed immediately after insert_face()
-    // returned, so replacing that pattern cannot change behavior.
+    // insert_face returns the faces-table rowid it captured before inserting
+    // into the vec_faces virtual table. This asserts that value still matches
+    // last_insert_rowid() after the call - true only because vec_faces is
+    // declared `face_id INTEGER PRIMARY KEY`, so vec0's shadow-table insert
+    // reuses the same key. Drop that declaration and the two diverge, which is
+    // why insert_face returns the captured id rather than re-reading it. If
+    // this test starts failing, the vec_faces schema changed.
     int64_t returned = db->insert_face(image_id, face);
     EXPECT_EQ(returned, sqlite3_last_insert_rowid(db->db_ptr()));
 }
