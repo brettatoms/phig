@@ -32,12 +32,11 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
         p.total = images.size();
         progress->push(p);
     }
-    if (images.empty()) return result;
-
     if (cancel.stop()) {
         result.completed = false;
         return result;
     }
+    if (images.empty()) return result;
 
     int num_threads;
     if (opts_.parallel > 0) {
@@ -49,7 +48,7 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
 
     if (progress) {
         FacesProgress p;
-        p.stage = FacesStage::LoadingModels;
+        p.stage = FacesStage::LoadingFaceModels;
         p.total = static_cast<size_t>(num_threads);
         progress->push(p);
     }

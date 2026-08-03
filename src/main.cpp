@@ -14,7 +14,6 @@
 #include <iostream>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <queue>
 #include <set>
@@ -38,7 +37,6 @@
 #include "models.h"
 #include "organize_exec.h"
 #include "organize_plan.h"
-#include "parallel.h"
 #include "paths.h"
 #include "relink.h"
 #include "remove_exec.h"
@@ -1588,7 +1586,7 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
                         std::cout << "Rebuilding face data for " << p.total << " images...\n";
                     }
                     break;
-                case FacesStage::LoadingModels:
+                case FacesStage::LoadingFaceModels:
                     std::cout << "Loading face recognition models (" << p.total
                               << " instances)...\n";
                     break;

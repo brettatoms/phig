@@ -8,7 +8,7 @@
 #include "database.h"
 #include "progress_queue.h"
 
-enum class FacesStage { FileDone, Selected, LoadingModels };
+enum class FacesStage { FileDone, Selected, LoadingFaceModels };
 
 struct FacesRebuildOptions {
     std::vector<std::string> matches;

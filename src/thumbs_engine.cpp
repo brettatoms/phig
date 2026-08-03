@@ -91,7 +91,12 @@ ThumbsResult ThumbsEngine::run(const CancelToken& cancel, ProgressQueue<ThumbsPr
         publish(img, true);
     };
 
-    result.completed = parallel_for_each(images.size(), num_threads, cancel, worker);
+    // parallel_for_each returns true unconditionally for an empty range, which
+    // would misreport an already-cancelled run over an empty selection as
+    // completed.
+    result.completed = images.empty()
+                           ? !cancel.stop()
+                           : parallel_for_each(images.size(), num_threads, cancel, worker);
     result.generated = generated.load();
     result.skipped = skipped.load();
     result.errors = errors.load();

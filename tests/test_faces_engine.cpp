@@ -151,6 +151,23 @@ TEST(FacesEngineRun, AlreadyCancelledDetectsNothingAndReportsIncomplete) {
     EXPECT_EQ(r.faces_detected, 0u);
 }
 
+TEST(FacesEngineRun, AlreadyCancelledOverAnEmptySelectionReportsIncomplete) {
+    // The empty-selection return must not precede the cancellation check: an
+    // already-cancelled run with nothing selected still has to report
+    // completed = false.
+    ScratchFaces coll(0);
+    FacesRebuildOptions opts;
+    opts.parallel = 2;
+    FacesEngine engine(opts, *coll.db);
+    CancelToken tok;
+    tok.cancel();
+
+    FacesResult r = engine.run(tok, nullptr);
+
+    EXPECT_EQ(r.total_selected, 0u);
+    EXPECT_FALSE(r.completed);
+}
+
 TEST(FacesEngineRun, PublishesModelLoadThenSelectedThenFiles) {
     // Ordering matters for rendering: the CLI prints "Loading face recognition
     // models (N instances)..." before the per-file lines, and model loading is
@@ -172,7 +189,7 @@ TEST(FacesEngineRun, PublishesModelLoadThenSelectedThenFiles) {
     EXPECT_EQ(p.total, 2u);
 
     ASSERT_TRUE(q.pop(p));
-    EXPECT_EQ(p.stage, FacesStage::LoadingModels);
+    EXPECT_EQ(p.stage, FacesStage::LoadingFaceModels);
     EXPECT_EQ(p.total, 1u);  // one detector instance for parallel=1
 
     size_t files = 0;

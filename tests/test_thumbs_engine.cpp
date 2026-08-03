@@ -1,10 +1,15 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
 
+#include "cancel.h"
+#include "database.h"
+#include "progress_queue.h"
 #include "thumbs_engine.h"
 #include "types.h"
 
@@ -76,15 +81,6 @@ TEST_F(ThumbsEngineTest, UnhashedRowIsSkippedBeforeTheCacheIsConsulted) {
     // would stat a path built from an empty key. The empty-sha branch must win.
     EXPECT_FALSE(thumb_needs_generating(with_sha(""), false));
 }
-
-#include <unistd.h>
-
-#include <cstdint>
-#include <filesystem>
-
-#include "cancel.h"
-#include "database.h"
-#include "progress_queue.h"
 
 namespace {
 // A scratch collection with N copies of a real fixture, scanned into a database.
@@ -196,6 +192,23 @@ TEST(ThumbsEngineRun, AlreadyCancelledGeneratesNothingAndReportsIncomplete) {
 
     EXPECT_FALSE(r.completed);
     EXPECT_EQ(r.generated, 0u);
+}
+
+TEST(ThumbsEngineRun, AlreadyCancelledOverAnEmptySelectionReportsIncomplete) {
+    // parallel_for_each short-circuits to true on an empty range, so an
+    // already-cancelled run with nothing selected must not fall through to
+    // that default and report completed.
+    ScratchThumbs coll(0);
+    ThumbsOptions opts;
+    opts.parallel = 2;
+    ThumbsEngine engine(opts, *coll.db);
+    CancelToken tok;
+    tok.cancel();
+
+    ThumbsResult r = engine.run(tok, nullptr);
+
+    EXPECT_EQ(r.total_selected, 0u);
+    EXPECT_FALSE(r.completed);
 }
 
 TEST(ThumbsEngineRun, PublishesSelectedCountBeforeAnyFileCompletes) {
