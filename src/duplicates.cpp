@@ -73,9 +73,41 @@ class BandedIndex {
 
 }  // namespace
 
+// Above this threshold the banded index is slower than the all-pairs scan, so
+// find_near_duplicates hands off to find_near_duplicates_bruteforce.
+//
+// Do not remove this cutoff. The index splits 64 bits into threshold + 1 bands,
+// so a rising threshold narrows every band and each one matches more of the
+// corpus. Past the crossover the candidate lists approach the whole collection
+// and the per-image sort/unique is pure overhead on top of the work the nested
+// loop was already doing. Measured at n=5000, n=20000 and n=40000: on random
+// hashes threshold 8 runs at 0.42x of brute force, threshold 10 at 1.3x,
+// threshold 32 at 32x and threshold 64 at 143x. Clustered corpora cross over
+// sooner — threshold 7 is 0.90x but threshold 8 is already 1.3x — so 7 is the
+// last value that wins on both shapes. The cutoff also caps index memory, which
+// grows with threshold + 1 entries per image.
+constexpr int kBandedIndexMaxThreshold = 7;
+
+// Also fall back when the index yields more candidates per image than the
+// all-pairs scan would compare, i.e. more than n/2.
+//
+// The threshold cutoff alone is not enough. A collection of very similar images
+// (few distinct scenes, small variations) produces huge candidate lists even at
+// the default threshold of 5, because most of the corpus shares a band. Beyond
+// n/2 candidates per image the index is doing more distance checks than the
+// nested loop, plus a sort/unique per image, so it cannot win. Measured at
+// n=20000: such a corpus gives ~15600 candidates per image against n/2 = 10000
+// and runs ~4x slower than brute force, while a realistically clustered corpus
+// gives ~4100 and stays ~2x faster. Comparing against n/2 separates the two.
+constexpr size_t kMaxCandidatesPerImageDivisor = 2;
+
 std::vector<DuplicateGroup> find_near_duplicates(const std::vector<ImageInfo>& all_images,
                                                  int threshold,
                                                  const std::set<std::string>& exact_sha256s) {
+    if (threshold > kBandedIndexMaxThreshold) {
+        return find_near_duplicates_bruteforce(all_images, threshold, exact_sha256s);
+    }
+
     std::vector<DuplicateGroup> groups;
 
     // Union-find to group near duplicates
@@ -109,6 +141,25 @@ std::vector<DuplicateGroup> find_near_duplicates(const std::vector<ImageInfo>& a
     BandedIndex index(threshold, all_images.size());
     for (size_t i = 0; i < all_images.size(); i++) {
         index.insert(static_cast<uint32_t>(i), all_images[i].phash);
+    }
+
+    // Sample a few images before committing to the index. If their candidate
+    // lists are already near the size of the whole corpus the index cannot pay
+    // for itself, so bail out before doing the work rather than after.
+    // Sampling is a prefix rather than a random draw so the decision stays
+    // deterministic for a given input.
+    {
+        const size_t sample = std::min<size_t>(all_images.size(), 64);
+        size_t total = 0;
+        std::vector<uint32_t> probe;
+        for (size_t i = 0; i < sample; i++) {
+            probe.clear();
+            index.collect_candidates(all_images[i].phash, probe);
+            total += probe.size();
+        }
+        if (sample > 0 && total > sample * (all_images.size() / kMaxCandidatesPerImageDivisor)) {
+            return find_near_duplicates_bruteforce(all_images, threshold, exact_sha256s);
+        }
     }
 
     std::vector<uint32_t> candidates;

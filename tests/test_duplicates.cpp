@@ -213,7 +213,83 @@ TEST(Duplicates, FortyThousandImagesCompletesQuickly) {
                   .count();
 
     // The brute-force implementation took ~5200 ms for this input. A generous
-    // ceiling still fails loudly if the BK-tree is accidentally linear-scanning.
+    // ceiling still fails loudly if the banded index degrades to a linear scan.
     EXPECT_LT(ms, 2000) << "40k images took " << ms << " ms";
     (void)groups;
+}
+
+// A high threshold must not be slower than the all-pairs scan it replaced.
+// Without the cutoff the banded index degrades badly here — bands become a bit
+// or two wide, so nearly the whole corpus matches every band. Measured at
+// n=5000: ~16000 ms at threshold 64 against ~110 ms for brute force. The
+// dispatch keeps this on the brute-force path, and the ceiling is set well
+// above brute force's time but far below the index's.
+TEST(Duplicates, HighThresholdDoesNotRegressAgainstBruteForce) {
+    std::mt19937_64 rng(4242);
+    std::vector<uint64_t> hashes;
+    for (int i = 0; i < 5000; ++i) hashes.push_back(rng());
+    auto imgs = make_images(hashes);
+
+    for (int threshold : {32, 64}) {
+        auto start = std::chrono::steady_clock::now();
+        auto groups = find_near_duplicates(imgs, threshold, {});
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - start)
+                      .count();
+        EXPECT_LT(ms, 1500) << "threshold " << threshold << " on 5k images took " << ms << " ms";
+        (void)groups;
+    }
+}
+
+// find_near_duplicates dispatches to the brute-force path above a threshold
+// cutoff, and again when candidate lists get too large. Both hand-offs must be
+// invisible: the groups, their order and their members have to match whichever
+// path runs. These walk across the cutoff so a change to it cannot silently
+// alter results.
+TEST(Duplicates, DispatchMatchesBruteForceAcrossTheThresholdCutoff) {
+    std::mt19937_64 rng(20260802);
+    // 0..12 spans both sides of the cutoff; 63 and 64 pin the top of the range,
+    // which the CLI accepts and which the index handles worst.
+    for (int threshold : {0, 1, 5, 6, 7, 8, 9, 10, 12, 63, 64}) {
+        for (int trial = 0; trial < 12; ++trial) {
+            size_t n = 2 + (rng() % 80);
+            std::vector<uint64_t> centers;
+            for (int c = 0; c < 3; ++c) centers.push_back(rng());
+            std::vector<uint64_t> hashes;
+            for (size_t i = 0; i < n; ++i) {
+                uint64_t h = centers[rng() % centers.size()];
+                for (int f = 0; f < static_cast<int>(rng() % 10); ++f) h ^= (1ULL << (rng() % 64));
+                hashes.push_back(h);
+            }
+            auto imgs = make_images(hashes);
+            ASSERT_TRUE(GroupsIdentical(find_near_duplicates_bruteforce(imgs, threshold, {}),
+                                        find_near_duplicates(imgs, threshold, {})))
+                << "threshold=" << threshold << " trial=" << trial << " n=" << n;
+        }
+    }
+}
+
+// A corpus of near-identical images makes every band match most of the
+// collection, which trips the candidate-volume fallback even at low thresholds.
+TEST(Duplicates, DispatchMatchesBruteForceWhenCandidateListsExplode) {
+    std::mt19937_64 rng(7654321);
+    for (int threshold : {1, 5, 7}) {
+        // Two centers only, at most 3 flipped bits: nearly everything collides.
+        std::vector<uint64_t> centers{rng(), rng()};
+        std::vector<ImageInfo> imgs;
+        for (size_t i = 0; i < 600; ++i) {
+            ImageInfo im;
+            im.path = "/photos/t" + std::to_string(i) + ".jpg";
+            im.sha256 =
+                (i % 7 == 0) ? std::string(64, 'x') : std::string(63, '0') + std::to_string(i % 10);
+            uint64_t h = centers[i % centers.size()];
+            for (int f = 0; f < static_cast<int>(rng() % 4); ++f) h ^= (1ULL << (rng() % 64));
+            im.phash = h;
+            imgs.push_back(im);
+        }
+        std::set<std::string> exact{std::string(64, 'x')};
+        ASSERT_TRUE(GroupsIdentical(find_near_duplicates_bruteforce(imgs, threshold, exact),
+                                    find_near_duplicates(imgs, threshold, exact)))
+            << "threshold=" << threshold;
+    }
 }
