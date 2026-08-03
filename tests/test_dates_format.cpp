@@ -49,3 +49,20 @@ TEST(FormatTime, LaterFileSortsAfterEarlierFile) {
     EXPECT_LT(format_time(ta), format_time(tb));
     std::filesystem::remove(a);
 }
+
+TEST(FormatTime, EpochZeroFormatsAsUnixEpochInUtc) {
+    auto path = make_temp_file();
+    // Pin the exact output, not just its shape: a UTC->local-time regression
+    // still produces a valid-looking 20-char ISO-8601 string, and that is the
+    // change that would make every tracked file look modified. The file
+    // clock's own default-constructed epoch is not the Unix epoch on this
+    // platform, so build the Unix epoch via system_clock and clock_cast it
+    // into file_time_type instead of relying on file_time_type{}.
+    auto sys_epoch = std::chrono::system_clock::from_time_t(0);
+    auto file_epoch = std::chrono::clock_cast<std::filesystem::file_time_type::clock>(sys_epoch);
+    std::filesystem::last_write_time(path, file_epoch);
+
+    EXPECT_EQ(format_time(std::filesystem::last_write_time(path)), "1970-01-01T00:00:00Z");
+
+    std::filesystem::remove(path);
+}
