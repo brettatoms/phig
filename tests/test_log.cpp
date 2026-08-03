@@ -1,4 +1,6 @@
+#include <fcntl.h>
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -27,8 +29,34 @@ class LogTest : public ::testing::Test {
         ss << f.rdbuf();
         return ss.str();
     }
+
+    // The stderr sink now writes through a dup of fd 2 taken at log_init, so
+    // it survives StderrSuppressor's later dup2 of fd 2 to /dev/null (that's
+    // the fix under test) and, for the same reason, gtest's CaptureStderr
+    // (which also dup2's fd 2). Redirect the real fd 2 to a file before
+    // log_init instead, so the dup log_init takes points at that file.
+    void RedirectStderrToFile() {
+        stderr_capture_path_ = (dir_ / "stderr_capture.txt").string();
+        fflush(stderr);
+        saved_stderr_fd_ = dup(STDERR_FILENO);
+        int fd = open(stderr_capture_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+    }
+    std::string RestoreStderrAndRead() {
+        fflush(stderr);
+        dup2(saved_stderr_fd_, STDERR_FILENO);
+        close(saved_stderr_fd_);
+        std::ifstream f(stderr_capture_path_);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        return ss.str();
+    }
+
     fs::path dir_;
     std::string path_;
+    std::string stderr_capture_path_;
+    int saved_stderr_fd_ = -1;
 };
 
 TEST_F(LogTest, UninitializedIsNoOp) {
@@ -37,10 +65,10 @@ TEST_F(LogTest, UninitializedIsNoOp) {
 }
 
 TEST_F(LogTest, WarnReachesStderrAndFile) {
+    RedirectStderrToFile();
     log_init(path_, true, LogLevel::Info);
-    testing::internal::CaptureStderr();
     log_warn("scan: a.jpg -- Cannot decode image");
-    std::string err = testing::internal::GetCapturedStderr();
+    std::string err = RestoreStderrAndRead();
     EXPECT_EQ(err, "[warning] scan: a.jpg -- Cannot decode image\n");
     // file line: UTC ISO-8601 timestamp + level + message
     std::regex line(R"(^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \[warning\] )"
@@ -49,29 +77,29 @@ TEST_F(LogTest, WarnReachesStderrAndFile) {
 }
 
 TEST_F(LogTest, InfoReachesFileOnly) {
+    RedirectStderrToFile();
     log_init(path_, true, LogLevel::Info);
-    testing::internal::CaptureStderr();
     log_info("phig scan /pics");
-    EXPECT_EQ(testing::internal::GetCapturedStderr(), "");
+    EXPECT_EQ(RestoreStderrAndRead(), "");
     EXPECT_NE(read_log().find("[info] phig scan /pics"), std::string::npos);
 }
 
 TEST_F(LogTest, MultilineEscapedInFileRawOnStderr) {
+    RedirectStderrToFile();
     log_init(path_, true, LogLevel::Info);
-    testing::internal::CaptureStderr();
     log_warn("first\nsecond");
-    EXPECT_EQ(testing::internal::GetCapturedStderr(), "[warning] first\nsecond\n");
+    EXPECT_EQ(RestoreStderrAndRead(), "[warning] first\nsecond\n");
     std::string body = read_log();
     EXPECT_EQ(std::count(body.begin(), body.end(), '\n'), 1);  // one entry, one line
     EXPECT_NE(body.find("[warning] first\\nsecond\n"), std::string::npos);
 }
 
 TEST_F(LogTest, FileLevelErrorKeepsStderrWarnings) {
+    RedirectStderrToFile();
     log_init(path_, true, LogLevel::Error);
-    testing::internal::CaptureStderr();
     log_warn("dropped from file");
     log_error("kept everywhere");
-    std::string err = testing::internal::GetCapturedStderr();
+    std::string err = RestoreStderrAndRead();
     EXPECT_NE(err.find("[warning] dropped from file"), std::string::npos);
     EXPECT_NE(err.find("[error] kept everywhere"), std::string::npos);
     std::string body = read_log();
@@ -80,11 +108,10 @@ TEST_F(LogTest, FileLevelErrorKeepsStderrWarnings) {
 }
 
 TEST_F(LogTest, FileDisabledStillWarnsOnStderr) {
+    RedirectStderrToFile();
     log_init(path_, false, LogLevel::Info);
-    testing::internal::CaptureStderr();
     log_warn("terminal only");
-    EXPECT_NE(testing::internal::GetCapturedStderr().find("[warning] terminal only"),
-              std::string::npos);
+    EXPECT_NE(RestoreStderrAndRead().find("[warning] terminal only"), std::string::npos);
     EXPECT_FALSE(fs::exists(path_));
 }
 
