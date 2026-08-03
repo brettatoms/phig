@@ -258,420 +258,107 @@ int cmd_scan(const ScanOptions& opts) {
     std::cout << "Scanning: " << opts.directory << (opts.recursive ? " (recursive)" : "") << "\n";
     std::cout << "Database: " << opts.db_path << "\n";
 
-    // Collect files
-    auto files = scan_directory(opts.directory, opts.recursive, opts.include_hidden);
-
-    // Filter by media type if requested
-    if (opts.media == "image") {
-        files.erase(std::remove_if(files.begin(), files.end(),
-                                   [](const fs::path& p) {
-                                       return !is_known_image_extension(p.extension().string());
-                                   }),
-                    files.end());
-    } else if (opts.media == "video") {
-        files.erase(std::remove_if(files.begin(), files.end(),
-                                   [](const fs::path& p) {
-                                       return !is_known_video_extension(p.extension().string());
-                                   }),
-                    files.end());
-    }
-
-    std::cout << "Found " << files.size() << " files\n";
-
-    // Determine thread count
-    int num_threads;
-    if (opts.parallel > 0) {
-        num_threads = opts.parallel;
-    } else if (opts.faces) {
-        // With faces: conservative default (each thread loads ~150MB of models)
-        num_threads = std::min(static_cast<int>(std::thread::hardware_concurrency()) / 2, 4);
-        num_threads = std::max(num_threads, 1);
-    } else {
-        num_threads = std::max(1u, std::thread::hardware_concurrency());
-    }
-
-    // Create per-thread face detectors if needed
-    std::vector<std::unique_ptr<FaceDetector>> face_detectors;
-    if (opts.faces) {
-        std::cout << "Loading face recognition models (" << num_threads << " instances)...\n";
-        for (int i = 0; i < num_threads; i++) {
-            face_detectors.push_back(std::make_unique<FaceDetector>());
-        }
-    }
-
-    // Install signal handler for graceful Ctrl-C. Only covers the worker phase
-    // below: the guard is reset before the post-join cleanup phase that deletes
-    // rows, so a SIGINT there aborts the process instead of being silently
-    // absorbed by a token nothing in that phase reads.
+    // Install signal handler for graceful Ctrl-C. Only covers ScanEngine::run:
+    // it covers the engine's worker phase only. The guard is dropped before
+    // run_reconcile, which deletes rows and polls no token, so a SIGINT there
+    // aborts the process instead of being silently absorbed.
     CancelToken cancel;
     std::optional<ScopedInterruptHandler> interrupt_guard(cancel);
 
-    // Process files with thread pool
-    std::atomic<size_t> processed{0};
-    std::atomic<size_t> skipped{0};
-    std::atomic<size_t> errors{0};
-    std::atomic<size_t> face_count{0};
-    std::atomic<size_t> thumb_count{0};
-    std::atomic<size_t> video_count{0};
+    // Everything the engine wants to show goes through the queue and is printed
+    // here, on one thread, so a per-file warning can never be overwritten by
+    // another worker's progress line. The engine runs on a worker thread and
+    // this thread renders.
+    ProgressQueue<ScanProgress> progress(1024);
+    ScanEngine engine(opts, db);
 
-    bool completed = true;
-    if (!files.empty()) {
-        std::mutex db_mutex;
-        std::vector<ProcessResult> batch;
-        const size_t batch_size = 10;  // small batches so Ctrl-C loses less work
-
-        auto flush_batch = [&]() {
-            if (batch.empty()) return;
-
-            // One transaction for the images and their faces: a throw partway
-            // through the face loop would otherwise leave some rows committed
-            // and others not, with batch never cleared. insert() is called
-            // directly rather than via insert_batch(), which opens its own
-            // transaction and cannot nest inside this one.
-            db.begin_transaction();
-            try {
-                for (auto& r : batch) db.insert(r.info);
-
-                // Insert faces (need image_id from DB) and auto-label known people
-                for (auto& r : batch) {
-                    if (!r.faces.empty()) {
-                        int64_t image_id = db.get_image_id(r.info.path);
-                        // Rows whose bytes didn't change kept their existing faces
-                        // (and person labels) through insert(); re-adding this
-                        // run's detections would duplicate them. insert() cleared
-                        // faces when the content changed, so has_faces == false
-                        // means these detections are needed. `face rebuild` is the
-                        // path for forced re-detection.
-                        if (image_id >= 0 && !db.has_faces(r.info.path)) {
-                            for (const auto& face : r.faces) {
-                                int64_t face_id = db.insert_face(image_id, face);
-                                db.auto_label_face(face_id, face.embedding);
-                            }
-                            face_count.fetch_add(r.faces.size());
-                        }
-                    }
-                }
-                db.commit_transaction();
-            } catch (...) {
-                db.rollback_transaction();
-                throw;
-            }
-            batch.clear();
-        };
-
-        auto process_one = [&](size_t idx, int worker_id) {
-            FaceDetector* detector =
-                (!face_detectors.empty()) ? face_detectors[worker_id].get() : nullptr;
-
-            const auto& filepath = files[idx];
-            std::string canonical;
-            try {
-                canonical = fs::canonical(filepath).string();
-            } catch (...) {
-                errors.fetch_add(1);
-                return;
-            }
-
-            if (has_sibling_raw(filepath)) {
-                skipped.fetch_add(1);
-                return;
-            }
-
-            // Check if we should skip (path + mtime match)
-            bool needs_faces_only = false;
-            bool needs_thumbs_only = false;
-
-            if (!opts.force.hash) {
-                std::string mtime;
-                try {
-                    mtime = format_time(fs::last_write_time(filepath));
-                } catch (...) {
-                    // Can't stat, will fail later
-                }
-
-                std::lock_guard<std::mutex> lock(db_mutex);
-                auto existing_mtime = db.get_modified_at(canonical);
-                if (existing_mtime && *existing_mtime == mtime) {
-                    // File unchanged — check if we need faces or thumbs
-                    bool need_faces = detector && !db.has_faces(canonical);
-                    bool need_thumbs = false;
-                    if (opts.thumbs) {
-                        auto sha = db.get_sha256(canonical);
-                        if (sha && !sha->empty()) {
-                            need_thumbs = opts.force.thumbs || !thumb_exists(*sha);
-                        }
-                    }
-
-                    if (need_faces) {
-                        needs_faces_only = true;
-                    } else if (need_thumbs && !need_faces) {
-                        needs_thumbs_only = true;
-                    } else {
-                        skipped.fetch_add(1);
-                        size_t done = processed.load() + skipped.load() + errors.load();
-                        std::cout << "\r[" << done << "/" << files.size() << "] " << std::flush;
-                        return;
-                    }
-                }
-            }
-
-            try {
-                if (needs_thumbs_only) {
-                    // Only generate thumbnail — file is unchanged and faces are done
-                    std::string sha;
-                    {
-                        std::lock_guard<std::mutex> lock(db_mutex);
-                        auto s = db.get_sha256(canonical);
-                        if (s) sha = *s;
-                    }
-                    if (!sha.empty()) {
-                        generate_thumb(canonical, sha);
-                        thumb_count.fetch_add(1);
-                    }
-                    processed.fetch_add(1);
-                } else if (needs_faces_only) {
-                    // Only decode and detect faces — skip hash/phash/EXIF
-                    cv::Mat img = decode_image(canonical);
-                    if (!img.empty()) {
-                        if (detector) {
-                            auto faces = detector->detect(img);
-                            if (!faces.empty()) {
-                                std::lock_guard<std::mutex> lock(db_mutex);
-                                // Flush any pending batch first, then insert faces in a
-                                // transaction
-                                flush_batch();
-                                // Another thread's flush_batch() may have inserted faces
-                                // for this row already; don't duplicate them.
-                                if (!db.has_faces(canonical)) {
-                                    db.begin_transaction();
-                                    try {
-                                        int64_t image_id = db.get_image_id(canonical);
-                                        if (image_id >= 0) {
-                                            for (const auto& face : faces) {
-                                                int64_t face_id = db.insert_face(image_id, face);
-                                                db.auto_label_face(face_id, face.embedding);
-                                            }
-                                            face_count.fetch_add(faces.size());
-                                        }
-                                        db.commit_transaction();
-                                    } catch (...) {
-                                        db.rollback_transaction();
-                                        throw;
-                                    }
-                                }
-                            }
-                        }
-                        // Also generate thumbnail if needed
-                        if (opts.thumbs) {
-                            std::string sha;
-                            {
-                                std::lock_guard<std::mutex> lock(db_mutex);
-                                auto s = db.get_sha256(canonical);
-                                if (s) sha = *s;
-                            }
-                            if (!sha.empty() && (opts.force.thumbs || !thumb_exists(sha))) {
-                                generate_thumb(img, sha);
-                                thumb_count.fetch_add(1);
-                            }
-                        }
-                    }
-                    processed.fetch_add(1);
-                } else {
-                    auto result = process_file(filepath, detector);
-
-                    if (result.info.media_type == "video") {
-                        video_count.fetch_add(1);
-                    }
-
-                    // Generate thumbnail if requested
-                    if (opts.thumbs && !result.info.sha256.empty()) {
-                        if (opts.force.thumbs || !thumb_exists(result.info.sha256)) {
-                            if (result.info.media_type == "video") {
-                                // For videos, extract keyframe for thumbnail
-                                try {
-                                    auto kf = extract_video_keyframe(canonical);
-                                    if (!kf.frame.empty()) {
-                                        generate_thumb(kf.frame, result.info.sha256);
-                                        thumb_count.fetch_add(1);
-                                    }
-                                } catch (...) {
-                                }
-                            } else {
-                                cv::Mat img = decode_image(canonical);
-                                if (!img.empty()) {
-                                    generate_thumb(img, result.info.sha256);
-                                    thumb_count.fetch_add(1);
-                                }
-                            }
-                        }
-                    }
-
-                    std::lock_guard<std::mutex> lock(db_mutex);
-                    batch.push_back(std::move(result));
-                    if (batch.size() >= batch_size) {
-                        flush_batch();
-                    }
-                    processed.fetch_add(1);
-                }
-            } catch (const std::exception& e) {
-                errors.fetch_add(1);
-                // Clear progress line, print warning, then resume progress
-                std::cout << "\r\033[K" << std::flush;
-                // Assemble the whole line so concurrent workers' messages
-                // don't interleave with each other or the progress line.
-                if (opts.fail_on_error) {
-                    log_error("scan: " + rel_path(filepath) + " -- " + e.what());
-                    throw;
-                } else {
-                    log_warn("scan: " + rel_path(filepath) + " -- " + e.what());
-                }
-            }
-
-            size_t done = processed.load() + skipped.load() + errors.load();
-            std::cout << "\r\033[K[" << done << "/" << files.size() << "] " << rel_path(filepath)
-                      << std::flush;
-        };
-
+    ScanResult result;
+    std::exception_ptr engine_error;
+    std::thread worker([&] {
         try {
-            completed = parallel_for_each(files.size(), num_threads, cancel, process_one);
-        } catch (const std::exception& e) {
-            // --on-error fail: flush what completed, then report and exit
-            // non-zero. This exception used to escape a std::thread lambda and
-            // call std::terminate, aborting mid-write with an uncheckpointed WAL.
-            //
-            // If the original failure came from inside flush_batch itself (a DB
-            // or face-insert error, not a decode error), the batch that caused it
-            // is still sitting there un-cleared, so this recovery flush would
-            // re-run the same failing work and throw again — before the
-            // "Error: " below ever runs. Catch that second failure and log it
-            // rather than let it escape; the batch's rows are left unflushed and
-            // reported as such instead of being silently dropped.
-            {
-                std::lock_guard<std::mutex> lock(db_mutex);
-                try {
-                    flush_batch();
-                } catch (const std::exception& flush_e) {
-                    log_error("scan: recovery flush also failed, " + std::to_string(batch.size()) +
-                              " row(s) unflushed -- " + flush_e.what());
-                }
-            }
-            std::cerr << "Error: " << e.what() << "\n";
-            return 1;
+            result = engine.run_workers(cancel, &progress);
+        } catch (...) {
+            engine_error = std::current_exception();
         }
+        progress.close();
+    });
 
-        // Flush remaining
-        flush_batch();
-    }  // end if (!files.empty())
+    ScanProgress p;
+    while (progress.pop(p)) {
+        switch (p.stage) {
+            case ScanStage::Walked:
+                std::cout << "Found " << p.total << " files\n";
+                break;
+            case ScanStage::LoadingFaceModels:
+                std::cout << "Loading face recognition models (" << p.total << " instances)...\n";
+                break;
+            case ScanStage::FileDone:
+                if (!p.error.empty()) {
+                    // Clear the progress line, then log the warning. Both happen
+                    // on this thread with no progress print able to land in
+                    // between, so the warning cannot be overwritten.
+                    std::cout << "\r\033[K" << std::flush;
+                    log_warn(p.error);
+                }
+                if (p.show_path) {
+                    std::cout << "\r\033[K[" << p.done << "/" << p.total << "] " << rel_path(p.path)
+                              << std::flush;
+                } else {
+                    std::cout << "\r[" << p.done << "/" << p.total << "] " << std::flush;
+                }
+                break;
+        }
+    }
+    worker.join();
 
-    // Restore the plain SIGINT behavior before the cleanup phase below, which
-    // deletes user-authored metadata (tags, gallery, faces) for missing files —
-    // it reads no CancelToken, so a signal during it must kill the process
-    // rather than be swallowed.
+    // SAFETY: restore the plain SIGINT behavior before run_reconcile below, which
+    // deletes user-authored metadata (tags, gallery, faces) for missing files. It
+    // reads no CancelToken, so a signal during it must kill the process rather
+    // than be swallowed by a token nothing there polls.
     interrupt_guard.reset();
 
-    if (!completed) {
+    if (engine_error) {
+        // --on-error fail: the engine flushed what completed and rethrew. Clear
+        // the last progress line so the message below starts on a blank one.
+        std::cout << "\r\033[K" << std::flush;
+        try {
+            std::rethrow_exception(engine_error);
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << "\n";
+        }
+        return 1;
+    }
+
+    if (!result.completed) {
         std::cout << "\n\nInterrupted. Progress saved.\n";
     }
 
-    // Clean up entries for files that no longer exist on disk
-    std::string scan_prefix = fs::canonical(opts.directory).string();
-    if (scan_prefix.back() != '/') scan_prefix += '/';
-
-    auto db_paths = db.get_paths_with_prefix(scan_prefix);
-    // Only consider a row deletable when its file is genuinely gone AND its
-    // parent directory still exists — a missing parent (unmounted subtree) or an
-    // errored existence check keeps the row, so a transient mount/permission
-    // problem can't purge metadata for intact files.
-    std::vector<std::string> removed_paths = paths_safe_to_delete(db_paths);
-    size_t removed_count = 0;
-    int relinked_count = 0;
-    int demoted_count = 0;
-
-    if (!removed_paths.empty() && !db_paths.empty() && removed_paths.size() == db_paths.size() &&
-        !opts.ignore_mount_warning) {
-        log_warn("scan: all " + std::to_string(removed_paths.size()) +
-                 " previously scanned files in this directory are missing.\n"
-                 "This may indicate an unmounted drive or incorrect path.\n"
-                 "Use --ignore-mount-warning to remove these entries from the database.");
-    } else {
-        // A demoted JPEG (same-basename RAW now on disk, RAW itself indexed)
-        // still exists on disk, so it's never in removed_paths — but its
-        // stale row must still be cleaned up. has_sibling_raw is a cheap,
-        // read-only peek (no DB writes) used only to decide whether it's
-        // worth opening a scan operation; demote_jpeg_rows (below) does the
-        // real, authoritative work exactly once, inside that operation.
-        bool maybe_demotable = std::any_of(db_paths.begin(), db_paths.end(),
-                                           [](const auto& p) { return has_sibling_raw(p); });
-
-        if (!removed_paths.empty() || maybe_demotable) {
-            // Removing a row destroys user-authored metadata (tags, gallery,
-            // faces) that a rescan cannot rebuild — record it like purge does,
-            // with a restorable row snapshot per entry (review #3a).
-            if (opts.log_enabled) {
-                int64_t op_id = db.log_begin_operation("scan", opts.argv_str, iso_utc_now());
-                try {
-                    relinked_count = relink_moved_rows(db, removed_paths, op_id);
-                    std::vector<std::string> demoted_paths =
-                        demote_jpeg_rows(db, scan_prefix, op_id);
-                    demoted_count = static_cast<int>(demoted_paths.size());
-                    std::vector<std::string> to_delete = removed_paths;
-                    to_delete.insert(to_delete.end(), demoted_paths.begin(), demoted_paths.end());
-                    db.delete_paths_logged(to_delete, op_id);
-                    removed_count = removed_paths.size();
-                } catch (...) {
-                    // delete_paths_logged rolls back its own transaction, but the
-                    // operation row was autocommitted by log_begin_operation. Mark
-                    // it so it doesn't linger as a stuck 'in_progress' row, matching
-                    // rm's broad-selection guard (review [6]); best-effort.
-                    try {
-                        db.log_finish_operation(op_id, "interrupted");
-                    } catch (...) {
-                    }
-                    throw;
-                }
-                db.log_finish_operation(op_id, "completed");
-                db.log_prune(opts.log_max_entries);
-            } else {
-                relinked_count = relink_moved_rows(db, removed_paths, 0);
-                std::vector<std::string> demoted_paths = demote_jpeg_rows(db, scan_prefix, 0);
-                demoted_count = static_cast<int>(demoted_paths.size());
-                std::vector<std::string> to_delete = removed_paths;
-                to_delete.insert(to_delete.end(), demoted_paths.begin(), demoted_paths.end());
-                db.delete_paths(to_delete);
-                removed_count = removed_paths.size();
-            }
-        }
-    }
+    engine.run_reconcile(result);
 
     auto elapsed = std::chrono::steady_clock::now() - start_time;
     auto secs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() / 1000.0;
 
-    size_t image_count = processed.load() - video_count.load();
     std::cout << "\n\nDone in " << secs << "s\n"
-              << "  Processed: " << processed.load() << " (" << image_count << " images, "
-              << video_count.load() << " videos)\n"
-              << "  Skipped:   " << skipped.load() << "\n"
-              << "  Errors:    " << errors.load() << "\n"
-              << "  Removed:   " << removed_count << "\n";
-    if (relinked_count > 0) {
-        std::cout << "  Relinked:  " << relinked_count
+              << "  Processed: " << result.processed << " (" << result.images << " images, "
+              << result.videos << " videos)\n"
+              << "  Skipped:   " << result.skipped << "\n"
+              << "  Errors:    " << result.errors << "\n"
+              << "  Removed:   " << result.removed << "\n";
+    if (result.relinked > 0) {
+        std::cout << "  Relinked:  " << result.relinked
                   << " (metadata moved to identical files at new paths)\n";
     }
-    if (demoted_count > 0) {
-        std::cout << "  Demoted:   " << demoted_count
+    if (result.demoted > 0) {
+        std::cout << "  Demoted:   " << result.demoted
                   << " (metadata moved from JPEG to sibling RAW)\n";
     }
     if (opts.faces) {
-        std::cout << "  Faces:     " << face_count.load() << "\n";
+        std::cout << "  Faces:     " << result.faces << "\n";
     }
     if (opts.thumbs) {
-        std::cout << "  Thumbs:    " << thumb_count.load() << "\n";
+        std::cout << "  Thumbs:    " << result.thumbs << "\n";
     }
     std::cout << "  Total DB:  " << db.count() << " entries\n";
-
-    log_info("scan " + opts.directory + " done: processed=" + std::to_string(processed.load()) +
-             " skipped=" + std::to_string(skipped.load()) + " errors=" +
-             std::to_string(errors.load()) + " removed=" + std::to_string(removed_count));
 
     return 0;
 }
