@@ -5,12 +5,17 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "cancel.h"
 #include "database.h"
+#include "faces.h"
+#include "models.h"
 #include "progress_queue.h"
 #include "scan_engine.h"
 #include "scanner.h"
@@ -484,4 +489,172 @@ TEST(ScanEngine, MediaFilterExcludesTheOtherType) {
     EXPECT_EQ(r.total_files, 3u) << "the .jpg must be filtered out before processing";
     EXPECT_EQ(r.errors, 0u) << "a filtered-out undecodable file cannot produce an error";
     EXPECT_EQ(r.processed, 3u);
+}
+
+// ---- Per-worker FaceDetector isolation ----
+//
+// `worker_id` exists so each worker thread gets its OWN FaceDetector: the models
+// carry ~150MB of mutable OpenCV DNN state and cv::FaceDetectorYN is not
+// thread-safe, so sharing one instance across N threads is a data race. This is
+// also the only reason the engine needs parallel_for_each's two-argument
+// callback. The two tests below pin the two halves of that invariant.
+
+TEST(ScanEngine, DetectorForWorkerGivesEachWorkerItsOwnInstance) {
+    // The mapping worker_id -> detector, tested without the models: constructing a
+    // real FaceDetector requires them, but the selection logic does not, so it
+    // lives in a free function. Distinct non-null addresses stand in for the real
+    // instances; nothing is constructed or destroyed, so they are released.
+    std::vector<std::unique_ptr<FaceDetector>> detectors;
+    std::vector<FaceDetector*> raw;
+    for (int i = 0; i < 4; ++i) {
+        auto* p = static_cast<FaceDetector*>(::operator new(sizeof(FaceDetector)));
+        raw.push_back(p);
+        detectors.emplace_back(p);
+    }
+
+    // Each worker must get ITS OWN instance. Collapsing the index (the classic
+    // `worker_id * 0` slip) hands worker 0's detector to every worker, which is a
+    // data race on ~150MB of mutable OpenCV model state.
+    for (int w = 0; w < 4; ++w) {
+        EXPECT_EQ(detector_for_worker(detectors, w), raw[w]) << "worker " << w;
+    }
+    // Stated as distinctness too, so the test reads as the invariant it protects.
+    std::set<FaceDetector*> seen;
+    for (int w = 0; w < 4; ++w) seen.insert(detector_for_worker(detectors, w));
+    EXPECT_EQ(seen.size(), 4u) << "workers must not share a FaceDetector";
+
+    // Out of range must throw rather than quietly return a plausible instance.
+    EXPECT_THROW(detector_for_worker(detectors, 4), std::out_of_range);
+    EXPECT_THROW(detector_for_worker(detectors, -1), std::out_of_range);
+
+    for (auto& d : detectors) ::operator delete(d.release());
+}
+
+TEST(ScanEngine, DetectorForWorkerIsNullWhenFacesWereNotRequested) {
+    std::vector<std::unique_ptr<FaceDetector>> none;
+    EXPECT_EQ(detector_for_worker(none, 0), nullptr);
+    EXPECT_EQ(detector_for_worker(none, 7), nullptr) << "no detectors means no faces, not a throw";
+}
+
+TEST(ScanEngine, ConstructsOneFaceDetectorPerWorker) {
+    // The announced count is observable without models, because the engine
+    // publishes it before it starts loading.
+    ScratchCollection c(3);
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+    ProgressQueue<ScanProgress> q(1024);
+
+    ScanOptions o = c.options();
+    o.faces = true;
+    o.parallel = 3;
+
+    Drain drain(q);
+    try {
+        ScanEngine(o, db).run_workers(cancel, &q);
+    } catch (const std::exception&) {
+        // Expected where models are absent: the detector constructor throws. The
+        // stage update below was already published, which is the point.
+    }
+    auto seen = drain.finish();
+
+    size_t loading_updates = 0;
+    for (const auto& s : seen) {
+        if (s.stage != ScanStage::LoadingFaceModels) continue;
+        ++loading_updates;
+        EXPECT_EQ(s.total, 3u) << "one FaceDetector per worker, not a shared one";
+    }
+    ASSERT_EQ(loading_updates, 1u) << "faces mode must announce model loading exactly once";
+}
+
+TEST(ScanEngine, DoesNotAnnounceModelLoadingWithoutTheFacesFlag) {
+    // The counterpart: no faces flag, no detectors, no announcement. Without this
+    // the test above could be satisfied by always publishing the stage.
+    ScratchCollection c(3);
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+    ProgressQueue<ScanProgress> q(1024);
+
+    Drain drain(q);
+    ScanEngine(c.options(), db).run_workers(cancel, &q);
+    auto seen = drain.finish();
+
+    for (const auto& s : seen) {
+        EXPECT_NE(s.stage, ScanStage::LoadingFaceModels)
+            << "model loading must not be announced when --faces was not given";
+    }
+}
+
+TEST(ScanEngine, FacesModeFailsClearlyWhenModelsAreMissing) {
+    if (face_models_exist()) {
+        GTEST_SKIP() << "models are installed; this test covers the missing-models path";
+    }
+    ScratchCollection c(2);
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+
+    ScanOptions o = c.options();
+    o.faces = true;
+    o.parallel = 2;
+
+    // The failure must be the actionable "run phig models download" message, and
+    // it must arrive before any file is touched, so nothing is half-written.
+    try {
+        ScanEngine(o, db).run_workers(cancel, nullptr);
+        FAIL() << "faces mode must not silently proceed without models";
+    } catch (const std::exception& e) {
+        EXPECT_NE(std::string(e.what()).find("models download"), std::string::npos) << e.what();
+    }
+    EXPECT_EQ(db.count(), 0) << "nothing may be written when model loading fails";
+}
+
+TEST(ScanEngine, DetectsFacesWithMultipleWorkers) {
+    // Exercises the real `detector_for_worker(face_detectors, worker_id)` CALL with
+    // more than one worker — the one piece the unit test above cannot reach, since
+    // it verifies the mapping but not that the call site passes the right worker_id.
+    //
+    // The two fixtures have DIFFERENT dimensions on purpose. FaceDetector caches the
+    // last input size and calls setInputSize only when it changes, so two workers
+    // sharing one instance interleave that cached size with detect(). Identical
+    // images would leave the cached size constant and hide the sharing entirely.
+    if (!face_models_exist()) {
+        GTEST_SKIP() << "face models not found at " << yunet_model_path()
+                     << "; run `phig models download` to enable this test";
+    }
+    // Downscaled from OpenCV's BSD-licensed sample data (samples/data/lena.jpg and
+    // messi5.jpg), the only images to hand that YuNet actually detects. Committed
+    // rather than read from the OpenCV package, which is not a declared dependency.
+    const fs::path small = "tests/data/faces_small.jpg";  // 320x320, 1 face
+    const fs::path large = "tests/data/faces_large.jpg";  // 448x280, 2 faces
+    ASSERT_TRUE(fs::exists(small)) << small;
+    ASSERT_TRUE(fs::exists(large)) << large;
+
+    ScratchCollection c(0);
+    // Alternate the two sizes so the workers keep forcing setInputSize changes.
+    const int PAIRS = 6;
+    for (int i = 0; i < PAIRS; ++i) {
+        fs::copy_file(small, c.dir / ("s" + std::to_string(i) + ".jpg"));
+        fs::copy_file(large, c.dir / ("l" + std::to_string(i) + ".jpg"));
+    }
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+
+    ScanOptions o = c.options();
+    o.faces = true;
+    o.parallel = 2;
+
+    ScanResult r = ScanEngine(o, db).run_workers(cancel, nullptr);
+    EXPECT_EQ(r.errors, 0u) << "sharing one detector across workers races on cached input size";
+    EXPECT_EQ(r.processed, static_cast<size_t>(2 * PAIRS));
+    // 1 face per small + 2 per large. An exact count is the assertion with teeth:
+    // a shared detector run against alternating input sizes drops or duplicates
+    // detections rather than failing outright.
+    EXPECT_EQ(r.faces, static_cast<size_t>(3 * PAIRS))
+        << "every face must be recorded exactly once";
+    for (const auto& img : db.get_all_images()) {
+        EXPECT_TRUE(db.has_faces(img.path)) << img.path << " got no faces";
+    }
 }

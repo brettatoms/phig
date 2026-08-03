@@ -93,6 +93,16 @@ ProcessResult process_file(const fs::path& filepath, FaceDetector* face_detector
     return result;
 }
 
+FaceDetector* detector_for_worker(const std::vector<std::unique_ptr<FaceDetector>>& detectors,
+                                  int worker_id) {
+    if (detectors.empty()) return nullptr;  // faces not requested
+    if (worker_id < 0 || static_cast<size_t>(worker_id) >= detectors.size()) {
+        throw std::out_of_range("detector_for_worker: worker_id " + std::to_string(worker_id) +
+                                " outside [0, " + std::to_string(detectors.size()) + ")");
+    }
+    return detectors[static_cast<size_t>(worker_id)].get();
+}
+
 ScanEngine::ScanEngine(const ScanOptions& opts, Database& db) : opts_(opts), db_(db) {}
 
 ScanResult ScanEngine::run(const CancelToken& cancel, ProgressQueue<ScanProgress>* progress) {
@@ -176,9 +186,20 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
         progress->push(std::move(p));
     };
 
+    // NOTE — this is the first thing pushed, and ProgressQueue evicts the OLDEST
+    // item when full, so under sustained back-pressure it is the first casualty.
+    // That inverts the queue's intent, where a stale progress tick is the
+    // worthless item and this one-shot notice is not. Accepted rather than fixed:
+    // losing it needs a consumer stalled for a full capacity's worth of file
+    // completions (1024 in the CLI), and each completion costs a hash plus a
+    // decode. A caller that cannot tolerate the loss reads ScanResult::total_files
+    // instead, which is never dropped.
     publish_stage(ScanStage::Walked, files.size());
 
-    // Create per-thread face detectors if needed
+    // One FaceDetector per worker, never a shared one: each holds ~150MB of
+    // mutable OpenCV DNN state and cv::FaceDetectorYN is not thread-safe, so
+    // sharing an instance across workers is a data race. `process_one` indexes
+    // this vector by worker_id, which is only sound while size() == num_threads.
     std::vector<std::unique_ptr<FaceDetector>> face_detectors;
     if (opts_.faces) {
         publish_stage(ScanStage::LoadingFaceModels, static_cast<size_t>(num_threads));
@@ -232,8 +253,7 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
         };
 
         auto process_one = [&](size_t idx, int worker_id) {
-            FaceDetector* detector =
-                (!face_detectors.empty()) ? face_detectors[worker_id].get() : nullptr;
+            FaceDetector* detector = detector_for_worker(face_detectors, worker_id);
 
             const auto& filepath = files[idx];
             std::string canonical;

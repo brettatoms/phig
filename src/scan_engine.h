@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -46,17 +47,34 @@ struct ProcessResult {
 // faces. Throws std::runtime_error if the file cannot be decoded.
 ProcessResult process_file(const std::filesystem::path& filepath, FaceDetector* face_detector);
 
+// Picks the FaceDetector belonging to one worker. Each worker MUST get its own
+// instance: a FaceDetector holds ~150MB of mutable OpenCV DNN state and
+// cv::FaceDetectorYN is not thread-safe, so two workers sharing one is a data
+// race on model state. This is the only reason the engine needs
+// parallel_for_each's two-argument callback.
+//
+// An empty vector means faces were not requested, and returns null. Out of range
+// throws rather than returning a wrong-but-plausible instance, because silently
+// handing back detector 0 to every worker is exactly the bug this guards.
+//
+// Free function, not a lambda inside run_workers, so the mapping is testable
+// without the models installed — constructing a real FaceDetector requires them.
+FaceDetector* detector_for_worker(const std::vector<std::unique_ptr<FaceDetector>>& detectors,
+                                  int worker_id);
+
 // One progress update, published as a file finishes. `path` is the full path of
 // that file; the caller shortens it for display. `show_path` is false for the
 // terse tick emitted when a file is skipped outright, which reproduces the
 // CLI's two progress formats.
 //
-// `error` is non-empty when the file failed: it is the already-formatted
-// warning text for that file. The engine has already logged it via log_warn, so
-// a caller with a log sink can ignore it; a caller rendering to a terminal
-// prints it alongside this update. Carrying it here rather than printing from
-// the worker is what keeps a warning from being erased by another thread's
-// progress line.
+// `error` is non-empty when the file failed: it is the already-formatted warning
+// text for that file, and the CALLER is responsible for logging it. When a queue
+// is given the engine deliberately does not log per-file warnings itself — it
+// would be doing so from a worker thread, where another worker's progress line
+// can overwrite it. Routing the text here lets the caller emit the warning and
+// the progress line together, on one thread, in order. A caller that passes no
+// queue gets the log_warn from the engine instead, since there is nowhere to
+// route it to.
 //
 // Two updates carry a `stage` instead of a finished file: the engine publishes
 // one once the file walk is done (`total` is the file count) and one before it
