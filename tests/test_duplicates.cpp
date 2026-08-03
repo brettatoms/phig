@@ -241,6 +241,95 @@ TEST(Duplicates, HighThresholdDoesNotRegressAgainstBruteForce) {
     }
 }
 
+// The regressions that matter most happen at the DEFAULT threshold, not at high
+// ones: a collection of few distinct scenes makes most of the corpus share a
+// band, so candidate lists explode while the threshold stays small. The
+// threshold cutoff cannot see this; only the candidate-volume guard catches it.
+//
+// Measured: the tight corpus runs ~310 ms and the clustered one ~530 ms as
+// shipped, against ~1620 ms and ~990 ms with the guards disabled. The clustered
+// case also separates the candidate-volume divisor from its previous, too-lax
+// value — at n/2 it does not trigger and takes ~990 ms. Ceilings sit ~1.5-3x
+// above the shipped times and well below the regressed ones, so a real
+// regression fails while timing noise (a few ms across runs) does not.
+TEST(Duplicates, ClusteredCorporaDoNotRegressAtTheDefaultThreshold) {
+    // Few centers, small variations: the shape that defeats the banded index.
+    {
+        std::mt19937_64 rng(4242);
+        std::vector<uint64_t> centers;
+        for (int c = 0; c < 3; ++c) centers.push_back(rng());
+        std::vector<uint64_t> hashes;
+        for (int i = 0; i < 8000; ++i) {
+            uint64_t h = centers[rng() % centers.size()];
+            for (int f = 0; f < static_cast<int>(rng() % 4); ++f) h ^= (1ULL << (rng() % 64));
+            hashes.push_back(h);
+        }
+        auto imgs = make_images(hashes);
+        auto start = std::chrono::steady_clock::now();
+        auto groups = find_near_duplicates(imgs, 5, {});
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - start)
+                      .count();
+        EXPECT_LT(ms, 1000) << "tight corpus (3 centers, 8k images) took " << ms << " ms";
+        (void)groups;
+    }
+
+    // Eight scenes with wider variation — an ordinary photo collection, and the
+    // case that regressed 3.13x before the candidate-volume divisor was lowered.
+    {
+        std::mt19937_64 rng(4242);
+        std::vector<uint64_t> centers;
+        for (int c = 0; c < 8; ++c) centers.push_back(rng());
+        std::vector<uint64_t> hashes;
+        for (int i = 0; i < 12000; ++i) {
+            uint64_t h = centers[rng() % centers.size()];
+            for (int f = 0; f < static_cast<int>(rng() % 9); ++f) h ^= (1ULL << (rng() % 64));
+            hashes.push_back(h);
+        }
+        auto imgs = make_images(hashes);
+        auto start = std::chrono::steady_clock::now();
+        auto groups = find_near_duplicates(imgs, 5, {});
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - start)
+                      .count();
+        EXPECT_LT(ms, 800) << "clustered corpus (8 centers, 12k images) took " << ms << " ms";
+        (void)groups;
+    }
+}
+
+// A corpus whose first images are unrepresentative of the rest must still be
+// classified correctly. Newest-first ordering puts recent varied shots ahead of
+// an older near-identical burst, and a front-loaded sample would miss the burst
+// entirely: measured, a prefix sample saw 69 candidates per image against a true
+// 14495 and ran 4.4x slower than brute force. The strided sample sees both.
+TEST(Duplicates, SamplingIsNotFooledByCorpusOrdering) {
+    std::mt19937_64 rng(4242);
+    std::vector<uint64_t> centers;
+    for (int c = 0; c < 3; ++c) centers.push_back(rng());
+
+    std::vector<uint64_t> hashes;
+    for (int i = 0; i < 8000; ++i) {
+        if (i < 512) {
+            hashes.push_back(rng());  // varied head
+        } else {
+            uint64_t h = centers[rng() % centers.size()];  // near-identical tail
+            for (int f = 0; f < static_cast<int>(rng() % 4); ++f) h ^= (1ULL << (rng() % 64));
+            hashes.push_back(h);
+        }
+    }
+    auto imgs = make_images(hashes);
+
+    auto start = std::chrono::steady_clock::now();
+    auto groups = find_near_duplicates(imgs, 5, {});
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - start)
+                  .count();
+    EXPECT_LT(ms, 1000) << "varied head over tight tail took " << ms << " ms";
+
+    // Correctness must hold whichever path the sampler picks.
+    EXPECT_TRUE(GroupsIdentical(find_near_duplicates_bruteforce(imgs, 5, {}), groups));
+}
+
 // find_near_duplicates dispatches to the brute-force path above a threshold
 // cutoff, and again when candidate lists get too large. Both hand-offs must be
 // invisible: the groups, their order and their members have to match whichever

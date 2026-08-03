@@ -88,18 +88,21 @@ class BandedIndex {
 // grows with threshold + 1 entries per image.
 constexpr int kBandedIndexMaxThreshold = 7;
 
-// Also fall back when the index yields more candidates per image than the
-// all-pairs scan would compare, i.e. more than n/2.
+// Also fall back when the index yields more than n/6 candidates per image.
 //
-// The threshold cutoff alone is not enough. A collection of very similar images
-// (few distinct scenes, small variations) produces huge candidate lists even at
-// the default threshold of 5, because most of the corpus shares a band. Beyond
-// n/2 candidates per image the index is doing more distance checks than the
-// nested loop, plus a sort/unique per image, so it cannot win. Measured at
-// n=20000: such a corpus gives ~15600 candidates per image against n/2 = 10000
-// and runs ~4x slower than brute force, while a realistically clustered corpus
-// gives ~4100 and stays ~2x faster. Comparing against n/2 separates the two.
-constexpr size_t kMaxCandidatesPerImageDivisor = 2;
+// The threshold cutoff alone is not enough: a collection of few distinct scenes
+// produces huge candidate lists even at the default threshold of 5, because most
+// of the corpus shares a band. Each candidate costs a distance check plus a
+// share of the per-image sort/unique, so past some rate the index does more work
+// than the nested loop it replaced.
+//
+// The rate, not the threshold, is what decides it. Measured over cluster counts
+// 4/8/12/20/40/200 at n=20000 and n=40000, banded/brute ratio against candidates
+// per image: everything at n/candidates >= 7.0 wins (0.83x-0.99x), everything at
+// <= 4.4 loses (1.33x-2.27x), and the break-even sits near n/6.3. n/6 clears
+// every measured regression while giving up none of the measured wins; n/2 (the
+// previous value) missed nine of them, the worst at 2.27x.
+constexpr size_t kMaxCandidatesPerImageDivisor = 6;
 
 std::vector<DuplicateGroup> find_near_duplicates(const std::vector<ImageInfo>& all_images,
                                                  int threshold,
@@ -143,21 +146,31 @@ std::vector<DuplicateGroup> find_near_duplicates(const std::vector<ImageInfo>& a
         index.insert(static_cast<uint32_t>(i), all_images[i].phash);
     }
 
-    // Sample a few images before committing to the index. If their candidate
-    // lists are already near the size of the whole corpus the index cannot pay
-    // for itself, so bail out before doing the work rather than after.
-    // Sampling is a prefix rather than a random draw so the decision stays
-    // deterministic for a given input.
+    // Sample before committing to the index. If candidate lists are already too
+    // long the index cannot pay for itself, so bail out before doing the work
+    // rather than after.
+    //
+    // The sample is strided across the whole corpus, not taken from the front.
+    // Collections are commonly ordered — a newest-first import puts recent
+    // varied shots ahead of an older tight burst — and a prefix of such an input
+    // is not representative: measured on a corpus whose first 64 images are
+    // random and whose remainder is near-identical, a prefix sample reported 69
+    // candidates per image against a true 14495, missed the fallback entirely
+    // and ran 4.4x slower than brute force. A stride sees both regions.
+    // Striding keeps the decision deterministic for a given input.
     {
-        const size_t sample = std::min<size_t>(all_images.size(), 64);
+        const size_t n = all_images.size();
+        const size_t sample = std::min<size_t>(n, 256);
         size_t total = 0;
         std::vector<uint32_t> probe;
-        for (size_t i = 0; i < sample; i++) {
+        for (size_t k = 0; k < sample; k++) {
+            // Spread k over [0, n) so the draw spans the whole corpus.
+            const size_t i = (n <= sample) ? k : (k * n) / sample;
             probe.clear();
             index.collect_candidates(all_images[i].phash, probe);
             total += probe.size();
         }
-        if (sample > 0 && total > sample * (all_images.size() / kMaxCandidatesPerImageDivisor)) {
+        if (sample > 0 && total > sample * (n / kMaxCandidatesPerImageDivisor)) {
             return find_near_duplicates_bruteforce(all_images, threshold, exact_sha256s);
         }
     }
