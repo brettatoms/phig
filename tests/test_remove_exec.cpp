@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
+#include <sys/wait.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -16,8 +18,8 @@ namespace fs = std::filesystem;
 
 class RemoveExecTest : public ::testing::Test {
    protected:
-    fs::path root;   // XDG_DATA_HOME
-    fs::path photos; // where media lives
+    fs::path root;    // XDG_DATA_HOME
+    fs::path photos;  // where media lives
     std::string db_path;
     std::unique_ptr<Database> db;
 
@@ -168,8 +170,8 @@ TEST_F(RemoveExecTest, HardDeleteMissingFileStillLogs) {
 
 TEST_F(RemoveExecTest, RemoveMediaCarriesSidecarsNotSiblings) {
     std::string raw = (photos / "IMG_9.CR2").string();
-    std::string jpg = (photos / "IMG_9.JPG").string();   // same-stem sibling
-    std::string xmp = (photos / "IMG_9.CR2.xmp").string();    // sidecar (append style)
+    std::string jpg = (photos / "IMG_9.JPG").string();      // same-stem sibling
+    std::string xmp = (photos / "IMG_9.CR2.xmp").string();  // sidecar (append style)
     write_file(raw, "raw");
     write_file(jpg, "jpg");
     write_file(xmp, "xmp");
@@ -202,8 +204,8 @@ TEST_F(RemoveExecTest, RmTrashRemovesFileAndRow) {
 
     int rc = cmd_rm(opts);
     EXPECT_EQ(rc, 0);
-    EXPECT_FALSE(fs::exists(p));                    // file trashed
-    EXPECT_EQ(db->get_all_images().size(), 0u);     // row gone
+    EXPECT_FALSE(fs::exists(p));                 // file trashed
+    EXPECT_EQ(db->get_all_images().size(), 0u);  // row gone
 }
 
 TEST_F(RemoveExecTest, RmDbOnlyKeepsFile) {
@@ -212,22 +214,26 @@ TEST_F(RemoveExecTest, RmDbOnlyKeepsFile) {
     insert_row(p);
 
     RemoveOptions opts;
-    opts.db_path = db_path; opts.matches = {"*b.jpg"};
-    opts.mode = RemoveMode::DbOnly; opts.assume_yes = true;
+    opts.db_path = db_path;
+    opts.matches = {"*b.jpg"};
+    opts.mode = RemoveMode::DbOnly;
+    opts.assume_yes = true;
     opts.argv_str = "phig rm --db-only --match *b.jpg";
 
     EXPECT_EQ(cmd_rm(opts), 0);
-    EXPECT_TRUE(fs::exists(p));                      // file kept
-    EXPECT_EQ(db->get_all_images().size(), 0u);      // row gone
+    EXPECT_TRUE(fs::exists(p));                  // file kept
+    EXPECT_EQ(db->get_all_images().size(), 0u);  // row gone
 }
 
 TEST_F(RemoveExecTest, RmRequiresMatchExceptOrphans) {
     RemoveOptions opts;
-    opts.db_path = db_path; opts.mode = RemoveMode::Trash; opts.assume_yes = true;
-    EXPECT_EQ(cmd_rm(opts), 1);                      // no --match, non-orphans → error
+    opts.db_path = db_path;
+    opts.mode = RemoveMode::Trash;
+    opts.assume_yes = true;
+    EXPECT_EQ(cmd_rm(opts), 1);  // no --match, non-orphans → error
 
     opts.mode = RemoveMode::Orphans;
-    EXPECT_EQ(cmd_rm(opts), 0);                      // orphans with no rows → "none found", ok
+    EXPECT_EQ(cmd_rm(opts), 0);  // orphans with no rows → "none found", ok
 }
 
 TEST_F(RemoveExecTest, RmDryRunTouchesNothing) {
@@ -236,12 +242,167 @@ TEST_F(RemoveExecTest, RmDryRunTouchesNothing) {
     insert_row(p);
 
     RemoveOptions opts;
-    opts.db_path = db_path; opts.matches = {"*c.jpg"};
-    opts.mode = RemoveMode::Trash; opts.dry_run = true; opts.assume_yes = true;
+    opts.db_path = db_path;
+    opts.matches = {"*c.jpg"};
+    opts.mode = RemoveMode::Trash;
+    opts.dry_run = true;
+    opts.assume_yes = true;
 
     EXPECT_EQ(cmd_rm(opts), 0);
-    EXPECT_TRUE(fs::exists(p));                      // untouched
-    EXPECT_EQ(db->get_all_images().size(), 1u);      // row kept
+    EXPECT_TRUE(fs::exists(p));                  // untouched
+    EXPECT_EQ(db->get_all_images().size(), 1u);  // row kept
+}
+
+TEST_F(RemoveExecTest, ConfirmCallbackRefusalCancelsTheOperation) {
+    // A caller that declines must leave everything untouched.
+    std::string p = (photos / "d.jpg").string();
+    write_file(p, "x");
+    insert_row(p);
+
+    bool asked = false;
+    ConfirmFn decline = [&](const std::string& prompt) {
+        asked = true;
+        EXPECT_EQ(prompt, "\nThis will PERMANENTLY delete 1 file(s).\n");
+        return false;
+    };
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*d.jpg"};
+    opts.mode = RemoveMode::Hard;  // --hard always needs confirmation
+
+    int rc = cmd_rm(opts, decline);
+    EXPECT_EQ(rc, 1);
+    EXPECT_TRUE(asked);
+    EXPECT_TRUE(fs::exists(p));                  // file untouched
+    EXPECT_EQ(db->get_all_images().size(), 1u);  // row untouched
+}
+
+TEST_F(RemoveExecTest, ConfirmCallbackAcceptanceProceeds) {
+    std::string p = (photos / "e.jpg").string();
+    write_file(p, "x");
+    insert_row(p);
+
+    ConfirmFn accept = [](const std::string&) { return true; };
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*e.jpg"};
+    opts.mode = RemoveMode::Hard;
+
+    int rc = cmd_rm(opts, accept);
+    EXPECT_EQ(rc, 0);
+    EXPECT_FALSE(fs::exists(p));                 // file removed
+    EXPECT_EQ(db->get_all_images().size(), 0u);  // row removed
+}
+
+TEST_F(RemoveExecTest, ConfirmCallbackNullRefusesWithoutAsking) {
+    // A null callback must not silently proceed: it's equivalent to declining.
+    std::string p = (photos / "f.jpg").string();
+    write_file(p, "x");
+    insert_row(p);
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*f.jpg"};
+    opts.mode = RemoveMode::Hard;
+
+    int rc = cmd_rm(opts);  // default confirm = nullptr
+    EXPECT_EQ(rc, 1);
+    EXPECT_TRUE(fs::exists(p));
+    EXPECT_EQ(db->get_all_images().size(), 1u);
+}
+
+TEST_F(RemoveExecTest, ConfirmCallbackBroadRemovalWarningTextIsExact) {
+    // A broad (non-hard) removal composes a different warning than --hard;
+    // pin its exact text too, since the two branches diverge.
+    const int N = 20;  // matched.size() >= 20 and matched*2 >= total triggers "broad"
+    for (int i = 0; i < N; i++) {
+        std::string p = (photos / ("bulk" + std::to_string(i) + ".jpg")).string();
+        write_file(p, "x");
+        insert_row(p);
+    }
+
+    std::string seen_prompt;
+    ConfirmFn decline = [&](const std::string& prompt) {
+        seen_prompt = prompt;
+        return false;
+    };
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*bulk*.jpg"};
+    opts.mode = RemoveMode::Trash;
+
+    int rc = cmd_rm(opts, decline);
+    EXPECT_EQ(rc, 1);
+    EXPECT_EQ(seen_prompt, "\nThis will remove 20 of 20 database entries (100%).\n");
+    EXPECT_EQ(db->get_all_images().size(), static_cast<size_t>(N));  // untouched
+}
+
+// The isatty-based non-interactive refusal is CLI code (src/main.cpp), which
+// isn't linked into phig-tests, so nothing above exercises it. Invoke the
+// built `phig` binary as a subprocess to pin that the guard is still there.
+TEST_F(RemoveExecTest, CliRefusesNonInteractiveConfirmationEvenWithPipedYes) {
+    fs::path exe_dir = fs::canonical("/proc/self/exe").parent_path();
+    fs::path phig_bin = exe_dir / "phig";
+    if (!fs::exists(phig_bin)) phig_bin = "./build/phig";
+    if (!fs::exists(phig_bin)) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+
+    // A small scratch collection scanned into its own DB, independent of the
+    // fixture's `db` (this test drives the real `phig scan`/`phig rm` CLI).
+    fs::path cli_root = fs::temp_directory_path() / "phig-remove-exec-cli-test";
+    fs::remove_all(cli_root);
+    fs::path cli_photos = cli_root / "photos";
+    fs::create_directories(cli_photos);
+    const int N = 25;
+    for (int i = 0; i < N; i++) {
+        write_file(cli_photos / ("img" + std::to_string(i) + ".jpg"), "not-really-a-jpeg");
+    }
+    std::string cli_db = (cli_root / "cli.db").string();
+    {
+        Database cli(cli_db);
+        cli.init_schema();
+        for (int i = 0; i < N; i++) {
+            ImageInfo info;
+            info.path = (cli_photos / ("img" + std::to_string(i) + ".jpg")).string();
+            info.filename = "img" + std::to_string(i) + ".jpg";
+            info.extension = "jpg";
+            info.file_size = 1;
+            info.created_at = "2024-01-01T00:00:00Z";
+            info.modified_at = "2024-01-01T00:00:00Z";
+            info.sha256 = "s" + std::to_string(i);
+            info.phash = 0;
+            info.width = 1;
+            info.height = 1;
+            info.metadata_json = "{}";
+            cli.insert(info);
+        }
+    }
+
+    fs::path out_path = cli_root / "out.txt";
+    std::string cmd = "echo yes | " + phig_bin.string() + " rm --match '*' --hard --db " + cli_db +
+                      " > " + out_path.string() + " 2>&1";
+    int rc = std::system(cmd.c_str());
+    int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+
+    std::ifstream in(out_path);
+    std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    EXPECT_EQ(exit_code, 1) << "output was:\n" << output;
+    EXPECT_NE(output.find("Refusing without confirmation."), std::string::npos) << "output was:\n"
+                                                                                << output;
+
+    int surviving = 0;
+    for (int i = 0; i < N; i++) {
+        if (fs::exists(cli_photos / ("img" + std::to_string(i) + ".jpg"))) surviving++;
+    }
+    EXPECT_EQ(surviving, N) << "piped 'yes' must not bypass the non-interactive refusal";
+
+    fs::remove_all(cli_root);
 }
 
 TEST_F(RemoveExecTest, RmOrphansDropsMissingKeepsPresent) {
@@ -254,11 +415,13 @@ TEST_F(RemoveExecTest, RmOrphansDropsMissingKeepsPresent) {
     fs::remove(missing);  // now orphaned; parent dir still exists (mount-safe keeps present)
 
     RemoveOptions opts;
-    opts.db_path = db_path; opts.mode = RemoveMode::Orphans; opts.assume_yes = true;
+    opts.db_path = db_path;
+    opts.mode = RemoveMode::Orphans;
+    opts.assume_yes = true;
     opts.argv_str = "phig rm --orphans";
 
     EXPECT_EQ(cmd_rm(opts), 0);
     auto rows = db->get_all_images();
     ASSERT_EQ(rows.size(), 1u);
-    EXPECT_EQ(rows[0].path, present);                // present kept, missing dropped
+    EXPECT_EQ(rows[0].path, present);  // present kept, missing dropped
 }
