@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -67,21 +68,27 @@ TEST(SearchEngineDedupe, PreservesInsertionOrderForTiedDistances) {
     // Equal distances are common with duplicate images and identical face
     // embeddings. A stable sort ensures consistent output across runs, and
     // callers may diff this output byte-for-byte (e.g., Task 5's baseline
-    // comparison). The two tied entries must appear in insertion order.
-    std::vector<Database::FaceSearchResult> in{
-        match("/p/closer.jpg", 0.1f),
-        match("/p/tied_first.jpg", 0.5f),
-        match("/p/tied_second.jpg", 0.5f),
-    };
+    // comparison). This uses 20 tied entries to exceed the insertion-sort
+    // threshold where an unstable sort would reorder them.
+    std::vector<Database::FaceSearchResult> in;
+    in.push_back(match("/p/closer.jpg", 0.1f));
+    for (int i = 0; i < 20; ++i) {
+        // Zero-padded paths so string order matches numeric order.
+        char path[32];
+        snprintf(path, sizeof(path), "/p/t%02d.jpg", i);
+        in.push_back(match(path, 0.5f));
+    }
 
     auto out = dedupe_face_matches(in);
 
-    ASSERT_EQ(out.size(), 3u);
+    ASSERT_EQ(out.size(), 21u);
     EXPECT_FLOAT_EQ(out[0].distance, 0.1f);
     EXPECT_EQ(out[0].path, "/p/closer.jpg");
-    // Tied at 0.5: must appear in insertion order.
-    EXPECT_FLOAT_EQ(out[1].distance, 0.5f);
-    EXPECT_EQ(out[1].path, "/p/tied_first.jpg");
-    EXPECT_FLOAT_EQ(out[2].distance, 0.5f);
-    EXPECT_EQ(out[2].path, "/p/tied_second.jpg");
+    // All 20 tied entries at 0.5 must appear in insertion order.
+    for (int i = 0; i < 20; ++i) {
+        char expected_path[32];
+        snprintf(expected_path, sizeof(expected_path), "/p/t%02d.jpg", i);
+        EXPECT_FLOAT_EQ(out[1 + i].distance, 0.5f);
+        EXPECT_EQ(out[1 + i].path, expected_path);
+    }
 }
