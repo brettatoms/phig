@@ -40,19 +40,10 @@ SearchResult SearchEngine::run() {
 
     switch (query_.mode) {
         case SearchMode::Person:
+            // Neither path selection nor the limit applies here, mirroring the
+            // CLI: the person branch returns directly without reaching the
+            // shared match/filter/limit block.
             result.paths = db_.get_images_for_person(query_.person);
-            // Path selection and limit still apply.
-            if (selecting) {
-                result.paths.erase(std::remove_if(result.paths.begin(), result.paths.end(),
-                                                  [&](const std::string& p) {
-                                                      return !passes_selection(p, query_.matches,
-                                                                               query_.excludes);
-                                                  }),
-                                   result.paths.end());
-            }
-            if (query_.limit > 0 && static_cast<int>(result.paths.size()) > query_.limit) {
-                result.paths.resize(query_.limit);
-            }
             return result;
 
         case SearchMode::Similar: {

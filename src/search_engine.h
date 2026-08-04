@@ -22,10 +22,11 @@ struct SearchQuery {
     // selection is pending — see `limit` below.
     Database::SearchCriteria filter;
 
-    // Path selection and the final limit apply to every mode, not just Filter,
-    // so they sit outside `filter`. `limit` is applied after path selection;
+    // Path selection and the final limit apply to Filter and Similar only, so
+    // they sit outside `filter`. `limit` is applied after path selection;
     // pushing it into SQL while a selection is pending would truncate before
-    // filtering and return fewer rows than asked for.
+    // filtering and return fewer rows than asked for. Person mode applies
+    // neither. Face mode has its own per-face limit and no selection.
     std::vector<std::string> matches, excludes;
     int limit = -1;
 

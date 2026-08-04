@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -8,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "faces.h"
 #include "search_engine.h"
 
 namespace fs = std::filesystem;
@@ -141,6 +143,15 @@ struct ScratchSearch {
         db->insert(info);
         return info.path;
     }
+
+    // Labels the image at `path` as containing `person`, so it shows up in
+    // get_images_for_person results.
+    void label(const std::string& path, const std::string& person) {
+        int64_t image_id = db->get_image_id(path);
+        FaceInfo face{};
+        int64_t face_id = db->insert_face(image_id, face);
+        db->set_face_person(face_id, db->get_or_create_person(person));
+    }
 };
 }  // namespace
 
@@ -260,4 +271,30 @@ TEST(SearchEnginePerson, UnknownPersonYieldsNoPaths) {
     auto r = SearchEngine(q, *s.db).run();
     EXPECT_TRUE(r.paths.empty());
     EXPECT_TRUE(r.images.empty()) << "person mode fills `paths`, not `images`";
+}
+
+TEST(SearchEnginePerson, IgnoresPathSelectionAndLimit) {
+    // The CLI's person branch returns before the shared match/filter/limit
+    // block (main.cpp:953-984 returns; the block is at 1130-1143), so neither
+    // applies here. `matches` is set to exclude "drop" and `limit` is set below
+    // the labeled count; both must be ignored.
+    ScratchSearch s;
+    std::string keep1 = s.add("keep_1.jpg", "jpg", 0);
+    std::string keep2 = s.add("keep_2.jpg", "jpg", 0);
+    std::string drop = s.add("drop_1.jpg", "jpg", 0);
+    s.label(keep1, "Alice");
+    s.label(keep2, "Alice");
+    s.label(drop, "Alice");
+
+    SearchQuery q;
+    q.mode = SearchMode::Person;
+    q.person = "Alice";
+    q.matches.push_back("*keep*");
+    q.limit = 1;
+
+    auto r = SearchEngine(q, *s.db).run();
+
+    EXPECT_EQ(r.paths.size(), 3u) << "selection and limit must not apply to person mode";
+    EXPECT_NE(std::find(r.paths.begin(), r.paths.end(), drop), r.paths.end())
+        << "drop_1.jpg would be excluded by the pending match pattern if selection ran";
 }
