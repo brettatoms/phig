@@ -28,3 +28,11 @@ target_link_libraries(test-gallery-model PRIVATE ${PHIG_LIBRARIES} ${GTK_LIBRARI
 target_link_directories(test-gallery-model PRIVATE ${PHIG_LIBRARY_DIRS} ${GTK_LIBRARY_DIRS})
 add_test(NAME gallery-model COMMAND test-gallery-model)
 set_tests_properties(gallery-model PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(test-thumb-loader tests/test-thumb-loader.c src/thumb-loader.c)
+target_compile_options(test-thumb-loader PRIVATE ${PHIG_GTK_WARNINGS})
+target_include_directories(test-thumb-loader PRIVATE src ${PHIG_INCLUDE_DIRS} ${GTK_INCLUDE_DIRS})
+target_link_libraries(test-thumb-loader PRIVATE ${PHIG_LIBRARIES} ${GTK_LIBRARIES})
+target_link_directories(test-thumb-loader PRIVATE ${PHIG_LIBRARY_DIRS} ${GTK_LIBRARY_DIRS})
+add_test(NAME thumb-loader COMMAND test-thumb-loader)
+set_tests_properties(thumb-loader PROPERTIES SKIP_RETURN_CODE 77)
