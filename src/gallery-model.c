@@ -98,6 +98,24 @@ struct _PhigGalleryModel {
     GHashTable* pages; /* page_index (guint, via GUINT_TO_POINTER) -> PhigPage* */
     gint64 clock;
     GHashTable* pending; /* page_index being fetched -> TRUE, to avoid duplicate fetches */
+
+    /* One placeholder row, shared by every non-resident position. GtkSelectionModel
+     * compares items by pointer identity, so returning a fresh placeholder object
+     * on every get_item call would make two calls for the same still-unfetched
+     * position look like different items and break selection. */
+    PhigImageRow* placeholder;
+
+    /* ctx and query are borrowed from the caller, not owned, so pinning self
+     * alive (the GWeakRef in FetchTaskData) does not keep them alive. in_flight
+     * counts worker threads currently between resolving that weak ref and
+     * dropping it — i.e. actually inside phig_query_page on ctx/query. dispose
+     * blocks until it reaches zero, which is what makes the header's "caller
+     * must not free ctx/query while any reference to the model is outstanding"
+     * contract actually true: the caller's final unref will not return while a
+     * worker is still using them. */
+    GMutex in_flight_lock;
+    GCond in_flight_cond;
+    guint in_flight;
 };
 
 static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface);
@@ -156,9 +174,15 @@ static void phig_gallery_model_evict_if_needed(PhigGalleryModel* self) {
 static void phig_gallery_model_install_page(PhigGalleryModel* self, PhigPage* page) {
     page->last_used = ++self->clock;
     guint position = page->page_index * PHIG_PAGE_SIZE;
+    guint n_rows = page->n_rows;
     g_hash_table_insert(self->pages, GUINT_TO_POINTER(page->page_index), page);
     phig_gallery_model_evict_if_needed(self);
-    g_list_model_items_changed(G_LIST_MODEL(self), position, 0, 0);
+    /* removed == added == n_rows: an in-place swap of placeholders for real
+     * rows at the same positions. The total item count never changes after
+     * construction, so this is not an insertion or a deletion. GTK compares
+     * this to a no-op unless removed/added are nonzero, so the view would
+     * never re-query get_item for this range without it. */
+    g_list_model_items_changed(G_LIST_MODEL(self), position, n_rows, n_rows);
 }
 
 static void phig_gallery_model_touch_page(PhigGalleryModel* self, PhigPage* page) {
@@ -182,8 +206,39 @@ typedef struct {
 } FetchTaskData;
 
 static void fetch_task_data_free(FetchTaskData* data) {
+    /* Set once phig_page_new_from_list has consumed it (fetch_page_done);
+     * still non-NULL here means the result was fetched but never installed
+     * (model gone before the callback ran, or the callback never dispatched),
+     * so this is the only place left to free it. */
+    if (data->fetched != NULL)
+        phig_image_list_free(data->fetched);
     g_weak_ref_clear(&data->model);
     g_free(data);
+}
+
+/* Registers as in-flight, then resolves the weak ref. Registering first
+ * closes the race dispose is guarding against: if this returns a non-NULL
+ * self, dispose is guaranteed to block (in phig_gallery_model_dispose) until
+ * phig_gallery_model_leave_in_flight is called, so ctx/query cannot be freed
+ * out from under the caller. If the model is already gone, unregisters
+ * immediately and returns NULL. */
+static PhigGalleryModel* phig_gallery_model_enter_in_flight(FetchTaskData* data) {
+    PhigGalleryModel* self = g_weak_ref_get(&data->model);
+    if (self == NULL)
+        return NULL;
+
+    g_mutex_lock(&self->in_flight_lock);
+    self->in_flight++;
+    g_mutex_unlock(&self->in_flight_lock);
+    return self;
+}
+
+static void phig_gallery_model_leave_in_flight(PhigGalleryModel* self) {
+    g_mutex_lock(&self->in_flight_lock);
+    self->in_flight--;
+    g_cond_broadcast(&self->in_flight_cond);
+    g_mutex_unlock(&self->in_flight_lock);
+    g_object_unref(self);
 }
 
 static void fetch_page_thread_func(GTask* task, gpointer source_object, gpointer task_data,
@@ -191,7 +246,7 @@ static void fetch_page_thread_func(GTask* task, gpointer source_object, gpointer
     (void)source_object;
     (void)cancellable;
     FetchTaskData* data = task_data;
-    PhigGalleryModel* self = g_weak_ref_get(&data->model);
+    PhigGalleryModel* self = phig_gallery_model_enter_in_flight(data);
     if (self == NULL) {
         g_task_return_boolean(task, FALSE);
         return;
@@ -201,7 +256,7 @@ static void fetch_page_thread_func(GTask* task, gpointer source_object, gpointer
     phig_status status = phig_query_page(self->ctx, self->query,
                                           (int64_t)data->page_index * PHIG_PAGE_SIZE,
                                           PHIG_PAGE_SIZE, &list);
-    g_object_unref(self);
+    phig_gallery_model_leave_in_flight(self);
 
     if (status != PHIG_OK) {
         g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "phig_query_page failed: %d",
@@ -233,6 +288,7 @@ static void fetch_page_done(GObject* source, GAsyncResult* result, gpointer user
     }
 
     PhigPage* page = phig_page_new_from_list(data->page_index, data->fetched);
+    data->fetched = NULL; /* consumed: phig_page_new_from_list already freed the list */
     g_hash_table_remove(self->pending, GUINT_TO_POINTER(data->page_index));
     phig_gallery_model_install_page(self, page);
     g_object_unref(self);
@@ -273,7 +329,7 @@ static gpointer phig_gallery_model_get_item(GListModel* list, guint position) {
     }
 
     phig_gallery_model_schedule_fetch(self, page_index);
-    return phig_image_row_new_placeholder();
+    return g_object_ref(self->placeholder);
 }
 
 static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface) {
@@ -282,14 +338,34 @@ static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface)
     iface->get_item = phig_gallery_model_get_item;
 }
 
+/* The caller may free ctx/query as soon as its last reference to this model
+ * is released (see phig_gallery_model_new's contract), so dispose must not
+ * return while a worker thread is still between phig_gallery_model_enter_in_flight
+ * and phig_gallery_model_leave_in_flight — i.e. still inside phig_query_page
+ * on ctx/query. This is what makes that contract actually hold: without it, a
+ * worker resolving its weak ref just before the caller's final unref could
+ * still be running phig_query_page after the caller frees ctx/query. */
+static void phig_gallery_model_dispose(GObject* obj) {
+    PhigGalleryModel* self = PHIG_GALLERY_MODEL(obj);
+    g_mutex_lock(&self->in_flight_lock);
+    while (self->in_flight > 0)
+        g_cond_wait(&self->in_flight_cond, &self->in_flight_lock);
+    g_mutex_unlock(&self->in_flight_lock);
+    G_OBJECT_CLASS(phig_gallery_model_parent_class)->dispose(obj);
+}
+
 static void phig_gallery_model_finalize(GObject* obj) {
     PhigGalleryModel* self = PHIG_GALLERY_MODEL(obj);
     g_hash_table_destroy(self->pages);
     g_hash_table_destroy(self->pending);
+    g_object_unref(self->placeholder);
+    g_mutex_clear(&self->in_flight_lock);
+    g_cond_clear(&self->in_flight_cond);
     G_OBJECT_CLASS(phig_gallery_model_parent_class)->finalize(obj);
 }
 
 static void phig_gallery_model_class_init(PhigGalleryModelClass* klass) {
+    G_OBJECT_CLASS(klass)->dispose = phig_gallery_model_dispose;
     G_OBJECT_CLASS(klass)->finalize = phig_gallery_model_finalize;
 }
 
@@ -297,6 +373,9 @@ static void phig_gallery_model_init(PhigGalleryModel* self) {
     self->pages =
         g_hash_table_new_full(NULL, NULL, NULL, (GDestroyNotify)phig_page_free);
     self->pending = g_hash_table_new(NULL, NULL);
+    self->placeholder = phig_image_row_new_placeholder();
+    g_mutex_init(&self->in_flight_lock);
+    g_cond_init(&self->in_flight_cond);
 }
 
 PhigGalleryModel* phig_gallery_model_new(phig_ctx* ctx, phig_query* query) {

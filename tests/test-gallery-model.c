@@ -45,10 +45,15 @@ static void test_out_of_range_returns_null(Fixture* f, gconstpointer unused) {
 static void test_get_item_returns_a_row_without_blocking(Fixture* f, gconstpointer unused) {
     (void)unused;
     /* A cold model has no resident page, so this exercises the placeholder path.
-     * It must return an object immediately rather than fetching synchronously. */
+     * It must return an object immediately rather than fetching synchronously.
+     * A synchronous implementation would have installed the page by the time
+     * get_item returns, so asserting the page is still non-resident right
+     * after the call is what actually distinguishes "returned a placeholder"
+     * from "blocked and returned the real row". */
     GObject* item = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
     g_assert_nonnull(item);
     g_assert_true(PHIG_IS_IMAGE_ROW(item));
+    g_assert_cmpuint(phig_gallery_model_resident_page_count(f->model), ==, 0);
     g_object_unref(item);
 }
 
@@ -59,6 +64,7 @@ static void test_row_strings_survive_page_eviction(Fixture* f, gconstpointer unu
     PhigImageRow* row =
         PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
     g_assert_nonnull(row);
+    g_object_unref(row); /* placeholder from the cold lookup above; not the one under test */
     phig_gallery_model_fetch_page_sync(f->model, 0);           /* test-only helper */
     row = PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
     char* sha_copy = g_strdup(phig_image_row_get_sha256(row));
@@ -80,6 +86,61 @@ static void test_resident_pages_stay_bounded(Fixture* f, gconstpointer unused) {
                      phig_gallery_model_get_max_resident_pages(f->model));
 }
 
+typedef struct {
+    GMainLoop* loop;
+    gboolean fired;
+    guint position;
+    guint removed;
+    guint added;
+} ItemsChangedCapture;
+
+static void on_items_changed(GListModel* model, guint position, guint removed, guint added,
+                              gpointer user_data) {
+    (void)model;
+    ItemsChangedCapture* capture = user_data;
+    capture->fired = TRUE;
+    capture->position = position;
+    capture->removed = removed;
+    capture->added = added;
+    g_main_loop_quit(capture->loop);
+}
+
+static gboolean on_timeout(gpointer user_data) {
+    GMainLoop* loop = user_data;
+    g_main_loop_quit(loop);
+    return G_SOURCE_REMOVE;
+}
+
+static void test_async_fetch_emits_items_changed(Fixture* f, gconstpointer unused) {
+    (void)unused;
+    /* The real path: get_item schedules a GTask fetch on a worker thread and
+     * returns a placeholder immediately. This drives an actual GMainLoop so
+     * the GTask's completion callback (fetch_page_done) can be dispatched,
+     * and asserts the exact items-changed arguments a GtkGridView relies on
+     * to re-query get_item for the range that just became resident. A 5s
+     * timeout guards against a hang if the callback never fires. */
+    GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    ItemsChangedCapture capture = {.loop = loop, .fired = FALSE};
+    gulong handler_id =
+        g_signal_connect(f->model, "items-changed", G_CALLBACK(on_items_changed), &capture);
+    guint timeout_id = g_timeout_add_seconds(5, on_timeout, loop);
+
+    GObject* placeholder = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
+    g_object_unref(placeholder);
+
+    g_main_loop_run(loop);
+
+    g_source_remove(timeout_id);
+    g_signal_handler_disconnect(f->model, handler_id);
+    g_main_loop_unref(loop);
+
+    g_assert_true(capture.fired);
+    g_assert_cmpuint(capture.position, ==, 0);
+    g_assert_cmpuint(capture.removed, ==, 200);
+    g_assert_cmpuint(capture.added, ==, 200);
+    g_assert_cmpuint(phig_gallery_model_resident_page_count(f->model), ==, 1);
+}
+
 int main(int argc, char** argv) {
     g_test_init(&argc, &argv, NULL);
     if (!g_getenv("PHIG_TEST_DB")) {
@@ -93,6 +154,7 @@ int main(int argc, char** argv) {
     T("get-item-no-block", test_get_item_returns_a_row_without_blocking);
     T("row-strings-survive-eviction", test_row_strings_survive_page_eviction);
     T("resident-pages-bounded", test_resident_pages_stay_bounded);
+    T("async-fetch-emits-items-changed", test_async_fetch_emits_items_changed);
 #undef T
     return g_test_run();
 }
