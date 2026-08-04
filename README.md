@@ -11,7 +11,15 @@ gitignored (matching phig's convention — `direnv allow` is per-machine), so a
 fresh clone needs it recreated:
 
 ```bash
-printf 'use devenv\n' > .envrc
+cat > .envrc <<'EOF'
+#!/usr/bin/env bash
+
+export DIRENV_WARN_TIMEOUT=20s
+
+eval "$(devenv direnvrc)"
+
+use devenv
+EOF
 direnv allow
 ```
 
