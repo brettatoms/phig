@@ -19,9 +19,12 @@ std::vector<Database::FaceSearchResult> dedupe_face_matches(
         }
     }
 
-    std::sort(out.begin(), out.end(),
-              [](const Database::FaceSearchResult& a, const Database::FaceSearchResult& b) {
-                  return a.distance < b.distance;
-              });
+    // Use stable_sort to preserve insertion order for equal distances. Duplicate
+    // images and ties from the face embedding model produce multiple matches at
+    // identical distances; a stable order ensures consistent output across runs.
+    std::stable_sort(out.begin(), out.end(),
+                     [](const Database::FaceSearchResult& a, const Database::FaceSearchResult& b) {
+                         return a.distance < b.distance;
+                     });
     return out;
 }

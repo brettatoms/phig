@@ -62,3 +62,26 @@ TEST(SearchEngineDedupe, PreservesTheFaceBoxOfTheClosestMatch) {
 TEST(SearchEngineDedupe, EmptyInputYieldsEmptyOutput) {
     EXPECT_TRUE(dedupe_face_matches({}).empty());
 }
+
+TEST(SearchEngineDedupe, PreservesInsertionOrderForTiedDistances) {
+    // Equal distances are common with duplicate images and identical face
+    // embeddings. A stable sort ensures consistent output across runs, and
+    // callers may diff this output byte-for-byte (e.g., Task 5's baseline
+    // comparison). The two tied entries must appear in insertion order.
+    std::vector<Database::FaceSearchResult> in{
+        match("/p/closer.jpg", 0.1f),
+        match("/p/tied_first.jpg", 0.5f),
+        match("/p/tied_second.jpg", 0.5f),
+    };
+
+    auto out = dedupe_face_matches(in);
+
+    ASSERT_EQ(out.size(), 3u);
+    EXPECT_FLOAT_EQ(out[0].distance, 0.1f);
+    EXPECT_EQ(out[0].path, "/p/closer.jpg");
+    // Tied at 0.5: must appear in insertion order.
+    EXPECT_FLOAT_EQ(out[1].distance, 0.5f);
+    EXPECT_EQ(out[1].path, "/p/tied_first.jpg");
+    EXPECT_FLOAT_EQ(out[2].distance, 0.5f);
+    EXPECT_EQ(out[2].path, "/p/tied_second.jpg");
+}
