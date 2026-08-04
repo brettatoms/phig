@@ -28,6 +28,21 @@ cmake --build build && ./build/phig-tests
 
 Coverage: scanner, hasher (SHA256 + phash), exif, database, glob, selection (match/exclude precedence), date parsing, JSON helpers, format strings, face DB operations, embedding distance, thumbnails, video extensions, video phash, video metadata, migrations, video search.
 
+### ThreadSanitizer: always set `OMP_NUM_THREADS=1`
+
+```bash
+OMP_NUM_THREADS=1 ./build/phig-tests   # TSan build
+```
+
+OpenCV's parallel framework here is OpenMP, and `libgomp` is not TSan-instrumented, so TSan
+cannot see its barriers. Every OpenCV parallel region inside a `detect()` or decode call
+then looks like unsynchronised access, reported against whichever phig function invoked it.
+
+Measured: `*Face*` 77-86 reports and `*Scan*` 42 at the default thread count, **0 for both**
+with `OMP_NUM_THREADS=1` and no code change. They are false positives, not races — if they
+were real, serialising OpenCV's internal pool could not silence them. Run TSan without this
+and ~120 false positives will bury any genuine finding.
+
 ## Linting & CI
 
 - **Formatting:** clang-format, Google style / 4-space / 100-col (`.clang-format`).
