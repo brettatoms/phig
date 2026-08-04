@@ -185,14 +185,17 @@ Database::Database(const std::string& path, bool read_only) {
         throw std::runtime_error("Failed to open database: " + err);
     }
 
+    // Wait (rather than fail instantly with SQLITE_BUSY) when another phig
+    // process holds the single WAL writer lock. Set before the first statement:
+    // journal_mode=WAL takes an exclusive lock to rewrite the file header, so a
+    // connection opening concurrently with another must wait for it too.
+    sqlite3_busy_timeout(db_, 30000);
+
     if (!read_only) {
         // Enable WAL mode for better concurrent read/write performance
         exec("PRAGMA journal_mode=WAL");
         exec("PRAGMA synchronous=NORMAL");
     }
-    // Wait (rather than fail instantly with SQLITE_BUSY) when another phig
-    // process holds the single WAL writer lock.
-    sqlite3_busy_timeout(db_, 30000);
     // Enforce declared FK cascades (faces/image_tags ON DELETE CASCADE). SQLite
     // defaults foreign_keys OFF per-connection, so this must be set every open.
     // Connection-local; does not write to the database file.
