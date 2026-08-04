@@ -35,7 +35,7 @@ extern "C" {
 #endif
 
 #define PHIG_ABI_VERSION_MAJOR 1u
-#define PHIG_ABI_VERSION_MINOR 1u
+#define PHIG_ABI_VERSION_MINOR 2u
 
 /* Values are published ABI: append only, never renumber. */
 typedef enum {
@@ -196,6 +196,22 @@ PHIG_API void phig_string_free(char* s);
  * phig's default if none was set. */
 PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, char* out_path,
                                        size_t out_len, bool* exists);
+
+/* Generate the thumbnail for one image and write it into phig's cache.
+ *
+ * `image_id` identifies the row; phig resolves its path, media type, and sha256
+ * itself, so a caller needs no knowledge of the cache layout or of how a video's
+ * keyframe is chosen.
+ *
+ * Returns PHIG_OK when a thumbnail now exists in the cache — including when one
+ * was already there, so a caller racing another generator does not see a
+ * spurious failure. Returns PHIG_ERR_DB if the row does not exist or has no
+ * sha256, and PHIG_ERR_INTERNAL if the image could not be decoded.
+ *
+ * Decodes pixels, so this is slow relative to every other call in this header:
+ * hundreds of milliseconds for a large RAW. Call it off the caller's UI thread.
+ * Safe to call concurrently on one ctx; see the thread-safety note above. */
+PHIG_API phig_status phig_thumb_generate(phig_ctx* ctx, int64_t image_id);
 
 /* Metadata writes. These take ids because a GUI always has a concrete
  * selection; the CLI's glob-based paths are unchanged.

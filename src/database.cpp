@@ -2158,6 +2158,30 @@ bool Database::get_metadata_json(int64_t id, std::string& out) {
     return found;
 }
 
+bool Database::get_image_for_thumb(int64_t id, ImageInfo& out) {
+    const char* sql = "SELECT path, media_type, sha256 FROM images WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare thumb-row query: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    sqlite3_bind_int64(stmt, 1, id);
+    bool found = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        auto text = [&](int col) -> std::string {
+            const unsigned char* p = sqlite3_column_text(stmt, col);
+            return p ? reinterpret_cast<const char*>(p) : "";
+        };
+        out.id = id;
+        out.path = text(0);
+        out.media_type = text(1);
+        out.sha256 = text(2);
+        found = true;
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
 void Database::exec(const std::string& sql) {
     char* err = nullptr;
     int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err);
