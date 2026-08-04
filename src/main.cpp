@@ -42,6 +42,7 @@
 #include "remove_exec.h"
 #include "scan_engine.h"
 #include "scanner.h"
+#include "search_engine.h"
 #include "selection.h"
 #include "sidecar.h"
 #include "thumbs.h"
@@ -925,7 +926,6 @@ int cmd_search(const SearchOptions& opts) {
         return 1;
     }
 
-    std::vector<ImageInfo> results;
     bool is_similar = !opts.similar.empty() || !opts.similar_hash.empty();
     bool is_face_search = !opts.face.empty();
     bool is_person_search = !opts.person.empty();
@@ -950,9 +950,69 @@ int cmd_search(const SearchOptions& opts) {
         }
     } cleanup{temp_file};
 
+    SearchQuery query;
+
     if (is_person_search) {
-        // Search by named person
-        auto paths = db.get_images_for_person(opts.person);
+        query.mode = SearchMode::Person;
+        query.person = opts.person;
+    } else if (is_face_search) {
+        // Face similarity search — decode with OpenCV, detect with dlib. The
+        // engine gets only the resulting embeddings: it has no OpenCV
+        // dependency and never touches the query file itself.
+        preload_face_models();
+        cv::Mat query_img = decode_image(face_path);
+        if (query_img.empty()) {
+            log_error("Cannot decode image: " + face_path);
+            return 1;
+        }
+        auto faces = detect_faces(query_img);
+        if (faces.empty()) {
+            std::cerr << "No faces detected in: " << face_path << "\n";
+            return 1;
+        }
+        std::cerr << "Detected " << faces.size() << " face(s), searching all...\n";
+
+        query.mode = SearchMode::Face;
+        for (const auto& face : faces) query.face_embeddings.push_back(face.embedding);
+        query.face_threshold = opts.face_threshold;
+        query.limit = opts.limit;
+    } else if (is_similar) {
+        query.mode = SearchMode::Similar;
+        if (!similar_path.empty()) {
+            query.phash = compute_phash(similar_path).hash;
+        } else {
+            query.phash = parse_hex_phash(opts.similar_hash);
+        }
+        query.phash_threshold = opts.threshold;
+        query.matches = opts.matches;
+        query.excludes = opts.excludes;
+        query.limit = opts.limit;
+    } else {
+        query.mode = SearchMode::Filter;
+        query.filter.extension = opts.extension;
+        query.filter.after = opts.after;
+        query.filter.before = opts.before;
+        query.filter.camera = opts.camera;
+        query.filter.make = opts.make;
+        query.filter.min_size = opts.min_size;
+        query.filter.max_size = opts.max_size;
+        query.filter.media = opts.media;
+        query.filter.min_duration_ms = opts.min_duration_ms;
+        query.filter.max_duration_ms = opts.max_duration_ms;
+        query.filter.tags = opts.tags;
+        query.filter.gallery = opts.gallery;
+        query.filter.min_sharpness = opts.min_sharpness;
+        query.filter.max_sharpness = opts.max_sharpness;
+        query.matches = opts.matches;
+        query.excludes = opts.excludes;
+        query.limit = opts.limit;
+    }
+
+    SearchEngine engine(query, db);
+    SearchResult result = engine.run();
+
+    if (is_person_search) {
+        const auto& paths = result.paths;
         if (opts.count_only) {
             std::cout << paths.size() << "\n";
             return 0;
@@ -982,47 +1042,10 @@ int cmd_search(const SearchOptions& opts) {
             out << "\nFound " << paths.size() << " images of \"" << opts.person << "\"\n";
         }
         return 0;
-    } else if (is_face_search) {
-        // Face similarity search — decode with OpenCV, detect with dlib
-        preload_face_models();
-        cv::Mat query_img = decode_image(face_path);
-        if (query_img.empty()) {
-            log_error("Cannot decode image: " + face_path);
-            return 1;
-        }
-        auto faces = detect_faces(query_img);
-        if (faces.empty()) {
-            std::cerr << "No faces detected in: " << face_path << "\n";
-            return 1;
-        }
+    }
 
-        std::cerr << "Detected " << faces.size() << " face(s), searching all...\n";
-
-        // Search for ALL faces found in the query image
-        std::vector<Database::FaceSearchResult> face_results;
-        std::set<std::string> seen_paths;
-        int per_face_limit = opts.limit > 0 ? opts.limit : 100;
-
-        for (const auto& face : faces) {
-            auto matches = db.search_faces(face.embedding, opts.face_threshold, per_face_limit);
-            for (auto& m : matches) {
-                // Deduplicate by path — keep the closest match per image
-                if (seen_paths.insert(m.path).second) {
-                    face_results.push_back(std::move(m));
-                }
-            }
-        }
-
-        // Sort by distance
-        std::sort(face_results.begin(), face_results.end(),
-                  [](const Database::FaceSearchResult& a, const Database::FaceSearchResult& b) {
-                      return a.distance < b.distance;
-                  });
-
-        if (opts.limit > 0 && static_cast<int>(face_results.size()) > opts.limit) {
-            face_results.resize(opts.limit);
-        }
-
+    if (is_face_search) {
+        const auto& face_results = result.matches;
         if (opts.count_only) {
             std::cout << face_results.size() << "\n";
             return 0;
@@ -1068,79 +1091,9 @@ int cmd_search(const SearchOptions& opts) {
             out << "Found " << face_results.size() << " matching faces\n";
         }
         return 0;
-    } else if (is_similar) {
-        // Compute or parse the query phash
-        uint64_t query_phash;
-        if (!similar_path.empty()) {
-            auto phash_result = compute_phash(similar_path);
-            query_phash = phash_result.hash;
-        } else {
-            query_phash = parse_hex_phash(opts.similar_hash);
-        }
-
-        // Get all images (within path prefix) and compare
-        auto all_images = db.get_all_images();
-
-        // Compute distances and filter
-        struct ScoredImage {
-            ImageInfo info;
-            int distance;
-        };
-        std::vector<ScoredImage> scored;
-
-        for (auto& img : all_images) {
-            int dist = hamming_distance(query_phash, img.phash);
-            if (dist <= opts.threshold) {
-                scored.push_back({std::move(img), dist});
-            }
-        }
-
-        // Sort by distance (closest first)
-        std::sort(scored.begin(), scored.end(), [](const ScoredImage& a, const ScoredImage& b) {
-            return a.distance < b.distance;
-        });
-
-        for (auto& s : scored) {
-            results.push_back(std::move(s.info));
-        }
-    } else {
-        // Build search criteria
-        Database::SearchCriteria criteria;
-        criteria.extension = opts.extension;
-        criteria.after = opts.after;
-        criteria.before = opts.before;
-        criteria.camera = opts.camera;
-        criteria.make = opts.make;
-        criteria.min_size = opts.min_size;
-        criteria.max_size = opts.max_size;
-        criteria.media = opts.media;
-        criteria.min_duration_ms = opts.min_duration_ms;
-        criteria.max_duration_ms = opts.max_duration_ms;
-        criteria.tags = opts.tags;
-        criteria.gallery = opts.gallery;
-        criteria.min_sharpness = opts.min_sharpness;
-        criteria.max_sharpness = opts.max_sharpness;
-        // Don't apply limit in DB if we also need match/filter (apply after)
-        if (opts.matches.empty() && opts.excludes.empty()) {
-            criteria.limit = opts.limit;
-        }
-        results = db.search(criteria);
     }
 
-    // Apply match/filter
-    if (!opts.matches.empty() || !opts.excludes.empty()) {
-        results.erase(std::remove_if(results.begin(), results.end(),
-                                     [&](const ImageInfo& img) {
-                                         return !passes_selection(img.path, opts.matches,
-                                                                  opts.excludes);
-                                     }),
-                      results.end());
-    }
-
-    // Apply limit (if not already applied in DB)
-    if (opts.limit > 0 && static_cast<int>(results.size()) > opts.limit) {
-        results.resize(opts.limit);
-    }
+    const auto& results = result.images;
 
     if (opts.count_only) {
         std::cout << results.size() << "\n";
