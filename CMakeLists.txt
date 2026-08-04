@@ -169,6 +169,9 @@ endif()
 
 install(TARGETS phig_abi LIBRARY DESTINATION lib)
 install(DIRECTORY include/phig DESTINATION include)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/phig.pc.in
+               ${CMAKE_CURRENT_BINARY_DIR}/phig.pc @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/phig.pc DESTINATION lib/pkgconfig)
 
 # ---- Binary ----
 add_executable(phig src/main.cpp)
