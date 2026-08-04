@@ -167,50 +167,57 @@ static void test_cancel_before_dispatch_never_calls_back(Fixture* f, gconstpoint
 
 /* ---- cancel after dispatch discards the result ---- */
 
-typedef struct {
-    GMainLoop* loop;
-    gboolean called;
-    ThumbResult result;
-} RaceCapture;
-
 static void on_thumb_race(ThumbResult result, GdkTexture* texture, gpointer user_data) {
-    RaceCapture* capture = user_data;
-    capture->called = TRUE;
-    capture->result = result;
+    (void)result;
+    gboolean* called = user_data;
+    *called = TRUE;
     if (texture != NULL)
         g_object_unref(texture);
-    g_main_loop_quit(capture->loop);
 }
 
 static void test_cancel_after_dispatch_discards_result(Fixture* f, gconstpointer unused) {
     (void)unused;
-    /* Cancelling immediately after thumb_loader_request has already handed
-     * the request to a worker (unlike the before-dispatch test above, this
-     * one races a real worker thread instead of relying on the
-     * already-cancelled check at the top of thumb_loader_request). Which
-     * side wins is not under this test's control, so both outcomes the
-     * loader is allowed to produce are accepted; a short guard is enough
-     * either way, since a single lookup+decode never takes anywhere near it,
-     * so this does not need the 5s hang-guard used elsewhere in this file. */
+    /* Forces the ordering instead of racing it, so this reliably exercises
+     * the deliver-side cancellation check in thumb_loader_deliver (just
+     * before thumb_loader_cache_insert) rather than either of the two
+     * worker-side checks that run earlier (right after popping, and again
+     * right after phig_thumb_lookup/gdk_texture_new_from_filename, both
+     * before a result is ever posted for delivery). Cancelling immediately
+     * after thumb_loader_request — the first approach tried here — was
+     * observed to resolve at the pre-lookup check in every run, never
+     * reaching delivery, which left the delivery-side check untested.
+     *
+     * thumb_loader_pending_idle_count only increments once a worker has
+     * gotten past both of those checks and actually posted the result (see
+     * thumb_loader_post_result), so spin-waiting for it to become nonzero
+     * before cancelling guarantees the cancel can only be observed by the
+     * delivery-side check — the two earlier ones have already run and let
+     * this request through by the time the wait ends. This polls a real
+     * state transition rather than sleeping a guessed duration; the 5s cap on
+     * the loop below still bounds it in case something regresses and the
+     * count never rises. */
     GCancellable* cancellable = g_cancellable_new();
-    GMainLoop* loop = g_main_loop_new(NULL, FALSE);
-    RaceCapture capture = {.loop = loop};
-    guint timeout_id = g_timeout_add(500, on_timeout, loop);
+    gboolean called = FALSE;
 
-    thumb_loader_request(f->loader, f->hit_sha, 256, cancellable, on_thumb_race, &capture);
+    thumb_loader_request(f->loader, f->hit_sha, 256, cancellable, on_thumb_race, &called);
+    for (int waited_ms = 0; thumb_loader_pending_idle_count(f->loader) == 0 && waited_ms < 5000;
+         waited_ms += 1)
+        g_usleep(1000);
     g_cancellable_cancel(cancellable);
 
+    /* Nothing to wait on beyond the guard: a correct implementation never
+     * calls on_thumb_race, so there is no completion event to catch — same
+     * shape as the before-dispatch test above, just later in the pipeline. */
+    GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    g_timeout_add(300, on_timeout, loop);
     g_main_loop_run(loop);
-    disarm_timeout(timeout_id);
     g_main_loop_unref(loop);
 
-    /* Either the callback never ran (request discarded before delivery) or it
-     * ran with THUMB_OK — a texture may legitimately still be delivered if
-     * cancellation lost the race with an already-completed load. What must
-     * never happen: a crash, or a result other than THUMB_OK/uncalled, which
-     * would mean the loader tried to act on a cancelled/freed request. */
-    if (capture.called)
-        g_assert_cmpint(capture.result, ==, THUMB_OK);
+    /* The deliver-side check must have discarded the cancelled request's
+     * result: the callback never runs, and nothing it loaded was cached. */
+    g_assert_false(called);
+    g_assert_cmpuint(thumb_loader_cache_bytes(f->loader), ==, 0);
+
     g_object_unref(cancellable);
 }
 
@@ -239,9 +246,10 @@ static void test_cache_respects_byte_budget(void) {
     phig_ctx* ctx;
     g_assert_cmpint(phig_init(&cfg, &ctx), ==, PHIG_OK);
 
-    /* Budget smaller than two thumbnails' worth (242*512*4 = ~495KB each) but
-     * requesting all 6 distinct shas, to force eviction partway through. */
-    gsize budget = 700 * 1024;
+    /* Room for about 3 of the 6 thumbnails (242*512*4 = ~495KB each), not
+     * just 1: a budget that only ever holds a single entry never exercises
+     * LRU *ordering* (which entry is evicted first), only bare capacity. */
+    gsize budget = 1600 * 1024;
     ThumbLoader* loader = thumb_loader_new(ctx, 4, budget);
 
     guint n = G_N_ELEMENTS(kExtraShas);

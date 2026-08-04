@@ -13,12 +13,13 @@ static const int thumb_loader_stop_sentinel;
  * idle currently holds it; freed exactly once, by whichever of those three
  * places is last to touch it.
  *
- * loader is borrowed, not reffed: a ref here would keep the loader's own
- * refcount above zero for as long as any request is outstanding, so the
- * app's final unref could never reach dispose and workers would never be
- * asked to stop. Instead, a worker registers with thumb_loader_enter_idle
- * before calling g_idle_add, and dispose blocks until every such
- * registration has a matching thumb_loader_leave_idle. */
+ * loader is borrowed, not reffed on the request itself: a ref here would keep
+ * the loader's own refcount above zero for as long as any request is
+ * outstanding, so the app's final unref could never reach dispose and
+ * workers would never be asked to stop. The ref that keeps the loader alive
+ * for delivery lives on the idle source instead — see
+ * thumb_loader_post_result — which is released whether or not the source is
+ * ever dispatched, so it cannot recreate that cycle. */
 typedef struct {
     ThumbLoader* loader;
     char sha256[65];
@@ -33,6 +34,12 @@ typedef struct {
 
 static void thumb_request_free(ThumbRequest* req) {
     g_clear_object(&req->cancellable);
+    /* May run on a worker thread (a request cancelled after loading but
+     * before delivery is freed from thumb_loader_worker, not the main
+     * thread). Safe here: GdkTexture is a plain GObject with no GTK widget
+     * state tied to a particular thread, so dropping the last ref off the
+     * main thread does not violate GTK's main-thread-only rule the way
+     * unreffing a widget would. */
     g_clear_object(&req->texture);
     g_free(req);
 }
@@ -62,13 +69,10 @@ struct _ThumbLoader {
     GQueue lru;          /* front = least recently used; holds ThumbCacheEntry*, not owned here */
     gsize cache_bytes;
 
-    /* Counts idle sources queued by a worker but not yet run on the main
-     * thread. dispose joins every worker before it returns, which guarantees
-     * no *new* g_idle_add call will happen, but says nothing about idle
-     * sources already queued — those run on a later main-loop iteration,
-     * which happens after a synchronous dispose/finalize would already have
-     * freed self. dispose drives the main context itself (see
-     * thumb_loader_dispose) until this reaches zero, closing that window. */
+    /* Diagnostic only: counts idle sources queued by a worker but not yet run
+     * on the main thread. Nothing blocks on this — see thumb_loader_dispose
+     * for why a wait here would be wrong — it exists so tests and debugging
+     * can observe that outstanding deliveries eventually reach zero. */
     GMutex idle_lock;
     guint pending_idle;
 };
@@ -126,12 +130,6 @@ static GdkTexture* thumb_loader_cache_insert(ThumbLoader* self, const char* sha2
     return ref;
 }
 
-/* Registers a pending idle post. Called on the worker thread before
- * g_idle_add, so dispose (called concurrently, on the main thread) either
- * observes the count before it is incremented — and blocks below until the
- * matching thumb_loader_leave_idle — or observes it already incremented,
- * which is the same outcome. Either way dispose cannot return while this
- * request's idle source might still run. */
 static void thumb_loader_enter_idle(ThumbLoader* self) {
     g_mutex_lock(&self->idle_lock);
     self->pending_idle++;
@@ -144,19 +142,17 @@ static void thumb_loader_leave_idle(ThumbLoader* self) {
     g_mutex_unlock(&self->idle_lock);
 }
 
-/* Runs on the main thread via g_idle_add. Delivers the result and frees the
- * request. A texture loaded by the worker but never installed here (request
- * cancelled between load and this call) must still be released — req owns it
- * via thumb_request_free until it is handed off, so no path here leaks it. */
+/* Runs on the main thread via g_idle_add_full. Delivers the result. Does not
+ * free req — thumb_loader_post_destroy does that, since GLib calls it exactly
+ * once after this (dispatched or not), and freeing req here too would make
+ * thumb_loader_post_destroy's later g_free a use-after-free on the very next
+ * line: GLib holds the same user_data pointer to pass to both. */
 static gboolean thumb_loader_deliver(gpointer user_data) {
     ThumbRequest* req = user_data;
     ThumbLoader* loader = req->loader;
 
-    if (req->cancellable != NULL && g_cancellable_is_cancelled(req->cancellable)) {
-        thumb_request_free(req);
-        thumb_loader_leave_idle(loader);
+    if (req->cancellable != NULL && g_cancellable_is_cancelled(req->cancellable))
         return G_SOURCE_REMOVE;
-    }
 
     if (req->result == THUMB_OK) {
         GdkTexture* cached = thumb_loader_cache_insert(loader, req->sha256, req->texture);
@@ -167,9 +163,38 @@ static gboolean thumb_loader_deliver(gpointer user_data) {
         req->cb(req->result, NULL, req->user_data);
     }
 
+    return G_SOURCE_REMOVE;
+}
+
+/* GDestroyNotify for the idle source posted below. Runs exactly once no
+ * matter how the source's life ends: after thumb_loader_deliver returns, or
+ * directly if the source is destroyed without ever being dispatched (e.g.
+ * the main context is torn down first). This is the single place req is
+ * freed — a texture loaded by the worker but never installed by
+ * thumb_loader_deliver (cancelled before or after that call) is still
+ * released via thumb_request_free, so no path here leaks it. It is also
+ * where the ref taken in thumb_loader_post_result is given back, so the
+ * loader cannot be finalized while a post is outstanding without needing
+ * dispose to wait on or drive the main loop itself. */
+static void thumb_loader_post_destroy(gpointer user_data) {
+    ThumbRequest* req = user_data;
+    ThumbLoader* loader = req->loader;
     thumb_request_free(req);
     thumb_loader_leave_idle(loader);
-    return G_SOURCE_REMOVE;
+    g_object_unref(loader);
+}
+
+/* Posts req for delivery on the main thread. The idle source itself holds
+ * the reference that keeps loader alive until delivery happens (or the
+ * source is destroyed undelivered) — not req, which only borrows loader.
+ * That is what lets dispose join workers and finalize proceed without
+ * pumping the main context: the last outstanding post, whenever it runs or
+ * is destroyed, drops the loader's last ref and the object is freed from
+ * there, not from a dispose that has to wait around for it. */
+static void thumb_loader_post_result(ThumbLoader* self, ThumbRequest* req) {
+    thumb_loader_enter_idle(self);
+    g_object_ref(self);
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, thumb_loader_deliver, req, thumb_loader_post_destroy);
 }
 
 static gpointer thumb_loader_worker(gpointer data) {
@@ -215,8 +240,7 @@ static gpointer thumb_loader_worker(gpointer data) {
             continue;
         }
 
-        thumb_loader_enter_idle(self);
-        g_idle_add(thumb_loader_deliver, req);
+        thumb_loader_post_result(self, req);
     }
 
     return NULL;
@@ -227,30 +251,43 @@ static gpointer thumb_loader_worker(gpointer data) {
  * still inside phig_thumb_lookup on it — g_thread_join guarantees exactly
  * that for each thread. One THUMB_LOADER_STOP per worker is enough to stop
  * all of them, since each worker consumes exactly one item before exiting.
+ * Guarded on n_threads rather than on self->workers being non-NULL: with
+ * n_threads == 0, g_new0(GThread*, 0) returns NULL (a zero-size allocation is
+ * not distinct from "no array"), so a NULL check here would also skip
+ * shutdown entirely for a loader with no workers to join in the first place —
+ * which is fine to skip, but the queue drain below is not, and must not be
+ * folded into the same guard.
  *
- * Joining workers only guarantees no *new* idle source will be queued; idle
- * sources already queued still need a main-loop iteration to actually run
- * thumb_loader_deliver. dispose runs on the main thread, so it cannot just
- * g_cond_wait for pending_idle to drop to zero — nothing would ever dispatch
- * those idle sources while this thread is blocked. Instead it drives the
- * default main context itself until the count clears. */
+ * Joining workers only stops new requests from being popped and looked up;
+ * it says nothing about requests already sitting in the queue (a shutdown
+ * with more queued work than workers had time to drain) or about idle
+ * sources already posted to the main context. The former are drained and
+ * freed directly here — nothing else will ever pop them once no worker
+ * remains. The latter are not waited on: each holds its own ref on self (see
+ * thumb_loader_post_result), so the object this dispose belongs to is kept
+ * alive by them for as long as any are outstanding, and g_object_unref simply
+ * is not called again until the last one lets go. dispose has no need to
+ * pump the main context to find out when that happens, and must not — that
+ * would run arbitrary application callbacks (including this loader's own
+ * deliveries, and completely unrelated idle/timeout sources) as a side
+ * effect of the caller's g_object_unref, on a partially-torn-down object. */
 static void thumb_loader_dispose(GObject* obj) {
     ThumbLoader* self = PHIG_THUMB_LOADER(obj);
 
-    if (self->workers != NULL) {
+    if (self->n_threads > 0) {
         for (guint i = 0; i < self->n_threads; i++)
             g_async_queue_push(self->queue, THUMB_LOADER_STOP);
         for (guint i = 0; i < self->n_threads; i++)
             g_thread_join(self->workers[i]);
         g_clear_pointer(&self->workers, g_free);
+    }
 
-        g_mutex_lock(&self->idle_lock);
-        while (self->pending_idle > 0) {
-            g_mutex_unlock(&self->idle_lock);
-            g_main_context_iteration(NULL, TRUE);
-            g_mutex_lock(&self->idle_lock);
+    if (self->queue != NULL) {
+        gpointer item;
+        while ((item = g_async_queue_try_pop(self->queue)) != NULL) {
+            if (item != THUMB_LOADER_STOP)
+                thumb_request_free(item);
         }
-        g_mutex_unlock(&self->idle_lock);
     }
 
     G_OBJECT_CLASS(thumb_loader_parent_class)->dispose(obj);
@@ -319,4 +356,11 @@ gsize thumb_loader_cache_bytes(ThumbLoader* self) {
 
 gint thumb_loader_queue_length(ThumbLoader* self) {
     return g_async_queue_length(self->queue);
+}
+
+guint thumb_loader_pending_idle_count(ThumbLoader* self) {
+    g_mutex_lock(&self->idle_lock);
+    guint count = self->pending_idle;
+    g_mutex_unlock(&self->idle_lock);
+    return count;
 }
