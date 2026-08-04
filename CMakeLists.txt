@@ -71,6 +71,8 @@ add_library(phig-core STATIC
     src/lockfile.cpp
     src/parallel.cpp
     src/scan_engine.cpp
+    src/thumbs_engine.cpp
+    src/faces_engine.cpp
 )
 
 set_target_properties(phig-core PROPERTIES
@@ -203,6 +205,8 @@ add_executable(phig-tests
     tests/test_parallel.cpp
     tests/test_progress_queue.cpp
     tests/test_scan_engine.cpp
+    tests/test_thumbs_engine.cpp
+    tests/test_faces_engine.cpp
     tests/test_libphig_query.cpp
     tests/test_libphig_abi.cpp
     tests/test_libphig_mutate.cpp

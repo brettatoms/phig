@@ -14,7 +14,6 @@
 #include <iostream>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <queue>
 #include <set>
@@ -30,6 +29,7 @@
 #include "duplicates.h"
 #include "exif.h"
 #include "faces.h"
+#include "faces_engine.h"
 #include "hasher.h"
 #include "lockfile.h"
 #include "log.h"
@@ -37,7 +37,6 @@
 #include "models.h"
 #include "organize_exec.h"
 #include "organize_plan.h"
-#include "parallel.h"
 #include "paths.h"
 #include "relink.h"
 #include "remove_exec.h"
@@ -46,6 +45,7 @@
 #include "selection.h"
 #include "sidecar.h"
 #include "thumbs.h"
+#include "thumbs_engine.h"
 #include "types.h"
 #include "version.h"
 
@@ -1264,76 +1264,58 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
             return 1;
         }
 
-        auto images = db.get_all_images();
-
-        if (!matches.empty() || !excludes.empty()) {
-            images.erase(std::remove_if(images.begin(), images.end(),
-                                        [&](const ImageInfo& img) {
-                                            return !passes_selection(img.path, matches, excludes);
-                                        }),
-                         images.end());
-        }
-
-        std::cout << "Generating thumbnails for " << images.size() << " images...\n";
-
-        int num_threads;
-        if (parallel > 0) {
-            num_threads = parallel;
-        } else {
-            num_threads = std::max(1u, std::thread::hardware_concurrency());
-        }
-
         CancelToken cancel;
         ScopedInterruptHandler interrupt_guard(cancel);
 
-        std::atomic<size_t> generated{0};
-        std::atomic<size_t> skipped{0};
-        std::atomic<size_t> errors{0};
+        ThumbsOptions opts;
+        opts.matches = matches;
+        opts.excludes = excludes;
+        opts.force = force;
+        opts.parallel = parallel;
 
-        auto worker = [&](size_t idx, int) {
-            const auto& img = images[idx];
-            if (img.sha256.empty()) {
-                skipped.fetch_add(1);
-                return;
-            }
+        // The engine runs on a worker thread and this thread renders, so a
+        // per-file progress write can never be interleaved with the engine's
+        // own state updates.
+        ProgressQueue<ThumbsProgress> progress(1024);
+        ThumbsEngine engine(opts, db);
 
-            if (!force && thumb_exists(img.sha256)) {
-                skipped.fetch_add(1);
-                size_t done = generated.load() + skipped.load() + errors.load();
-                std::cout << "\r[" << done << "/" << images.size() << "] " << std::flush;
-                return;
-            }
-
+        ThumbsResult result;
+        std::exception_ptr engine_error;
+        std::thread worker([&] {
             try {
-                bool ok = false;
-                if (img.media_type == "video") {
-                    // Extract keyframe for video thumbnail
-                    auto kf = extract_video_keyframe(img.path);
-                    if (!kf.frame.empty()) {
-                        ok = generate_thumb(kf.frame, img.sha256);
-                    }
-                } else {
-                    ok = generate_thumb(img.path, img.sha256);
-                }
-                if (ok) {
-                    generated.fetch_add(1);
-                } else {
-                    errors.fetch_add(1);
-                }
+                result = engine.run(cancel, &progress);
             } catch (...) {
-                errors.fetch_add(1);
+                engine_error = std::current_exception();
             }
+            progress.close();
+        });
 
-            size_t done = generated.load() + skipped.load() + errors.load();
-            fs::path p(img.path);
-            std::string display = (p.parent_path().filename() / p.filename()).string();
-            std::cout << "\r\033[K[" << done << "/" << images.size() << "] " << display
-                      << std::flush;
-        };
+        ThumbsProgress p;
+        while (progress.pop(p)) {
+            switch (p.stage) {
+                case ThumbsStage::Selected:
+                    std::cout << "Generating thumbnails for " << p.total << " images...\n";
+                    break;
+                case ThumbsStage::FileDone:
+                    if (p.show_path) {
+                        fs::path path(p.path);
+                        std::string display =
+                            (path.parent_path().filename() / path.filename()).string();
+                        std::cout << "\r\033[K[" << p.done << "/" << p.total << "] " << display
+                                  << std::flush;
+                    } else {
+                        std::cout << "\r[" << p.done << "/" << p.total << "] " << std::flush;
+                    }
+                    break;
+            }
+        }
+        worker.join();
 
-        bool completed = parallel_for_each(images.size(), num_threads, cancel, worker);
+        if (engine_error) {
+            std::rethrow_exception(engine_error);
+        }
 
-        if (!completed) {
+        if (!result.completed) {
             std::cout << "\n\nInterrupted. Progress saved.\n";
         }
 
@@ -1341,9 +1323,9 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
         auto secs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() / 1000.0;
 
         std::cout << "\n\nDone in " << secs << "s\n"
-                  << "  Generated: " << generated.load() << "\n"
-                  << "  Skipped:   " << skipped.load() << "\n"
-                  << "  Errors:    " << errors.load() << "\n";
+                  << "  Generated: " << result.generated << "\n"
+                  << "  Skipped:   " << result.skipped << "\n"
+                  << "  Errors:    " << result.errors << "\n";
 
         return 0;
 
@@ -1558,104 +1540,83 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
 
     } else if (subcmd == "rebuild") {
         // Parse match/filter flags
-        std::vector<std::string> matches, excludes;
+        FacesRebuildOptions opts;
         int parallel = default_parallel;
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
-                matches.push_back(expand_tilde(argv[++i]));
+                opts.matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--exclude" && i + 1 < argc) {
-                excludes.push_back(expand_tilde(argv[++i]));
+                opts.excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--parallel" && i + 1 < argc) {
                 parallel = std::stoi(argv[++i]);
             } else if (arg == "--db") {
                 i++;  // already handled
             }
         }
-
-        auto all_images = db.get_all_images();
-
-        // Apply match/filter
-        std::vector<ImageInfo> images;
-        for (const auto& img : all_images) {
-            if (passes_selection(img.path, matches, excludes)) {
-                images.push_back(img);
-            }
-        }
-
-        if (images.empty()) {
-            std::cout << "No matching images found.\n";
-            return 0;
-        }
-
-        std::cout << "Rebuilding face data for " << images.size() << " images...\n";
-
-        // Determine thread count
-        int num_threads;
-        if (parallel > 0) {
-            num_threads = parallel;
-        } else {
-            num_threads = std::min(static_cast<int>(std::thread::hardware_concurrency()) / 2, 4);
-            num_threads = std::max(num_threads, 1);
-        }
-
-        // Create per-thread detectors
-        std::cout << "Loading face recognition models (" << num_threads << " instances)...\n";
-        std::vector<std::unique_ptr<FaceDetector>> detectors;
-        detectors.reserve(num_threads);
-        for (int i = 0; i < num_threads; i++) {
-            detectors.push_back(std::make_unique<FaceDetector>());
-        }
-
-        std::atomic<size_t> total_faces{0};
-        std::mutex db_mutex;
+        opts.parallel = parallel;
 
         CancelToken cancel;
         ScopedInterruptHandler interrupt_guard(cancel);
 
-        auto worker = [&](size_t idx, int worker_id) {
-            const auto& img_info = images[idx];
-            cv::Mat img = decode_image(img_info.path);
-            if (img.empty()) return;
+        // The engine runs on a worker thread and this thread renders, so a
+        // per-file progress write can never be interleaved with the engine's
+        // own state updates.
+        ProgressQueue<FacesProgress> progress(1024);
+        FacesEngine engine(opts, db);
 
-            auto faces = detectors[worker_id]->detect(img);
+        FacesResult result;
+        std::exception_ptr engine_error;
+        std::thread worker([&] {
+            try {
+                result = engine.run(cancel, &progress);
+            } catch (...) {
+                engine_error = std::current_exception();
+            }
+            progress.close();
+        });
 
-            {
-                std::lock_guard<std::mutex> lock(db_mutex);
-                int64_t image_id = db.get_image_id(img_info.path);
-                if (image_id >= 0) {
-                    // Delete-then-reinsert must be atomic: if the delete ran
-                    // outside the transaction and we were interrupted before
-                    // commit, the old faces would be gone with no re-detection.
-                    db.begin_transaction();
-                    try {
-                        db.delete_faces_for_image(image_id);
-                        for (const auto& face : faces) {
-                            int64_t face_id = db.insert_face(image_id, face);
-                            db.auto_label_face(face_id, face.embedding);
-                        }
-                        db.commit_transaction();
-                        total_faces.fetch_add(faces.size());
-                    } catch (...) {
-                        db.rollback_transaction();
-                        throw;
+        FacesProgress p;
+        while (progress.pop(p)) {
+            switch (p.stage) {
+                case FacesStage::Selected:
+                    if (p.total == 0) {
+                        std::cout << "No matching images found.\n";
+                    } else {
+                        std::cout << "Rebuilding face data for " << p.total << " images...\n";
                     }
+                    break;
+                case FacesStage::LoadingFaceModels:
+                    std::cout << "Loading face recognition models (" << p.total
+                              << " instances)...\n";
+                    break;
+                case FacesStage::FileDone: {
+                    fs::path path(p.path);
+                    std::string display =
+                        (path.parent_path().filename() / path.filename()).string();
+                    std::cout << "\r\033[K[" << p.done << "/" << p.total << "] " << display
+                              << std::flush;
+                    break;
                 }
             }
+        }
+        worker.join();
 
-            fs::path p(img_info.path);
-            std::string display = (p.parent_path().filename() / p.filename()).string();
-            std::cout << "\r\033[K[" << (idx + 1) << "/" << images.size() << "] " << display
-                      << std::flush;
-        };
+        if (engine_error) {
+            std::rethrow_exception(engine_error);
+        }
 
-        bool completed = parallel_for_each(images.size(), num_threads, cancel, worker);
+        // "No matching images found." was already printed above from the
+        // Selected update (p.total == 0); stop here so nothing below it prints.
+        if (result.total_selected == 0) {
+            return 0;
+        }
 
-        if (!completed) {
+        if (!result.completed) {
             std::cout << "\n\nInterrupted. Progress saved.\n";
         }
 
-        std::cout << "\n\nDone. " << total_faces.load() << " faces detected.\n";
+        std::cout << "\n\nDone. " << result.faces_detected << " faces detected.\n";
         return 0;
 
     } else if (subcmd == "list") {
