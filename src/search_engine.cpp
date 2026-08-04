@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <unordered_map>
 
+#include "duplicates.h"
+#include "selection.h"
+
 std::vector<Database::FaceSearchResult> dedupe_face_matches(
     std::vector<Database::FaceSearchResult> matches) {
     std::unordered_map<std::string, size_t> best;  // path -> index into `out`
@@ -27,4 +30,71 @@ std::vector<Database::FaceSearchResult> dedupe_face_matches(
                          return a.distance < b.distance;
                      });
     return out;
+}
+
+SearchEngine::SearchEngine(const SearchQuery& query, Database& db) : query_(query), db_(db) {}
+
+SearchResult SearchEngine::run() {
+    SearchResult result;
+    const bool selecting = !query_.matches.empty() || !query_.excludes.empty();
+
+    switch (query_.mode) {
+        case SearchMode::Person:
+            result.paths = db_.get_images_for_person(query_.person);
+            // Path selection and limit still apply.
+            if (selecting) {
+                result.paths.erase(std::remove_if(result.paths.begin(), result.paths.end(),
+                                                  [&](const std::string& p) {
+                                                      return !passes_selection(p, query_.matches,
+                                                                               query_.excludes);
+                                                  }),
+                                   result.paths.end());
+            }
+            if (query_.limit > 0 && static_cast<int>(result.paths.size()) > query_.limit) {
+                result.paths.resize(query_.limit);
+            }
+            return result;
+
+        case SearchMode::Similar: {
+            struct Scored {
+                ImageInfo info;
+                int distance;
+            };
+            std::vector<Scored> scored;
+            for (auto& img : db_.get_all_images()) {
+                int dist = hamming_distance(query_.phash, img.phash);
+                if (dist <= query_.phash_threshold) scored.push_back({std::move(img), dist});
+            }
+            std::sort(scored.begin(), scored.end(),
+                      [](const Scored& a, const Scored& b) { return a.distance < b.distance; });
+            for (auto& s : scored) result.images.push_back(std::move(s.info));
+            break;
+        }
+
+        case SearchMode::Face:
+            // Task 4.
+            break;
+
+        case SearchMode::Filter: {
+            Database::SearchCriteria criteria = query_.filter;
+            // Only push the limit into SQL when no path selection is pending:
+            // truncating before selection would return fewer rows than asked for.
+            criteria.limit = selecting ? -1 : query_.limit;
+            result.images = db_.search(criteria);
+            break;
+        }
+    }
+
+    if (selecting) {
+        result.images.erase(std::remove_if(result.images.begin(), result.images.end(),
+                                           [&](const ImageInfo& img) {
+                                               return !passes_selection(img.path, query_.matches,
+                                                                        query_.excludes);
+                                           }),
+                            result.images.end());
+    }
+    if (query_.limit > 0 && static_cast<int>(result.images.size()) > query_.limit) {
+        result.images.resize(query_.limit);
+    }
+    return result;
 }
