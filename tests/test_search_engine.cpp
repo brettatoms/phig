@@ -2,6 +2,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -297,4 +298,130 @@ TEST(SearchEnginePerson, IgnoresPathSelectionAndLimit) {
     EXPECT_EQ(r.paths.size(), 3u) << "selection and limit must not apply to person mode";
     EXPECT_NE(std::find(r.paths.begin(), r.paths.end(), drop), r.paths.end())
         << "drop_1.jpg would be excluded by the pending match pattern if selection ran";
+}
+
+namespace {
+// A 128-float embedding that is all `v`. Two such embeddings are at a
+// predictable distance from each other, which is what makes threshold and
+// ordering assertions checkable without real face data.
+std::array<float, 128> flat_embedding(float v) {
+    std::array<float, 128> e{};
+    e.fill(v);
+    return e;
+}
+}  // namespace
+
+TEST(SearchEngineFace, ReturnsMatchesInMatchesNotImages) {
+    ScratchSearch s;
+    std::string p = s.add("a.jpg", "jpg", 0);
+    int64_t id = s.db->get_image_id(p);
+    ASSERT_GE(id, 0);
+    FaceInfo f;
+    f.embedding = flat_embedding(0.1f);
+    s.db->insert_face(id, f);
+
+    SearchQuery q;
+    q.mode = SearchMode::Face;
+    q.face_embeddings.push_back(flat_embedding(0.1f));
+    q.face_threshold = 10.0f;  // generous: this test is about plumbing, not ranking
+
+    auto r = SearchEngine(q, *s.db).run();
+
+    EXPECT_FALSE(r.matches.empty()) << "face mode fills `matches`";
+    EXPECT_TRUE(r.images.empty()) << "face mode must not fill `images`";
+}
+
+TEST(SearchEngineFace, CrossBatchConflictKeepsTheClosestMatch) {
+    // The bug this fixes, end to end. A single-image, two-face fixture is NOT
+    // enough to catch this: `search_faces` sorts within a call, so with only
+    // one path in the database, each batch already contains that path's own
+    // minimum and first-seen-wins accidentally agrees with closest-wins. To
+    // force a genuine cross-batch conflict, `decoy.jpg` gives query face 1 an
+    // exact match, pushing `target.jpg`'s poor-but-present face out to the
+    // SECOND slot of batch 1 — and `q.limit = 2` (which becomes per_face_limit)
+    // trims batch 1 to exactly those two rows, so target's true (exact) match
+    // in batch 2 never gets a chance to be "first seen". Do not simplify this
+    // fixture by dropping the decoy or the limit; doing so re-hides the bug, as
+    // happened once already while designing this test.
+    ScratchSearch s;
+    std::string target_path = s.add("target.jpg", "jpg", 0);
+    int64_t target_id = s.db->get_image_id(target_path);
+    ASSERT_GE(target_id, 0);
+    FaceInfo target_poor;
+    target_poor.embedding = flat_embedding(0.50f);  // poor match for query 1
+    target_poor.x = target_poor.y = target_poor.width = target_poor.height = 1;
+    s.db->insert_face(target_id, target_poor);
+    FaceInfo target_exact;
+    target_exact.embedding = flat_embedding(0.10f);  // exact match for query 2
+    target_exact.x = target_exact.y = target_exact.width = target_exact.height = 2;
+    s.db->insert_face(target_id, target_exact);
+
+    std::string decoy_path = s.add("decoy.jpg", "jpg", 0);
+    int64_t decoy_id = s.db->get_image_id(decoy_path);
+    ASSERT_GE(decoy_id, 0);
+    FaceInfo decoy_face;
+    decoy_face.embedding = flat_embedding(0.90f);  // exact match for query 1
+    decoy_face.x = decoy_face.y = decoy_face.width = decoy_face.height = 3;
+    s.db->insert_face(decoy_id, decoy_face);
+
+    SearchQuery q;
+    q.mode = SearchMode::Face;
+    q.face_embeddings.push_back(flat_embedding(0.90f));  // exact on decoy, poor on target
+    q.face_embeddings.push_back(flat_embedding(0.10f));  // exact on target
+    q.face_threshold = 100.0f;
+    q.limit = 2;  // load-bearing: caps per_face_limit at 2, see comment above
+
+    auto r = SearchEngine(q, *s.db).run();
+
+    ASSERT_EQ(r.matches.size(), 2u);
+    auto it = std::find_if(r.matches.begin(), r.matches.end(), [](const auto& m) {
+        return m.path.find("target") != std::string::npos;
+    });
+    ASSERT_NE(it, r.matches.end());
+    EXPECT_NEAR(it->distance, 0.0f, 1e-3)
+        << "kept distance must be the closest match, not whichever query face's batch saw it "
+           "first";
+}
+
+TEST(SearchEngineFace, RespectsTheDistanceThreshold) {
+    ScratchSearch s;
+    std::string p = s.add("a.jpg", "jpg", 0);
+    int64_t id = s.db->get_image_id(p);
+    FaceInfo f;
+    f.embedding = flat_embedding(0.9f);
+    s.db->insert_face(id, f);
+
+    SearchQuery q;
+    q.mode = SearchMode::Face;
+    q.face_embeddings.push_back(flat_embedding(0.1f));
+    q.face_threshold = 0.001f;  // far too tight for this pair
+
+    EXPECT_TRUE(SearchEngine(q, *s.db).run().matches.empty());
+}
+
+TEST(SearchEngineFace, AppliesTheLimitAfterDeduplication) {
+    // Limiting before dedupe could return fewer rows than asked for.
+    ScratchSearch s;
+    for (int i = 0; i < 4; ++i) {
+        std::string p = s.add("f" + std::to_string(i) + ".jpg", "jpg", 0);
+        int64_t id = s.db->get_image_id(p);
+        FaceInfo f;
+        f.embedding = flat_embedding(0.1f + 0.01f * static_cast<float>(i));
+        s.db->insert_face(id, f);
+    }
+    SearchQuery q;
+    q.mode = SearchMode::Face;
+    q.face_embeddings.push_back(flat_embedding(0.1f));
+    q.face_threshold = 100.0f;
+    q.limit = 2;
+
+    EXPECT_EQ(SearchEngine(q, *s.db).run().matches.size(), 2u);
+}
+
+TEST(SearchEngineFace, NoQueryEmbeddingsYieldsNoMatches) {
+    ScratchSearch s;
+    s.add("a.jpg", "jpg", 0);
+    SearchQuery q;
+    q.mode = SearchMode::Face;
+    EXPECT_TRUE(SearchEngine(q, *s.db).run().matches.empty());
 }

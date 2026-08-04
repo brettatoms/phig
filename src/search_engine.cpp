@@ -1,6 +1,7 @@
 #include "search_engine.h"
 
 #include <algorithm>
+#include <iterator>
 #include <unordered_map>
 
 #include "duplicates.h"
@@ -62,9 +63,23 @@ SearchResult SearchEngine::run() {
             break;
         }
 
-        case SearchMode::Face:
-            // Task 4.
-            break;
+        case SearchMode::Face: {
+            // One KNN query per detected query face, then collapse to one entry
+            // per path keeping the closest distance. `search_faces` sorts within
+            // a single call, so the runs must be merged rather than concatenated.
+            const int per_face_limit = query_.limit > 0 ? query_.limit : 100;
+            std::vector<Database::FaceSearchResult> all;
+            for (const auto& embedding : query_.face_embeddings) {
+                auto batch = db_.search_faces(embedding, query_.face_threshold, per_face_limit);
+                all.insert(all.end(), std::make_move_iterator(batch.begin()),
+                           std::make_move_iterator(batch.end()));
+            }
+            result.matches = dedupe_face_matches(std::move(all));
+            if (query_.limit > 0 && static_cast<int>(result.matches.size()) > query_.limit) {
+                result.matches.resize(query_.limit);
+            }
+            return result;
+        }
 
         case SearchMode::Filter: {
             Database::SearchCriteria criteria = query_.filter;
