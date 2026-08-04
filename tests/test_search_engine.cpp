@@ -384,6 +384,8 @@ TEST(SearchEngineFace, CrossBatchConflictKeepsTheClosestMatch) {
 }
 
 TEST(SearchEngineFace, RespectsTheDistanceThreshold) {
+    // Checks that the threshold is plumbed through to `Database::search_faces`,
+    // whose internal `if (dist > threshold) continue;` does the actual filtering.
     ScratchSearch s;
     std::string p = s.add("a.jpg", "jpg", 0);
     int64_t id = s.db->get_image_id(p);
@@ -400,22 +402,59 @@ TEST(SearchEngineFace, RespectsTheDistanceThreshold) {
 }
 
 TEST(SearchEngineFace, AppliesTheLimitAfterDeduplication) {
-    // Limiting before dedupe could return fewer rows than asked for.
+    // Limiting before dedupe could return fewer distinct paths than asked for.
+    // `per_face_limit` equals `q.limit` (2) and caps EACH batch at the database,
+    // so a single query embedding can never make `all` exceed the limit — dedup
+    // then has nothing left to do. Two query embeddings are required: each is
+    // capped at 2 rows, but together they can produce up to 4 rows, more than
+    // the limit, which is what makes the post-dedup resize meaningfully
+    // different from a pre-dedup one. `both.jpg` has two faces that each win
+    // their own query (so it appears once per batch, twice total); `other.jpg`
+    // has one face that also matches both queries (same: twice total). Limiting
+    // the raw 4 rows to 2 before dedup can keep two rows of the SAME path and
+    // drop the other path entirely; limiting after dedup (2 distinct paths)
+    // keeps both. Do not shrink this to one query embedding — that shape passes
+    // even if the limit is applied before dedup.
     ScratchSearch s;
-    for (int i = 0; i < 4; ++i) {
-        std::string p = s.add("f" + std::to_string(i) + ".jpg", "jpg", 0);
-        int64_t id = s.db->get_image_id(p);
-        FaceInfo f;
-        f.embedding = flat_embedding(0.1f + 0.01f * static_cast<float>(i));
-        s.db->insert_face(id, f);
-    }
+    std::string both = s.add("both.jpg", "jpg", 0);
+    int64_t both_id = s.db->get_image_id(both);
+    ASSERT_GE(both_id, 0);
+    FaceInfo f1;
+    f1.embedding = flat_embedding(0.10f);
+    f1.x = f1.y = f1.width = f1.height = 1;
+    s.db->insert_face(both_id, f1);
+    FaceInfo f2;
+    f2.embedding = flat_embedding(0.20f);
+    f2.x = f2.y = f2.width = f2.height = 2;
+    s.db->insert_face(both_id, f2);
+
+    std::string other = s.add("other.jpg", "jpg", 0);
+    int64_t other_id = s.db->get_image_id(other);
+    ASSERT_GE(other_id, 0);
+    FaceInfo f3;
+    f3.embedding = flat_embedding(0.80f);
+    f3.x = f3.y = f3.width = f3.height = 3;
+    s.db->insert_face(other_id, f3);
+
     SearchQuery q;
     q.mode = SearchMode::Face;
-    q.face_embeddings.push_back(flat_embedding(0.1f));
+    // Query 1 (0.10) ranks both.jpg's two faces (f1, f2) as its closest two,
+    // pushing other.jpg's face (f3) out of that batch's top-2 entirely. Query 2
+    // (0.80) ranks other.jpg's face (f3) first and both.jpg's f2 second,
+    // pushing f1 out. So `all` (batch1 ++ batch2) is [f1, f2, f3, f2] — its
+    // first two entries are BOTH `both.jpg`. Resizing `all` to 2 before dedup
+    // keeps only those two identical-path rows and loses `other.jpg` entirely;
+    // resizing the deduped (2-distinct-path) result instead keeps both.
+    q.face_embeddings.push_back(flat_embedding(0.10f));
+    q.face_embeddings.push_back(flat_embedding(0.80f));
     q.face_threshold = 100.0f;
     q.limit = 2;
 
-    EXPECT_EQ(SearchEngine(q, *s.db).run().matches.size(), 2u);
+    auto r = SearchEngine(q, *s.db).run();
+
+    ASSERT_EQ(r.matches.size(), 2u);
+    EXPECT_NE(r.matches[0].path, r.matches[1].path)
+        << "must be 2 distinct paths, not 2 rows of one";
 }
 
 TEST(SearchEngineFace, NoQueryEmbeddingsYieldsNoMatches) {

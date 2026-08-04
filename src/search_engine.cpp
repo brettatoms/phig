@@ -65,8 +65,11 @@ SearchResult SearchEngine::run() {
 
         case SearchMode::Face: {
             // One KNN query per detected query face, then collapse to one entry
-            // per path keeping the closest distance. `search_faces` sorts within
-            // a single call, so the runs must be merged rather than concatenated.
+            // per path keeping the closest distance among the rows each query
+            // returned. `search_faces` sorts within a single call, so the runs
+            // must be merged rather than concatenated. `per_face_limit` truncates
+            // each batch before the merge, so a path's true best face is missed
+            // if it did not survive truncation in any batch.
             const int per_face_limit = query_.limit > 0 ? query_.limit : 100;
             std::vector<Database::FaceSearchResult> all;
             for (const auto& embedding : query_.face_embeddings) {

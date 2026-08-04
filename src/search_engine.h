@@ -59,13 +59,16 @@ struct SearchResult {
     std::vector<std::string> paths;                   // Person
 };
 
-// Collapses face matches to one entry per path, keeping the SMALLEST distance,
-// then sorts ascending by distance.
+// Collapses face matches to one entry per path, keeping the SMALLEST distance
+// among the rows each per-face query returned, then sorts ascending by
+// distance.
 //
 // Matches arrive as one sorted run per query face, so a path can appear in
 // several runs at different distances. Deduplicating on first-seen would rank an
 // image by whichever query face happened to be detected first rather than by its
-// best match, and under a limit could drop it entirely.
+// best match, and under a limit could drop it entirely. This does not recover a
+// path's true best face if `per_face_limit` truncated it out of every batch
+// before dedup ever saw it.
 //
 // Free function, not a private method, so the rule is testable without a
 // database or face models.
