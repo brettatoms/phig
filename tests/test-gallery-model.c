@@ -78,6 +78,33 @@ static void test_row_strings_survive_page_eviction(Fixture* f, gconstpointer unu
     g_object_unref(row);
 }
 
+static void test_placeholders_are_unique_per_position(Fixture* f, gconstpointer unused) {
+    (void)unused;
+    /* GTK's list-item manager keys recycled widgets by item pointer identity
+     * (glib#3030): one placeholder object shared across positions makes it
+     * pick a widget for the wrong position at random, which is what shipped
+     * as 223 "Duplicate item detected" warnings and an empty-looking grid.
+     * GtkSelectionModel separately requires that repeated queries of the
+     * SAME position return the same object, or selection breaks. Both must
+     * hold at once: distinct positions get distinct placeholders, and asking
+     * for one position twice gets the same placeholder both times. */
+    GObject* a1 = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
+    GObject* b1 = g_list_model_get_item(G_LIST_MODEL(f->model), 400);
+    GObject* a2 = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
+
+    g_assert_true(PHIG_IS_IMAGE_ROW(a1));
+    g_assert_true(PHIG_IS_IMAGE_ROW(b1));
+    g_assert_true(phig_image_row_is_placeholder(PHIG_IMAGE_ROW(a1)));
+    g_assert_true(phig_image_row_is_placeholder(PHIG_IMAGE_ROW(b1)));
+
+    g_assert_true(a1 != b1);  /* distinct positions: distinct objects */
+    g_assert_true(a1 == a2);  /* same position asked twice: same object */
+
+    g_object_unref(a1);
+    g_object_unref(b1);
+    g_object_unref(a2);
+}
+
 static void test_resident_pages_stay_bounded(Fixture* f, gconstpointer unused) {
     (void)unused;
     for (guint i = 0; i < (guint)f->total; i += 200)
@@ -154,6 +181,7 @@ int main(int argc, char** argv) {
     T("get-item-no-block", test_get_item_returns_a_row_without_blocking);
     T("row-strings-survive-eviction", test_row_strings_survive_page_eviction);
     T("resident-pages-bounded", test_resident_pages_stay_bounded);
+    T("placeholders-unique-per-position", test_placeholders_are_unique_per_position);
     T("async-fetch-emits-items-changed", test_async_fetch_emits_items_changed);
 #undef T
     return g_test_run();

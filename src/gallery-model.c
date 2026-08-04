@@ -10,6 +10,13 @@
 #define PHIG_PAGE_RADIUS 2
 #define PHIG_MAX_RESIDENT_PAGES (2 * PHIG_PAGE_RADIUS + 1)
 
+/* Cached per-position placeholders, capped independently of resident pages:
+ * a scroll that outruns fetches touches positions across many more pages
+ * than PHIG_MAX_RESIDENT_PAGES bounds, so this needs its own budget rather
+ * than inheriting that one. Sized to the same order of magnitude — a few
+ * pages' worth — since Task 7 tunes both against real scrolling together. */
+#define PHIG_MAX_PLACEHOLDERS (PHIG_MAX_RESIDENT_PAGES * PHIG_PAGE_SIZE)
+
 struct _PhigImageRow {
     GObject parent_instance;
     gboolean placeholder;
@@ -90,6 +97,18 @@ static void phig_page_free(PhigPage* page) {
     g_free(page);
 }
 
+/* One cached placeholder row for one non-resident position, with its own LRU
+ * timestamp so the placeholder table can be capped independently of pages. */
+typedef struct {
+    PhigImageRow* row;
+    gint64 last_used;
+} PhigPlaceholderEntry;
+
+static void phig_placeholder_entry_free(PhigPlaceholderEntry* entry) {
+    g_object_unref(entry->row);
+    g_free(entry);
+}
+
 struct _PhigGalleryModel {
     GObject parent_instance;
     phig_ctx* ctx;
@@ -99,11 +118,20 @@ struct _PhigGalleryModel {
     gint64 clock;
     GHashTable* pending; /* page_index being fetched -> TRUE, to avoid duplicate fetches */
 
-    /* One placeholder row, shared by every non-resident position. GtkSelectionModel
-     * compares items by pointer identity, so returning a fresh placeholder object
-     * on every get_item call would make two calls for the same still-unfetched
-     * position look like different items and break selection. */
-    PhigImageRow* placeholder;
+    /* Placeholder rows for non-resident positions, one per position, keyed by
+     * position (guint, via GUINT_TO_POINTER) -> PhigPlaceholderEntry*. GTK's
+     * list-item manager keys recycled widgets by item pointer identity: a
+     * single object shared across positions makes it pick a widget for the
+     * wrong position at random (glib#3030), and a fresh object per call
+     * breaks GtkSelectionModel's own identity tracking for repeated queries
+     * of the same position. One cached object per position satisfies both.
+     * Bounded the same way pages are: an LRU capped at
+     * PHIG_MAX_PLACEHOLDERS, independent of pages so a fast scroll that
+     * outruns fetches cannot grow it past that regardless of how many
+     * distinct pages get requested. Entries for a position are also dropped
+     * outright once that position's page lands (phig_gallery_model_install_page). */
+    GHashTable* placeholders;
+    gint64 placeholder_clock;
 
     /* ctx and query are borrowed from the caller, not owned, so pinning self
      * alive (the GWeakRef in FetchTaskData) does not keep them alive. in_flight
@@ -169,6 +197,51 @@ static void phig_gallery_model_evict_if_needed(PhigGalleryModel* self) {
     }
 }
 
+/* Returns the cached placeholder for position, creating and caching one if
+ * absent. Evicts the least-recently-used placeholder first if the table is
+ * already at its cap, so a scroll that outruns fetches cannot grow this
+ * table without bound regardless of how many distinct pages get touched. */
+static PhigImageRow* phig_gallery_model_get_placeholder(PhigGalleryModel* self, guint position) {
+    PhigPlaceholderEntry* entry =
+        g_hash_table_lookup(self->placeholders, GUINT_TO_POINTER(position));
+    if (entry != NULL) {
+        entry->last_used = ++self->placeholder_clock;
+        return entry->row;
+    }
+
+    if (g_hash_table_size(self->placeholders) >= PHIG_MAX_PLACEHOLDERS) {
+        GHashTableIter iter;
+        gpointer key, value;
+        gpointer lru_key = NULL;
+        PhigPlaceholderEntry* lru_entry = NULL;
+
+        g_hash_table_iter_init(&iter, self->placeholders);
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            PhigPlaceholderEntry* candidate = value;
+            if (lru_entry == NULL || candidate->last_used < lru_entry->last_used) {
+                lru_key = key;
+                lru_entry = candidate;
+            }
+        }
+        g_hash_table_remove(self->placeholders, lru_key);
+    }
+
+    entry = g_new0(PhigPlaceholderEntry, 1);
+    entry->row = phig_image_row_new_placeholder();
+    entry->last_used = ++self->placeholder_clock;
+    g_hash_table_insert(self->placeholders, GUINT_TO_POINTER(position), entry);
+    return entry->row;
+}
+
+/* Drops cached placeholders for [position, position + n_rows): those
+ * positions now have real rows, so nothing will ask get_item for a
+ * placeholder there again until the page is evicted. */
+static void phig_gallery_model_drop_placeholders(PhigGalleryModel* self, guint position,
+                                                  guint n_rows) {
+    for (guint i = 0; i < n_rows; i++)
+        g_hash_table_remove(self->placeholders, GUINT_TO_POINTER(position + i));
+}
+
 /* Inserts a fetched page, marks it most-recently-used, evicts if over budget,
  * and emits items-changed for the range it covers. */
 static void phig_gallery_model_install_page(PhigGalleryModel* self, PhigPage* page) {
@@ -177,6 +250,7 @@ static void phig_gallery_model_install_page(PhigGalleryModel* self, PhigPage* pa
     guint n_rows = page->n_rows;
     g_hash_table_insert(self->pages, GUINT_TO_POINTER(page->page_index), page);
     phig_gallery_model_evict_if_needed(self);
+    phig_gallery_model_drop_placeholders(self, position, n_rows);
     /* removed == added == n_rows: an in-place swap of placeholders for real
      * rows at the same positions. The total item count never changes after
      * construction, so this is not an insertion or a deletion. GTK compares
@@ -329,7 +403,7 @@ static gpointer phig_gallery_model_get_item(GListModel* list, guint position) {
     }
 
     phig_gallery_model_schedule_fetch(self, page_index);
-    return g_object_ref(self->placeholder);
+    return g_object_ref(phig_gallery_model_get_placeholder(self, position));
 }
 
 static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface) {
@@ -358,7 +432,7 @@ static void phig_gallery_model_finalize(GObject* obj) {
     PhigGalleryModel* self = PHIG_GALLERY_MODEL(obj);
     g_hash_table_destroy(self->pages);
     g_hash_table_destroy(self->pending);
-    g_object_unref(self->placeholder);
+    g_hash_table_destroy(self->placeholders);
     g_mutex_clear(&self->in_flight_lock);
     g_cond_clear(&self->in_flight_cond);
     G_OBJECT_CLASS(phig_gallery_model_parent_class)->finalize(obj);
@@ -373,7 +447,8 @@ static void phig_gallery_model_init(PhigGalleryModel* self) {
     self->pages =
         g_hash_table_new_full(NULL, NULL, NULL, (GDestroyNotify)phig_page_free);
     self->pending = g_hash_table_new(NULL, NULL);
-    self->placeholder = phig_image_row_new_placeholder();
+    self->placeholders =
+        g_hash_table_new_full(NULL, NULL, NULL, (GDestroyNotify)phig_placeholder_entry_free);
     g_mutex_init(&self->in_flight_lock);
     g_cond_init(&self->in_flight_cond);
 }
