@@ -216,10 +216,15 @@ TEST(SearchEngineFilter, LimitTruncatesWhenNoSelectionIsPending) {
 }
 
 TEST(SearchEngineSimilar, ReturnsRowsWithinThresholdSortedByDistance) {
+    // Insertion order is deliberately the REVERSE of the expected output order
+    // (worst match first, exact match last). `get_all_images` has no ORDER BY,
+    // so rows come back in insertion order; if a future edit "tidies" these
+    // into ascending-distance order, the assertions below would pass even with
+    // the distance sort deleted, silently disarming this test.
     ScratchSearch s;
-    s.add("exact.jpg", "jpg", 0xFFFFFFFFFFFFFFFFull);  // distance 0
-    s.add("near.jpg", "jpg", 0xFFFFFFFFFFFFFFFEull);   // distance 1
     s.add("far.jpg", "jpg", 0x0000000000000000ull);    // distance 64
+    s.add("near.jpg", "jpg", 0xFFFFFFFFFFFFFFFEull);   // distance 1
+    s.add("exact.jpg", "jpg", 0xFFFFFFFFFFFFFFFFull);  // distance 0
     SearchQuery q;
     q.mode = SearchMode::Similar;
     q.phash = 0xFFFFFFFFFFFFFFFFull;
@@ -243,13 +248,19 @@ TEST(SearchEngineSimilar, ThresholdIsInclusive) {
 }
 
 TEST(SearchEngineSimilar, LimitTruncatesAfterDistanceSort) {
-    // Similar mode has no SQL-level limit, so this can only pass if the final
-    // post-selection resize runs — unlike Filter mode, where the SQL limit alone
-    // can satisfy a same-shaped assertion.
+    // Similar mode has no SQL-level limit, so this can only pass if both the
+    // distance sort AND the final post-selection resize run — unlike Filter
+    // mode, where the SQL limit alone can satisfy a same-shaped assertion.
+    //
+    // Insertion order is deliberately the REVERSE of the expected output order
+    // (worst match first, exact match last). `get_all_images` has no ORDER BY,
+    // so rows come back in insertion order; if a future edit "tidies" these
+    // into ascending-distance order, the assertions below would pass even with
+    // the distance sort deleted, silently disarming this test.
     ScratchSearch s;
-    s.add("exact.jpg", "jpg", 0xFFFFFFFFFFFFFFFFull);  // distance 0
-    s.add("near.jpg", "jpg", 0xFFFFFFFFFFFFFFFEull);   // distance 1
     s.add("far.jpg", "jpg", 0xFFFFFFFFFFFFFFF0ull);    // distance 4
+    s.add("near.jpg", "jpg", 0xFFFFFFFFFFFFFFFEull);   // distance 1
+    s.add("exact.jpg", "jpg", 0xFFFFFFFFFFFFFFFFull);  // distance 0
     SearchQuery q;
     q.mode = SearchMode::Similar;
     q.phash = 0xFFFFFFFFFFFFFFFFull;
