@@ -14,7 +14,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(PHIG REQUIRED phig)
 pkg_check_modules(GTK REQUIRED gtk4 libadwaita-1)
 
-add_executable(phig-gtk src/main.c)
+add_executable(phig-gtk src/main.c src/gallery-model.c src/thumb-loader.c)
 target_compile_options(phig-gtk PRIVATE ${PHIG_GTK_WARNINGS})
 target_include_directories(phig-gtk PRIVATE ${PHIG_INCLUDE_DIRS} ${GTK_INCLUDE_DIRS})
 target_link_libraries(phig-gtk PRIVATE ${PHIG_LIBRARIES} ${GTK_LIBRARIES})
