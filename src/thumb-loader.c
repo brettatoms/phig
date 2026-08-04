@@ -22,6 +22,7 @@ static const int thumb_loader_stop_sentinel;
  * ever dispatched, so it cannot recreate that cycle. */
 typedef struct {
     ThumbLoader* loader;
+    int64_t image_id;
     char sha256[65];
     GCancellable* cancellable; /* reffed, or NULL */
     ThumbCallback cb;
@@ -215,6 +216,20 @@ static gpointer thumb_loader_worker(gpointer data) {
         bool exists = false;
         phig_status status = phig_thumb_lookup(self->ctx, req->sha256, path, sizeof(path), &exists);
 
+        if (status == PHIG_OK && !exists) {
+            /* Generation is far slower than a lookup or a file load (hundreds
+             * of milliseconds vs. about one), so by the time a queued request
+             * gets here the user may have scrolled past it — check
+             * cancellation immediately before paying that cost rather than
+             * after. */
+            if (req->cancellable != NULL && g_cancellable_is_cancelled(req->cancellable)) {
+                thumb_request_free(req);
+                continue;
+            }
+            if (phig_thumb_generate(self->ctx, req->image_id) == PHIG_OK)
+                status = phig_thumb_lookup(self->ctx, req->sha256, path, sizeof(path), &exists);
+        }
+
         if (status != PHIG_OK) {
             /* out_len is sized generously above; any failure here is a real
              * lookup error, not a too-small buffer. */
@@ -330,15 +345,17 @@ ThumbLoader* thumb_loader_new(phig_ctx* ctx, guint n_threads, gsize cache_bytes)
     return self;
 }
 
-void thumb_loader_request(ThumbLoader* self, const char* sha256, guint32 max_dim,
-                           GCancellable* cancellable, ThumbCallback cb, gpointer user_data) {
-    (void)max_dim; /* M0's backend serves one fixed cache size; see header. */
+void thumb_loader_request(ThumbLoader* self, int64_t image_id, const char* sha256,
+                           guint32 max_dim, GCancellable* cancellable, ThumbCallback cb,
+                           gpointer user_data) {
+    (void)max_dim; /* the backend serves one fixed cache size; see header. */
 
     if (cancellable != NULL && g_cancellable_is_cancelled(cancellable))
         return; /* never dispatched, so cb must not run: matches the header's contract */
 
     ThumbRequest* req = g_new0(ThumbRequest, 1);
     req->loader = self;
+    req->image_id = image_id;
     g_strlcpy(req->sha256, sha256, sizeof(req->sha256));
     req->cancellable = cancellable != NULL ? g_object_ref(cancellable) : NULL;
     req->cb = cb;

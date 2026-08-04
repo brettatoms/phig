@@ -140,8 +140,8 @@ static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item
     GCancellable* cancellable = g_cancellable_new();
     g_object_set_data_full(G_OBJECT(item), "phig-cancellable", cancellable, g_object_unref);
 
-    thumb_loader_request(loader, phig_image_row_get_sha256(row), PHIG_CELL_SIZE, cancellable,
-                          on_thumb_result, g_object_ref(item));
+    thumb_loader_request(loader, phig_image_row_get_id(row), phig_image_row_get_sha256(row),
+                          PHIG_CELL_SIZE, cancellable, on_thumb_result, g_object_ref(item));
 }
 
 /* unbind: cancel any outstanding request for this cell and clear the

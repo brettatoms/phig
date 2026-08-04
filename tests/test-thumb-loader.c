@@ -7,8 +7,11 @@
  * how to point this at a different machine's cache). */
 #define DEFAULT_HIT_SHA "603048e2b3b3a1c74dedce02521164e11bc985629fa88e840a445045d4e64990"
 
-/* All-zeroes: valid hex, 64 chars, guaranteed not to resolve to a cached file. */
+/* All-zeroes: valid hex, 64 chars, guaranteed not to resolve to a cached file.
+ * Paired with a nonexistent id so a miss on it also fails generation instead
+ * of generating a real thumbnail into the test database's cache. */
 #define MISS_SHA "0000000000000000000000000000000000000000000000000000000000000000"
+#define MISS_ID ((int64_t)-1)
 
 /* Five more real cached thumbnails, used only by the byte-budget test to
  * force eviction. Found by scanning the test database once; not asserted
@@ -92,7 +95,9 @@ static void test_hit_yields_texture(Fixture* f, gconstpointer unused) {
     Capture capture = {.loop = loop};
     guint timeout_id = arm_timeout(loop);
 
-    thumb_loader_request(f->loader, f->hit_sha, 256, NULL, on_thumb_capture, &capture);
+    /* hit_sha names an already-cached thumbnail, so the lookup reports a hit
+     * and image_id is never read; MISS_ID stands in for "not needed here". */
+    thumb_loader_request(f->loader, MISS_ID, f->hit_sha, 256, NULL, on_thumb_capture, &capture);
     g_main_loop_run(loop);
 
     disarm_timeout(timeout_id);
@@ -112,7 +117,7 @@ static void test_miss_yields_thumb_miss(Fixture* f, gconstpointer unused) {
     Capture capture = {.loop = loop};
     guint timeout_id = arm_timeout(loop);
 
-    thumb_loader_request(f->loader, MISS_SHA, 256, NULL, on_thumb_capture, &capture);
+    thumb_loader_request(f->loader, MISS_ID, MISS_SHA, 256, NULL, on_thumb_capture, &capture);
     g_main_loop_run(loop);
 
     disarm_timeout(timeout_id);
@@ -146,7 +151,8 @@ static void test_cancel_before_dispatch_never_calls_back(Fixture* f, gconstpoint
     g_cancellable_cancel(cancellable);
 
     gboolean called = FALSE;
-    thumb_loader_request(loader, f->hit_sha, 256, cancellable, on_thumb_must_not_run, &called);
+    thumb_loader_request(loader, MISS_ID, f->hit_sha, 256, cancellable, on_thumb_must_not_run,
+                          &called);
 
     g_assert_cmpint(thumb_loader_queue_length(loader), <=, 0);
 
@@ -199,7 +205,7 @@ static void test_cancel_after_dispatch_discards_result(Fixture* f, gconstpointer
     GCancellable* cancellable = g_cancellable_new();
     gboolean called = FALSE;
 
-    thumb_loader_request(f->loader, f->hit_sha, 256, cancellable, on_thumb_race, &called);
+    thumb_loader_request(f->loader, MISS_ID, f->hit_sha, 256, cancellable, on_thumb_race, &called);
     for (int waited_ms = 0; thumb_loader_pending_idle_count(f->loader) == 0 && waited_ms < 5000;
          waited_ms += 1)
         g_usleep(1000);
@@ -258,7 +264,7 @@ static void test_cache_respects_byte_budget(void) {
     guint timeout_id = arm_timeout(loop);
 
     for (guint i = 0; i < n; i++)
-        thumb_loader_request(loader, kExtraShas[i], 256, NULL, on_thumb_budget, &capture);
+        thumb_loader_request(loader, MISS_ID, kExtraShas[i], 256, NULL, on_thumb_budget, &capture);
 
     g_main_loop_run(loop);
     disarm_timeout(timeout_id);
