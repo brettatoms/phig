@@ -6,8 +6,14 @@
  * Clients must not read phig's SQLite schema or thumbnail cache layout
  * directly; this header is the contract.
  *
- * Thread safety: a phig_ctx is NOT thread-safe. Use one ctx per thread, or
- * serialize access externally.
+ * Thread safety: a phig_ctx may be called concurrently from multiple threads.
+ * The underlying SQLite connection is serialized internally. phig_last_error
+ * reports the last error on the calling thread, so it must be read on the
+ * same thread whose call failed — not from another thread, and not after a
+ * successful call on that thread has cleared it.
+ *
+ * Not covered by this: phig_config.thumbs_dir is resolved through a
+ * process-wide global (see below), independent of any phig_ctx.
  *
  * All dates are ISO-8601 TEXT ("YYYY-MM-DD HH:MM:SS"), never epoch integers.
  */

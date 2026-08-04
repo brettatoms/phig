@@ -19,8 +19,13 @@ struct phig_ctx {
     phig_access_mode mode = PHIG_READ_ONLY;
     std::string db_path;
     std::string thumbs_dir;
-    std::string last_error;
 };
+
+// The error from the last PHIG_TRY/PHIG_CATCH call on the calling thread.
+// Thread-local rather than per-ctx: an error is inherently per-call, and two
+// threads sharing one phig_ctx must not see each other's failures. Defined in
+// context.cpp.
+std::string& phig_thread_last_error();
 
 struct phig_query {
     Database::PageCriteria criteria;
@@ -135,15 +140,15 @@ void phig_acquire_write_lock(phig_ctx* ctx, std::unique_ptr<WriterLock>& out);
 // the ABI boundary. Requires a `phig_ctx* ctx` in scope with a valid pointer.
 #define PHIG_TRY(ctx)                                  \
     if ((ctx) == nullptr) return PHIG_ERR_INVALID_ARG; \
-    (ctx)->last_error.clear();                         \
+    phig_thread_last_error().clear();                  \
     try {
-#define PHIG_CATCH(ctx)                               \
-    }                                                 \
-    catch (const std::exception& e) {                 \
-        (ctx)->last_error = e.what();                 \
-        return PHIG_ERR_DB;                           \
-    }                                                 \
-    catch (...) {                                     \
-        (ctx)->last_error = "unknown internal error"; \
-        return PHIG_ERR_INTERNAL;                     \
+#define PHIG_CATCH(ctx)                                      \
+    }                                                        \
+    catch (const std::exception& e) {                        \
+        phig_thread_last_error() = e.what();                 \
+        return PHIG_ERR_DB;                                  \
+    }                                                        \
+    catch (...) {                                            \
+        phig_thread_last_error() = "unknown internal error"; \
+        return PHIG_ERR_INTERNAL;                            \
     }
