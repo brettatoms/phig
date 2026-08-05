@@ -60,17 +60,35 @@ pkg_check_modules(AVUTIL REQUIRED libavutil>=57)
 pkg_check_modules(SWSCALE REQUIRED libswscale>=6)
 
 # ---- Vendored third-party code (built without our strict warnings) ----
-add_library(phig-vendor STATIC
-    vendor/sqlite-vec/sqlite-vec.c
-    vendor/inih/ini.c
-    vendor/inih/INIReader.cpp
-)
+# inih is packaged on most distros (Arch core/libinih, Debian/Ubuntu
+# libinih-dev), so a packager will object to phig bundling a copy. Default
+# OFF so nothing changes for existing developers.
+option(PHIG_USE_SYSTEM_INIH "Link the system inih instead of the vendored copy" OFF)
+
+set(PHIG_VENDOR_SOURCES vendor/sqlite-vec/sqlite-vec.c)
+if(NOT PHIG_USE_SYSTEM_INIH)
+    list(APPEND PHIG_VENDOR_SOURCES vendor/inih/ini.c vendor/inih/INIReader.cpp)
+endif()
+
+add_library(phig-vendor STATIC ${PHIG_VENDOR_SOURCES})
 target_include_directories(phig-vendor PUBLIC
     ${CMAKE_SOURCE_DIR}/vendor/sqlite-vec
-    ${CMAKE_SOURCE_DIR}/vendor/inih
 )
 target_compile_definitions(phig-vendor PUBLIC SQLITE_VEC_STATIC SQLITE_CORE)
 set_target_properties(phig-vendor PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+if(PHIG_USE_SYSTEM_INIH)
+    # Separate .pc files for the C parser and its C++ wrapper (core/config.cpp
+    # includes INIReader.h) — confirmed present as "inih" and "INIReader" on
+    # this system, both tracking version 62.
+    pkg_check_modules(INIH REQUIRED inih)
+    pkg_check_modules(INIREADER REQUIRED INIReader)
+    target_include_directories(phig-vendor PUBLIC ${INIH_INCLUDE_DIRS} ${INIREADER_INCLUDE_DIRS})
+    target_link_libraries(phig-vendor PUBLIC ${INIH_LIBRARIES} ${INIREADER_LIBRARIES})
+    target_link_directories(phig-vendor PUBLIC ${INIH_LIBRARY_DIRS} ${INIREADER_LIBRARY_DIRS})
+else()
+    target_include_directories(phig-vendor PUBLIC ${CMAKE_SOURCE_DIR}/vendor/inih)
+endif()
 
 add_subdirectory(core)
 add_subdirectory(libphig)
