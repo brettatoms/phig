@@ -7,25 +7,27 @@
 #include <thread>
 
 #include "database.h"
+#include "temp_dir.h"
 #include "types.h"
 
 namespace fs = std::filesystem;
 
 class DatabaseTest : public ::testing::Test {
    protected:
+    fs::path dir;
     std::string db_path;
     std::unique_ptr<Database> db;
 
     void SetUp() override {
-        db_path = (fs::temp_directory_path() / "image-cleanup-test.db").string();
-        fs::remove(db_path);
+        dir = make_temp_dir("db");
+        db_path = (dir / "test.db").string();
         db = std::make_unique<Database>(db_path);
         db->init_schema();
     }
 
     void TearDown() override {
         db.reset();
-        fs::remove(db_path);
+        fs::remove_all(dir);
     }
 
     ImageInfo make_image(const std::string& path, const std::string& sha = "abc123",
@@ -558,14 +560,11 @@ TEST_F(DatabaseTest, PurgeNoMatch) {
 }
 
 TEST_F(DatabaseTest, CreatesDatabaseDirectory) {
-    auto nested_path =
-        (fs::temp_directory_path() / "image-cleanup-test-nested" / "sub" / "test.db").string();
-    {
-        Database nested_db(nested_path);
-        nested_db.init_schema();
-        EXPECT_EQ(nested_db.count(), 0);
-    }
-    fs::remove_all(fs::temp_directory_path() / "image-cleanup-test-nested");
+    // "nested" must not exist yet — the point is that Database creates it.
+    auto nested_path = (dir / "nested" / "sub" / "test.db").string();
+    Database nested_db(nested_path);
+    nested_db.init_schema();
+    EXPECT_EQ(nested_db.count(), 0);
 }
 
 // ---- Tags & favorites (plan 011) ----
@@ -1031,9 +1030,7 @@ static void raw_exec(sqlite3* db, const char* sql) {
 // the bug that BEGIN IMMEDIATE fixes.
 TEST(DatabaseConcurrency, DeferredBeginCanBusySnapshotOnReadThenWrite) {
     namespace fs = std::filesystem;
-    fs::path dir = fs::temp_directory_path() / "phig-db-busysnap";
-    fs::remove_all(dir);
-    fs::create_directories(dir);
+    fs::path dir = make_temp_dir("db-busysnap");
     std::string dbp = (dir / "c.db").string();
     {
         Database init(dbp);
@@ -1067,9 +1064,7 @@ TEST(DatabaseConcurrency, DeferredBeginCanBusySnapshotOnReadThenWrite) {
 // stale-snapshot condition. This is the observable effect of the fix.
 TEST(DatabaseConcurrency, BeginTransactionTakesWriteLockImmediately) {
     namespace fs = std::filesystem;
-    fs::path dir = fs::temp_directory_path() / "phig-db-immediate";
-    fs::remove_all(dir);
-    fs::create_directories(dir);
+    fs::path dir = make_temp_dir("db-immediate");
     std::string dbp = (dir / "c.db").string();
     {
         Database init(dbp);
@@ -1094,9 +1089,7 @@ TEST(DatabaseConcurrency, BeginTransactionTakesWriteLockImmediately) {
 
 TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
     namespace fs = std::filesystem;
-    fs::path dir = fs::temp_directory_path() / "phig-db-migrate";
-    fs::remove_all(dir);
-    fs::create_directories(dir);
+    fs::path dir = make_temp_dir("db-migrate");
     std::string dbp = (dir / "m.db").string();
 
     // Create a DB then roll its recorded schema_version back to force a

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "database.h"
+#include "temp_dir.h"
 #include "types.h"
 
 // These tests verify the porcelain output format by testing the underlying
@@ -26,19 +27,20 @@ namespace fs = std::filesystem;
 
 class PorcelainTest : public ::testing::Test {
    protected:
+    fs::path dir;
     std::string db_path;
     std::unique_ptr<Database> db;
 
     void SetUp() override {
-        db_path = (fs::temp_directory_path() / "phig-test-porcelain.db").string();
-        fs::remove(db_path);
+        dir = make_temp_dir("porcelain");
+        db_path = (dir / "test.db").string();
         db = std::make_unique<Database>(db_path);
         db->init_schema();
     }
 
     void TearDown() override {
         db.reset();
-        fs::remove(db_path);
+        fs::remove_all(dir);
     }
 
     ImageInfo make_image(const std::string& path, const std::string& sha = "abc", int w = 640,

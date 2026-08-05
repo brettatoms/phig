@@ -50,7 +50,7 @@ jobs:
       # registers each target's cases into the same ctest run, so this one
       # invocation gates on the perf suite too, not just the fast default one.
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --parallel
 
   lint:
     name: lint (clang-format + clang-tidy)

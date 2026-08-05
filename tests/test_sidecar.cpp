@@ -5,6 +5,7 @@
 #include <fstream>
 
 #include "sidecar.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -12,11 +13,7 @@ class SidecarTest : public ::testing::Test {
    protected:
     fs::path dir;
 
-    void SetUp() override {
-        dir = fs::temp_directory_path() / "phig-sidecar-test";
-        fs::remove_all(dir);
-        fs::create_directories(dir);
-    }
+    void SetUp() override { dir = make_temp_dir("sidecar"); }
     void TearDown() override { fs::remove_all(dir); }
 
     void touch(const fs::path& p) {

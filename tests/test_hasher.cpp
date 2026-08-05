@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "hasher.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -18,11 +19,7 @@ class HasherTest : public ::testing::Test {
    protected:
     std::string test_dir;
 
-    void SetUp() override {
-        test_dir = fs::temp_directory_path() / "image-cleanup-test-hasher";
-        fs::remove_all(test_dir);
-        fs::create_directories(test_dir);
-    }
+    void SetUp() override { test_dir = make_temp_dir("hasher").string(); }
 
     void TearDown() override { fs::remove_all(test_dir); }
 
@@ -82,10 +79,9 @@ TEST_F(HasherTest, SHA256IdenticalFiles) {
 TEST_F(HasherTest, Sha256ThrowsOnUnreadableInput) {
     // A directory opens as a stream on Linux/macOS but reads fail — the old
     // code silently hashed a zero-filled buffer of the directory's st_size.
-    auto dir = fs::temp_directory_path() / "phig-hash-unreadable-test";
+    auto dir = fs::path(test_dir) / "unreadable";
     fs::create_directories(dir);
     EXPECT_THROW(compute_sha256(dir.string()), std::runtime_error);
-    fs::remove_all(dir);
 }
 
 // ---- SHA256 padding-boundary characterization ----

@@ -10,6 +10,7 @@
 #include "cancel.h"
 #include "database.h"
 #include "progress_queue.h"
+#include "temp_dir.h"
 #include "thumbs_engine.h"
 #include "types.h"
 
@@ -34,8 +35,7 @@ class ThumbsEngineTest : public ::testing::Test {
         const char* xdg = std::getenv("XDG_CACHE_HOME");
         if (xdg) orig_cache = xdg;
 
-        temp_dir = fs::temp_directory_path() / "phig-test-thumbs-engine";
-        fs::create_directories(temp_dir);
+        temp_dir = make_temp_dir("thumbs-engine");
         setenv("XDG_CACHE_HOME", temp_dir.c_str(), 1);
     }
 

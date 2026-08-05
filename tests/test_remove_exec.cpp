@@ -12,6 +12,7 @@
 #include "database.h"
 #include "paths.h"
 #include "remove_exec.h"
+#include "temp_dir.h"
 #include "types.h"
 
 namespace fs = std::filesystem;
@@ -24,9 +25,7 @@ class RemoveExecTest : public ::testing::Test {
     std::unique_ptr<Database> db;
 
     void SetUp() override {
-        root = fs::temp_directory_path() / "phig-remove-exec-test";
-        fs::remove_all(root);
-        fs::create_directories(root);
+        root = make_temp_dir("remove-exec");
         setenv("XDG_DATA_HOME", root.c_str(), 1);
         photos = root / "photos";
         fs::create_directories(photos);
@@ -354,8 +353,7 @@ TEST_F(RemoveExecTest, CliRefusesNonInteractiveConfirmationEvenWithPipedYes) {
 
     // A small scratch collection scanned into its own DB, independent of the
     // fixture's `db` (this test drives the real `phig scan`/`phig rm` CLI).
-    fs::path cli_root = fs::temp_directory_path() / "phig-remove-exec-cli-test";
-    fs::remove_all(cli_root);
+    fs::path cli_root = make_temp_dir("remove-exec-cli");
     fs::path cli_photos = cli_root / "photos";
     fs::create_directories(cli_photos);
     const int N = 25;

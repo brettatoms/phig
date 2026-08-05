@@ -10,6 +10,7 @@
 #include "hasher.h"
 #include "metadata.h"
 #include "scanner.h"
+#include "temp_dir.h"
 #include "types.h"
 
 namespace fs = std::filesystem;
@@ -59,8 +60,7 @@ TEST(VideoExtensionTest, ImageExtensionExcludesVideo) {
 // ---- Scanner picks up videos ----
 
 TEST(VideoScannerTest, FindsVideoFiles) {
-    auto temp = fs::temp_directory_path() / "phig-test-video-scan";
-    fs::create_directories(temp);
+    auto temp = make_temp_dir("video-scan");
 
     // Create test files
     std::ofstream(temp / "photo.jpg");
@@ -201,8 +201,8 @@ TEST(VideoMetadataTest, JsonEscapesSpecialCharacters) {
 TEST(MigrationTest, PreMigrationBatchInsertDoesNotLeaveOpenTransaction) {
     // The real bug: if a pre-migration DB migration leaves an open transaction,
     // or if insert_batch fails and doesn't rollback, subsequent operations fail.
-    auto temp = fs::temp_directory_path() / "phig-test-txn-cascade.db";
-    fs::remove(temp);
+    auto temp_root = make_temp_dir("txn-cascade");
+    auto temp = temp_root / "test.db";
 
     // Create pre-migration DB with exif column
     {
@@ -270,14 +270,14 @@ TEST(MigrationTest, PreMigrationBatchInsertDoesNotLeaveOpenTransaction) {
     }
     EXPECT_TRUE(found_video);
 
-    fs::remove(temp);
+    fs::remove_all(temp_root);
 }
 
 TEST(MigrationTest, TransactionRecoveryOnBatchError) {
     // Reproduce: if insert_batch fails mid-transaction, the next insert_batch
     // should not fail with "cannot start a transaction within a transaction"
-    auto temp = fs::temp_directory_path() / "phig-test-txn-recovery.db";
-    fs::remove(temp);
+    auto temp_root = make_temp_dir("txn-recovery");
+    auto temp = temp_root / "test.db";
 
     Database db(temp.string());
     db.init_schema();
@@ -312,12 +312,12 @@ TEST(MigrationTest, TransactionRecoveryOnBatchError) {
     db.insert_batch({good2});
 
     EXPECT_EQ(db.count(), 2);
-    fs::remove(temp);
+    fs::remove_all(temp_root);
 }
 
 TEST(MigrationTest, PreExistingDatabaseGetsMigrated) {
-    auto temp = fs::temp_directory_path() / "phig-test-premigration.db";
-    fs::remove(temp);
+    auto temp_root = make_temp_dir("premigration");
+    auto temp = temp_root / "test.db";
 
     // Create a pre-migration database (v1 schema with 'exif' column, no meta table)
     {
@@ -363,12 +363,12 @@ TEST(MigrationTest, PreExistingDatabaseGetsMigrated) {
         EXPECT_EQ(db.count(), 2);
     }
 
-    fs::remove(temp);
+    fs::remove_all(temp_root);
 }
 
 TEST(MigrationTest, FreshDatabaseGetsLatestSchema) {
-    auto temp = fs::temp_directory_path() / "phig-test-migration.db";
-    fs::remove(temp);
+    auto temp_root = make_temp_dir("migration");
+    auto temp = temp_root / "test.db";
 
     {
         Database db(temp.string());
@@ -391,12 +391,12 @@ TEST(MigrationTest, FreshDatabaseGetsLatestSchema) {
         EXPECT_EQ(images[0].duration_ms, 5000);
     }
 
-    fs::remove(temp);
+    fs::remove_all(temp_root);
 }
 
 TEST(MigrationTest, ExistingImagesDefaultToImageType) {
-    auto temp = fs::temp_directory_path() / "phig-test-migration2.db";
-    fs::remove(temp);
+    auto temp_root = make_temp_dir("migration2");
+    auto temp = temp_root / "test.db";
 
     {
         Database db(temp.string());
@@ -416,14 +416,14 @@ TEST(MigrationTest, ExistingImagesDefaultToImageType) {
         EXPECT_EQ(images[0].duration_ms, 0);
     }
 
-    fs::remove(temp);
+    fs::remove_all(temp_root);
 }
 
 // ---- Duration parsing tests (via search integration) ----
 
 TEST(VideoSearchTest, SearchByMediaType) {
-    auto temp = fs::temp_directory_path() / "phig-test-search-media.db";
-    fs::remove(temp);
+    auto temp_root = make_temp_dir("search-media");
+    auto temp = temp_root / "test.db";
 
     Database db(temp.string());
     db.init_schema();
@@ -461,12 +461,12 @@ TEST(VideoSearchTest, SearchByMediaType) {
     results = db.search(c);
     EXPECT_EQ(results.size(), 2);
 
-    fs::remove(temp);
+    fs::remove_all(temp_root);
 }
 
 TEST(VideoSearchTest, SearchByDuration) {
-    auto temp = fs::temp_directory_path() / "phig-test-search-dur.db";
-    fs::remove(temp);
+    auto temp_root = make_temp_dir("search-dur");
+    auto temp = temp_root / "test.db";
 
     Database db(temp.string());
     db.init_schema();
@@ -519,15 +519,15 @@ TEST(VideoSearchTest, SearchByDuration) {
     // short.mp4 (<= 10s) plus the image; long.mp4 excluded.
     EXPECT_EQ(names(results), (std::set<std::string>{"short.mp4", "photo.jpg"}));
 
-    fs::remove(temp);
+    fs::remove_all(temp_root);
 }
 
 // Regression: get_exact_duplicates' SELECT must include media_type and
 // duration_ms, otherwise those fields come back empty/0 and the
 // `--media` filter on `phig duplicates` silently drops all groups.
 TEST(VideoSearchTest, ExactDuplicatesPopulateMediaTypeAndDuration) {
-    auto temp = fs::temp_directory_path() / "phig-test-exactdup-media.db";
-    fs::remove(temp);
+    auto temp_root = make_temp_dir("exactdup-media");
+    auto temp = temp_root / "test.db";
 
     Database db(temp.string());
     db.init_schema();
@@ -561,15 +561,15 @@ TEST(VideoSearchTest, ExactDuplicatesPopulateMediaTypeAndDuration) {
         EXPECT_EQ(info.duration_ms, 5000);
     }
 
-    fs::remove(temp);
+    fs::remove_all(temp_root);
 }
 
 // Regression: migrating a database created before face recognition existed
 // (no people/vec_faces tables, no faces.person_id column) must re-establish
 // that schema, so face operations work after an upgrade.
 TEST(MigrationTest, PreFaceRecognitionDatabaseGetsFaceSchema) {
-    auto temp = fs::temp_directory_path() / "phig-test-preface.db";
-    fs::remove(temp);
+    auto temp_root = make_temp_dir("preface");
+    auto temp = temp_root / "test.db";
 
     // Pre-face-recognition DB: images + faces (without person_id), no meta,
     // no people table, no vec_faces virtual table.
@@ -622,5 +622,5 @@ TEST(MigrationTest, PreFaceRecognitionDatabaseGetsFaceSchema) {
     int64_t person_id = db.get_or_create_person("Alice");
     EXPECT_GE(person_id, 0);
 
-    fs::remove(temp);
+    fs::remove_all(temp_root);
 }

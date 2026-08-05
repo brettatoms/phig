@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "config.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -21,9 +22,7 @@ class ConfigTest : public ::testing::Test {
         if (h) saved_home = h;
         setenv("HOME", "/home/tester", 1);
 
-        dir = fs::temp_directory_path() / "phig-test-config";
-        fs::remove_all(dir);
-        fs::create_directories(dir);
+        dir = make_temp_dir("config");
     }
 
     void TearDown() override {

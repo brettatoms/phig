@@ -8,6 +8,7 @@
 #include "database.h"
 #include "faces.h"
 #include "relink.h"
+#include "temp_dir.h"
 #include "types.h"
 
 namespace fs = std::filesystem;
@@ -19,9 +20,7 @@ class RelinkTest : public ::testing::Test {
     std::unique_ptr<Database> db;
 
     void SetUp() override {
-        dir = fs::temp_directory_path() / "phig-relink-test";
-        fs::remove_all(dir);
-        fs::create_directories(dir);
+        dir = make_temp_dir("relink");
         db_path = (dir / "t.db").string();
         db = std::make_unique<Database>(db_path);
         db->init_schema();

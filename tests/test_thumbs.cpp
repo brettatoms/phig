@@ -7,6 +7,7 @@
 
 #include "hasher.h"
 #include "paths.h"
+#include "temp_dir.h"
 #include "thumbs.h"
 
 namespace fs = std::filesystem;
@@ -21,8 +22,7 @@ class ThumbsTest : public ::testing::Test {
         const char* xdg = std::getenv("XDG_CACHE_HOME");
         if (xdg) orig_cache = xdg;
 
-        temp_dir = fs::temp_directory_path() / "phig-test-thumbs";
-        fs::create_directories(temp_dir);
+        temp_dir = make_temp_dir("thumbs");
         setenv("XDG_CACHE_HOME", temp_dir.c_str(), 1);
     }
 

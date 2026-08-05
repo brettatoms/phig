@@ -6,6 +6,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "exif.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -13,11 +14,7 @@ class ExifTest : public ::testing::Test {
    protected:
     std::string test_dir;
 
-    void SetUp() override {
-        test_dir = fs::temp_directory_path() / "image-cleanup-test-exif";
-        fs::remove_all(test_dir);
-        fs::create_directories(test_dir);
-    }
+    void SetUp() override { test_dir = make_temp_dir("exif"); }
 
     void TearDown() override { fs::remove_all(test_dir); }
 

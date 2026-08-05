@@ -4,6 +4,7 @@
 #include <fstream>
 
 #include "scanner.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -11,11 +12,7 @@ class ScannerTest : public ::testing::Test {
    protected:
     std::string test_dir;
 
-    void SetUp() override {
-        test_dir = fs::temp_directory_path() / "image-cleanup-test-scanner";
-        fs::remove_all(test_dir);
-        fs::create_directories(test_dir);
-    }
+    void SetUp() override { test_dir = make_temp_dir("scanner"); }
 
     void TearDown() override { fs::remove_all(test_dir); }
 

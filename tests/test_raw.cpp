@@ -5,6 +5,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "raw.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -12,11 +13,7 @@ class RawDecodeTest : public ::testing::Test {
    protected:
     std::string test_dir;
 
-    void SetUp() override {
-        test_dir = fs::temp_directory_path() / "image-cleanup-test-raw";
-        fs::remove_all(test_dir);
-        fs::create_directories(test_dir);
-    }
+    void SetUp() override { test_dir = make_temp_dir("raw"); }
 
     void TearDown() override { fs::remove_all(test_dir); }
 

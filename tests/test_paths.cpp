@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "paths.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -173,11 +174,7 @@ class MoveFileTest : public ::testing::Test {
    protected:
     fs::path dir;
 
-    void SetUp() override {
-        dir = fs::temp_directory_path() / "phig-move-test";
-        fs::remove_all(dir);
-        fs::create_directories(dir);
-    }
+    void SetUp() override { dir = make_temp_dir("move"); }
     void TearDown() override { fs::remove_all(dir); }
 
     static void write_file(const fs::path& p, const std::string& contents) {
@@ -234,9 +231,7 @@ TEST_F(MoveFileTest, CrossDeviceRefusesToOverwriteExistingDest) {
     if (!fs::exists(shm) || device_of(dir) == device_of(shm)) {
         GTEST_SKIP() << "no distinct second filesystem available for EXDEV test";
     }
-    fs::path shm_dir = shm / "phig-move-test";
-    fs::remove_all(shm_dir);
-    fs::create_directories(shm_dir);
+    fs::path shm_dir = make_temp_dir("move-exdev-noreplace", shm);
 
     fs::path src = dir / "src.jpg", dst = shm_dir / "dst.jpg";
     write_file(src, "SOURCE");
@@ -262,8 +257,7 @@ TEST_F(MoveFileTest, CrossDeviceFallsBackToCopyRemove) {
     if (!fs::exists(shm) || device_of(dir) == device_of(shm)) {
         GTEST_SKIP() << "no distinct second filesystem available for EXDEV test";
     }
-    fs::path shm_dir = shm / "phig-move-test";
-    fs::remove_all(shm_dir);
+    fs::path shm_dir = make_temp_dir("move-exdev-fallback", shm);
 
     fs::path src = dir / "a.txt";
     fs::path dst = shm_dir / "sub/b.txt";
@@ -290,9 +284,7 @@ TEST_F(MoveFileTest, CrossDeviceCopyFailureReportsRealError) {
     if (geteuid() == 0) {
         GTEST_SKIP() << "running as root: unreadable-file permission checks don't apply";
     }
-    fs::path shm_dir = shm / "phig-move-test";
-    fs::remove_all(shm_dir);
-    fs::create_directories(shm_dir);
+    fs::path shm_dir = make_temp_dir("move-exdev-copyfail", shm);
 
     fs::path src = dir / "unreadable.jpg";
     fs::path dst = shm_dir / "dst.jpg";
@@ -319,11 +311,7 @@ class ResolveConflictTest : public ::testing::Test {
    protected:
     fs::path dir;
 
-    void SetUp() override {
-        dir = fs::temp_directory_path() / "phig-conflict-test";
-        fs::remove_all(dir);
-        fs::create_directories(dir);
-    }
+    void SetUp() override { dir = make_temp_dir("conflict"); }
     void TearDown() override { fs::remove_all(dir); }
 
     void touch(const fs::path& p) { std::ofstream o(p); }
@@ -459,11 +447,7 @@ class SafeToDeleteTest : public ::testing::Test {
    protected:
     fs::path root;
 
-    void SetUp() override {
-        root = fs::temp_directory_path() / "phig-safedelete-test";
-        fs::remove_all(root);
-        fs::create_directories(root);
-    }
+    void SetUp() override { root = make_temp_dir("safedelete"); }
     void TearDown() override { fs::remove_all(root); }
 
     void touch(const fs::path& p) {
@@ -529,11 +513,7 @@ class AtomicWriteTest : public ::testing::Test {
    protected:
     fs::path dir;
 
-    void SetUp() override {
-        dir = fs::temp_directory_path() / "phig-atomic-test";
-        fs::remove_all(dir);
-        fs::create_directories(dir);
-    }
+    void SetUp() override { dir = make_temp_dir("atomic"); }
     void TearDown() override { fs::remove_all(dir); }
 
     static void write_file(const fs::path& p, const std::string& c) {
@@ -611,8 +591,7 @@ TEST_F(AtomicWriteTest, CopyFileOverwritesExistingDestOnSuccess) {
 // ---- trash_dir and trash_path_for ----
 
 TEST(TrashPathTest, TrashDirUnderDataHome) {
-    fs::path tmp = fs::temp_directory_path() / "phig-trashdir-test";
-    fs::remove_all(tmp);
+    fs::path tmp = make_temp_dir("trashdir");
     setenv("XDG_DATA_HOME", tmp.c_str(), 1);
     EXPECT_EQ(trash_dir(), (tmp / "phig" / "trash").string());
     unsetenv("XDG_DATA_HOME");
@@ -620,8 +599,7 @@ TEST(TrashPathTest, TrashDirUnderDataHome) {
 }
 
 TEST(TrashPathTest, TrashPathForInsertsRandomHexAndIsUnique) {
-    fs::path tmp = fs::temp_directory_path() / "phig-trashpath-test";
-    fs::remove_all(tmp);
+    fs::path tmp = make_temp_dir("trashpath");
     setenv("XDG_DATA_HOME", tmp.c_str(), 1);
 
     // Shape: <trash_dir>/<stem>.<8 hex>.<ext>, and the path does not exist yet
@@ -661,7 +639,7 @@ TEST(TrashPathTest, TrashPathForInsertsRandomHexAndIsUnique) {
 
 TEST(TempSiblingConcurrency, NoCollisionUnderThreads) {
     namespace fs = std::filesystem;
-    const fs::path dest = fs::temp_directory_path() / "phig-tmpsib" / "IMG_1.jpg";
+    const fs::path dest = make_temp_dir("tmpsib") / "IMG_1.jpg";
     const int threads = 8;
     const int per_thread = 2000;
 

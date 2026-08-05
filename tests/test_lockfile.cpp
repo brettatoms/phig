@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "lockfile.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -17,9 +18,7 @@ class LockfileTest : public ::testing::Test {
     fs::path dir;
     std::string lpath;
     void SetUp() override {
-        dir = fs::temp_directory_path() / "phig-lockfile-test";
-        fs::remove_all(dir);
-        fs::create_directories(dir);
+        dir = make_temp_dir("lockfile");
         lpath = (dir / "phig.db.lock").string();
     }
     void TearDown() override { fs::remove_all(dir); }

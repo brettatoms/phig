@@ -4,6 +4,7 @@
 #include <fstream>
 
 #include "dates.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -11,11 +12,7 @@ class GetBestDateTest : public ::testing::Test {
    protected:
     fs::path dir;
 
-    void SetUp() override {
-        dir = fs::temp_directory_path() / "phig-dates-test";
-        fs::remove_all(dir);
-        fs::create_directories(dir);
-    }
+    void SetUp() override { dir = make_temp_dir("dates"); }
     void TearDown() override { fs::remove_all(dir); }
 
     void write(const fs::path& p, const std::string& contents) {
@@ -74,11 +71,7 @@ class GetBestDateStrTest : public ::testing::Test {
    protected:
     fs::path dir;
 
-    void SetUp() override {
-        dir = fs::temp_directory_path() / "phig-dates-str-test";
-        fs::remove_all(dir);
-        fs::create_directories(dir);
-    }
+    void SetUp() override { dir = make_temp_dir("dates-str"); }
     void TearDown() override { fs::remove_all(dir); }
 
     void write(const fs::path& p, const std::string& contents) {

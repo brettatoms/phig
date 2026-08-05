@@ -42,7 +42,7 @@ package names. No prefix is needed; a plain `cmake` works:
 cmake -B build && cmake --build build
 ./build/phig-tests        # fast suite (~1s), 636 tests
 ./build/phig-perf-tests   # performance suite (~3s), 4 tests
-ctest --test-dir build    # both — 640, what CI runs
+ctest --test-dir build --parallel   # both — 640, what CI runs (~7s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -56,6 +56,12 @@ fast. One test is a pre-existing, unrelated skip:
 unattributed failure shows up instead, check
 `DatabaseConcurrency.ConcurrentMigrationIsSafe` first — see Known issues
 below before assuming your change caused it.
+
+`--parallel` has to be passed explicitly: CMake cannot make a bare `ctest`
+parallel (`CTestConfig.cmake`'s `CTEST_PARALLEL_LEVEL` is ignored by a direct
+`ctest` invocation — measured, still 48s). Tests get a unique temp directory
+from `tests/temp_dir.h`, which is what makes parallel safe; a new fixture that
+hardcodes a temp path instead will pass alone and fail under `--parallel`.
 
 `gtk/` has its own build (`cmake -B build && cmake --build build -j` from
 inside `gtk/`) and 13 tests across two binaries — see `gtk/CLAUDE.md`.
