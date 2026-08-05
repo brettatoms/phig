@@ -206,7 +206,9 @@ PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, char* 
  * Returns PHIG_OK when a thumbnail now exists in the cache — including when one
  * was already there, so a caller racing another generator does not see a
  * spurious failure. Returns PHIG_ERR_DB if the row does not exist or has no
- * sha256, and PHIG_ERR_INTERNAL if the image could not be decoded.
+ * sha256, PHIG_ERR_NOT_FOUND if the row's source file is no longer on disk
+ * (moved or deleted after being indexed — an ordinary state, not corruption),
+ * and PHIG_ERR_INTERNAL if the image could not be decoded.
  *
  * Decodes pixels, so this is slow relative to every other call in this header:
  * hundreds of milliseconds for a large RAW. Call it off the caller's UI thread.

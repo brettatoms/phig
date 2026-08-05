@@ -419,3 +419,48 @@ TEST(AbiThumbGenerate, ConcurrentGenerationOfSameRowAllSucceed) {
 
     phig_shutdown(ctx);
 }
+
+// Sibling of ConcurrentGenerationOfSameRowAllSucceed above, but the row's
+// source file does not exist on disk (a dangling row: the file was moved or
+// deleted after being indexed, an ordinary state for this kind of
+// collection). Runs the 8 concurrent calls in a forked child via EXPECT_EXIT:
+// a decoder-triggered exit() deep inside one of them would otherwise take the
+// whole test binary down with it rather than just failing this one check.
+// The child exits with a marker code only if every call returned normally, so
+// an unexpected exit (silent death, code 0) shows up as a failed exit-code
+// match instead of aborting the suite.
+TEST(AbiThumbGenerate, ConcurrentGenerationOfDanglingRowReturnsNotFound) {
+    PathOverrideGuard guard;
+    TempDbPath tmp;
+    ScratchThumbsDir thumbs;
+    std::string sha(64, '1');
+    int64_t id = seed_thumb_row(tmp.path, "tests/data/does_not_exist.jpg", "image", sha);
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+
+    constexpr int kMarkerExitCode = 42;
+    EXPECT_EXIT(
+        {
+            phig_ctx* ctx = nullptr;
+            if (phig_init(&cfg, &ctx) != PHIG_OK) _exit(1);
+
+            constexpr int kThreads = 8;
+            std::vector<std::thread> threads;
+            std::vector<phig_status> results(kThreads);
+            for (int t = 0; t < kThreads; ++t) {
+                threads.emplace_back([&, t] { results[t] = phig_thumb_generate(ctx, id); });
+            }
+            for (auto& th : threads) th.join();
+
+            for (auto st : results) {
+                if (st != PHIG_ERR_NOT_FOUND) _exit(2);
+            }
+
+            phig_shutdown(ctx);
+            _exit(kMarkerExitCode);
+        },
+        ::testing::ExitedWithCode(kMarkerExitCode), "");
+}

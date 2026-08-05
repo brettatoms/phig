@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <string>
 
 #include "hasher.h"
@@ -42,6 +43,9 @@ extern "C" phig_status phig_thumb_generate(phig_ctx* ctx, int64_t image_id) {
     if (img.sha256.empty()) return PHIG_ERR_DB;
 
     if (thumb_exists(img.sha256)) return PHIG_OK;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(img.path, ec)) return PHIG_ERR_NOT_FOUND;
 
     bool ok = false;
     if (img.media_type == "video") {
