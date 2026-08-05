@@ -632,7 +632,7 @@ TEST(TrashPathTest, TrashPathForInsertsRandomHexAndIsUnique) {
     EXPECT_FALSE(fs::exists(p));
     // filename is IMG_1234.<hex>.jpg
     std::string name = pp.filename().string();
-    ASSERT_EQ(name.rfind("IMG_1234.", 0), 0u);          // starts with stem + '.'
+    ASSERT_EQ(name.rfind("IMG_1234.", 0), 0u);  // starts with stem + '.'
     ASSERT_TRUE(name.size() > std::string("IMG_1234..jpg").size());
     // The extension is preserved as the final component.
     EXPECT_EQ(pp.extension().string(), ".jpg");

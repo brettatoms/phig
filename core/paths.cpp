@@ -78,8 +78,8 @@ std::string trash_path_for(const std::string& filename) {
 
     fs::path name(filename);
     std::string ext = name.extension().string();  // ".jpg" or ""
-    std::string stem = name.stem().string();       // "IMG_1234" (or full name if no ext)
-    std::string tagged = stem + "." + hex + ext;    // IMG_1234.<hex>.jpg  /  NOEXT.<hex>
+    std::string stem = name.stem().string();      // "IMG_1234" (or full name if no ext)
+    std::string tagged = stem + "." + hex + ext;  // IMG_1234.<hex>.jpg  /  NOEXT.<hex>
     return (fs::path(trash_dir()) / tagged).string();
 }
 
