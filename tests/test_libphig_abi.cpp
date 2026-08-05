@@ -3,7 +3,10 @@
 
 #include <filesystem>
 #include <string>
+#include <thread>
+#include <vector>
 
+#include "database.h"
 #include "paths.h"
 #include "phig/phig.h"
 
@@ -243,4 +246,221 @@ TEST(AbiThumb, NullThumbsDirLeavesDefaultInPlace) {
     EXPECT_NE(std::string(buf).find("thumbs"), std::string::npos);
 
     phig_shutdown(ctx);
+}
+
+namespace {
+// A scratch thumbs_dir, removed on scope exit, so generation tests never
+// write into a real ~/.cache/phig/thumbs.
+struct ScratchThumbsDir {
+    std::string path;
+    ScratchThumbsDir() {
+        path = (std::filesystem::temp_directory_path() /
+                ("phig_thumb_gen_" + std::to_string(::getpid()) + "_" +
+                 std::to_string(reinterpret_cast<uintptr_t>(this))))
+                   .string();
+    }
+    ~ScratchThumbsDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+};
+
+// Inserts one row with a real fixture file behind it (so generation has real
+// pixels to decode) and returns its id.
+int64_t seed_thumb_row(const std::string& db_path, const std::string& src_fixture,
+                       const std::string& media_type, const std::string& sha) {
+    Database db(db_path);
+    db.init_schema();
+    ImageInfo info;
+    info.path = src_fixture;
+    info.filename = src_fixture.substr(src_fixture.rfind('/') + 1);
+    info.extension = src_fixture.substr(src_fixture.rfind('.') + 1);
+    info.modified_at = "2021-01-01T00:00:00Z";
+    info.sha256 = sha;
+    info.media_type = media_type;
+    db.insert(info);
+    return db.get_image_id(src_fixture);
+}
+}  // namespace
+
+TEST(AbiThumbGenerate, GeneratesFromMissThenLookupReportsExists) {
+    PathOverrideGuard guard;
+    TempDbPath tmp;
+    ScratchThumbsDir thumbs;
+    std::string sha(64, 'c');
+    int64_t id = seed_thumb_row(tmp.path, "tests/data/faces_small.jpg", "image", sha);
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+
+    char buf[4096];
+    bool exists = true;
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_FALSE(exists);
+
+    ASSERT_EQ(phig_thumb_generate(ctx, id), PHIG_OK);
+
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    EXPECT_TRUE(exists);
+
+    phig_shutdown(ctx);
+}
+
+TEST(AbiThumbGenerate, GeneratingTwiceStaysOkAndLeavesOneValidFile) {
+    PathOverrideGuard guard;
+    TempDbPath tmp;
+    ScratchThumbsDir thumbs;
+    std::string sha(64, 'd');
+    int64_t id = seed_thumb_row(tmp.path, "tests/data/faces_small.jpg", "image", sha);
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+
+    ASSERT_EQ(phig_thumb_generate(ctx, id), PHIG_OK);
+
+    char buf[4096];
+    bool exists = false;
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_TRUE(exists);
+    auto size_after_first = std::filesystem::file_size(buf);
+
+    ASSERT_EQ(phig_thumb_generate(ctx, id), PHIG_OK);
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_TRUE(exists);
+    EXPECT_GT(std::filesystem::file_size(buf), 0u);
+    EXPECT_EQ(std::filesystem::file_size(buf), size_after_first);
+
+    phig_shutdown(ctx);
+}
+
+TEST(AbiThumbGenerate, NonexistentImageIdReturnsErrDb) {
+    PathOverrideGuard guard;
+    TempDbPath tmp;
+    ScratchThumbsDir thumbs;
+    make_db(tmp.path);
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+
+    EXPECT_EQ(phig_thumb_generate(ctx, 999999), PHIG_ERR_DB);
+
+    phig_shutdown(ctx);
+}
+
+// The test that distinguishes a correct wrap of ThumbsEngine's worker from a
+// naive generate_thumb(path, sha): a video row has no decodable pixels at
+// `path` itself, only through extract_video_keyframe first.
+TEST(AbiThumbGenerate, VideoRowProducesThumbnailViaKeyframe) {
+    PathOverrideGuard guard;
+    TempDbPath tmp;
+    ScratchThumbsDir thumbs;
+    std::string sha(64, 'e');
+    int64_t id = seed_thumb_row(tmp.path, "tests/data/test_red.mov", "video", sha);
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+
+    ASSERT_EQ(phig_thumb_generate(ctx, id), PHIG_OK);
+
+    char buf[4096];
+    bool exists = false;
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    EXPECT_TRUE(exists);
+    EXPECT_GT(std::filesystem::file_size(buf), 0u);
+
+    phig_shutdown(ctx);
+}
+
+TEST(AbiThumbGenerate, ConcurrentGenerationOfSameRowAllSucceed) {
+    PathOverrideGuard guard;
+    TempDbPath tmp;
+    ScratchThumbsDir thumbs;
+    std::string sha(64, 'f');
+    int64_t id = seed_thumb_row(tmp.path, "tests/data/faces_small.jpg", "image", sha);
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+
+    constexpr int kThreads = 8;
+    std::vector<std::thread> threads;
+    std::vector<phig_status> results(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] { results[t] = phig_thumb_generate(ctx, id); });
+    }
+    for (auto& th : threads) th.join();
+
+    for (auto st : results) EXPECT_EQ(st, PHIG_OK);
+
+    char buf[4096];
+    bool exists = false;
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_TRUE(exists);
+    EXPECT_GT(std::filesystem::file_size(buf), 0u);
+
+    phig_shutdown(ctx);
+}
+
+// Sibling of ConcurrentGenerationOfSameRowAllSucceed above, but the row's
+// source file does not exist on disk (a dangling row: the file was moved or
+// deleted after being indexed, an ordinary state for this kind of
+// collection). Runs the 8 concurrent calls in a forked child via EXPECT_EXIT:
+// a decoder-triggered exit() deep inside one of them would otherwise take the
+// whole test binary down with it rather than just failing this one check.
+// The child exits with a marker code only if every call returned normally, so
+// an unexpected exit (silent death, code 0) shows up as a failed exit-code
+// match instead of aborting the suite.
+TEST(AbiThumbGenerate, ConcurrentGenerationOfDanglingRowReturnsNotFound) {
+    PathOverrideGuard guard;
+    TempDbPath tmp;
+    ScratchThumbsDir thumbs;
+    std::string sha(64, '1');
+    int64_t id = seed_thumb_row(tmp.path, "tests/data/does_not_exist.jpg", "image", sha);
+
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+
+    constexpr int kMarkerExitCode = 42;
+    EXPECT_EXIT(
+        {
+            phig_ctx* ctx = nullptr;
+            if (phig_init(&cfg, &ctx) != PHIG_OK) _exit(1);
+
+            constexpr int kThreads = 8;
+            std::vector<std::thread> threads;
+            std::vector<phig_status> results(kThreads);
+            for (int t = 0; t < kThreads; ++t) {
+                threads.emplace_back([&, t] { results[t] = phig_thumb_generate(ctx, id); });
+            }
+            for (auto& th : threads) th.join();
+
+            for (auto st : results) {
+                if (st != PHIG_ERR_NOT_FOUND) _exit(2);
+            }
+
+            phig_shutdown(ctx);
+            _exit(kMarkerExitCode);
+        },
+        ::testing::ExitedWithCode(kMarkerExitCode), "");
 }

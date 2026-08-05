@@ -136,7 +136,7 @@ set_target_properties(phig_abi PROPERTIES
     OUTPUT_NAME phig
     # Must track PHIG_ABI_VERSION_MAJOR.MINOR in include/phig/phig.h.
     # SOVERSION is the major alone, so an additive minor bump keeps the soname.
-    VERSION 1.1.0
+    VERSION 1.2.0
     SOVERSION 1
     # Hide everything not explicitly exported so the ABI surface is exactly
     # what the header declares.
@@ -169,6 +169,9 @@ endif()
 
 install(TARGETS phig_abi LIBRARY DESTINATION lib)
 install(DIRECTORY include/phig DESTINATION include)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/phig.pc.in
+               ${CMAKE_CURRENT_BINARY_DIR}/phig.pc @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/phig.pc DESTINATION lib/pkgconfig)
 
 # ---- Binary ----
 add_executable(phig src/main.cpp)

@@ -1,6 +1,11 @@
 #include "internal.h"
 #include "paths.h"
 
+std::string& phig_thread_last_error() {
+    static thread_local std::string error;
+    return error;
+}
+
 extern "C" {
 
 uint32_t phig_abi_version(void) { return (PHIG_ABI_VERSION_MAJOR << 16) | PHIG_ABI_VERSION_MINOR; }
@@ -47,6 +52,6 @@ phig_status phig_init(const phig_config* cfg, phig_ctx** out) {
 
 void phig_shutdown(phig_ctx* ctx) { delete ctx; }
 
-const char* phig_last_error(phig_ctx* ctx) { return ctx ? ctx->last_error.c_str() : ""; }
+const char* phig_last_error(phig_ctx* ctx) { return ctx ? phig_thread_last_error().c_str() : ""; }
 
 }  // extern "C"

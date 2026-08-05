@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "database.h"
@@ -236,5 +238,121 @@ TEST(AbiMutate, WriteSucceedsAfterTheLockIsReleased) {
     EXPECT_EQ(phig_tag_add(ctx, ids.data(), 1, "allowed"), PHIG_OK);
     Database db(tmp.path);
     EXPECT_EQ(db.get_tags_for_image("/photos/m0.jpg").size(), 1u);
+    phig_shutdown(ctx);
+}
+
+// Same ctx, 8 threads, each provoking the WriterLock-contention failure from
+// WriteFailsWhileAnotherProcessHoldsTheWriterLock concurrently. last_error is
+// thread-local, so mutating it from 8 threads at once must not corrupt the
+// heap-allocated string or crash the process, and every thread must read back
+// its own non-empty message.
+TEST(AbiMutate, ConcurrentFailuresOnSharedCtxDoNotCorrupt) {
+    TempDbPath tmp;
+    auto ids = seed_three(tmp.path);
+    phig_ctx* ctx = open_rw(tmp.path);
+    WriterLock held(tmp.path + ".lock", /*no_wait=*/true);  // held for the whole test
+
+    constexpr int kThreads = 8;
+    constexpr int kIterations = 200;
+    std::atomic<int> failures{0};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&] {
+            for (int i = 0; i < kIterations; ++i) {
+                phig_status st = phig_tag_add(ctx, ids.data(), 1, "contended");
+                if (st == PHIG_ERR_DB && std::string(phig_last_error(ctx)) != "") {
+                    ++failures;
+                }
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    EXPECT_EQ(failures.load(), kThreads * kIterations);
+    phig_shutdown(ctx);
+}
+
+// The test that actually distinguishes a thread-local last_error from a
+// shared one. One thread shares ctx's db_path lock with a contended
+// WriterLock, so every phig_tag_add on it fails through PHIG_CATCH; the other
+// thread only calls phig_query_page, which never touches the writer lock and
+// always succeeds. With last_error on phig_ctx (the pre-fix shape), the
+// querying thread can observe the failing thread's message after its own
+// PHIG_TRY clears it and before the failing thread overwrites it. Thread-local
+// storage makes that impossible.
+TEST(AbiMutate, EachThreadSeesOnlyItsOwnError) {
+    TempDbPath tmp;
+    auto ids = seed_three(tmp.path);
+    phig_ctx* ctx = open_rw(tmp.path);
+    WriterLock held(tmp.path + ".lock", /*no_wait=*/true);  // held for the whole test
+
+    constexpr int kIterations = 2000;
+    std::atomic<bool> contamination{false};
+
+    std::thread failing([&] {
+        for (int i = 0; i < kIterations; ++i) {
+            phig_status st = phig_tag_add(ctx, ids.data(), 1, "contended");
+            if (st != PHIG_ERR_DB) contamination = true;
+        }
+    });
+
+    std::thread succeeding([&] {
+        phig_query* q = nullptr;
+        ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+        for (int i = 0; i < kIterations; ++i) {
+            phig_image_list* list = nullptr;
+            phig_status st = phig_query_page(ctx, q, 0, 10, &list);
+            if (st != PHIG_OK) contamination = true;
+            // A successful call must have an empty last_error. If it doesn't,
+            // this thread observed the other thread's failure message.
+            if (std::string(phig_last_error(ctx)) != "") contamination = true;
+            phig_image_list_free(list);
+        }
+        phig_query_free(q);
+    });
+
+    failing.join();
+    succeeding.join();
+
+    EXPECT_FALSE(contamination.load());
+    phig_shutdown(ctx);
+}
+
+// The phig-gtk scenario: several threads paging through the same ctx at once.
+// Should pass both before and after the thread-local change — SQLite already
+// serializes access to the connection — so its value is documenting that the
+// supported concurrent-read pattern actually works.
+TEST(AbiMutate, ConcurrentReadsOnSharedCtxReturnConsistentResults) {
+    TempDbPath tmp;
+    seed_three(tmp.path);
+    phig_config cfg{};
+    cfg.db_path = tmp.path.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+
+    constexpr int kThreads = 8;
+    std::vector<std::thread> threads;
+    std::vector<int64_t> counts(kThreads, -1);
+    std::atomic<int> ok{0};
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] {
+            phig_query* q = nullptr;
+            if (phig_query_new(ctx, &q) != PHIG_OK) return;
+            phig_image_list* list = nullptr;
+            if (phig_query_page(ctx, q, 0, 10, &list) == PHIG_OK) {
+                counts[t] = list->count;
+                ++ok;
+            }
+            phig_image_list_free(list);
+            phig_query_free(q);
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    EXPECT_EQ(ok.load(), kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        EXPECT_EQ(counts[t], 3);
+    }
     phig_shutdown(ctx);
 }
