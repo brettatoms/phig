@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(phig VERSION 0.3.0 LANGUAGES C CXX)
 
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cli/version.h.in
                ${CMAKE_CURRENT_BINARY_DIR}/version.h @ONLY)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -174,7 +174,7 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/phig.pc.in
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/phig.pc DESTINATION lib/pkgconfig)
 
 # ---- Binary ----
-add_executable(phig src/main.cpp)
+add_executable(phig cli/main.cpp)
 target_link_libraries(phig PRIVATE phig-core)
 target_compile_options(phig PRIVATE ${PHIG_WARNINGS})
 install(TARGETS phig DESTINATION bin)
