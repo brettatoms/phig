@@ -63,7 +63,7 @@ single expander.
 ### Config format: INI via vendored inih
 
 INI fits phig's flat, path-and-defaults config; no nesting or typed arrays are
-needed. `inih` (Ben Hoyt, BSD-3-Clause — compatible with phig's MIT) is vendored
+needed. `inih` (Ben Hoyt, BSD-3-Clause) is vendored
 as a single-file dependency exactly like `vendor/sqlite-vec/`.
 
 Files vendored into `vendor/inih/`: `ini.c`, `ini.h`, `INIReader.h`,

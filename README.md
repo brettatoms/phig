@@ -439,7 +439,3 @@ phig rm --match "*/old-backup/*"
 ```bash
 cmake --build build && ./build/phig-tests
 ```
-
-## License
-
-[MIT](LICENSE)
