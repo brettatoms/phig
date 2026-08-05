@@ -125,16 +125,16 @@ target_compile_options(phig-core PRIVATE ${PHIG_WARNINGS})
 
 # ---- libphig: C ABI shared library ----
 add_library(phig_abi SHARED
-    src/libphig/context.cpp
-    src/libphig/query.cpp
-    src/libphig/records.cpp
-    src/libphig/thumbs.cpp
-    src/libphig/mutate.cpp
-    src/libphig/settings.cpp
+    libphig/context.cpp
+    libphig/query.cpp
+    libphig/records.cpp
+    libphig/thumbs.cpp
+    libphig/mutate.cpp
+    libphig/settings.cpp
 )
 set_target_properties(phig_abi PROPERTIES
     OUTPUT_NAME phig
-    # Must track PHIG_ABI_VERSION_MAJOR.MINOR in include/phig/phig.h.
+    # Must track PHIG_ABI_VERSION_MAJOR.MINOR in libphig/include/phig/phig.h.
     # SOVERSION is the major alone, so an additive minor bump keeps the soname.
     VERSION 1.2.0
     SOVERSION 1
@@ -146,9 +146,9 @@ set_target_properties(phig_abi PROPERTIES
 )
 target_compile_options(phig_abi PRIVATE ${PHIG_WARNINGS})
 target_include_directories(phig_abi
-    PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libphig/include>
             $<INSTALL_INTERFACE:include>
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libphig
 )
 # phig-core is the internal static library target (output: libphig-core.a).
 target_link_libraries(phig_abi PRIVATE phig-core)
@@ -161,14 +161,14 @@ target_link_libraries(phig_abi PRIVATE phig-core)
 # via different flags and file formats (Mach-O prefixes C symbols with `_`).
 if(APPLE)
     target_link_options(phig_abi PRIVATE
-        "LINKER:-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/src/libphig/phig.exported_symbols")
+        "LINKER:-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/libphig/phig.exported_symbols")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(phig_abi PRIVATE
-        "LINKER:--version-script,${CMAKE_CURRENT_SOURCE_DIR}/src/libphig/phig.version")
+        "LINKER:--version-script,${CMAKE_CURRENT_SOURCE_DIR}/libphig/phig.version")
 endif()
 
 install(TARGETS phig_abi LIBRARY DESTINATION lib)
-install(DIRECTORY include/phig DESTINATION include)
+install(DIRECTORY libphig/include/phig DESTINATION include)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/phig.pc.in
                ${CMAKE_CURRENT_BINARY_DIR}/phig.pc @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/phig.pc DESTINATION lib/pkgconfig)
