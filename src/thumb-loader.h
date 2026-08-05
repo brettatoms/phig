@@ -37,6 +37,16 @@ G_DECLARE_FINAL_TYPE(ThumbLoader, thumb_loader, PHIG, THUMB_LOADER, GObject)
  * concurrent use for as long as it is not freed out from under a call. */
 ThumbLoader* thumb_loader_new(phig_ctx* ctx, guint n_threads, gsize cache_bytes);
 
+/* Stops and joins every worker thread and drains the request queue, so that
+ * once this returns no thread is inside phig_thumb_lookup/phig_thumb_generate
+ * on ctx and none ever will be again. The caller must call this before
+ * freeing ctx, regardless of how many refs on the loader itself remain
+ * outstanding (an idle source posted for delivery holds one of those, and
+ * draining the main loop to wait for it is not reliable at shutdown). Safe to
+ * call more than once (dispose also calls it, for callers that skip an
+ * explicit call); a second call is a no-op. */
+void thumb_loader_shutdown(ThumbLoader* self);
+
 /* Request a thumbnail texture for `image_id`/`sha256` (the latter 64-char
  * hex, or empty if the row has not been hashed yet). Both identify the same
  * row; `image_id` is what phig_thumb_generate needs to resolve the path and

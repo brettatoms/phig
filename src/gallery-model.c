@@ -438,6 +438,7 @@ static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface)
  * still be running phig_query_page after the caller frees ctx/query. */
 static void phig_gallery_model_dispose(GObject* obj) {
     PhigGalleryModel* self = PHIG_GALLERY_MODEL(obj);
+    g_debug("phig_gallery_model_dispose: entering, in_flight=%u", self->in_flight);
     g_mutex_lock(&self->in_flight_lock);
     while (self->in_flight > 0)
         g_cond_wait(&self->in_flight_cond, &self->in_flight_lock);

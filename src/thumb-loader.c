@@ -76,6 +76,13 @@ struct _ThumbLoader {
      * can observe that outstanding deliveries eventually reach zero. */
     GMutex idle_lock;
     guint pending_idle;
+
+    /* Set once thumb_loader_shutdown has joined every worker. Checked by
+     * thumb_loader_deliver so an idle source already queued before shutdown
+     * (holding only a loader ref, per thumb_loader_post_result) delivers
+     * nothing instead of calling back into a caller that may itself be
+     * mid-teardown. */
+    gboolean stopped;
 };
 
 G_DEFINE_FINAL_TYPE(ThumbLoader, thumb_loader, G_TYPE_OBJECT)
@@ -151,6 +158,9 @@ static void thumb_loader_leave_idle(ThumbLoader* self) {
 static gboolean thumb_loader_deliver(gpointer user_data) {
     ThumbRequest* req = user_data;
     ThumbLoader* loader = req->loader;
+
+    if (loader->stopped)
+        return G_SOURCE_REMOVE;
 
     if (req->cancellable != NULL && g_cancellable_is_cancelled(req->cancellable))
         return G_SOURCE_REMOVE;
@@ -276,17 +286,17 @@ static gpointer thumb_loader_worker(gpointer data) {
     return NULL;
 }
 
-/* Stops every worker before the loader can be finalized. ctx is borrowed (see
- * thumb_loader_new's contract), so this must return only once no worker is
- * still inside phig_thumb_lookup on it — g_thread_join guarantees exactly
- * that for each thread. One THUMB_LOADER_STOP per worker is enough to stop
- * all of them, since each worker consumes exactly one item before exiting.
- * Guarded on n_threads rather than on self->workers being non-NULL: with
- * n_threads == 0, g_new0(GThread*, 0) returns NULL (a zero-size allocation is
- * not distinct from "no array"), so a NULL check here would also skip
- * shutdown entirely for a loader with no workers to join in the first place —
- * which is fine to skip, but the queue drain below is not, and must not be
- * folded into the same guard.
+/* Stops every worker so the loader's ctx (borrowed; see thumb_loader_new's
+ * contract) can be freed safely afterward. Returning only once no worker is
+ * still inside phig_thumb_lookup/phig_thumb_generate on it is g_thread_join's
+ * guarantee for each thread. One THUMB_LOADER_STOP per worker is enough to
+ * stop all of them, since each worker consumes exactly one item before
+ * exiting. Guarded on n_threads rather than on self->workers being non-NULL:
+ * with n_threads == 0, g_new0(GThread*, 0) returns NULL (a zero-size
+ * allocation is not distinct from "no array"), so a NULL check here would
+ * also skip shutdown entirely for a loader with no workers to join in the
+ * first place — which is fine to skip, but the queue drain below is not, and
+ * must not be folded into the same guard.
  *
  * Joining workers only stops new requests from being popped and looked up;
  * it says nothing about requests already sitting in the queue (a shutdown
@@ -294,17 +304,21 @@ static gpointer thumb_loader_worker(gpointer data) {
  * sources already posted to the main context. The former are drained and
  * freed directly here — nothing else will ever pop them once no worker
  * remains. The latter are not waited on: each holds its own ref on self (see
- * thumb_loader_post_result), so the object this dispose belongs to is kept
- * alive by them for as long as any are outstanding, and g_object_unref simply
- * is not called again until the last one lets go. dispose has no need to
- * pump the main context to find out when that happens, and must not — that
- * would run arbitrary application callbacks (including this loader's own
- * deliveries, and completely unrelated idle/timeout sources) as a side
- * effect of the caller's g_object_unref, on a partially-torn-down object. */
-static void thumb_loader_dispose(GObject* obj) {
-    ThumbLoader* self = PHIG_THUMB_LOADER(obj);
+ * thumb_loader_post_result), so this object is kept alive by them for as long
+ * as any are outstanding, and finalize simply does not run until the last one
+ * lets go. Setting stopped first makes those already-queued deliveries
+ * harmless no-ops (thumb_loader_deliver) rather than callbacks into a caller
+ * that may itself be mid-teardown; it is set here, not in dispose, because
+ * ctx must already be unusable to every worker before any such delivery could
+ * run.
+ *
+ * Idempotent: a second call finds n_threads workers already joined and NULL
+ * (self->workers was cleared by the first call), so it repeats only the
+ * queue-drain, which is harmless on an already-empty queue. */
+void thumb_loader_shutdown(ThumbLoader* self) {
+    self->stopped = TRUE;
 
-    if (self->n_threads > 0) {
+    if (self->n_threads > 0 && self->workers != NULL) {
         for (guint i = 0; i < self->n_threads; i++)
             g_async_queue_push(self->queue, THUMB_LOADER_STOP);
         for (guint i = 0; i < self->n_threads; i++)
@@ -319,7 +333,16 @@ static void thumb_loader_dispose(GObject* obj) {
                 thumb_request_free(item);
         }
     }
+}
 
+/* Falls back to thumb_loader_shutdown for callers that drop the last ref
+ * without having called it explicitly (every existing test does this): ctx
+ * must not be relied upon by a worker beyond this object's own lifetime
+ * regardless of how the caller chose to tear it down. Idempotent, so this is
+ * a no-op when main() has already called thumb_loader_shutdown. */
+static void thumb_loader_dispose(GObject* obj) {
+    ThumbLoader* self = PHIG_THUMB_LOADER(obj);
+    thumb_loader_shutdown(self);
     G_OBJECT_CLASS(thumb_loader_parent_class)->dispose(obj);
 }
 

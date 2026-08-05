@@ -64,8 +64,20 @@ typedef struct {
     gint64 startup_start_us; /* g_get_monotonic_time() at process start, for PHIG_MEASURE */
 } PhigApp;
 
+/* Shutdown order matters: loader workers must stop touching ctx before ctx is
+ * torn down, and the model's own in-flight page fetches (which also run on
+ * ctx, via a worker thread) must finish before phig_shutdown as well.
+ * thumb_loader_shutdown joins every worker; dropping the grid's model then
+ * drops the model's last ref, running phig_gallery_model_dispose (which waits
+ * on its in_flight counter) synchronously before this function continues. */
 static void phig_app_free(PhigApp* app) {
+    if (app->loader != NULL)
+        thumb_loader_shutdown(app->loader);
     g_clear_object(&app->loader);
+
+    if (app->grid != NULL)
+        gtk_grid_view_set_model(app->grid, NULL);
+
     if (app->ctx != NULL)
         phig_shutdown(app->ctx);
     g_free(app->db_path);
@@ -407,10 +419,13 @@ static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_da
 }
 
 static void startup_result_free(StartupResult* result) {
-    /* On success, query has been handed to the model by startup_done and
-     * must not be freed here. On failure it was never allocated (query is
-     * the last thing startup_thread_func sets before returning success), so
-     * this only ever runs on an already-NULL query in that case. */
+    /* query is never freed here. On success it is borrowed by the model for
+     * the model's lifetime (phig-gtk has no query-replace path yet, so that
+     * lifetime is the rest of the process). On failure, startup_done frees it
+     * itself before returning, since phig_query_new succeeding followed by a
+     * later fallible step (currently just phig_query_set_sort, but nothing
+     * stops that changing) is the one path where query is allocated but never
+     * reaches the model. */
     g_free(result);
 }
 
@@ -451,6 +466,8 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
     if (!g_task_propagate_boolean(task, &error)) {
         show_startup_error(app, error->message);
         g_error_free(error);
+        if (startup->query != NULL)
+            phig_query_free(startup->query);
         if (startup->ctx != NULL)
             phig_shutdown(startup->ctx);
         return;
@@ -557,23 +574,10 @@ int main(int argc, char** argv) {
     int status = g_application_run(G_APPLICATION(gtk_app), 1, argv);
 
     /* g_application_run stops pumping the main context the moment it
-     * returns. thumb_loader_dispose (see its comment) deliberately never
-     * pumps the context itself to wait for outstanding idle-source
-     * deliveries to drop their ref on the loader; it relies on the app's own
-     * main loop still running for that. With the loop stopped, any request
-     * whose result was posted but not yet delivered holds a ref that would
-     * otherwise never drop, so g_clear_object below would leave the loader's
-     * refcount above zero, its dispose (and the g_thread_join inside it)
-     * would never run, and a worker could still be executing inside
-     * libphig.so when exit() starts tearing down shared libraries — observed
-     * as a SIGSEGV on quit under scroll load (task-7-report.md). Draining the
-     * context here runs every pending idle delivery first, which drops their
-     * refs and lets phig_app_free's g_clear_object bring the loader to
-     * dispose synchronously, joining every worker before this function
-     * returns. */
-    while (app->loader != NULL && thumb_loader_pending_idle_count(app->loader) > 0)
-        g_main_context_iteration(NULL, TRUE);
-
+     * returns, so any idle-source delivery not yet dispatched never will be.
+     * That is fine: phig_app_free stops and joins the loader's workers and
+     * tears down the model explicitly, rather than waiting on those
+     * deliveries or their refcounts to reach zero on their own. */
     g_object_unref(gtk_app);
     phig_app_free(app);
     return status;
