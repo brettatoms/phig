@@ -47,33 +47,33 @@ set_target_properties(phig-vendor PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ---- Shared library (compiled once, used by binary + tests) ----
 add_library(phig-core STATIC
-    src/scanner.cpp
-    src/hasher.cpp
-    src/exif.cpp
-    src/database.cpp
-    src/selection.cpp
-    src/faces.cpp
-    src/models.cpp
-    src/thumbs.cpp
-    src/metadata.cpp
-    src/paths.cpp
-    src/config.cpp
-    src/settings.cpp
-    src/organize_exec.cpp
-    src/organize_plan.cpp
-    src/remove_exec.cpp
-    src/relink.cpp
-    src/log.cpp
-    src/sidecar.cpp
-    src/dates.cpp
-    src/duplicates.cpp
-    src/raw.cpp
-    src/lockfile.cpp
-    src/parallel.cpp
-    src/scan_engine.cpp
-    src/thumbs_engine.cpp
-    src/faces_engine.cpp
-    src/search_engine.cpp
+    core/scanner.cpp
+    core/hasher.cpp
+    core/exif.cpp
+    core/database.cpp
+    core/selection.cpp
+    core/faces.cpp
+    core/models.cpp
+    core/thumbs.cpp
+    core/metadata.cpp
+    core/paths.cpp
+    core/config.cpp
+    core/settings.cpp
+    core/organize_exec.cpp
+    core/organize_plan.cpp
+    core/remove_exec.cpp
+    core/relink.cpp
+    core/log.cpp
+    core/sidecar.cpp
+    core/dates.cpp
+    core/duplicates.cpp
+    core/raw.cpp
+    core/lockfile.cpp
+    core/parallel.cpp
+    core/scan_engine.cpp
+    core/thumbs_engine.cpp
+    core/faces_engine.cpp
+    core/search_engine.cpp
 )
 
 set_target_properties(phig-core PROPERTIES
@@ -84,7 +84,7 @@ set_target_properties(phig-core PROPERTIES
 )
 
 target_include_directories(phig-core PUBLIC
-    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/core
     ${OpenCV_INCLUDE_DIRS}
     ${EXIF_INCLUDE_DIRS}
     ${LIBRAW_R_INCLUDE_DIRS}
