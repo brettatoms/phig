@@ -17,25 +17,16 @@ A command-line tool for managing image and video collections. Scan directories, 
 
 ## Building
 
-### With devenv (development)
-
-Requires [Nix](https://nixos.org/download/) with [devenv](https://devenv.sh/) and optionally [direnv](https://direnv.net/).
-
-```bash
-cd phig
-direnv allow          # auto-activates the dev environment (one-time)
-
-cmake -B build
-cmake --build build
-```
-
-The binary is at `./build/phig`. It links against Nix store libraries and is intended for local development use.
-
-### With system packages (distribution)
-
 phig builds against stock system libraries — OpenCV (core modules only; no
 `contrib` needed), SQLite3, libexif, libcurl, FFmpeg, spdlog, and LibRaw.
-Install the dependencies with your package manager:
+Install the dependencies with your package manager, then optionally install
+[mise](https://mise.jdx.dev/) and run `mise install` from the repo root to
+get the exact `cmake`, `clang-format`, and `clang-tidy` versions CI uses
+(`mise.toml`) — matching `clang-format`'s version matters, since a
+different version reformats code differently and would make the lint gate
+disagree between your machine and CI. mise is optional: any `cmake` >= 3.20
+works, and lint-tool version drift only shows up as noise in
+`clang-format --dry-run` output, not a broken build.
 
 ```bash
 # Debian / Ubuntu

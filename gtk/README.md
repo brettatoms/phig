@@ -6,35 +6,37 @@ Talks to phig only through `libphig`'s C ABI (`<phig/phig.h>`) — never a
 
 ## Setup
 
-Dependencies come from a Nix devenv and are not on the bare `PATH`. `.envrc` is
-gitignored (matching phig's convention — `direnv allow` is per-machine), so a
-fresh clone needs it recreated:
+Dependencies (gtk4, libadwaita) come from the system package manager:
 
 ```bash
-cat > .envrc <<'EOF'
-#!/usr/bin/env bash
+# Debian / Ubuntu
+sudo apt install libgtk-4-dev libadwaita-1-dev
 
-export DIRENV_WARN_TIMEOUT=20s
+# Fedora
+sudo dnf install gtk4-devel libadwaita-devel
 
-eval "$(devenv direnvrc)"
+# Arch Linux
+sudo pacman -S gtk4 libadwaita
 
-use devenv
-EOF
-direnv allow
+# macOS (Homebrew)
+brew install gtk4 libadwaita
 ```
 
 phig-gtk links against `libphig`, discovered via `pkg-config`. Install phig to
-`~/.local` (outside both repos) before the first build:
+`~/.local` (outside both repos) before the first build. `~/.local/lib/pkgconfig`
+is not on `pkg-config`'s default search path, so export `PKG_CONFIG_PATH` too
+(add it to your shell profile so it persists):
 
 ```bash
-cd ../phig && direnv exec . cmake --install build --prefix ~/.local
+cd ../phig && cmake --install build --prefix ~/.local
+export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig:$PKG_CONFIG_PATH"
 ```
 
 ## Build
 
 ```bash
-direnv exec . cmake -B build && direnv exec . cmake --build build -j
-direnv exec . ./build/phig-gtk
+cmake -B build && cmake --build build -j
+./build/phig-gtk
 ```
 
 ## Measured performance (Task 7)

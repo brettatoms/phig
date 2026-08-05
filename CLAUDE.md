@@ -33,18 +33,21 @@ below in this file.
 
 ## Building and testing
 
-Dependencies come from a Nix devenv and are **not** on the bare `PATH`. A
-plain `cmake` fails on missing `opencv4`. Prefix every build, test, and
-format command with `direnv exec .` until the devenv is wired into the
-environment directly (tracked separately):
+Native libraries (OpenCV, LibRaw, FFmpeg, libexif, SQLite3, spdlog, gtest,
+CURL) come from the system package manager — see `README.md` for per-distro
+package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
-direnv exec . cmake -B build && direnv exec . cmake --build build
-direnv exec . ./build/phig-tests        # fast suite (~1s), 636 tests
-direnv exec . ./build/phig-perf-tests   # performance suite (~3s), 4 tests
-direnv exec . ctest --test-dir build    # both — 640, what CI runs
-direnv exec . clang-format -i <files>
+cmake -B build && cmake --build build
+./build/phig-tests        # fast suite (~1s), 636 tests
+./build/phig-perf-tests   # performance suite (~3s), 4 tests
+ctest --test-dir build    # both — 640, what CI runs
+clang-format -i <files>
 ```
+
+Optionally install [mise](https://mise.jdx.dev/) and run `mise install`
+(`mise.toml`) to get the exact `cmake`/`clang-format`/`clang-tidy` versions
+CI pins — not required for a build, only for the lint gate to agree with CI.
 
 Performance tests live in a separate target so the everyday suite stays
 fast. One test is a pre-existing, unrelated skip:
@@ -53,9 +56,8 @@ unattributed failure shows up instead, check
 `DatabaseConcurrency.ConcurrentMigrationIsSafe` first — see Known issues
 below before assuming your change caused it.
 
-`gtk/` has its own build (`direnv exec . cmake -B build && direnv exec .
-cmake --build build -j` from inside `gtk/`) and 13 tests across two
-binaries — see `gtk/CLAUDE.md`.
+`gtk/` has its own build (`cmake -B build && cmake --build build -j` from
+inside `gtk/`) and 13 tests across two binaries — see `gtk/CLAUDE.md`.
 
 ### ThreadSanitizer: always set `OMP_NUM_THREADS=1`
 
@@ -95,9 +97,11 @@ collection:
   is a separate `phig-vendor` target without these flags.
 - **clang-tidy:** high-signal set in `.clang-tidy` (bugprone/performance/
   analyzer, noisy checks disabled). Run locally via
-  `./scripts/clang-tidy.sh` — it injects g++'s libstdc++ header dirs so the
-  Nix clang-tidy can find `<string>` etc. CI runs `run-clang-tidy` directly
-  on its system toolchain.
+  `./scripts/clang-tidy.sh` — it injects g++'s own libstdc++ header dirs at
+  runtime (discovered via `g++ -E -x c++ - -v`, never hardcoded) so
+  clang-tidy's clang frontend can find `<string>` etc. regardless of which
+  toolchain installed it. CI runs `run-clang-tidy` directly on its system
+  toolchain.
 - **CI:** `.github/workflows/ci.yml` builds + tests on ubuntu-latest and
   macos-latest (with `-DPHIG_WERROR=ON`) and runs the lint gate. GitHub
   Actions are pinned to full commit SHAs.
@@ -106,7 +110,8 @@ collection:
 
 - **Language:** C++20
 - **Build:** CMake
-- **Dev environment:** devenv + direnv (Nix)
+- **Dev environment:** system-installed native libraries; `mise` (optional)
+  pins `cmake`/`clang-format`/`clang-tidy` to the versions CI uses
 - **Dependencies:** OpenCV (image decode + phash + video keyframes), libexif
   (EXIF extraction), FFmpeg/libavformat (video metadata), SQLite (database),
   spdlog (diagnostic logging), GoogleTest (tests)
