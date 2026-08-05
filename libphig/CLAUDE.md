@@ -9,6 +9,28 @@ linker version script (`libphig/phig.version` on Linux,
 Public header: `libphig/include/phig/phig.h`. This is the only header a
 client may include — see `gtk/CLAUDE.md`.
 
+## Coverage — and what it lags
+
+The ABI covers paginated queries, per-image metadata, thumbnail lookup and
+generation, settings, and tag/gallery/favorite writes.
+
+**It does not cover the long-running operations** — scan, organize, remove,
+face detection. Those engines exist and work in `core/` (`ScanEngine`,
+`FacesEngine`, `organize_exec`, `remove_exec`); they have simply never been
+given ABI surface, because the only client so far (`gtk/` M0) is a read-only
+thumbnail grid that does not need them. This is a lag, not a design
+exclusion — plan 031 covers closing it, including the progress and
+cancellation convention the ABI currently has no shape for.
+
+Consequently `cli/` links `phig-core` and includes `core/` headers directly
+rather than going through libphig. **The CLI is a peer of libphig over
+`core/`, not a wrapper around it.** Anything written as though the CLI sits on
+libphig is wrong.
+
+Pixel decoding is also absent. `gtk/CLAUDE.md` anticipates decode moving
+out-of-process; measurement (0 crashes in 12,684 probes) argues in-process is
+defensible. Unresolved, and out of scope for plan 031.
+
 ## Rules
 
 - **No exception may cross the ABI boundary.** Where a `phig_ctx*` is in

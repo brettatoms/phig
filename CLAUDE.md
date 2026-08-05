@@ -25,6 +25,7 @@ tools that look for that filename resolve to something.
 | `scripts/` | Dev tooling (e.g. `clang-tidy.sh`). | — |
 | `docs/` | Cross-project specs/plans/ledgers from when phig, phig-gtk, and phig-web were separate repos. Date-stamped files. | Historical record |
 | `plans/` | phig's own numbered implementation plans (`NNN-name.md`). | Historical record |
+| `MARKET.md` | Competitive analysis: the field, its recurring weaknesses, phig's differentiators. Dated, additive. | Working document |
 
 See each directory's `CLAUDE.md` for what it is, its stability contract, and
 directory-specific rules. Command reference, tech stack, and phig's key

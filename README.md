@@ -161,9 +161,12 @@ thumbnail path lookup, and tag/gallery/favorite writes.
 
 Clients link it instead of reading phig's database directly: the SQLite schema
 and the thumbnail cache layout are private and may change, while the header is
-a versioned contract (`phig_abi_version()`). Long-running operations — scan,
-organize, remove, face detection — are not in the ABI; run them through the
-CLI, which holds the writer lock and records the activity log.
+a versioned contract (`phig_abi_version()`).
+
+Long-running operations — scan, organize, remove, face detection — are not yet
+in the ABI. Run them through the CLI, which holds the writer lock and records
+the activity log. The engines live in `core/`; giving them ABI surface, with
+progress reporting and cancellation, is plan 031.
 
 libphig's own metadata writes take the same writer lock as the CLI (see
 Concurrency, above), scoped to the database the caller opened, so they cannot
