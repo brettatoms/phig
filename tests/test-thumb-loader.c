@@ -8,9 +8,9 @@
 #define DEFAULT_HIT_SHA "603048e2b3b3a1c74dedce02521164e11bc985629fa88e840a445045d4e64990"
 
 /* All-zeroes: valid hex, 64 chars, guaranteed not to resolve to a cached file.
- * Paired with a nonexistent id so a miss on it also fails generation instead
- * of generating a real thumbnail into the test database's cache. */
-#define MISS_SHA "0000000000000000000000000000000000000000000000000000000000000000"
+ * Paired with a nonexistent id so a lookup miss on it also fails generation —
+ * exercising the generate-then-fails path, not a plain cache miss. */
+#define GENERATE_FAILS_SHA "0000000000000000000000000000000000000000000000000000000000000000"
 #define MISS_ID ((int64_t)-1)
 
 /* Five more real cached thumbnails, used only by the byte-budget test to
@@ -109,15 +109,18 @@ static void test_hit_yields_texture(Fixture* f, gconstpointer unused) {
     g_clear_object(&capture.texture);
 }
 
-/* ---- miss yields THUMB_MISS ---- */
+/* ---- no sha256 yields THUMB_MISS ---- */
 
-static void test_miss_yields_thumb_miss(Fixture* f, gconstpointer unused) {
+/* An empty sha256 is what a row gets before phig has hashed it. That is not
+ * a failure — there is nothing to look up or generate from yet — so it must
+ * report the same as an ordinary not-yet-generated cache miss. */
+static void test_no_sha256_yields_thumb_miss(Fixture* f, gconstpointer unused) {
     (void)unused;
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     Capture capture = {.loop = loop};
     guint timeout_id = arm_timeout(loop);
 
-    thumb_loader_request(f->loader, MISS_ID, MISS_SHA, 256, NULL, on_thumb_capture, &capture);
+    thumb_loader_request(f->loader, MISS_ID, "", 256, NULL, on_thumb_capture, &capture);
     g_main_loop_run(loop);
 
     disarm_timeout(timeout_id);
@@ -125,6 +128,29 @@ static void test_miss_yields_thumb_miss(Fixture* f, gconstpointer unused) {
 
     g_assert_true(capture.called);
     g_assert_cmpint(capture.result, ==, THUMB_MISS);
+    g_assert_null(capture.texture);
+}
+
+/* ---- a lookup miss whose generation also fails yields THUMB_FAILED ---- */
+
+/* Unlike a plain cache miss (nothing generated yet), a failed generation is a
+ * real failure the user should be able to notice — phig had a sha256 to work
+ * from and still could not produce a thumbnail. */
+static void test_generation_failure_yields_thumb_failed(Fixture* f, gconstpointer unused) {
+    (void)unused;
+    GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    Capture capture = {.loop = loop};
+    guint timeout_id = arm_timeout(loop);
+
+    thumb_loader_request(f->loader, MISS_ID, GENERATE_FAILS_SHA, 256, NULL, on_thumb_capture,
+                          &capture);
+    g_main_loop_run(loop);
+
+    disarm_timeout(timeout_id);
+    g_main_loop_unref(loop);
+
+    g_assert_true(capture.called);
+    g_assert_cmpint(capture.result, ==, THUMB_FAILED);
     g_assert_null(capture.texture);
 }
 
@@ -286,7 +312,8 @@ int main(int argc, char** argv) {
 #define T(name, fn) \
     g_test_add("/thumb-loader/" name, Fixture, NULL, fixture_set_up, fn, fixture_tear_down)
     T("hit-yields-texture", test_hit_yields_texture);
-    T("miss-yields-thumb-miss", test_miss_yields_thumb_miss);
+    T("no-sha256-yields-thumb-miss", test_no_sha256_yields_thumb_miss);
+    T("generation-failure-yields-thumb-failed", test_generation_failure_yields_thumb_failed);
     T("cancel-before-dispatch-never-calls-back", test_cancel_before_dispatch_never_calls_back);
     T("cancel-after-dispatch-discards-result", test_cancel_after_dispatch_discards_result);
 #undef T

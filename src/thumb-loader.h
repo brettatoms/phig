@@ -9,8 +9,8 @@ G_BEGIN_DECLS
 
 typedef enum {
     THUMB_OK = 0,  /* texture is non-NULL */
-    THUMB_MISS,    /* no sha256 to generate from, or generation failed */
-    THUMB_FAILED   /* the file exists but could not be loaded */
+    THUMB_MISS,    /* the row has no sha256 yet; nothing to generate from */
+    THUMB_FAILED   /* generation failed, or the cached file could not be loaded */
 } ThumbResult;
 
 /* Runs on the main thread. `texture` is owned by the loader's cache; ref it to
@@ -38,10 +38,11 @@ G_DECLARE_FINAL_TYPE(ThumbLoader, thumb_loader, PHIG, THUMB_LOADER, GObject)
 ThumbLoader* thumb_loader_new(phig_ctx* ctx, guint n_threads, gsize cache_bytes);
 
 /* Request a thumbnail texture for `image_id`/`sha256` (the latter 64-char
- * hex). Both identify the same row; `image_id` is what phig_thumb_generate
- * needs to resolve the path and media type for generation, and the caller
- * already has it on hand (PhigImageRow), so passing it here avoids a second
- * query to reverse it from the sha.
+ * hex, or empty if the row has not been hashed yet). Both identify the same
+ * row; `image_id` is what phig_thumb_generate needs to resolve the path and
+ * media type for generation, and the caller already has it on hand
+ * (PhigImageRow), so passing it here avoids a second query to reverse it
+ * from the sha.
  *
  * Asynchronous and cancellable. `max_dim` is the largest edge the caller can
  * use; the backend ignores it because the cache holds one size, but it is in
@@ -50,8 +51,8 @@ ThumbLoader* thumb_loader_new(phig_ctx* ctx, guint n_threads, gsize cache_bytes)
  *
  * On a cache miss this generates the thumbnail via phig_thumb_generate before
  * replying, so it is far slower than a hit — hundreds of milliseconds versus
- * about one. Replies THUMB_MISS if the row has no sha256 or generation
- * fails. */
+ * about one. Replies THUMB_MISS if the row has no sha256; THUMB_FAILED if
+ * generation or the subsequent file load fails. */
 void thumb_loader_request(ThumbLoader* self, int64_t image_id, const char* sha256,
                            guint32 max_dim, GCancellable* cancellable, ThumbCallback cb,
                            gpointer user_data);

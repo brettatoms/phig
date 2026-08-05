@@ -152,6 +152,13 @@ G_DEFINE_FINAL_TYPE_WITH_CODE(
     PhigGalleryModel, phig_gallery_model, G_TYPE_OBJECT,
     G_IMPLEMENT_INTERFACE(G_TYPE_LIST_MODEL, phig_gallery_model_list_model_iface_init))
 
+/* Emitted on the main thread when a page fetch fails, after the affected
+ * positions are left as placeholders (no items-changed for them, since
+ * nothing changed). Carries no per-row detail: a GUI is expected to surface
+ * this once regardless of how many pages fail, not once per row. */
+enum { SIGNAL_PAGE_FETCH_FAILED, N_SIGNALS };
+static guint signals[N_SIGNALS];
+
 static GType phig_gallery_model_get_item_type(GListModel* list) {
     (void)list;
     return PHIG_TYPE_IMAGE_ROW;
@@ -357,6 +364,7 @@ static void fetch_page_done(GObject* source, GAsyncResult* result, gpointer user
             g_error_free(error);
         }
         g_hash_table_remove(self->pending, GUINT_TO_POINTER(data->page_index));
+        g_signal_emit(self, signals[SIGNAL_PAGE_FETCH_FAILED], 0);
         g_object_unref(self);
         return;
     }
@@ -441,6 +449,10 @@ static void phig_gallery_model_finalize(GObject* obj) {
 static void phig_gallery_model_class_init(PhigGalleryModelClass* klass) {
     G_OBJECT_CLASS(klass)->dispose = phig_gallery_model_dispose;
     G_OBJECT_CLASS(klass)->finalize = phig_gallery_model_finalize;
+
+    signals[SIGNAL_PAGE_FETCH_FAILED] =
+        g_signal_new("page-fetch-failed", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL,
+                     NULL, NULL, G_TYPE_NONE, 0);
 }
 
 static void phig_gallery_model_init(PhigGalleryModel* self) {

@@ -212,9 +212,20 @@ static gpointer thumb_loader_worker(gpointer data) {
             continue;
         }
 
+        /* A row with no sha256 (not yet hashed by phig) has nothing to look
+         * up or generate from; that is not a failure, just data phig has not
+         * produced yet, so it is reported the same as a not-yet-generated
+         * cache miss rather than counted as THUMB_FAILED. */
+        if (req->sha256[0] == '\0') {
+            req->result = THUMB_MISS;
+            thumb_loader_post_result(self, req);
+            continue;
+        }
+
         char path[PATH_MAX];
         bool exists = false;
         phig_status status = phig_thumb_lookup(self->ctx, req->sha256, path, sizeof(path), &exists);
+        bool generation_failed = false;
 
         if (status == PHIG_OK && !exists) {
             /* Generation is far slower than a lookup or a file load (hundreds
@@ -228,11 +239,15 @@ static gpointer thumb_loader_worker(gpointer data) {
             }
             if (phig_thumb_generate(self->ctx, req->image_id) == PHIG_OK)
                 status = phig_thumb_lookup(self->ctx, req->sha256, path, sizeof(path), &exists);
+            else
+                generation_failed = true;
         }
 
-        if (status != PHIG_OK) {
-            /* out_len is sized generously above; any failure here is a real
-             * lookup error, not a too-small buffer. */
+        if (status != PHIG_OK || generation_failed) {
+            /* out_len is sized generously above; any lookup failure here is a
+             * real error, not a too-small buffer. A failed generation is
+             * equally a real failure — the row has a sha256 but phig could
+             * not decode the image — so both count as THUMB_FAILED. */
             req->result = THUMB_FAILED;
         } else if (!exists) {
             req->result = THUMB_MISS;

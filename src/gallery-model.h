@@ -34,7 +34,14 @@ const char* phig_image_row_get_filename(PhigImageRow* row);
  * page and emits items-changed for its range from the GTask completion
  * callback on the main thread. Pages beyond the resident budget are evicted
  * least-recently-used; rows already handed out to callers stay valid because
- * they are refcounted GObjects owning their own string copies. */
+ * they are refcounted GObjects owning their own string copies.
+ *
+ * Signals:
+ *   "page-fetch-failed" (no args) — a page fetch failed; the affected
+ *   positions keep their placeholder rows (no items-changed is emitted for
+ *   them, since nothing changed). Emitted once per failed fetch, on the main
+ *   thread; a GUI is expected to coalesce this into one user-visible
+ *   notification rather than one per occurrence. */
 #define PHIG_TYPE_GALLERY_MODEL (phig_gallery_model_get_type())
 G_DECLARE_FINAL_TYPE(PhigGalleryModel, phig_gallery_model, PHIG, GALLERY_MODEL, GObject)
 

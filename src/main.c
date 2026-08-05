@@ -13,8 +13,10 @@
 
 typedef struct {
     AdwApplicationWindow* window;
+    AdwToolbarView* toolbar_view;
     GtkGridView* grid;
     AdwToastOverlay* toast_overlay;
+    GtkLabel* failed_label; /* header-bar counter for THUMB_FAILED results */
     char* db_path;
 
     /* Owned once startup finishes; NULL until then. Kept on the app struct so
@@ -22,6 +24,9 @@ typedef struct {
      * for as long as they run). */
     phig_ctx* ctx;
     ThumbLoader* loader;
+
+    guint thumb_failed_count;
+    gboolean page_fetch_toast_shown; /* one toast per session, not one per failed page */
 } PhigApp;
 
 static void phig_app_free(PhigApp* app) {
@@ -59,6 +64,13 @@ typedef struct {
     phig_query* query;
 } StartupResult;
 
+/* phig_last_error reports the last error on the calling thread, so it must be
+ * read here, on the worker thread that made the failing call, and carried to
+ * the main thread as an owned copy — by the time startup_done runs on the
+ * main thread the ctx may have been used again (or never existed at all) and
+ * the message would be stale or unreadable. A failed phig_init produces no
+ * context at all, per the header, so that case carries a fixed message
+ * instead of a phig_last_error call. */
 static void startup_thread_func(GTask* task, gpointer source_object, gpointer task_data,
                                  GCancellable* cancellable) {
     (void)source_object;
@@ -71,15 +83,15 @@ static void startup_thread_func(GTask* task, gpointer source_object, gpointer ta
 
     phig_status status = phig_init(&cfg, &result->ctx);
     if (status != PHIG_OK) {
-        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "phig_init failed: %d",
-                                 (int)status);
+        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED,
+                                 "Could not open the phig database.");
         return;
     }
 
     status = phig_query_new(result->ctx, &result->query);
     if (status != PHIG_OK) {
-        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "phig_query_new failed: %d",
-                                 (int)status);
+        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "%s",
+                                 phig_last_error(result->ctx));
         return;
     }
     phig_query_set_sort(result->query, PHIG_SORT_DATE, TRUE);
@@ -105,13 +117,38 @@ static void on_factory_setup(GtkSignalListItemFactory* factory, GtkListItem* ite
     gtk_list_item_set_child(item, frame);
 }
 
-/* Delivered on the main thread by ThumbLoader. user_data is the GtkListItem,
- * reffed when the request was made since the loader holds it across a hop to
- * a worker thread and back. Guarded on the cancellable stored on the item,
- * not on the result: if the cell has since been unbound (and its cancellable
- * cancelled), a stale success for a now-different row must not be shown. */
+/* Bundles the two things on_thumb_result needs: the item (reffed, to survive
+ * the hop to a worker thread and back) and app (borrowed, to update the
+ * failure counter). ThumbCallback has one user_data slot, so both travel in
+ * this heap struct rather than one being smuggled onto the item. */
+typedef struct {
+    GtkListItem* item;
+    PhigApp* app;
+} ThumbResultData;
+
+/* Updates the header-bar failure counter and shows it once nonzero. Left
+ * visible for the rest of the session once shown: a count dropping back out
+ * of sight would look like the problem went away, which it has not — the
+ * broken cell stays broken until the app restarts. */
+static void phig_app_note_thumb_failed(PhigApp* app) {
+    app->thumb_failed_count++;
+    char* text = g_strdup_printf("%u thumbnail%s failed", app->thumb_failed_count,
+                                  app->thumb_failed_count == 1 ? "" : "s");
+    gtk_label_set_text(app->failed_label, text);
+    g_free(text);
+    gtk_widget_set_visible(GTK_WIDGET(app->failed_label), TRUE);
+}
+
+/* Delivered on the main thread by ThumbLoader. Guarded on the cancellable
+ * stored on the item, not on the result: if the cell has since been unbound
+ * (and its cancellable cancelled), a stale success for a now-different row
+ * must not be shown. */
 static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer user_data) {
-    GtkListItem* item = user_data;
+    ThumbResultData* data = user_data;
+    GtkListItem* item = data->item;
+    PhigApp* app = data->app;
+    g_free(data);
+
     GCancellable* cancellable = g_object_get_data(G_OBJECT(item), "phig-cancellable");
     if (cancellable == NULL || g_cancellable_is_cancelled(cancellable)) {
         g_object_unref(item);
@@ -128,7 +165,8 @@ static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer us
     } else if (result == THUMB_FAILED) {
         gtk_picture_set_paintable(GTK_PICTURE(picture), NULL);
         gtk_widget_add_css_class(picture, "phig-thumb-failed");
-    } else { /* THUMB_MISS */
+        phig_app_note_thumb_failed(app);
+    } else { /* THUMB_MISS: not an error, just not generated (or generating) yet */
         gtk_picture_set_paintable(GTK_PICTURE(picture), NULL);
         gtk_widget_add_css_class(picture, "phig-thumb-placeholder");
     }
@@ -144,7 +182,7 @@ static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer us
 static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item,
                              gpointer user_data) {
     (void)factory;
-    ThumbLoader* loader = user_data;
+    PhigApp* app = user_data;
     PhigImageRow* row = gtk_list_item_get_item(item);
 
     GtkWidget* frame = gtk_list_item_get_child(item);
@@ -160,8 +198,12 @@ static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item
     GCancellable* cancellable = g_cancellable_new();
     g_object_set_data_full(G_OBJECT(item), "phig-cancellable", cancellable, g_object_unref);
 
-    thumb_loader_request(loader, phig_image_row_get_id(row), phig_image_row_get_sha256(row),
-                          PHIG_CELL_SIZE, cancellable, on_thumb_result, g_object_ref(item));
+    ThumbResultData* data = g_new0(ThumbResultData, 1);
+    data->item = g_object_ref(item);
+    data->app = app;
+
+    thumb_loader_request(app->loader, phig_image_row_get_id(row), phig_image_row_get_sha256(row),
+                          PHIG_CELL_SIZE, cancellable, on_thumb_result, data);
 }
 
 /* unbind: cancel any outstanding request for this cell and clear the
@@ -224,6 +266,32 @@ static void startup_result_free(StartupResult* result) {
     g_free(result);
 }
 
+/* One toast for the whole session, not one per failed page: a scroll that
+ * outruns several page fetches would otherwise stack a toast per failure.
+ * The affected cells already keep their placeholders (the model's contract
+ * for this signal), so this is purely a "something is wrong" notice. */
+static void on_page_fetch_failed(PhigGalleryModel* model, gpointer user_data) {
+    (void)model;
+    PhigApp* app = user_data;
+    if (app->page_fetch_toast_shown)
+        return;
+    app->page_fetch_toast_shown = TRUE;
+
+    AdwToast* toast = adw_toast_new("Some images could not be loaded");
+    adw_toast_overlay_add_toast(app->toast_overlay, toast);
+}
+
+/* Replaces the grid with an in-window error page carrying phig's own message.
+ * The window and its header bar stay up; only the content area changes, so
+ * this is never a dialog and never blocks anything. */
+static void show_startup_error(PhigApp* app, const char* message) {
+    GtkWidget* status_page = adw_status_page_new();
+    adw_status_page_set_icon_name(ADW_STATUS_PAGE(status_page), "dialog-error-symbolic");
+    adw_status_page_set_title(ADW_STATUS_PAGE(status_page), "Could Not Open Collection");
+    adw_status_page_set_description(ADW_STATUS_PAGE(status_page), message);
+    adw_toolbar_view_set_content(app->toolbar_view, status_page);
+}
+
 static void startup_done(GObject* source, GAsyncResult* result, gpointer user_data) {
     (void)source;
     (void)user_data;
@@ -233,7 +301,7 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
 
     GError* error = NULL;
     if (!g_task_propagate_boolean(task, &error)) {
-        g_warning("phig-gtk: startup failed: %s", error->message);
+        show_startup_error(app, error->message);
         g_error_free(error);
         if (startup->ctx != NULL)
             phig_shutdown(startup->ctx);
@@ -248,13 +316,14 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
      * never freed once handed to the model (phig-gtk has no query-replace
      * path yet, so the model is never torn down before the app is). */
     PhigGalleryModel* model = phig_gallery_model_new(app->ctx, startup->query);
+    g_signal_connect(model, "page-fetch-failed", G_CALLBACK(on_page_fetch_failed), app);
     GtkSelectionModel* selection = GTK_SELECTION_MODEL(gtk_no_selection_new(G_LIST_MODEL(model)));
     gtk_grid_view_set_model(app->grid, selection);
     g_object_unref(selection);
 
     GtkListItemFactory* factory = gtk_signal_list_item_factory_new();
     g_signal_connect(factory, "setup", G_CALLBACK(on_factory_setup), NULL);
-    g_signal_connect(factory, "bind", G_CALLBACK(on_factory_bind), app->loader);
+    g_signal_connect(factory, "bind", G_CALLBACK(on_factory_bind), app);
     g_signal_connect(factory, "unbind", G_CALLBACK(on_factory_unbind), NULL);
     gtk_grid_view_set_factory(app->grid, factory);
     g_object_unref(factory);
@@ -267,18 +336,27 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
     gtk_window_set_title(GTK_WINDOW(app->window), "phig");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 1100, 750);
 
-    AdwToolbarView* view = ADW_TOOLBAR_VIEW(adw_toolbar_view_new());
-    adw_toolbar_view_add_top_bar(view, adw_header_bar_new());
+    app->toolbar_view = ADW_TOOLBAR_VIEW(adw_toolbar_view_new());
+    AdwHeaderBar* header_bar = ADW_HEADER_BAR(adw_header_bar_new());
+
+    /* Unobtrusive running count of THUMB_FAILED results (Step 3). Hidden
+     * until the first failure so a normal run — all hits and misses — shows
+     * nothing extra in the header bar. */
+    app->failed_label = GTK_LABEL(gtk_label_new(NULL));
+    gtk_widget_add_css_class(GTK_WIDGET(app->failed_label), "error");
+    gtk_widget_set_visible(GTK_WIDGET(app->failed_label), FALSE);
+    adw_header_bar_pack_end(header_bar, GTK_WIDGET(app->failed_label));
+    adw_toolbar_view_add_top_bar(app->toolbar_view, GTK_WIDGET(header_bar));
 
     app->grid = GTK_GRID_VIEW(gtk_grid_view_new(NULL, NULL));
     gtk_grid_view_set_min_columns(app->grid, 3);
     g_signal_connect(app->grid, "activate", G_CALLBACK(on_cell_activate), app);
     GtkWidget* scroller = gtk_scrolled_window_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), GTK_WIDGET(app->grid));
-    adw_toolbar_view_set_content(view, scroller);
+    adw_toolbar_view_set_content(app->toolbar_view, scroller);
 
     app->toast_overlay = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
-    adw_toast_overlay_set_child(app->toast_overlay, GTK_WIDGET(view));
+    adw_toast_overlay_set_child(app->toast_overlay, GTK_WIDGET(app->toolbar_view));
 
     adw_application_window_set_content(app->window, GTK_WIDGET(app->toast_overlay));
 
