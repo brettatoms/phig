@@ -1076,6 +1076,63 @@ thesis was reasoned from a supply gap, and three chances to corroborate it from
 the demand side produced nothing. Treat it as unvalidated until a source
 supports it.
 
+### Sampling-bias correction to the finding above (2026-08-05)
+
+**"No evidenced demand" overstates what the evidence supports, and the sampling is
+biased against finding this particular demand.**
+
+Every source in this document is a forum or subreddit where people who already own
+and discuss photo-management software talk to each other — r/unRAID, r/photography,
+DPReview, r/macapps. **Non-technical people who cannot get photos off their phone
+do not post in those places. They ask someone they trust.** Searching those forums
+for this demand is looking in the one place it is structurally unlikely to appear.
+
+Countervailing firsthand evidence from phig's author: people who are less
+technically inclined ask *constantly* how to get their photos from phone to laptop.
+That is direct observation of the target audience, from a channel no forum search
+reaches, and it outranks the absence found above.
+
+**The corrected claim:** no demand for serverless P2P sync appeared *among people
+who already run photo management software*. That is much narrower than "no demand,"
+and it says nothing about the larger, quieter audience who never gets as far as
+choosing a tool.
+
+**What remains true and unchanged by this correction:**
+
+- The transfer job is solved several times over, cheaply — PhotoSync (under $5,
+  all four platforms, local Wi-Fi, no cloud, no server), AirDrop inside Apple,
+  and Google Photos/iCloud by being preinstalled. The person asking is not blocked
+  by absent software.
+- So the barrier is **discovery and trust, not capability** — and discovery is
+  brutally hard to win as an unknown entrant, because "which app should I use" is
+  answered by whoever the asker already trusts. That currently is phig's author,
+  which does not scale.
+- The technical obstacles are real and explain why the frictionless version does
+  not exist: iOS background-execution limits mean a sleeping phone cannot reliably
+  sync; app-store presence requires developer enrollment, review, and two mobile
+  codebases from zero; local network discovery is fragile across router configs.
+  Mylio has a funded team and still draws complaints that devices will not sync.
+- The genuinely unoccupied position is still the *combination* — transfer plus a
+  real organizer, no cloud, no server, no subscription. Unoccupied does not imply
+  profitable when the transfer half is a commodity and the audience pays for
+  nothing today.
+
+**The cheap decisive test, and it needs no code.** phig's author has direct access
+to the exact audience these forums cannot reach. Over the next several times
+someone asks, establish three things:
+
+1. What have they already tried, and why did it fail them?
+2. Would they pay anything at all, and roughly how much?
+3. **Is the pain the transfer itself, or the mess afterward?**
+
+Question 3 decides the product. If the answer is consistently "the mess
+afterward" — thousands of unsorted photos, duplicates, can't find anything — that
+is phig's engine, and transfer is merely the on-ramp. If it is "I just want the
+files on my laptop," PhotoSync already wins and there is no business here.
+
+Ten conversations, no build. Until they happen, this thesis is **unvalidated in
+both directions** — not refuted, as the section above implied.
+
 ### Correction to the above (2026-08-05, same day)
 
 **The transfer half of that position is already occupied.** Overstated on first
@@ -1252,9 +1309,12 @@ currently weakest rather than strongest.
 section said P2P sync was the right wedge and the GUI merely gated it. Both halves
 need correcting:
 
-1. **The P2P wedge is unvalidated.** Six sources, zero requests for serverless
-   phone↔desktop sync. PhotoSync already does the transport for under $5, and
-   r/unRAID shows it in production paired with Immich.
+1. **The P2P wedge is unvalidated — in both directions.** Six sources produced
+   zero requests, but all six sample people who already own photo software, so the
+   absence is weak evidence (see the sampling-bias correction). What is solid:
+   PhotoSync already does the transport for under $5 on all four platforms, and
+   r/unRAID shows it in production paired with Immich. The unoccupied slice is
+   transfer *integrated with* an organizer.
 2. **The GUI is not a gate in front of a differentiator — it is the
    differentiator, and it is contested.** Lap shipped a modern local-first
    folder-first manager with local AI, took 685 upvotes and comments like "exactly
@@ -1322,9 +1382,13 @@ same corpus. Do not put it in any pitch until measured.
   desktop plus one mobile sync client, rather than five first-class clients?
   Note the DAM thread cites Win+Mac as the coverage that matters and never
   mentions Linux.
-- ~~Is there evidence of demand for serverless P2P photo sync?~~ **Resolved
-  negative, 2026-08-05.** Six threads, zero requests. Two show the job already
-  done by PhotoSync + Immich. Do not build sync on this evidence.
+- **Is there evidence of demand for serverless P2P photo sync?** Still open, and
+  **not** resolved negative — an earlier version of this line said it was, which
+  overstated the evidence. Six threads produced zero requests, but all six sample
+  people who already own photo software; the audience that cannot move photos off a
+  phone does not post there. Firsthand author observation says they ask constantly.
+  Resolve it with ten conversations, not a build — see the sampling-bias
+  correction, especially question 3 (transfer, or the mess afterward?).
 - **Is culling/similar-shot review the better wedge than sync?** Voiced in three
   threads. phig's phash grouping plus `blur_score` cover the selection half.
   Open: does it need a compare UI with a RAW histogram, and **does it need star
@@ -1426,9 +1490,15 @@ return is better realized as demonstrated capability than as licence sales.
 
 - A paying audience appears for something phig uniquely does (provably complete
   dedup, RAW+JPEG pairing, cross-session recoverability) — evidenced by demand,
-  not inferred from a supply gap. Note that two theses in this document (P2P sync,
-  embeddable engine) reached "no evidenced demand" and should not be revived
-  without it.
+  not inferred from a supply gap. The embeddable-engine thesis reached "no
+  evidenced demand" and should not be revived without it.
+- **The P2P/mobile-transfer thesis is the one live lead**, and it is untested rather
+  than refuted. Every source here samples people who already own photo software, so
+  it cannot see the audience that gets stuck moving photos off a phone — an audience
+  the author reports asking constantly. Ten conversations with real askers would
+  settle it, and the deciding question is whether their pain is the transfer or the
+  mess afterward. If it is the mess, that is phig's engine and this decision should
+  be reopened. See the sampling-bias correction.
 - Lap stalls and no comparable free replacement emerges.
 - The DAM incumbents (iMatch Windows-only, Photo Supreme) lose their audience
   without a free successor taking it.
