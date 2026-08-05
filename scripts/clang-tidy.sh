@@ -30,7 +30,7 @@ done < <(g++ -E -x c++ - -v </dev/null 2>&1 |
 if command -v run-clang-tidy >/dev/null 2>&1; then
     args=()
     for inc in "${isystem[@]}"; do args+=("-extra-arg=$inc"); done
-    exec run-clang-tidy -quiet -p build "${args[@]}" 'src/.*\.(cpp|h)$' "$@"
+    exec run-clang-tidy -quiet -p build "${args[@]}" '(core|libphig|cli)/.*\.(cpp|h)$' "$@"
 fi
 
 # Fallback: invoke clang-tidy per file, failing if any file reports findings.
@@ -39,5 +39,5 @@ for inc in "${isystem[@]}"; do args+=("--extra-arg=$inc"); done
 status=0
 while IFS= read -r file; do
     clang-tidy -p build "${args[@]}" "$file" "$@" || status=1
-done < <(find src -maxdepth 1 -type f \( -name '*.cpp' -o -name '*.h' \))
+done < <(find core libphig cli -maxdepth 1 -type f \( -name '*.cpp' -o -name '*.h' \))
 exit "$status"

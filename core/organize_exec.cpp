@@ -130,7 +130,7 @@ void carry_sidecars(Database& db, const std::string& parent_source, const std::s
             // append style: dest keeps full media name -> dst_stem + parent ext + tail
             // dst media filename is dst_stem + parent-ext; reconstruct from dst_media.
             std::string dst_name = dst_media.filename().string();  // IMG_1-1.CR2
-            tail = dst_name + tail;                                // IMG_1-1.CR2.xmp
+            tail.insert(0, dst_name);                              // IMG_1-1.CR2.xmp
         } else {
             // stem style: IMG_1.xmp -> IMG_1-1.xmp
             tail = dst_stem + side_name.substr(src_stem.size());

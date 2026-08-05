@@ -10,4 +10,4 @@ Checks: >
   -clang-analyzer-deadcode.DeadStores,
   performance-*
 WarningsAsErrors: '*'
-HeaderFilterRegex: '^src/'
+HeaderFilterRegex: '^(core|libphig|cli)/'

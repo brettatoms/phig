@@ -59,4 +59,4 @@ using ConfirmFn = std::function<bool(const std::string& prompt)>;
 // not set, `confirm` is called with the composed warning text; returning
 // false aborts. A null `confirm` is treated as a refusal, so callers that
 // don't supply one never proceed without consent.
-int cmd_rm(const RemoveOptions& opts, ConfirmFn confirm = nullptr);
+int cmd_rm(const RemoveOptions& opts, const ConfirmFn& confirm = nullptr);

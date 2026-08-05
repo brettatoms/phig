@@ -89,7 +89,13 @@ Settings Settings::load(const std::string& path) {
                 line.kind = LineKind::KeyValue;
                 line.section = current_section;
                 std::string name = normalize_key(trim(t.substr(0, eq)));
-                line.key = current_section.empty() ? name : current_section + "." + name;
+                if (current_section.empty()) {
+                    line.key = name;
+                } else {
+                    line.key = current_section;
+                    line.key += '.';
+                    line.key += name;
+                }
                 std::string tail = t.substr(eq + 1);
                 size_t comment_at = find_inline_comment(tail);
                 if (comment_at == std::string::npos) {

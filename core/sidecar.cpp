@@ -53,6 +53,7 @@ std::string normalize_xmp_date(const std::string& v) {
     // ISO: "YYYY-MM-DDThh:mm:ss"
     if (v.size() >= 19 && v[4] == '-' && v[7] == '-' && (v[10] == 'T' || v[10] == ' ')) {
         int y, mo, d, h, mi, s;
+        // NOLINTNEXTLINE(bugprone-unchecked-string-to-number-conversion): checked via == 6 below.
         if (std::sscanf(v.c_str(), "%d-%d-%d%*c%d:%d:%d", &y, &mo, &d, &h, &mi, &s) == 6)
             return exif_shape(y, mo, d, h, mi, s);
         return "";
@@ -61,6 +62,7 @@ std::string normalize_xmp_date(const std::string& v) {
     {
         int mo, d, y, h, mi, s;
         char ampm[3] = {0, 0, 0};
+        // NOLINTNEXTLINE(bugprone-unchecked-string-to-number-conversion): checked via >= 6 below.
         int n = std::sscanf(v.c_str(), "%d/%d/%d %d:%d:%d %2s", &mo, &d, &y, &h, &mi, &s, ampm);
         if (n >= 6) {
             if (n == 7) {

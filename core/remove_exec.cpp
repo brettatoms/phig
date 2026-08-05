@@ -62,7 +62,7 @@ std::vector<std::string> remove_media_with_sidecars(Database& db, const std::str
     return acted;
 }
 
-int cmd_rm(const RemoveOptions& opts, ConfirmFn confirm) {
+int cmd_rm(const RemoveOptions& opts, const ConfirmFn& confirm) {
     const bool needs_match = opts.mode == RemoveMode::Trash || opts.mode == RemoveMode::Hard ||
                              opts.mode == RemoveMode::DbOnly;
     if (needs_match && opts.matches.empty()) {

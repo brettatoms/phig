@@ -1469,6 +1469,7 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         // For each named face, search for similar untagged faces
         auto ref_rows = db.get_face_embeddings_for_person(person_id);
         std::vector<std::array<float, 128>> ref_embeddings;
+        ref_embeddings.reserve(ref_rows.size());
         for (const auto& row : ref_rows) {
             ref_embeddings.push_back(row.embedding);
         }

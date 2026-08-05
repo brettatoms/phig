@@ -56,8 +56,7 @@ WriterLock::WriterLock(const std::string& path, bool no_wait) {
         throw LockBusy("Another phig operation is running (pid " + std::to_string(other_pid) + ")");
     }
 
-    std::cerr << "Another phig operation is running (pid " << other_pid << "); waiting..."
-              << std::endl;
+    std::cerr << "Another phig operation is running (pid " << other_pid << "); waiting...\n";
     if (::flock(fd_, LOCK_EX) != 0) {  // blocking
         int e = errno;
         ::close(fd_);

@@ -20,19 +20,25 @@ namespace fs = std::filesystem;
 // Schema version this code expects. Bump when adding migrations.
 static const int CURRENT_SCHEMA_VERSION = 7;
 
-// migrations[N] upgrades from version N-1 to version N.
+// migrations()[N] upgrades from version N-1 to version N.
 // Version 1 = initial schema, created directly by init_schema().
 // Version 2 = video support (media_type + duration_ms columns).
 // Version 3 = tags/image_tags + gallery column + seeded favorite tag.
-static const std::vector<std::string> migrations = {
-    "",  // placeholder for index 0 (no version 0)
-    "",  // v1: initial schema, created fresh by init_schema()
-    // v2: rename exif -> metadata, add video support columns
-    R"(ALTER TABLE images RENAME COLUMN exif TO metadata;
+//
+// Function-local static rather than a namespace-scope one: a namespace-scope
+// static's initializer runs before main() and an exception escaping it calls
+// std::terminate(); wrapping it in a function lets construction failure
+// propagate normally to whichever caller triggers the first call.
+static const std::vector<std::string>& migrations() {
+    static const std::vector<std::string> table = {
+        "",  // placeholder for index 0 (no version 0)
+        "",  // v1: initial schema, created fresh by init_schema()
+        // v2: rename exif -> metadata, add video support columns
+        R"(ALTER TABLE images RENAME COLUMN exif TO metadata;
        ALTER TABLE images ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image';
        ALTER TABLE images ADD COLUMN duration_ms INTEGER;)",
-    // v3: tags & galleries & favorites
-    R"(CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+        // v3: tags & galleries & favorites
+        R"(CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
        CREATE TABLE image_tags (
          image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
          tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
@@ -40,10 +46,10 @@ static const std::vector<std::string> migrations = {
        INSERT OR IGNORE INTO tags(name) VALUES ('favorite');
        ALTER TABLE images ADD COLUMN gallery TEXT;
        CREATE INDEX idx_gallery ON images(gallery);)",
-    // v4: blur/sharpness score
-    "ALTER TABLE images ADD COLUMN blur_score REAL;",
-    // v5: activity log (operations + per-file entries) for audit/rollback
-    R"(CREATE TABLE operations (
+        // v4: blur/sharpness score
+        "ALTER TABLE images ADD COLUMN blur_score REAL;",
+        // v5: activity log (operations + per-file entries) for audit/rollback
+        R"(CREATE TABLE operations (
          id          INTEGER PRIMARY KEY,
          ts          TEXT NOT NULL,
          command     TEXT NOT NULL,
@@ -59,12 +65,12 @@ static const std::vector<std::string> migrations = {
          dst          TEXT,
          restore_json TEXT);
        CREATE INDEX idx_op_entries ON operation_entries(op_id);)",
-    // v6: indexed effective_date for date-sorted pagination without a full
-    // scan/JSON-parse of every row. The ADD COLUMN happens in C++ (see the
-    // migration loop) because a DB created fresh at a later CURRENT_SCHEMA_VERSION
-    // and then rolled back to v4/v5 for testing already has the column, and
-    // SQLite's ALTER TABLE has no IF NOT EXISTS.
-    R"(UPDATE images SET effective_date = COALESCE(
+        // v6: indexed effective_date for date-sorted pagination without a full
+        // scan/JSON-parse of every row. The ADD COLUMN happens in C++ (see the
+        // migration loop) because a DB created fresh at a later CURRENT_SCHEMA_VERSION
+        // and then rolled back to v4/v5 for testing already has the column, and
+        // SQLite's ALTER TABLE has no IF NOT EXISTS.
+        R"(UPDATE images SET effective_date = COALESCE(
                    CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.DateTimeOriginal') END,
                    CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.DateTimeDigitized') END,
                    modified_at);
@@ -74,18 +80,18 @@ static const std::vector<std::string> migrations = {
                WHERE effective_date LIKE '____:__:__%';
        CREATE INDEX IF NOT EXISTS idx_effective_date
                ON images(effective_date DESC, id DESC);)",
-    // v7: canonicalize effective_date to "YYYY-MM-DD HH:MM:SS". v6 backfilled
-    // from modified_at, which format_time() writes as "YYYY-MM-DDTHH:MM:SSZ",
-    // so the column ended up holding two families that do not sort against
-    // each other (' ' < 'T'). Both UPDATEs must produce byte-identical output
-    // to compute_effective_date() in this file.
-    //
-    // The EXIF pass repeats v6's rewrite because a v6 database can still hold
-    // ':' values written by an insert() from before that normalization landed.
-    // The mtime pass is gated on the exact 20-char T...Z shape, so a value
-    // that merely contains a 'T' is left alone. Rows that are NULL, empty, or
-    // match neither shape are untouched by both.
-    R"(UPDATE images SET effective_date =
+        // v7: canonicalize effective_date to "YYYY-MM-DD HH:MM:SS". v6 backfilled
+        // from modified_at, which format_time() writes as "YYYY-MM-DDTHH:MM:SSZ",
+        // so the column ended up holding two families that do not sort against
+        // each other (' ' < 'T'). Both UPDATEs must produce byte-identical output
+        // to compute_effective_date() in this file.
+        //
+        // The EXIF pass repeats v6's rewrite because a v6 database can still hold
+        // ':' values written by an insert() from before that normalization landed.
+        // The mtime pass is gated on the exact 20-char T...Z shape, so a value
+        // that merely contains a 'T' is left alone. Rows that are NULL, empty, or
+        // match neither shape are untouched by both.
+        R"(UPDATE images SET effective_date =
                    substr(effective_date,1,4) || '-' || substr(effective_date,6,2) || '-' ||
                    substr(effective_date,9)
                WHERE effective_date LIKE '____:__:__%';
@@ -94,7 +100,9 @@ static const std::vector<std::string> migrations = {
                WHERE length(effective_date) >= 20
                  AND substr(effective_date,11,1) = 'T'
                  AND substr(effective_date,20,1) = 'Z';)",
-};
+    };
+    return table;
+}
 
 namespace {
 // Step a prepared DML statement to completion, finalize it, and throw if the
@@ -463,7 +471,7 @@ void Database::init_schema() {
                         sqlite3_finalize(stmt);
                     }
                 }
-                if (!migrations[v].empty()) exec(migrations[v]);
+                if (!migrations()[v].empty()) exec(migrations()[v]);
                 set_schema_version(v);
                 exec("COMMIT");
             } catch (...) {
