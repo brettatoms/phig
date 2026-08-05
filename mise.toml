@@ -1,0 +1,4 @@
+[tools]
+cmake = "4.1.2"
+"pipx:clang-format" = "21.1.8"
+"pipx:clang-tidy" = "21.1.6"
