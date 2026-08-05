@@ -1,20 +1,53 @@
 #include <adwaita.h>
 #include <gtk/gtk.h>
 #include <phig/phig.h>
+#include <stdlib.h>
 
 #include "gallery-model.h"
 #include "thumb-loader.h"
 
-/* Cell size in the grid, and the thumbnail cache budget. Task 7 measures
- * these against real scrolling; these are starting values, not tuned ones. */
+/* Cell size in the grid. */
 #define PHIG_CELL_SIZE 200
+
+/* Loader thread count: measured at 2, 4, and 8 against warm and miss-heavy
+ * full-range scrolls (task-7-report.md). Frame timing is identical across all
+ * three on a warm cache (main-thread texture/placeholder work dominates, not
+ * worker count) and on a miss-heavy scroll (capped by HDD seek time
+ * regardless of thread count). 8 threads also reproduced a pre-existing,
+ * unrelated crash — concurrent thumbnail-generation attempts against one
+ * dangling DB row whose source file no longer exists on disk — that did not
+ * reproduce at 4. 4 is kept: no measured benefit from more, and it avoids
+ * that crash. */
 #define PHIG_THUMB_LOADER_THREADS 4
+
+/* Texture cache budget: measured at 64/256/512 MB against the full
+ * 29,953-row warm scroll (task-7-report.md). Frame timing did not
+ * distinguish the three (66-83ms worst frame at all of them); RSS scaled
+ * with the budget (276/476/692 MB peak). 256 MB is kept over 64 MB for
+ * scrollback headroom — a monotonic one-way sweep never revisits a texture,
+ * so this test cannot show the difference a back-and-forth scroll would. */
 #define PHIG_THUMB_CACHE_BYTES (256 * 1024 * 1024)
+
+/* Every tunable is also overridable via environment variable so the same
+ * binary can be re-measured at different values without a rebuild
+ * (task-7-report.md's Step 4 sweep). Falls back to the #define when unset or
+ * unparseable. */
+static guint env_override_uint(const char* name, guint fallback) {
+    const char* value = g_getenv(name);
+    if (value == NULL || value[0] == '\0')
+        return fallback;
+    char* end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (end == value || parsed <= 0)
+        return fallback;
+    return (guint)parsed;
+}
 
 typedef struct {
     AdwApplicationWindow* window;
     AdwToolbarView* toolbar_view;
     GtkGridView* grid;
+    GtkScrolledWindow* scroller;
     AdwToastOverlay* toast_overlay;
     GtkLabel* failed_label; /* header-bar counter for THUMB_FAILED results */
     char* db_path;
@@ -27,6 +60,8 @@ typedef struct {
 
     guint thumb_failed_count;
     gboolean page_fetch_toast_shown; /* one toast per session, not one per failed page */
+
+    gint64 startup_start_us; /* g_get_monotonic_time() at process start, for PHIG_MEASURE */
 } PhigApp;
 
 static void phig_app_free(PhigApp* app) {
@@ -35,6 +70,119 @@ static void phig_app_free(PhigApp* app) {
         phig_shutdown(app->ctx);
     g_free(app->db_path);
     g_free(app);
+}
+
+/* Measurement harness (task-7-report.md). Entirely gated on PHIG_MEASURE=1,
+ * so it never runs in normal use: no input-injection path exists on this
+ * machine (no ydotool/wtype/AT-SPI — established in Tasks 4-5), so scrolling
+ * is driven directly on the scrolled window's GtkAdjustment instead, from a
+ * g_timeout_add step function, with frame timings recorded via a tick
+ * callback on the grid. */
+typedef struct {
+    PhigApp* app;
+    GArray* frame_deltas_us; /* gint64, one per observed frame */
+    gint64 last_frame_time_us;
+    gboolean have_last_frame;
+    guint tick_id;
+    guint timeout_id;
+    double step; /* adjustment units per timeout tick */
+    gboolean returning; /* sweeping back down after reaching upper bound */
+} PhigMeasureState;
+
+static void phig_measure_state_free(PhigMeasureState* state) {
+    g_array_free(state->frame_deltas_us, TRUE);
+    g_free(state);
+}
+
+static gboolean phig_measure_tick(GtkWidget* widget, GdkFrameClock* clock, gpointer user_data) {
+    (void)widget;
+    PhigMeasureState* state = user_data;
+    gint64 now_us = gdk_frame_clock_get_frame_time(clock);
+    if (state->have_last_frame) {
+        gint64 delta = now_us - state->last_frame_time_us;
+        g_array_append_val(state->frame_deltas_us, delta);
+        if (g_getenv("PHIG_MEASURE_DEBUG") != NULL)
+            g_printerr("PHIG_MEASURE_DEBUG tick delta_ms=%.3f\n", delta / 1000.0);
+    }
+    state->last_frame_time_us = now_us;
+    state->have_last_frame = TRUE;
+    return G_SOURCE_CONTINUE;
+}
+
+static void phig_measure_report(PhigMeasureState* state) {
+    GArray* deltas = state->frame_deltas_us;
+    gint64 worst_us = 0;
+    guint over_16ms = 0;
+    for (guint i = 0; i < deltas->len; i++) {
+        gint64 d = g_array_index(deltas, gint64, i);
+        if (d > worst_us)
+            worst_us = d;
+        if (d > 16000)
+            over_16ms++;
+    }
+    g_printerr("PHIG_MEASURE scroll frames=%u worst_frame_ms=%.3f over_16ms=%u\n", deltas->len,
+               worst_us / 1000.0, over_16ms);
+}
+
+/* Advances the vertical adjustment one step per timeout firing: sweeps from
+ * lower to upper, then back to lower, then stops and reports. Two passes
+ * (down and back up) exercise both scroll directions over the same range in
+ * one run. */
+static gboolean phig_measure_step(gpointer user_data) {
+    PhigMeasureState* state = user_data;
+    GtkAdjustment* vadj = gtk_scrolled_window_get_vadjustment(state->app->scroller);
+    double value = gtk_adjustment_get_value(vadj);
+    double lower = gtk_adjustment_get_lower(vadj);
+    double upper = gtk_adjustment_get_upper(vadj) - gtk_adjustment_get_page_size(vadj);
+    if (g_getenv("PHIG_MEASURE_DEBUG") != NULL)
+        g_printerr("PHIG_MEASURE_DEBUG value=%.1f lower=%.1f upper=%.1f page_size=%.1f\n", value,
+                   lower, upper, gtk_adjustment_get_page_size(vadj));
+
+    /* The grid has no layout yet on the first few ticks after model attach
+     * (page_size/upper read 0 until GTK completes a size allocation), which
+     * would otherwise read as "already at the end" and finish the sweep
+     * before it starts. Wait for a real page size instead of stepping. */
+    if (gtk_adjustment_get_page_size(vadj) <= 0.0)
+        return G_SOURCE_CONTINUE;
+
+    if (!state->returning) {
+        value += state->step;
+        if (value >= upper) {
+            value = upper;
+            state->returning = TRUE;
+        }
+    } else {
+        value -= state->step;
+        if (value <= lower) {
+            value = lower;
+            gtk_adjustment_set_value(vadj, value);
+            phig_measure_report(state);
+            gtk_widget_remove_tick_callback(GTK_WIDGET(state->app->grid), state->tick_id);
+            phig_measure_state_free(state);
+            g_application_quit(g_application_get_default());
+            return G_SOURCE_REMOVE;
+        }
+    }
+    gtk_adjustment_set_value(vadj, value);
+    return G_SOURCE_CONTINUE;
+}
+
+/* Starts the scroll harness once PHIG_MEASURE=1 is set and the model is
+ * attached. PHIG_MEASURE_STEP_PX (default 4000) controls how many adjustment
+ * units advance per 8ms timeout tick — the full 29,953-row grid is roughly
+ * 2,000,000px tall at 3 columns and PHIG_CELL_SIZE=200, so the default sweeps
+ * end to end in a few seconds. */
+static void phig_measure_maybe_start(PhigApp* app) {
+    if (g_getenv("PHIG_MEASURE") == NULL)
+        return;
+
+    PhigMeasureState* state = g_new0(PhigMeasureState, 1);
+    state->app = app;
+    state->frame_deltas_us = g_array_new(FALSE, FALSE, sizeof(gint64));
+    state->step = (double)env_override_uint("PHIG_MEASURE_STEP_PX", 4000);
+    state->tick_id =
+        gtk_widget_add_tick_callback(GTK_WIDGET(app->grid), phig_measure_tick, state, NULL);
+    state->timeout_id = g_timeout_add(8, phig_measure_step, state);
 }
 
 /* Callback for gtk_file_launcher_launch async completion. On error, shows a
@@ -309,7 +457,10 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
     }
 
     app->ctx = startup->ctx;
-    app->loader = thumb_loader_new(app->ctx, PHIG_THUMB_LOADER_THREADS, PHIG_THUMB_CACHE_BYTES);
+    guint n_threads = env_override_uint("PHIG_THUMB_LOADER_THREADS", PHIG_THUMB_LOADER_THREADS);
+    gsize cache_bytes =
+        (gsize)env_override_uint("PHIG_THUMB_CACHE_BYTES", PHIG_THUMB_CACHE_BYTES);
+    app->loader = thumb_loader_new(app->ctx, n_threads, cache_bytes);
 
     /* The model borrows ctx/query for its lifetime. Both outlive it here:
      * ctx lives on app until phig_app_free at process exit, and query is
@@ -327,6 +478,18 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
     g_signal_connect(factory, "unbind", G_CALLBACK(on_factory_unbind), NULL);
     gtk_grid_view_set_factory(app->grid, factory);
     g_object_unref(factory);
+
+    /* First-page-applied: the model now has a real GListModel attached and
+     * GTK will query it on the next layout pass. This is the end of the
+     * window announced under PHIG_MEASURE=1 (task-7-report.md's startup
+     * table); nothing here waits for that layout pass to actually run, since
+     * the model attach itself is the last thing this codebase controls. */
+    if (g_getenv("PHIG_MEASURE") != NULL) {
+        gint64 elapsed_us = g_get_monotonic_time() - app->startup_start_us;
+        g_printerr("PHIG_MEASURE startup_ms=%.3f\n", elapsed_us / 1000.0);
+    }
+
+    phig_measure_maybe_start(app);
 }
 
 static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
@@ -351,9 +514,9 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
     app->grid = GTK_GRID_VIEW(gtk_grid_view_new(NULL, NULL));
     gtk_grid_view_set_min_columns(app->grid, 3);
     g_signal_connect(app->grid, "activate", G_CALLBACK(on_cell_activate), app);
-    GtkWidget* scroller = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), GTK_WIDGET(app->grid));
-    adw_toolbar_view_set_content(app->toolbar_view, scroller);
+    app->scroller = GTK_SCROLLED_WINDOW(gtk_scrolled_window_new());
+    gtk_scrolled_window_set_child(app->scroller, GTK_WIDGET(app->grid));
+    adw_toolbar_view_set_content(app->toolbar_view, GTK_WIDGET(app->scroller));
 
     app->toast_overlay = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
     adw_toast_overlay_set_child(app->toast_overlay, GTK_WIDGET(app->toolbar_view));
@@ -384,6 +547,7 @@ static char* default_db_path(void) {
 
 int main(int argc, char** argv) {
     PhigApp* app = g_new0(PhigApp, 1);
+    app->startup_start_us = g_get_monotonic_time();
     app->db_path = (argc > 1) ? g_strdup(argv[1]) : default_db_path();
 
     /* argv is parsed above, not handed to GApplication: G_APPLICATION_DEFAULT_FLAGS
@@ -391,6 +555,25 @@ int main(int argc, char** argv) {
     AdwApplication* gtk_app = adw_application_new("org.phig.Gtk", G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(gtk_app, "activate", G_CALLBACK(on_activate), app);
     int status = g_application_run(G_APPLICATION(gtk_app), 1, argv);
+
+    /* g_application_run stops pumping the main context the moment it
+     * returns. thumb_loader_dispose (see its comment) deliberately never
+     * pumps the context itself to wait for outstanding idle-source
+     * deliveries to drop their ref on the loader; it relies on the app's own
+     * main loop still running for that. With the loop stopped, any request
+     * whose result was posted but not yet delivered holds a ref that would
+     * otherwise never drop, so g_clear_object below would leave the loader's
+     * refcount above zero, its dispose (and the g_thread_join inside it)
+     * would never run, and a worker could still be executing inside
+     * libphig.so when exit() starts tearing down shared libraries — observed
+     * as a SIGSEGV on quit under scroll load (task-7-report.md). Draining the
+     * context here runs every pending idle delivery first, which drops their
+     * refs and lets phig_app_free's g_clear_object bring the loader to
+     * dispose synchronously, joining every worker before this function
+     * returns. */
+    while (app->loader != NULL && thumb_loader_pending_idle_count(app->loader) > 0)
+        g_main_context_iteration(NULL, TRUE);
+
     g_object_unref(gtk_app);
     phig_app_free(app);
     return status;

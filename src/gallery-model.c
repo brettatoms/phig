@@ -1,20 +1,29 @@
 #include "gallery-model.h"
 
-/* One page holds this many rows. Task 7 measures whether this and the
- * resident-page budget below need to change. */
+/* One page holds this many rows. Not varied in measurement (task-7-report.md):
+ * page-fetch latency (0.85ms warm / 19ms cold per phig_query_page) is never
+ * the bottleneck a full-range scroll hits, so there was no result to tune
+ * this against. */
 #define PHIG_PAGE_SIZE 200
 
 /* Pages resident at once: the requested page plus this many either side,
  * rounded up to an odd budget so eviction has a clear least-recently-used
- * end. Task 7 measures this against real scrolling. */
+ * end. Measured at 1, 2, and 4 against the full 29,953-row scroll
+ * (task-7-report.md): all three produce the same frame timings and
+ * comparable RSS, because main-thread texture/placeholder work dominates,
+ * not page-fetch latency. 2 is kept as a starting point that measured no
+ * worse than the alternatives. */
 #define PHIG_PAGE_RADIUS 2
 #define PHIG_MAX_RESIDENT_PAGES (2 * PHIG_PAGE_RADIUS + 1)
 
 /* Cached per-position placeholders, capped independently of resident pages:
  * a scroll that outruns fetches touches positions across many more pages
  * than PHIG_MAX_RESIDENT_PAGES bounds, so this needs its own budget rather
- * than inheriting that one. Sized to the same order of magnitude — a few
- * pages' worth — since Task 7 tunes both against real scrolling together. */
+ * than inheriting that one. At its current derived value (1000 with
+ * PHIG_PAGE_RADIUS=2), a full-range fast-drag scroll — both warm and
+ * miss-heavy — produced zero "Duplicate item detected" warnings
+ * (task-7-report.md), so this stays derived rather than pinned to a
+ * separately-measured constant. */
 #define PHIG_MAX_PLACEHOLDERS (PHIG_MAX_RESIDENT_PAGES * PHIG_PAGE_SIZE)
 
 struct _PhigImageRow {
