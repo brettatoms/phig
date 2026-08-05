@@ -27,12 +27,14 @@ endif()
 # REQUIRED — see the comment on each.
 find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc objdetect videoio)
 # OpenCV's own OpenCVConfig-version.cmake only accepts a requested version
-# whose major matches its own (so find_package(OpenCV 3.4) would reject 4.x
-# and 5.x, not just pre-3.4) — the floor has to be checked manually instead.
-if(OpenCV_VERSION VERSION_LESS 3.4)
-    message(FATAL_ERROR "phig requires OpenCV >= 3.4 (found ${OpenCV_VERSION}): "
-                         "cv::imread applies EXIF orientation by default from 3.4 on, "
-                         "and phig depends on that behavior.")
+# whose major matches its own (so find_package(OpenCV 4.5.4) would reject 5.x,
+# not just pre-4.5.4) — the floor has to be checked manually instead.
+if(OpenCV_VERSION VERSION_LESS 4.5.4)
+    message(FATAL_ERROR "phig requires OpenCV >= 4.5.4 (found ${OpenCV_VERSION}): "
+                         "core/faces.cpp calls cv::FaceDetectorYN::create and "
+                         "cv::FaceRecognizerSF::create unconditionally, and both need "
+                         "4.5.4. (cv::imread has applied EXIF orientation by default "
+                         "since 3.4, which also depends on this floor.)")
 endif()
 find_package(PkgConfig REQUIRED)
 # 0.6.24: Debian bookworm's libexif-dev. No known dependency on anything newer.

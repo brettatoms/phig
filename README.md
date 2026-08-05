@@ -56,8 +56,10 @@ cmake --install build --prefix ~/.local        # installs to ~/.local/bin/phig
 ```
 
 Notes:
-- **OpenCV** ≥ 4.5 for core features; face recognition (the YuNet/SFace models)
-  needs ≥ 4.7. Only core modules are used — no `opencv_contrib`.
+- **OpenCV** ≥ 4.5.4 — the YuNet/SFace face-recognition APIs
+  (`cv::FaceDetectorYN::create`, `cv::FaceRecognizerSF::create`) are called
+  unconditionally and need that version. Only core modules are used — no
+  `opencv_contrib`.
 - **FFmpeg on Fedora**: the official repos ship `ffmpeg-free-devel`, which is
   sufficient. The fully-featured `ffmpeg-devel` lives in the third-party RPM Fusion
   repo; you only need it if `ffmpeg-free-devel` is missing a codec you require.
