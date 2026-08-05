@@ -195,8 +195,14 @@ static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_da
 
     PhigImageRow* row = PHIG_IMAGE_ROW(g_list_model_get_item(list_model, position));
 
+    if (row == NULL) {
+        g_object_unref(list_model);
+        return;
+    }
+
     if (phig_image_row_is_placeholder(row)) {
         g_object_unref(row);
+        g_object_unref(list_model);
         return;
     }
 
@@ -207,6 +213,7 @@ static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_da
     g_object_unref(file);
 
     g_object_unref(row);
+    g_object_unref(list_model);
 }
 
 static void startup_result_free(StartupResult* result) {
