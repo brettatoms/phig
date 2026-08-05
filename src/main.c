@@ -14,6 +14,7 @@
 typedef struct {
     AdwApplicationWindow* window;
     GtkGridView* grid;
+    AdwToastOverlay* toast_overlay;
     char* db_path;
 
     /* Owned once startup finishes; NULL until then. Kept on the app struct so
@@ -29,6 +30,25 @@ static void phig_app_free(PhigApp* app) {
         phig_shutdown(app->ctx);
     g_free(app->db_path);
     g_free(app);
+}
+
+/* Callback for gtk_file_launcher_launch async completion. On error, shows a
+ * toast with the error message; on success, the system viewer has been started. */
+static void on_launched(GObject* source, GAsyncResult* result, gpointer user_data) {
+    (void)source;
+    GtkFileLauncher* launcher = GTK_FILE_LAUNCHER(source);
+    PhigApp* app = user_data;
+    GError* error = NULL;
+
+    if (!gtk_file_launcher_launch_finish(launcher, result, &error)) {
+        const char* message = error != NULL ? error->message : "Unknown error";
+        AdwToast* toast = adw_toast_new(message);
+        adw_toast_overlay_add_toast(app->toast_overlay, toast);
+        if (error != NULL)
+            g_error_free(error);
+    }
+
+    g_object_unref(launcher);
 }
 
 /* Result of the worker startup sequence, handed to the main thread. On
@@ -161,6 +181,34 @@ static void on_factory_unbind(GtkSignalListItemFactory* factory, GtkListItem* it
     gtk_picture_set_paintable(GTK_PICTURE(picture), NULL);
 }
 
+/* Activated when a cell is clicked. Launches the image in the system viewer. */
+static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_data) {
+    (void)grid;
+    PhigApp* app = user_data;
+
+    GtkSelectionModel* selection = gtk_grid_view_get_model(app->grid);
+    GListModel* list_model = NULL;
+    g_object_get(selection, "model", &list_model, NULL);
+
+    if (list_model == NULL)
+        return;
+
+    PhigImageRow* row = PHIG_IMAGE_ROW(g_list_model_get_item(list_model, position));
+
+    if (phig_image_row_is_placeholder(row)) {
+        g_object_unref(row);
+        return;
+    }
+
+    const char* path = phig_image_row_get_path(row);
+    GFile* file = g_file_new_for_path(path);
+    GtkFileLauncher* launcher = gtk_file_launcher_new(file);
+    gtk_file_launcher_launch(launcher, GTK_WINDOW(app->window), NULL, on_launched, app);
+    g_object_unref(file);
+
+    g_object_unref(row);
+}
+
 static void startup_result_free(StartupResult* result) {
     /* On success, query has been handed to the model by startup_done and
      * must not be freed here. On failure it was never allocated (query is
@@ -217,11 +265,15 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
 
     app->grid = GTK_GRID_VIEW(gtk_grid_view_new(NULL, NULL));
     gtk_grid_view_set_min_columns(app->grid, 3);
+    g_signal_connect(app->grid, "activate", G_CALLBACK(on_cell_activate), app);
     GtkWidget* scroller = gtk_scrolled_window_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), GTK_WIDGET(app->grid));
     adw_toolbar_view_set_content(view, scroller);
 
-    adw_application_window_set_content(app->window, GTK_WIDGET(view));
+    app->toast_overlay = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
+    adw_toast_overlay_set_child(app->toast_overlay, GTK_WIDGET(view));
+
+    adw_application_window_set_content(app->window, GTK_WIDGET(app->toast_overlay));
 
     /* The window maps with an empty grid; the query runs on a worker and the
      * model is not attached until it finishes (startup_done, above). */
