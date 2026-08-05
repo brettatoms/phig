@@ -1,8 +1,9 @@
 # phig-gtk
 
-GTK4/libadwaita desktop client for [phig](../phig), a C++ image-collection CLI.
+GTK4/libadwaita desktop client for phig, a C++ image-collection CLI, living
+alongside it in this monorepo (`gtk/` next to `core/`, `libphig/`, `cli/`).
 Talks to phig only through `libphig`'s C ABI (`<phig/phig.h>`) — never a
-`phig-core` header, never a `cv::Mat`.
+`core/` header, never a `cv::Mat`.
 
 ## Setup
 
@@ -23,12 +24,12 @@ brew install gtk4 libadwaita
 ```
 
 phig-gtk links against `libphig`, discovered via `pkg-config`. Install phig to
-`~/.local` (outside both repos) before the first build. `~/.local/lib/pkgconfig`
-is not on `pkg-config`'s default search path, so export `PKG_CONFIG_PATH` too
-(add it to your shell profile so it persists):
+`~/.local` before the first build. `~/.local/lib/pkgconfig` is not on
+`pkg-config`'s default search path, so export `PKG_CONFIG_PATH` too (add it to
+your shell profile so it persists):
 
 ```bash
-cd ../phig && cmake --install build --prefix ~/.local
+cd .. && cmake --install build --prefix ~/.local
 export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig:$PKG_CONFIG_PATH"
 ```
 
