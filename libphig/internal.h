@@ -136,8 +136,10 @@ phig_image_list* phig_make_image_list(const std::vector<ImageInfo>& rows);
 // mutate.cpp.
 void phig_acquire_write_lock(phig_ctx* ctx, std::unique_ptr<WriterLock>& out);
 
-// Every public entry point wraps its body in these so no exception escapes
-// the ABI boundary. Requires a `phig_ctx* ctx` in scope with a valid pointer.
+// Public entry points that have a `phig_ctx* ctx` in scope wrap their body in
+// these so no exception escapes the ABI boundary. The null check on `ctx`
+// means entry points with no context (phig_init, records.cpp, settings.cpp)
+// can't use this macro and use a plain try/catch(...) instead.
 #define PHIG_TRY(ctx)                                  \
     if ((ctx) == nullptr) return PHIG_ERR_INVALID_ARG; \
     phig_thread_last_error().clear();                  \

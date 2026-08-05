@@ -11,10 +11,13 @@ client may include — see `gtk/CLAUDE.md`.
 
 ## Rules
 
-- **Every entry point wraps its body in `PHIG_TRY`/`PHIG_CATCH`.** These
-  convert a C++ exception into an error code plus a message, so no
-  exception ever crosses the C ABI boundary into a caller that isn't
-  expecting one.
+- **No exception may cross the ABI boundary.** Where a `phig_ctx*` is in
+  scope, wrap the body in `PHIG_TRY`/`PHIG_CATCH` — it converts a C++
+  exception into an error code plus a message. `PHIG_TRY` expands to a null
+  check on `ctx`, so it needs a context it can check; the ctx-less entry
+  points (`phig_init`, the `records.cpp` free functions, and all of
+  `settings.cpp`) can't use it and instead wrap their body in a plain
+  `try`/`catch (...)`.
 - **`phig_last_error` is thread-local.** Read it on the thread whose call
   just failed — reading it from another thread, or after another call on
   the same thread has run, gets you the wrong (or no) message.
