@@ -20,17 +20,44 @@ if(PHIG_WERROR)
     list(APPEND PHIG_WARNINGS -Werror)
 endif()
 
+# Version floors. Each is picked from what a mainstream distro ships (Debian
+# 12 "bookworm"), not from this machine's Arch versions, so configure fails
+# cleanly on something too old rather than misbehaving at runtime. Where a
+# floor isn't justified by a known API dependency, the call stays bare
+# REQUIRED — see the comment on each.
 find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc objdetect videoio)
+# OpenCV's own OpenCVConfig-version.cmake only accepts a requested version
+# whose major matches its own (so find_package(OpenCV 3.4) would reject 4.x
+# and 5.x, not just pre-3.4) — the floor has to be checked manually instead.
+if(OpenCV_VERSION VERSION_LESS 3.4)
+    message(FATAL_ERROR "phig requires OpenCV >= 3.4 (found ${OpenCV_VERSION}): "
+                         "cv::imread applies EXIF orientation by default from 3.4 on, "
+                         "and phig depends on that behavior.")
+endif()
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(EXIF REQUIRED libexif)
-find_package(SQLite3 REQUIRED)
-find_package(CURL REQUIRED)
-find_package(spdlog REQUIRED)
-pkg_check_modules(LIBRAW_R REQUIRED libraw_r)
-pkg_check_modules(AVFORMAT REQUIRED libavformat)
-pkg_check_modules(AVCODEC REQUIRED libavcodec)
-pkg_check_modules(AVUTIL REQUIRED libavutil)
-pkg_check_modules(SWSCALE REQUIRED libswscale)
+# 0.6.24: Debian bookworm's libexif-dev. No known dependency on anything newer.
+pkg_check_modules(EXIF REQUIRED libexif>=0.6.24)
+# 3.40: Debian bookworm's libsqlite3-dev. WAL mode and BEGIN IMMEDIATE predate this by years.
+find_package(SQLite3 3.40 REQUIRED)
+# 7.88: Debian bookworm's libcurl4-openssl-dev. Only curl_easy_* calls are
+# used (core/), all present since curl's early releases; the floor tracks the
+# distro baseline rather than any specific API requirement.
+find_package(CURL 7.88 REQUIRED)
+# 1.10: Debian bookworm's libspdlog-dev. custom_flag_formatter and
+# pattern_time_type::utc (core/log.cpp) both predate 1.10 by several releases.
+find_package(spdlog 1.10 REQUIRED)
+# 0.20: Debian bookworm's libraw-dev.
+pkg_check_modules(LIBRAW_R REQUIRED libraw_r>=0.20)
+# FFmpeg 5.1 (Debian bookworm) soname majors: avformat/avcodec 59, avutil 57,
+# swscale 6. core/metadata.cpp uses AVCodecParameters (FFmpeg 3.1+) and
+# av_display_rotation_get (FFmpeg 2.x+) — both far older than bookworm's
+# version, so bookworm's own shipped version is the binding constraint, not
+# a specific API. swscale has no call sites in core/ (linked transitively);
+# floored at the same distro baseline for consistency.
+pkg_check_modules(AVFORMAT REQUIRED libavformat>=59)
+pkg_check_modules(AVCODEC REQUIRED libavcodec>=59)
+pkg_check_modules(AVUTIL REQUIRED libavutil>=57)
+pkg_check_modules(SWSCALE REQUIRED libswscale>=6)
 
 # ---- Vendored third-party code (built without our strict warnings) ----
 add_library(phig-vendor STATIC
@@ -55,7 +82,8 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/phig.pc DESTINATION lib/pkgconfig)
 
 # ---- Tests ----
 enable_testing()
-find_package(GTest REQUIRED)
+# 1.12: Debian bookworm's libgtest-dev. No version-specific gtest API in use.
+find_package(GTest 1.12 REQUIRED)
 
 add_executable(phig-tests
     tests/test_scanner.cpp
