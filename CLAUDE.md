@@ -40,9 +40,9 @@ environment directly (tracked separately):
 
 ```bash
 direnv exec . cmake -B build && direnv exec . cmake --build build
-direnv exec . ./build/phig-tests        # fast suite (~1s), 640 tests
-direnv exec . ./build/phig-perf-tests   # performance suite (~3s)
-direnv exec . ctest --test-dir build    # both — what CI runs
+direnv exec . ./build/phig-tests        # fast suite (~1s), 636 tests
+direnv exec . ./build/phig-perf-tests   # performance suite (~3s), 4 tests
+direnv exec . ctest --test-dir build    # both — 640, what CI runs
 direnv exec . clang-format -i <files>
 ```
 
