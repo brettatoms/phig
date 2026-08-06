@@ -11,8 +11,8 @@ set_target_properties(phig_abi PROPERTIES
     OUTPUT_NAME phig
     # Must track PHIG_ABI_VERSION_MAJOR.MINOR in libphig/include/phig/phig.h.
     # SOVERSION is the major alone, so an additive minor bump keeps the soname.
-    VERSION 1.2.0
-    SOVERSION 1
+    VERSION 2.0.0
+    SOVERSION 2
     # Hide everything not explicitly exported so the ABI surface is exactly
     # what the header declares.
     C_VISIBILITY_PRESET hidden

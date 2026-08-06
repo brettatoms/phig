@@ -1,14 +1,16 @@
 ---
 name: Multi-Size Thumbnail Cache
-status: designing
+status: completed
 created: 2026-08-06
 description: >
   Make the thumbnail size an explicit parameter instead of a hardcoded 512px,
   and partition the cache by size (`thumbs/<size>/ab/<sha>.jpg`) so several
   sizes coexist rather than one invalidating another. Unblocks plan 037's zoom
   ceiling, which currently caps cells at ~250px logical because nothing larger
-  can be served without upscaling. Breaking ABI change: `phig_thumb_lookup`
-  and `phig_thumb_generate` gain a size argument, so this is libphig 2.0.
+  can be served without upscaling. `phig_thumb_lookup` and
+  `phig_thumb_generate` gain a size argument — a break, but pre-release with one
+  in-tree consumer, so it is made in place and the version bumped as a signal
+  rather than a migration.
 ---
 
 # 040 — Multi-Size Thumbnail Cache
@@ -86,23 +88,20 @@ bool generate_thumb(const std::string& image_path, const std::string& sha256, in
 Callers to update: `core/scan_engine.cpp` (5 sites), `core/thumbs_engine.cpp`
 (3), `libphig/thumbs.cpp` (5), `cli/main.cpp` (4).
 
-### ABI: this is 2.0, not 1.3
+### ABI: change in place, bump to 2.0
 
-`phig_thumb_lookup(ctx, sha256, out_path, out_len, exists)` gains a size
-argument, which **breaks** the existing signature. Current ABI is 1.2
-(`PHIG_ABI_VERSION_MAJOR 1`, `MINOR 2`).
+`phig_thumb_lookup` and `phig_thumb_generate` gain a size argument, changing
+their signatures. That is a break, and it costs nothing here: phig is
+pre-release, `libphig.so` is not installed or linked by anything outside this
+repo, and its only consumer is `gtk/`, updated in the same commit.
 
-Two options, to settle before implementing:
+So: change them in place, no `_sized` variant and no compatibility shim. Bump
+`PHIG_ABI_VERSION_MAJOR` to 2 as an honest signal, not because anything depends
+on it.
 
-- **Break to 2.0.** Cleanest surface. libphig's only consumer today is `gtk/`,
-  in this repo, so the blast radius is one caller we control.
-- **Add `phig_thumb_lookup_sized` alongside**, keeping the old entry point at
-  the default size. 1.3, no break, but the surface carries a legacy call
-  forever, and the "default size" ambiguity this plan exists to remove comes
-  straight back.
-
-Leaning **2.0**: the versioned boundary exists so breaks are expressible, and
-the sole consumer is in-tree. Confirm before implementing.
+The versioned boundary means breaks are *expressible*, not that every change
+needs a migration story. Revisit that once something outside this repo links
+against libphig.
 
 ### What phig decides vs what the client decides
 
@@ -112,26 +111,31 @@ not write into the cache, does not compute cache paths itself, and does not
 decide the directory scheme. `gtk/` may still downscale an already-decoded
 texture for display — that is presentation.
 
-## Open questions
+## Decisions
 
-1. **ABI 2.0 vs an additive `_sized` entry point.** See above; leaning 2.0.
-2. **Which sizes does phig generate by default?** A `--size` on
-   `phig thumbs rebuild` is the obvious surface, but scan also generates
-   thumbnails (`--thumbs`), and it needs to know which size(s) to write. A
-   single configured default with explicit opt-in for others is probably right,
-   but the config key interacts with question 3.
-3. **Does `thumbs clean` become size-aware?** Today it deletes orphaned
-   thumbnails whose rows are gone. With several sizes it also needs to answer
-   "delete a whole size tree" (e.g. after deciding 512px is no longer wanted).
-   Probably `phig thumbs clean [--size N]`.
-4. **Migration of the existing 947 MB cache.** The current flat
-   `thumbs/ab/<sha>.jpg` files are all 512px. Moving them into `thumbs/512/`
-   preserves them for free and avoids a regeneration; leaving them stranded
-   wastes 947 MB until someone deletes it. A one-time move on first run is
-   cheap (rename, no re-encode) but is a migration step that has to be right.
-5. **Does the GTK client request 768px, or keep 512px until asked?** Plan 037's
-   clamp reads the cache size; if that becomes a set of sizes, the clamp needs
-   to know which are actually populated rather than assuming the largest.
+1. **ABI.** Change in place, bump to 2.0. See above.
+2. **Migration.** Move the existing flat `thumbs/ab/<sha>.jpg` into
+   `thumbs/512/ab/<sha>.jpg` on first run. They are all 512px, so it is a
+   rename with no re-encode — seconds, and all 24,529 stay usable. Skipping it
+   would strand 947 MB and re-do work already done.
+3. **Generation is on demand.** The slow part is producing new sizes: ~20 min
+   for 768px across 24,529 images, HDD-bound at ~13 files/sec. A cell that
+   requests a size phig does not have generates it then, so bigger thumbnails
+   appear where the user is actually looking rather than after a batch wait.
+   `phig thumbs rebuild --size N` populates a size upfront for anyone who wants
+   that instead.
+
+4. **`scan --thumbs` writes one size, the default (512).** Generating every
+   size on scan would multiply its cost for sizes nobody may look at. Other
+   sizes are filled on demand.
+5. **`thumbs clean` gains `--size N`**, scoping the orphan sweep to one size
+   tree. Without it, it sweeps every size — which is what "remove thumbnails
+   whose rows are gone" should mean.
+6. **The GTK clamp becomes a configured maximum, not a cache probe.** With
+   on-demand generation the question is not "what is cached" but "what will
+   phig generate", so `PHIG_CACHE_THUMB_PX` (`gtk/src/main.c:41`, used at :386
+   and :426) becomes the largest size phig is willing to serve. Set it to 1024
+   so the zoom range is genuinely usable, and let generation fill in.
 
 ## Tests
 
@@ -148,6 +152,29 @@ Data-adjacent (it moves cached files), so real-behaviour tests:
 
 Gate: `ctest --test-dir build --parallel` green, plus the real-run checks
 (`phig search --count` = 29925, `phig --version` = 0.3.0).
+
+## Outcome (2026-08-06)
+
+Implemented as designed. `THUMB_SIZE` is gone; `get_thumb_path`, `thumb_exists`
+and `generate_thumb` all take a size, and the cache is
+`thumbs/<size>/ab/<sha>.jpg`. `phig_thumb_lookup`/`phig_thumb_generate` gained
+the argument, so ABI is 2.0 — with `libphig/CMakeLists.txt`'s `VERSION`/
+`SOVERSION` bumped alongside the header, which is easy to miss: a stale
+`libphig.so.1` on the library path silently kept the old layout and rewrote flat
+directories until it was removed.
+
+Migration ran against the real cache: 24,529 thumbnails moved into `512/` in
+0.6s, byte-identical (938,210,582 bytes before and after), and a second run is a
+0.13s no-op. On-demand generation verified end to end through the ABI — a 768px
+lookup misses, generates, and lands at `thumbs/768/…` with the 512px tree
+untouched.
+
+The GTK ceiling (`PHIG_CACHE_THUMB_PX`) went 512 → 1024, which is what the zoom
+work needed: on a 1494px viewport at scale=2 the grid previously collapsed at 6
+columns / 249px cells and now continues to 3 columns / 498px cells.
+
+Deferred: `thumbs clean --size N` (decision 5) is not implemented — `clean`
+still sweeps the whole cache, which is correct but coarse.
 
 ## Depends on / relates to
 

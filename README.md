@@ -10,7 +10,7 @@ A command-line tool for managing image and video collections. Scan directories, 
 - **Search** — query the database by filename, date, EXIF data, file size, video duration, sharpness, tags, gallery, visual similarity, or face
 - **Face recognition** — detect faces, compute embeddings, name people, and search by person
 - **Tags, galleries, favorites** — label files with tags, assign a gallery, mark favorites, and use them in search and organize
-- **Thumbnails** — generate 512px JPEG thumbnails cached by SHA256
+- **Thumbnails** — generate JPEG thumbnails (512px default) cached by SHA256 and size
 - **Activity log** — record `mv`/`cp`/`rm` in the database for an audit trail
 - **Remove** — remove images by glob pattern: trash (default, recoverable), permanently delete, drop the DB row only, or drop rows for missing files
 - **Match/exclude** — repeatable `--match` and `--exclude` globs across commands, matching against full paths, with exclude taking precedence
@@ -333,11 +333,13 @@ New scans with `--faces` automatically label detected faces that match known peo
 
 ### Thumbnails
 
-Thumbnails are 512px JPEGs cached under `~/.cache/phig/thumbs/`, keyed by SHA256
-so identical files share one thumbnail.
+Thumbnails are JPEGs cached under `~/.cache/phig/thumbs/<size>/`, keyed by
+SHA256 and size, so identical files share one thumbnail and several sizes can
+coexist. 512px is the default; `--size` writes another without disturbing it.
 
 ```bash
-phig thumbs rebuild                             # generate missing thumbnails
+phig thumbs rebuild                             # generate missing thumbnails (512px)
+phig thumbs rebuild --size 768                  # fill another size; leaves 512px alone
 phig thumbs rebuild --match "*/2024/*"          # only for matching files
 phig thumbs clean                               # remove orphaned thumbnails
 ```

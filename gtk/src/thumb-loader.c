@@ -254,7 +254,12 @@ static gpointer thumb_loader_worker(gpointer data) {
 
         char path[PATH_MAX];
         bool exists = false;
-        phig_status status = phig_thumb_lookup(self->ctx, req->sha256, path, sizeof(path), &exists);
+        /* Ask phig for the size this request needs. Sizes are independent in
+         * phig's cache, so a 768 lookup does not see a cached 512 — the caller
+         * quantises max_dim so this is a small set of sizes, not one per pixel. */
+        int want = req->max_dim > 0 ? (int)req->max_dim : PHIG_THUMB_SIZE_DEFAULT;
+        phig_status status =
+            phig_thumb_lookup(self->ctx, req->sha256, want, path, sizeof(path), &exists);
         bool generation_failed = false;
 
         if (status == PHIG_OK && !exists) {
@@ -267,8 +272,9 @@ static gpointer thumb_loader_worker(gpointer data) {
                 thumb_request_free(req);
                 continue;
             }
-            if (phig_thumb_generate(self->ctx, req->image_id) == PHIG_OK)
-                status = phig_thumb_lookup(self->ctx, req->sha256, path, sizeof(path), &exists);
+            if (phig_thumb_generate(self->ctx, req->image_id, want) == PHIG_OK)
+                status =
+                    phig_thumb_lookup(self->ctx, req->sha256, want, path, sizeof(path), &exists);
             else
                 generation_failed = true;
         }
@@ -283,37 +289,11 @@ static gpointer thumb_loader_worker(gpointer data) {
             req->result = THUMB_MISS;
         } else {
             GError* error = NULL;
-            GdkTexture* texture = NULL;
-            /* Decode straight to the requested display size when the caller
-             * asked for one smaller than the cache's 512px: the scale is paid
-             * once per (sha, size) here on a worker rather than by the GPU on
-             * every frame, and the resident texture shrinks with the square of
-             * the size, so the byte budget holds proportionally more of them. */
-            if (req->max_dim > 0) {
-                /* Decode straight to the requested size: scaling here costs one
-                 * pass per (sha, size) on a worker instead of leaving the GPU to
-                 * downscale a 512px texture into a smaller cell, and the smaller
-                 * texture is what makes the byte budget hold proportionally more
-                 * of them. gdk_texture_downscale does not exist in GTK 4.22, and
-                 * gdk_texture_new_for_pixbuf is deprecated, so go via
-                 * GdkMemoryTexture over the pixbuf's own buffer. */
-                GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file_at_size(
-                    path, (int)req->max_dim, (int)req->max_dim, &error);
-                if (pixbuf != NULL) {
-                    GBytes* bytes = g_bytes_new(gdk_pixbuf_get_pixels(pixbuf),
-                                                (gsize)gdk_pixbuf_get_rowstride(pixbuf) *
-                                                    (gsize)gdk_pixbuf_get_height(pixbuf));
-                    texture = GDK_TEXTURE(gdk_memory_texture_new(
-                        gdk_pixbuf_get_width(pixbuf), gdk_pixbuf_get_height(pixbuf),
-                        gdk_pixbuf_get_has_alpha(pixbuf) ? GDK_MEMORY_R8G8B8A8
-                                                         : GDK_MEMORY_R8G8B8,
-                        bytes, (gsize)gdk_pixbuf_get_rowstride(pixbuf)));
-                    g_bytes_unref(bytes);
-                    g_object_unref(pixbuf);
-                }
-            } else {
-                texture = gdk_texture_new_from_filename(path, &error);
-            }
+            /* phig writes the cache entry at exactly the size requested above, so
+             * the file on disk is already the right size — no client-side
+             * rescale. That also keeps the texture small, which is what lets the
+             * byte budget hold proportionally more of them. */
+            GdkTexture* texture = gdk_texture_new_from_filename(path, &error);
             if (texture == NULL) {
                 g_warning("thumb loader: failed to load %s: %s", path,
                           error ? error->message : "unknown error");

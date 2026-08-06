@@ -96,8 +96,12 @@ static void test_hit_yields_texture(Fixture* f, gconstpointer unused) {
     guint timeout_id = arm_timeout(loop);
 
     /* hit_sha names an already-cached thumbnail, so the lookup reports a hit
-     * and image_id is never read; MISS_ID stands in for "not needed here". */
-    thumb_loader_request(f->loader, MISS_ID, f->hit_sha, 256, NULL, on_thumb_capture, &capture);
+     * and image_id is never read; MISS_ID stands in for "not needed here".
+     * The size must be the one actually cached: phig partitions its cache by
+     * size, so a request for any other size is a miss that would try to
+     * generate. */
+    thumb_loader_request(f->loader, MISS_ID, f->hit_sha, PHIG_THUMB_SIZE_DEFAULT, NULL,
+                         on_thumb_capture, &capture);
     g_main_loop_run(loop);
 
     disarm_timeout(timeout_id);

@@ -4,20 +4,35 @@
 #include <opencv2/core.hpp>
 #include <string>
 
-// Derive the thumbnail cache path from a SHA256 hash
-// e.g. ~/.cache/phig/thumbs/ab/ab3f7c9e...d4e2.jpg
-std::string get_thumb_path(const std::string& sha256);
+// The thumbnail size phig writes unless a caller asks for another. Sizes are
+// independent: generating one never invalidates or replaces another.
+inline constexpr int PHIG_DEFAULT_THUMB_SIZE = 512;
 
-// Check if a thumbnail exists in the cache
-bool thumb_exists(const std::string& sha256);
+// Derive the thumbnail cache path from a SHA256 hash and a size (longest edge,
+// in pixels). The size is part of the path — e.g.
+// ~/.cache/phig/thumbs/512/ab/ab3f7c9e...d4e2.jpg — so several sizes coexist
+// rather than one overwriting another. Returns "" for a too-short sha or a
+// non-positive size.
+std::string get_thumb_path(const std::string& sha256, int size);
 
-// Generate a thumbnail from an already-decoded image
+// Check if a thumbnail of this size exists in the cache. A thumbnail at some
+// other size does not count.
+bool thumb_exists(const std::string& sha256, int size);
+
+// Generate a thumbnail at `size` (longest edge) from an already-decoded image.
+// Never upscales: a source smaller than `size` is cached at its own dimensions.
 // Returns true on success
-bool generate_thumb(const cv::Mat& img, const std::string& sha256);
+bool generate_thumb(const cv::Mat& img, const std::string& sha256, int size);
 
-// Generate a thumbnail by reading an image from disk
+// Generate a thumbnail at `size` by reading an image from disk
 // Returns true on success
-bool generate_thumb(const std::string& image_path, const std::string& sha256);
+bool generate_thumb(const std::string& image_path, const std::string& sha256, int size);
+
+// Move any pre-size-partition thumbnails (<thumbs>/ab/<sha>.jpg) into
+// <thumbs>/512/ab/<sha>.jpg, returning how many were moved. They were all 512px,
+// so this is a rename and never a re-encode. Idempotent and safe to call on
+// every startup: once moved, there is nothing left at the old layout to find.
+int migrate_flat_thumb_cache();
 
 // True if `filename` matches phig's thumbnail naming contract: a 64-char
 // lowercase hex SHA256 stem with a ".jpg" extension (e.g. "ab3f...d4e2.jpg").

@@ -143,7 +143,7 @@ any other client.
 phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--db <path>]
 
 # Generate thumbnails
-phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--parallel N] [--db <path>]
+phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--size N] [--parallel N] [--db <path>]
 phig thumbs clean [--db <path>]
 
 # Find duplicate images
@@ -212,8 +212,12 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   surviving row before deleting the stale one, logged as a `relink` entry.
   Ambiguous (two+ identical-content files) or no on-disk match: no
   transfer, row still deleted with a restore snapshot.
-- **Thumbnails** — 512px JPEG cached in `~/.cache/phig/thumbs/` keyed by
-  SHA256. Deduplicates naturally.
+- **Thumbnails** — JPEGs cached in `~/.cache/phig/thumbs/<size>/ab/<sha>.jpg`,
+  keyed by (SHA256, size). Deduplicates naturally, and sizes are independent:
+  generating 768px never replaces or invalidates 512px, so a client can ask for
+  what it needs without a cache-wide regeneration. 512 is the default that
+  `scan --thumbs` and `thumbs rebuild` write; `thumbs rebuild --size N` fills
+  another, and libphig generates one on demand when a lookup misses.
 - **Video support** — scans video files (MP4/MOV/MKV/AVI/WebM etc.),
   extracts keyframe phash via OpenCV VideoCapture, metadata via
   libavformat. Videos stored with `media_type = 'video'`,

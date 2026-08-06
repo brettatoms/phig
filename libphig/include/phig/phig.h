@@ -34,8 +34,8 @@ extern "C" {
 #define PHIG_API __attribute__((visibility("default")))
 #endif
 
-#define PHIG_ABI_VERSION_MAJOR 1u
-#define PHIG_ABI_VERSION_MINOR 2u
+#define PHIG_ABI_VERSION_MAJOR 2u
+#define PHIG_ABI_VERSION_MINOR 0u
 
 /* Values are published ABI: append only, never renumber. */
 typedef enum {
@@ -191,17 +191,22 @@ PHIG_API void phig_string_free(char* s);
  * request generation rather than reading it. Returns PHIG_ERR_INVALID_ARG if
  * out_len is too small for the path plus its NUL.
  *
+ * `size` is the thumbnail's longest edge in pixels and is part of its cache
+ * path, so sizes are independent: a lookup at 768 does not see a cached 512.
+ * Callers should ask for a small set of sizes rather than one per pixel value.
+ *
  * Resolves against the thumbnail cache directory configured via
  * phig_config.thumbs_dir (process-wide; see that field's documentation), or
  * phig's default if none was set. */
-PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, char* out_path,
+PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, int size, char* out_path,
                                        size_t out_len, bool* exists);
 
 /* Generate the thumbnail for one image and write it into phig's cache.
  *
  * `image_id` identifies the row; phig resolves its path, media type, and sha256
  * itself, so a caller needs no knowledge of the cache layout or of how a video's
- * keyframe is chosen.
+ * keyframe is chosen. `size` is the longest edge in pixels; generating one size
+ * never replaces another.
  *
  * Returns PHIG_OK when a thumbnail now exists in the cache — including when one
  * was already there, so a caller racing another generator does not see a
@@ -213,7 +218,7 @@ PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, char* 
  * Decodes pixels, so this is slow relative to every other call in this header:
  * hundreds of milliseconds for a large RAW. Call it off the caller's UI thread.
  * Safe to call concurrently on one ctx; see the thread-safety note above. */
-PHIG_API phig_status phig_thumb_generate(phig_ctx* ctx, int64_t image_id);
+PHIG_API phig_status phig_thumb_generate(phig_ctx* ctx, int64_t image_id, int size);
 
 /* Metadata writes. These take ids because a GUI always has a concrete
  * selection; the CLI's glob-based paths are unchanged.

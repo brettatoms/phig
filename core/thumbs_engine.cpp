@@ -9,10 +9,10 @@
 #include "selection.h"
 #include "thumbs.h"
 
-bool thumb_needs_generating(const ImageInfo& img, bool force) {
+bool thumb_needs_generating(const ImageInfo& img, bool force, int size) {
     if (img.sha256.empty()) return false;
     if (force) return true;
-    return !thumb_exists(img.sha256);
+    return !thumb_exists(img.sha256, size);
 }
 
 ThumbsEngine::ThumbsEngine(const ThumbsOptions& opts, Database& db) : opts_(opts), db_(db) {}
@@ -61,7 +61,7 @@ ThumbsResult ThumbsEngine::run(const CancelToken& cancel, ProgressQueue<ThumbsPr
     auto worker = [&](size_t idx, int) {
         const ImageInfo& img = images[idx];
 
-        if (!thumb_needs_generating(img, opts_.force)) {
+        if (!thumb_needs_generating(img, opts_.force, opts_.size)) {
             skipped.fetch_add(1);
             // An unhashed row produced no progress line in the CLI at all; a
             // cache hit produced the terse tick. Preserve both.
@@ -74,10 +74,10 @@ ThumbsResult ThumbsEngine::run(const CancelToken& cancel, ProgressQueue<ThumbsPr
             if (img.media_type == "video") {
                 auto kf = extract_video_keyframe(img.path);
                 if (!kf.frame.empty()) {
-                    ok = generate_thumb(kf.frame, img.sha256);
+                    ok = generate_thumb(kf.frame, img.sha256, opts_.size);
                 }
             } else {
-                ok = generate_thumb(img.path, img.sha256);
+                ok = generate_thumb(img.path, img.sha256, opts_.size);
             }
             if (ok) {
                 generated.fetch_add(1);

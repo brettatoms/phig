@@ -62,8 +62,8 @@ TEST_F(ThumbsEngineTest, EmptyShaIsSkippedEvenUnderForce) {
     // A row with no hash has no cache key, so there is nowhere to write a
     // thumbnail. --force must not override this: it is not a staleness
     // question, it is a missing-identifier question.
-    EXPECT_FALSE(thumb_needs_generating(with_sha(""), false));
-    EXPECT_FALSE(thumb_needs_generating(with_sha(""), true));
+    EXPECT_FALSE(thumb_needs_generating(with_sha(""), false, PHIG_DEFAULT_THUMB_SIZE));
+    EXPECT_FALSE(thumb_needs_generating(with_sha(""), true, PHIG_DEFAULT_THUMB_SIZE));
 }
 
 TEST_F(ThumbsEngineTest, ForceRegeneratesEvenWhenTheThumbExists) {
@@ -73,13 +73,13 @@ TEST_F(ThumbsEngineTest, ForceRegeneratesEvenWhenTheThumbExists) {
     std::string sha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     create_thumb_file(sha);
     ImageInfo hashed = with_sha(sha);
-    EXPECT_TRUE(thumb_needs_generating(hashed, true));
+    EXPECT_TRUE(thumb_needs_generating(hashed, true, PHIG_DEFAULT_THUMB_SIZE));
 }
 
 TEST_F(ThumbsEngineTest, UnhashedRowIsSkippedBeforeTheCacheIsConsulted) {
     // Guards ordering: if the implementation checked thumb_exists("") first it
     // would stat a path built from an empty key. The empty-sha branch must win.
-    EXPECT_FALSE(thumb_needs_generating(with_sha(""), false));
+    EXPECT_FALSE(thumb_needs_generating(with_sha(""), false, PHIG_DEFAULT_THUMB_SIZE));
 }
 
 namespace {

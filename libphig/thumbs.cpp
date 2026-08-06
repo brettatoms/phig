@@ -21,28 +21,29 @@ bool is_hex64(const char* s) {
 }
 }  // namespace
 
-extern "C" phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, char* out_path,
-                                         size_t out_len, bool* exists) {
-    if (out_path == nullptr || exists == nullptr || out_len == 0) {
+extern "C" phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, int size,
+                                         char* out_path, size_t out_len, bool* exists) {
+    if (out_path == nullptr || exists == nullptr || out_len == 0 || size <= 0) {
         return PHIG_ERR_INVALID_ARG;
     }
     if (!is_hex64(sha256)) return PHIG_ERR_INVALID_ARG;
     PHIG_TRY(ctx)
-    std::string path = get_thumb_path(sha256);
+    std::string path = get_thumb_path(sha256, size);
     if (path.size() + 1 > out_len) return PHIG_ERR_INVALID_ARG;
     std::memcpy(out_path, path.c_str(), path.size() + 1);
-    *exists = thumb_exists(sha256);
+    *exists = thumb_exists(sha256, size);
     return PHIG_OK;
     PHIG_CATCH(ctx)
 }
 
-extern "C" phig_status phig_thumb_generate(phig_ctx* ctx, int64_t image_id) {
+extern "C" phig_status phig_thumb_generate(phig_ctx* ctx, int64_t image_id, int size) {
+    if (size <= 0) return PHIG_ERR_INVALID_ARG;
     PHIG_TRY(ctx)
     ImageInfo img;
     if (!ctx->db->get_image_for_thumb(image_id, img)) return PHIG_ERR_DB;
     if (img.sha256.empty()) return PHIG_ERR_DB;
 
-    if (thumb_exists(img.sha256)) return PHIG_OK;
+    if (thumb_exists(img.sha256, size)) return PHIG_OK;
 
     std::error_code ec;
     if (!std::filesystem::exists(img.path, ec)) return PHIG_ERR_NOT_FOUND;
@@ -50,9 +51,9 @@ extern "C" phig_status phig_thumb_generate(phig_ctx* ctx, int64_t image_id) {
     bool ok = false;
     if (img.media_type == "video") {
         auto kf = extract_video_keyframe(img.path);
-        if (!kf.frame.empty()) ok = generate_thumb(kf.frame, img.sha256);
+        if (!kf.frame.empty()) ok = generate_thumb(kf.frame, img.sha256, size);
     } else {
-        ok = generate_thumb(img.path, img.sha256);
+        ok = generate_thumb(img.path, img.sha256, size);
     }
     return ok ? PHIG_OK : PHIG_ERR_INTERNAL;
     PHIG_CATCH(ctx)

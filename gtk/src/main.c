@@ -35,10 +35,12 @@
 #define PHIG_COLUMNS_MIN 1
 #define PHIG_COLUMNS_MAX 24
 
-/* Largest thumbnail the phig cache holds (longest edge, core/thumbs.cpp
- * THUMB_SIZE). A cell needing more physical pixels than this would be upscaled
- * and look soft, which is what bounds zooming in. */
-#define PHIG_CACHE_THUMB_PX 512
+/* Largest thumbnail phig will generate on request (longest edge). Sizes are
+ * independent in phig's cache, so asking for a size it does not have generates
+ * it rather than returning a smaller one — this is a policy ceiling, not a
+ * statement about what is currently cached. A cell needing more physical pixels
+ * than this would be upscaled and look soft, which is what bounds zooming in. */
+#define PHIG_CACHE_THUMB_PX 1024
 
 /* Requested texture sizes are rounded up to a multiple of this, so a 187px and
  * a 195px cell share one cached texture instead of each getting their own. Keeps

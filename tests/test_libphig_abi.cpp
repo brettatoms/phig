@@ -173,7 +173,7 @@ TEST(AbiThumb, ReturnsPathAndReportsMissing) {
     std::string sha(64, 'a');
     char buf[4096];
     bool exists = true;
-    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
     EXPECT_NE(buf[0], '\0');
     EXPECT_FALSE(exists);  // nothing generated for this digest
     // Path must contain the digest so it is stable and cache-keyed by content.
@@ -192,12 +192,14 @@ TEST(AbiThumb, RejectsBadDigestAndSmallBuffer) {
 
     char buf[4096];
     bool exists = false;
-    EXPECT_EQ(phig_thumb_lookup(ctx, "nothex", buf, sizeof(buf), &exists), PHIG_ERR_INVALID_ARG);
-    EXPECT_EQ(phig_thumb_lookup(ctx, nullptr, buf, sizeof(buf), &exists), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(phig_thumb_lookup(ctx, "nothex", 512, buf, sizeof(buf), &exists),
+              PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(phig_thumb_lookup(ctx, nullptr, 512, buf, sizeof(buf), &exists),
+              PHIG_ERR_INVALID_ARG);
 
     std::string sha(64, 'a');
     char tiny[8];
-    EXPECT_EQ(phig_thumb_lookup(ctx, sha.c_str(), tiny, sizeof(tiny), &exists),
+    EXPECT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, tiny, sizeof(tiny), &exists),
               PHIG_ERR_INVALID_ARG);
     phig_shutdown(ctx);
 }
@@ -220,7 +222,7 @@ TEST(AbiThumb, HonorsConfiguredThumbsDir) {
     std::string sha(64, 'a');
     char buf[4096];
     bool exists = true;
-    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
     EXPECT_EQ(std::string(buf).rfind(custom, 0), 0u);  // path starts with custom dir
     EXPECT_FALSE(exists);
 
@@ -242,7 +244,7 @@ TEST(AbiThumb, NullThumbsDirLeavesDefaultInPlace) {
     std::string sha(64, 'b');
     char buf[4096];
     bool exists = true;
-    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
     EXPECT_NE(std::string(buf).find("thumbs"), std::string::npos);
 
     phig_shutdown(ctx);
@@ -299,12 +301,12 @@ TEST(AbiThumbGenerate, GeneratesFromMissThenLookupReportsExists) {
 
     char buf[4096];
     bool exists = true;
-    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
     ASSERT_FALSE(exists);
 
-    ASSERT_EQ(phig_thumb_generate(ctx, id), PHIG_OK);
+    ASSERT_EQ(phig_thumb_generate(ctx, id, 512), PHIG_OK);
 
-    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
     EXPECT_TRUE(exists);
 
     phig_shutdown(ctx);
@@ -324,16 +326,16 @@ TEST(AbiThumbGenerate, GeneratingTwiceStaysOkAndLeavesOneValidFile) {
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
 
-    ASSERT_EQ(phig_thumb_generate(ctx, id), PHIG_OK);
+    ASSERT_EQ(phig_thumb_generate(ctx, id, 512), PHIG_OK);
 
     char buf[4096];
     bool exists = false;
-    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
     ASSERT_TRUE(exists);
     auto size_after_first = std::filesystem::file_size(buf);
 
-    ASSERT_EQ(phig_thumb_generate(ctx, id), PHIG_OK);
-    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_EQ(phig_thumb_generate(ctx, id, 512), PHIG_OK);
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
     ASSERT_TRUE(exists);
     EXPECT_GT(std::filesystem::file_size(buf), 0u);
     EXPECT_EQ(std::filesystem::file_size(buf), size_after_first);
@@ -354,7 +356,7 @@ TEST(AbiThumbGenerate, NonexistentImageIdReturnsErrDb) {
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
 
-    EXPECT_EQ(phig_thumb_generate(ctx, 999999), PHIG_ERR_DB);
+    EXPECT_EQ(phig_thumb_generate(ctx, 999999, 512), PHIG_ERR_DB);
 
     phig_shutdown(ctx);
 }
@@ -376,11 +378,11 @@ TEST(AbiThumbGenerate, VideoRowProducesThumbnailViaKeyframe) {
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
 
-    ASSERT_EQ(phig_thumb_generate(ctx, id), PHIG_OK);
+    ASSERT_EQ(phig_thumb_generate(ctx, id, 512), PHIG_OK);
 
     char buf[4096];
     bool exists = false;
-    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
     EXPECT_TRUE(exists);
     EXPECT_GT(std::filesystem::file_size(buf), 0u);
 
@@ -405,7 +407,7 @@ TEST(AbiThumbGenerate, ConcurrentGenerationOfSameRowAllSucceed) {
     std::vector<std::thread> threads;
     std::vector<phig_status> results(kThreads);
     for (int t = 0; t < kThreads; ++t) {
-        threads.emplace_back([&, t] { results[t] = phig_thumb_generate(ctx, id); });
+        threads.emplace_back([&, t] { results[t] = phig_thumb_generate(ctx, id, 512); });
     }
     for (auto& th : threads) th.join();
 
@@ -413,7 +415,7 @@ TEST(AbiThumbGenerate, ConcurrentGenerationOfSameRowAllSucceed) {
 
     char buf[4096];
     bool exists = false;
-    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), buf, sizeof(buf), &exists), PHIG_OK);
+    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
     ASSERT_TRUE(exists);
     EXPECT_GT(std::filesystem::file_size(buf), 0u);
 
@@ -451,7 +453,7 @@ TEST(AbiThumbGenerate, ConcurrentGenerationOfDanglingRowReturnsNotFound) {
             std::vector<std::thread> threads;
             std::vector<phig_status> results(kThreads);
             for (int t = 0; t < kThreads; ++t) {
-                threads.emplace_back([&, t] { results[t] = phig_thumb_generate(ctx, id); });
+                threads.emplace_back([&, t] { results[t] = phig_thumb_generate(ctx, id, 512); });
             }
             for (auto& th : threads) th.join();
 

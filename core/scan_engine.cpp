@@ -292,7 +292,7 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                         if (opts_.thumbs) {
                             auto sha = db_.get_sha256(canonical);
                             if (sha && !sha->empty()) {
-                                need_thumbs = opts_.force.thumbs || !thumb_exists(*sha);
+                                need_thumbs = opts_.force.thumbs || !thumb_exists(*sha, PHIG_DEFAULT_THUMB_SIZE);
                             }
                         }
 
@@ -326,7 +326,7 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                         if (s) sha = *s;
                     }
                     if (!sha.empty()) {
-                        generate_thumb(canonical, sha);
+                        generate_thumb(canonical, sha, PHIG_DEFAULT_THUMB_SIZE);
                         thumb_count.fetch_add(1);
                     }
                     processed.fetch_add(1);
@@ -370,8 +370,8 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                                 auto s = db_.get_sha256(canonical);
                                 if (s) sha = *s;
                             }
-                            if (!sha.empty() && (opts_.force.thumbs || !thumb_exists(sha))) {
-                                generate_thumb(img, sha);
+                            if (!sha.empty() && (opts_.force.thumbs || !thumb_exists(sha, PHIG_DEFAULT_THUMB_SIZE))) {
+                                generate_thumb(img, sha, PHIG_DEFAULT_THUMB_SIZE);
                                 thumb_count.fetch_add(1);
                             }
                         }
@@ -386,13 +386,13 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
 
                     // Generate thumbnail if requested
                     if (opts_.thumbs && !proc.info.sha256.empty()) {
-                        if (opts_.force.thumbs || !thumb_exists(proc.info.sha256)) {
+                        if (opts_.force.thumbs || !thumb_exists(proc.info.sha256, PHIG_DEFAULT_THUMB_SIZE)) {
                             if (proc.info.media_type == "video") {
                                 // For videos, extract keyframe for thumbnail
                                 try {
                                     auto kf = extract_video_keyframe(canonical);
                                     if (!kf.frame.empty()) {
-                                        generate_thumb(kf.frame, proc.info.sha256);
+                                        generate_thumb(kf.frame, proc.info.sha256, PHIG_DEFAULT_THUMB_SIZE);
                                         thumb_count.fetch_add(1);
                                     }
                                 } catch (...) {
@@ -400,7 +400,7 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                             } else {
                                 cv::Mat img = decode_image(canonical);
                                 if (!img.empty()) {
-                                    generate_thumb(img, proc.info.sha256);
+                                    generate_thumb(img, proc.info.sha256, PHIG_DEFAULT_THUMB_SIZE);
                                     thumb_count.fetch_add(1);
                                 }
                             }

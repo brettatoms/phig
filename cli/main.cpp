@@ -125,6 +125,7 @@ void print_usage() {
         << "  phig face rebuild [--match] [--exclude] [--parallel N]  Re-detect all faces\n"
         << "  phig face list                     List known people\n"
         << "  phig thumbs rebuild [flags]  Generate missing thumbnails\n"
+        << "                               (--size N for a size other than 512)\n"
         << "  phig thumbs clean            Remove orphaned thumbnails\n"
         << "  phig tag add|remove <tag> [--match|--exclude|--path]   Tag images\n"
         << "  phig tag list                                         List tags and counts\n"
@@ -1130,7 +1131,8 @@ int cmd_search(const SearchOptions& opts) {
         for (const auto& img : results) {
             std::string date = get_best_date_str(img);
             std::string camera = json_get(img.metadata_json, "Model");
-            std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
+            std::string tpath =
+                img.sha256.size() >= 2 ? get_thumb_path(img.sha256, PHIG_DEFAULT_THUMB_SIZE) : "";
             out << img.path << '\t' << img.width << '\t' << img.height << '\t' << img.file_size
                 << '\t' << date << '\t' << camera << '\t' << tpath << '\n';
         }
@@ -1139,7 +1141,8 @@ int cmd_search(const SearchOptions& opts) {
         for (const auto& img : results) {
             std::string date = get_best_date_str(img);
             std::string camera = json_get(img.metadata_json, "Model");
-            std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
+            std::string tpath =
+                img.sha256.size() >= 2 ? get_thumb_path(img.sha256, PHIG_DEFAULT_THUMB_SIZE) : "";
             out << "\"" << img.path << "\"," << img.filename << "," << img.width << ","
                 << img.height << "," << img.file_size << "," << date << ","
                 << "\"" << camera << "\"," << img.sha256 << "," << img.phash << ","
@@ -1152,7 +1155,8 @@ int cmd_search(const SearchOptions& opts) {
             const auto& img = results[i];
             std::string date = get_best_date_str(img);
             std::string camera = json_get(img.metadata_json, "Model");
-            std::string tpath = img.sha256.size() >= 2 ? get_thumb_path(img.sha256) : "";
+            std::string tpath =
+                img.sha256.size() >= 2 ? get_thumb_path(img.sha256, PHIG_DEFAULT_THUMB_SIZE) : "";
             out << "{\"path\":\"" << img.path << "\""
                 << ",\"filename\":\"" << img.filename << "\""
                 << ",\"width\":" << img.width << ",\"height\":" << img.height
@@ -1902,6 +1906,15 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     set_path_overrides(cfg.db, cfg.models_dir, cfg.thumbs_dir);
+
+    // Thumbnails used to live at <thumbs>/ab/<sha>.jpg, before the size became
+    // part of the path. Move any such files under <thumbs>/512/ so an existing
+    // cache stays usable instead of being silently orphaned. A rename, not a
+    // re-encode; a no-op once done.
+    if (int moved = migrate_flat_thumb_cache(); moved > 0) {
+        log_info("migrated " + std::to_string(moved) +
+                 " thumbnails into the size-partitioned cache layout");
+    }
 
     // Diagnostic logger (plan 024): stderr sink for warnings/errors plus a
     // rotating file sink at ~/.local/state/phig/phig.log unless disabled.

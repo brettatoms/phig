@@ -7,13 +7,15 @@
 #include "cancel.h"
 #include "database.h"
 #include "progress_queue.h"
+#include "thumbs.h"
 #include "types.h"
 
 struct ThumbsOptions {
     std::vector<std::string> matches;
     std::vector<std::string> excludes;
     bool force = false;
-    int parallel = -1;  // -1 = auto
+    int parallel = -1;                   // -1 = auto
+    int size = PHIG_DEFAULT_THUMB_SIZE;  // longest edge, in pixels
 };
 
 // Whether one row needs a thumbnail generated.
@@ -24,7 +26,7 @@ struct ThumbsOptions {
 //
 // Free function, not a private method, so the decision is testable without
 // touching the thumbnail cache on disk.
-bool thumb_needs_generating(const ImageInfo& img, bool force);
+bool thumb_needs_generating(const ImageInfo& img, bool force, int size);
 
 // Progress carries either a finished file or the count of selected images,
 // published once before the parallel phase begins so a caller can size a

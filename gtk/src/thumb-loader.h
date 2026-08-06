@@ -7,6 +7,10 @@
 
 G_BEGIN_DECLS
 
+/* Size requested when a caller passes max_dim 0. Matches phig's own default so
+ * an unsized request hits the cache the CLI populates. */
+#define PHIG_THUMB_SIZE_DEFAULT 512
+
 typedef enum {
     THUMB_OK = 0,  /* texture is non-NULL */
     THUMB_MISS,    /* the row has no sha256 yet; nothing to generate from */
