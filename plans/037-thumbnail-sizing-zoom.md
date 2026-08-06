@@ -1,6 +1,6 @@
 ---
 name: Thumbnail Sizing, HiDPI & Grid Zoom
-status: designing
+status: planned
 created: 2026-08-05
 description: >
   HiDPI-correct thumbnail sizing and a zoomable grid. The plan began as a fix
@@ -18,7 +18,9 @@ description: >
 
 # 037 — Thumbnail Sizing, HiDPI & Grid Zoom
 
-**Status is `designing`, not `planned`.** This is now a **feature** plan. The
+**Status is `planned`.** This is now a **feature** plan: all three open
+decisions are settled and the zoom model is specified, so it is ready to
+implement. The
 performance half is closed: the original diagnosis was inferred from code plus a
 frame-time pattern rather than an isolating experiment, and when the experiment
 was run (2026-08-06, all of steps 1-3 below) it came back negative three times
@@ -166,7 +168,7 @@ Three consequences that are easy to miss:
    request, the `max_dim` passed to the loader, and the measurement harness all
    have to read it dynamically.
 
-## The three decisions — two settled by measurement (2026-08-06)
+## The three decisions — all settled (2026-08-06)
 
 **1. Where does downscaling happen? → SETTLED: it does not matter for
 performance; do it on the worker anyway, for memory.**
@@ -213,32 +215,95 @@ thumbs at HDD-bound 13 files/sec) buys only cells above 256 px logical. Not
 worth it now. Revisit only if a 3x display or a >256 px grid cell becomes a real
 requirement.
 
-**3. How does the GUI learn the scale factor? → STILL OPEN, but simplified.**
+**3. How does the GUI learn the scale factor? → SETTLED: integer
+`gtk_widget_get_scale_factor`.**
 
 Currently it does not: zero references to any scale API across `gtk/`.
 
 **Fractional scaling is out of scope.** GTK will not ship on macOS — a native Mac
 app is the plan there — so the fractional-scale case that motivated
-`gdk_surface_get_scale` (Wayland 1.25/1.5, which the integer API rounds) is not
-a case this client has to serve. Use `gtk_widget_get_scale_factor`: integer,
-per-widget, and correct for the displays this client targets. Revisit if a
+`gdk_surface_get_scale` (Wayland 1.25/1.5, which the integer API rounds) is not a
+case this client has to serve. Use `gtk_widget_get_scale_factor`: integer,
+per-widget, correct for the displays this client targets. Revisit only if a
 fractional-scaled Linux display becomes a real target.
 
-What still needs deciding:
+Read the scale when a cell binds, pass `cell_size * scale` as `max_dim`, and
+handle `notify::scale-factor` for the window moving between monitors. That and the
+zoom handler feed one policy, not two code paths.
 
-- Read the scale when a cell binds and pass `cell_size * scale` as `max_dim`.
-- React to scale changing from **two independent sources** — the window moving
-  between monitors (`notify::scale-factor`) and the user zooming — feeding one
-  policy rather than two code paths.
-- `PHIG_CELL_SIZE` is compile-time in four places (`gtk/src/main.c:10`, used at
-  `:185`, `:270`, `:366`) and becomes runtime state.
+## The zoom model: fit-to-width with snap (settled 2026-08-06)
 
-**Should zoom snap to discrete levels? → Recommend yes.** Most file browsers do.
-Discrete bounds the number of cache generations, keeps the `(sha, physical_size)`
-key tractable, and with the 256 px ceiling above gives a small fixed set — e.g.
-128/160/200/256 px logical, each doubling to a known physical size at 2x.
-Continuous zoom means re-scaling from a master texture per sha or re-decoding
-constantly, for a grid where no one needs 213 px cells.
+Modelled on iOS Photos, which is a better fit than stepping through preset cell
+sizes: **the grid always divides the viewport width exactly, so there is never
+horizontal scrolling and never a ragged right edge.**
+
+The inversion that makes this work — zoom does not set the cell size:
+
+```
+zoom gesture -> target column count (integer) -> cell size = viewport_width / columns
+```
+
+Cell size is *derived*. Resizing the window changes cell size while the column
+count holds; zooming changes the column count. `GtkGridView` already reflows
+columns to fit the width (`min_columns=3`, no `max_columns`, `main.c:571`), so the
+reflow half exists. What is missing is that the cell has a hard
+`gtk_widget_set_size_request(frame, 200, 200)` (`main.c:309`), so cells stay 200 px
+and the leftover width becomes gaps instead of being divided up.
+
+### Snapping, with hysteresis
+
+The gesture is continuous; the resting state is always a whole column count. Mid
+gesture the column count is fractional (e.g. 4.6 columns). Which way it settles
+depends on how much of the edge column is showing **and on the pinch direction**,
+so a gesture hovering near a boundary does not oscillate between two counts:
+
+```
+pinching IN  (toward bigger cells):  commit when fraction < 0.4
+pinching OUT (toward smaller cells): commit when fraction > 0.6
+dead zone 0.4-0.6:                   hold the current count
+```
+
+Plain rounding at 0.5 was considered and rejected: under a slow pinch it
+flip-flops exactly at the boundary.
+
+### Texture requests follow the resting state, not the gesture
+
+Requesting a texture per gesture frame would fire a new request every frame of a
+pinch. Instead request for the **snap target** and let GTK scale the existing
+texture during the gesture — which is also what makes the animation cheap, since
+it scales textures already resident.
+
+Sizes are then quantised to bound the cache: round the requested physical size up
+to the next 64 px bucket, so a 187 px and a 195 px cell both request 256 px. This
+keeps `(sha256, physical_size)` small without needing discrete cell sizes, and
+means an ordinary window resize usually does not cross a bucket boundary — cached
+textures stay valid and only layout changes.
+
+### Bounds
+
+- **Zoom-in limit is computed, not hardcoded.** The 512 px cache serves cells up
+  to 256 px logical at scale=2, so the sharpness floor is about
+  `min_columns = viewport_width / (256 * scale) * scale` — i.e. do not allow a
+  column count whose derived cell size would need more than 512 physical px.
+  Past that, thumbnails visibly soften.
+- **`max_columns` must be set** (it currently is not). Without it a very wide
+  window can reflow to 20+ unusably small columns.
+- Note the interaction with wide windows: on this 2560 px display at scale=2, a
+  3-column grid means 853 px cells needing 1706 physical px — far past the cache.
+  The usable range on a wide monitor is therefore the *smaller-cell* end. This is
+  a consequence of the fixed 512 px cache, not of the zoom model.
+
+### Input
+
+`GtkGestureZoom` (trackpad pinch) and `GtkEventControllerScroll` (Ctrl+scroll,
+for mice) both exist in GTK 4.22.4; there is no gesture handling in `main.c`
+today. Both feed the same column-count policy.
+
+### Nice-to-have
+
+The iOS transition animates cells to their new size rather than jumping. Not
+required. It is cheap if texture requests follow the snap target as above, since
+the animation then scales already-resident textures.
 
 ## The measurement record (steps 1-3 complete)
 
