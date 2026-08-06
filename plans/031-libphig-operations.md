@@ -1,6 +1,6 @@
 ---
 name: libphig Operations Surface
-status: planned
+status: designing
 created: 2026-08-05
 description: Expose the long-running operations — scan, organize, remove, face detection — through libphig, so a GUI client can run them without shelling out to the CLI. The engines already exist in `core/` and are exercised by the CLI; this is ABI surface over working functionality plus a progress/cancellation convention that survives the C boundary. Supersedes the scoping decision in `docs/plans/2026-07-31-libphig-core.md` that kept these out of the ABI.
 ---

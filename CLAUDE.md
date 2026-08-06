@@ -23,8 +23,8 @@ tools that look for that filename resolve to something.
 | `tests/` | GoogleTest suite (fast + perf) covering `core/`, `libphig/`. | — |
 | `vendor/` | Vendored third-party code, built without `-Wall -Wextra`. | — |
 | `scripts/` | Dev tooling (e.g. `clang-tidy.sh`). | — |
-| `docs/` | Cross-project specs/plans/ledgers from when phig, phig-gtk, and phig-web were separate repos. Date-stamped files. | Historical record |
-| `plans/` | phig's own numbered implementation plans (`NNN-name.md`). | Historical record |
+| `docs/` | Cross-project specs/ledgers from when phig, phig-gtk, and phig-web were separate repos, plus execution artifacts owned by a numbered plan. Date-stamped files. | Historical record |
+| `plans/` | Numbered implementation plans (`NNN-name.md`) for the whole monorepo — the single index of what's outstanding. | Working index |
 | `MARKET.md` | Competitive analysis: the field, its recurring weaknesses, phig's differentiators. Dated, additive. | Working document |
 
 See each directory's `CLAUDE.md` for what it is, its stability contract, and
@@ -188,8 +188,8 @@ tests/      GoogleTest suite: one file per core/libphig unit, plus
             perf_duplicates.cpp for the perf target.
 vendor/     Vendored third-party code.
 scripts/    Dev tooling.
-docs/       Cross-project specs/plans (see Layout above).
-plans/      phig's own numbered plans (see Layout above).
+docs/       Cross-project specs + execution artifacts (see Layout above).
+plans/      Numbered plans, monorepo-wide (see Layout above).
 ```
 
 ## Key design decisions
@@ -271,21 +271,38 @@ plans/      phig's own numbered plans (see Layout above).
 
 ## Plans and specs
 
-Plans, specs, and designs live in two places:
+`plans/` is the single index of phig's work — one sequence across the whole
+monorepo, covering `core/`, `libphig/`, `cli/`, `gtk/`, and anything added
+later. There are no per-directory plan folders, and a plan may span several
+directories. Every plan is `plans/NNN-name.md` with frontmatter (`name`,
+`status`, `created`, `description`) and a row in `plans/000-INDEX.md`. If it
+isn't in the index, it isn't tracked — the index is the only place to look
+for what's outstanding.
 
-- `plans/` holds phig's own historical plans as numbered `NNN-name.md`
-  files with the established frontmatter (`name`, `status`, `created`,
-  `description`) — see `plans/000-INDEX.md`.
-- `docs/` holds cross-project specs, plans, and ledgers from the era when
-  phig, phig-gtk, and phig-web were separate repos, as date-stamped files
-  (`docs/specs/`, `docs/plans/`).
+`docs/` holds two things, neither of them tracked plans: cross-project specs
+and ledgers from when phig, phig-gtk, and phig-web were separate repos, and
+execution artifacts (superpowers plans, SDD ledgers, diagnoses) belonging to
+a numbered plan. An artifact in `docs/` may be linked from a numbered plan;
+it never carries the status itself.
 
-New phig-only plans go in `plans/` with the next number and an index row in
-`plans/000-INDEX.md`. New cross-project or monorepo-wide design docs go in
-`docs/`. Completed plans should not be edited unless the user explicitly
-asks — it's fine to add cross-references to other plans. Changes to
-completed features get a new plan rather than editing the original. Always
-write a plan and get approval before implementing.
+**Plan location overrides superpowers.** The `writing-plans` skill defaults
+to `docs/superpowers/plans/YYYY-MM-DD-name.md` and yields to project
+preference. In this repo a plan goes to `plans/NNN-name.md` with an index
+row. If the plan is an execution script — bite-sized TDD steps with
+checkboxes — write it to `docs/plans/` as an artifact and open or update the
+numbered plan that owns it.
+
+Status is one of: `designing` (open questions remain), `planned` (designed,
+not started), `in-progress` (started; the index row says what's left),
+`completed` (shipped, including pieces explicitly deferred to a later plan),
+`deferred` (deliberately not now), `superseded` (replaced — the row and the
+file's frontmatter both name the replacement).
+
+New cross-project or monorepo-wide design docs go in `docs/`. Completed
+plans should not be edited unless the user explicitly asks — it's fine to
+add cross-references to other plans. Changes to completed features get a new
+plan rather than editing the original. Always write a plan and get approval
+before implementing.
 
 ## Conventions
 
