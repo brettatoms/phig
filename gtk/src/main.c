@@ -95,6 +95,7 @@ typedef struct {
     guint columns;
     gboolean columns_chosen; /* FALSE until a real viewport width picked the initial count */
     guint relayout_id;       /* pending phig_relayout_idle, 0 if none */
+    gboolean relayout_needs_rebind; /* geometry changed: re-request textures at the new size */
     double pinch_columns;
     guint pinch_base_columns; /* columns when the current gesture began */
 } PhigApp;
@@ -430,6 +431,7 @@ static void phig_set_columns(PhigApp* app, guint columns) {
     if (clamped == app->columns)
         return;
     app->columns = clamped;
+    app->relayout_needs_rebind = TRUE; /* cell size changed: textures are now the wrong size */
     phig_apply_columns(app);
 }
 
@@ -453,37 +455,31 @@ static guint phig_snap_columns(double fractional, guint current) {
 }
 
 
-/* Re-sizes every realized cell after a resize or zoom. GtkGridView recycles a
- * bounded set of cells, so walking the grid's children is cheap and bounded by
- * what is on screen — not by the 29,953-row model. */
+/* Cells are NOT given a size request. GtkGridView divides its allocated width
+ * among max_columns equal columns, so the cell width already follows the
+ * viewport. A size request here would set each cell's MINIMUM size, and a
+ * window's natural size is derived from its children's minimums — so a bigger
+ * cell would demand a wider window, which would widen the viewport, which would
+ * derive an even bigger cell. That loop grows the window without bound until the
+ * process is killed. Only the height needs setting, to keep cells square. */
 static void phig_resize_visible_cells(PhigApp* app) {
     guint cell = phig_cell_size_for(phig_viewport_width(app), app->columns);
     for (GtkWidget* child = gtk_widget_get_first_child(GTK_WIDGET(app->grid)); child != NULL;
          child = gtk_widget_get_next_sibling(child)) {
-        /* GridView wraps each cell in an internal child; the frame we built in
-         * on_factory_setup is somewhere beneath it. */
         for (GtkWidget* inner = gtk_widget_get_first_child(child); inner != NULL;
              inner = gtk_widget_get_next_sibling(inner)) {
             if (!GTK_IS_FRAME(inner))
                 continue;
-            /* Only when it actually differs: gtk_widget_set_size_request always
-             * queues a resize, and doing that from a notification that layout
-             * itself emitted re-enters layout until GTK gives up. */
             int cur_w = -1, cur_h = -1;
             gtk_widget_get_size_request(inner, &cur_w, &cur_h);
-            if (cur_w != (int)cell || cur_h != (int)cell)
-                gtk_widget_set_size_request(inner, (int)cell, (int)cell);
+            /* Width stays -1 (unconstrained, follows the column); height makes
+             * the cell square. Height cannot feed back into the width. */
+            if (cur_w != -1 || cur_h != (int)cell)
+                gtk_widget_set_size_request(inner, -1, (int)cell);
         }
     }
 }
 
-/* Applies pending geometry once, off the size-allocation notification.
- *
- * Resizing cells requests another layout pass, and during a window-open or drag
- * animation the width changes every frame — doing it synchronously from the
- * notification makes GTK see repeated layout requests within one frame and warn
- * "layout continuously requested, giving up after 4 tries". Coalescing to one
- * idle per frame keeps the work but not the re-entrancy. */
 static gboolean phig_relayout_idle(gpointer user_data) {
     PhigApp* app = user_data;
     app->relayout_id = 0;
@@ -494,9 +490,13 @@ static gboolean phig_relayout_idle(gpointer user_data) {
 
     if (!app->columns_chosen) {
         /* First real width: choose the count that lands nearest the target cell
-         * size, rather than keeping the provisional value. */
+         * size, rather than keeping the provisional value. Set the field
+         * directly — phig_set_columns would clamp against the provisional
+         * count and can no-op if the clamp happens to agree with it. */
         app->columns_chosen = TRUE;
-        phig_set_columns(app, phig_default_columns_for_width(width));
+        app->columns = phig_clamp_columns(app, phig_default_columns_for_width(width));
+        app->relayout_needs_rebind = TRUE;
+        phig_apply_columns(app);
     } else {
         /* Width changed, so the derived cell size changed even though the column
          * count did not. Re-clamp too: a narrower window can push the sharpness
@@ -504,6 +504,20 @@ static gboolean phig_relayout_idle(gpointer user_data) {
         phig_set_columns(app, app->columns);
     }
     phig_resize_visible_cells(app);
+    /* Cells bound before this point requested a texture for the previous cell
+     * size — at startup that is the provisional 1-column geometry, which is far
+     * too large and renders visibly blurry until the cell is recycled. Dropping
+     * the model and re-setting it rebinds every visible cell at the new size. */
+    if (app->relayout_needs_rebind) {
+        app->relayout_needs_rebind = FALSE;
+        GtkSelectionModel* model = gtk_grid_view_get_model(app->grid);
+        if (model != NULL) {
+            g_object_ref(model);
+            gtk_grid_view_set_model(app->grid, NULL);
+            gtk_grid_view_set_model(app->grid, model);
+            g_object_unref(model);
+        }
+    }
     return G_SOURCE_REMOVE;
 }
 
@@ -669,11 +683,12 @@ static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item
     GtkWidget* frame = gtk_list_item_get_child(item);
     GtkWidget* picture = gtk_frame_get_child(GTK_FRAME(frame));
 
-    /* Before the placeholder early-return: a placeholder cell still has to
-     * occupy a full cell's footprint, or the grid's rows collapse while pages
-     * are in flight. */
+    /* Before the placeholder early-return: a placeholder cell still needs a
+     * row's worth of height, or rows collapse while pages are in flight. Height
+     * only — see phig_resize_visible_cells for why width must stay
+     * unconstrained. */
     guint cell = phig_cell_size_for(phig_viewport_width(app), app->columns);
-    gtk_widget_set_size_request(frame, (int)cell, (int)cell);
+    gtk_widget_set_size_request(frame, -1, (int)cell);
 
     if (phig_image_row_is_placeholder(row)) {
         gtk_picture_set_paintable(GTK_PICTURE(picture), NULL);
