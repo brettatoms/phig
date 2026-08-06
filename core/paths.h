@@ -63,13 +63,27 @@ std::string unique_backup_path(const std::string& dest);
 // complete bytes. Creates dest's parent dirs.
 bool atomic_write_file(const std::string& dest, const void* data, size_t size);
 
-// From a set of DB-tracked paths, return the subset that is safe to delete as
-// "no longer on disk". A path is deletable ONLY when the file is genuinely gone
-// AND its parent directory still exists. A missing parent directory means the
-// subtree is unmounted or unreachable (not that the file was deleted), and an
-// existence check that errors (EACCES/EIO) is treated as "unknown, keep" — so a
-// transient mount/permission problem never purges rows for intact files.
-std::vector<std::string> paths_safe_to_delete(const std::vector<std::string>& db_paths);
+// How `paths_safe_to_delete` classified a set of DB-tracked paths. Paths whose
+// file still exists are not collected: that's the normal case and there is
+// nothing to report about it.
+//
+// `parent_missing` and `check_failed` carry paths rather than counts so a caller
+// can list them, and they are kept apart because they warrant different
+// treatment: a missing parent is a heuristic judgement a caller may override,
+// while a failed check is an unknown state that must never be overridden.
+struct SafeToDeleteResult {
+    std::vector<std::string> deletable;       // file gone, parent present
+    std::vector<std::string> parent_missing;  // possible unmount; overridable
+    std::vector<std::string> check_failed;    // fs::exists errored (EACCES/EIO)
+};
+
+// From a set of DB-tracked paths, classify each as "no longer on disk" or not.
+// A path is deletable ONLY when the file is genuinely gone AND its parent
+// directory still exists. A missing parent directory means the subtree is
+// unmounted or unreachable (not that the file was deleted), and an existence
+// check that errors (EACCES/EIO) is an unknown state — so a transient
+// mount/permission problem never purges rows for intact files.
+SafeToDeleteResult paths_safe_to_delete(const std::vector<std::string>& db_paths);
 
 // Resolve a destination path against the on_conflict policy ("skip",
 // "overwrite", or "rename"). A path conflicts if it exists on disk OR is already

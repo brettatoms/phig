@@ -169,6 +169,7 @@ void print_usage() {
         << "  --hard                   Delete the file from disk (permanent, no trash)\n"
         << "  --db-only                Remove the DB row only, keep the file on disk\n"
         << "  --orphans                Remove DB rows whose files are already missing\n"
+        << "  --ignore-mount-warning   With --orphans, also remove rows whose parent dir is gone\n"
         << "  --dry-run                Show what would be removed\n"
         << "  --yes                    Skip confirmation for broad removals\n"
         << "  --db <path>              Database path\n"
@@ -352,6 +353,16 @@ int cmd_scan(const ScanOptions& opts) {
     if (result.demoted > 0) {
         std::cout << "  Demoted:   " << result.demoted
                   << " (metadata moved from JPEG to sibling RAW)\n";
+    }
+    if (result.skipped_parent_missing > 0) {
+        std::cout << "  Kept:      " << result.skipped_parent_missing
+                  << " missing files whose parent directory is also gone\n"
+                     "             (possible unmounted drive; --ignore-mount-warning removes"
+                     " them)\n";
+    }
+    if (result.skipped_check_failed > 0) {
+        std::cout << "  Kept:      " << result.skipped_check_failed
+                  << " files that could not be checked (permission or I/O error)\n";
     }
     if (opts.faces) {
         std::cout << "  Faces:     " << result.faces << "\n";
@@ -2129,6 +2140,8 @@ int main(int argc, char* argv[]) {
             } else if (arg == "--orphans") {
                 opts.mode = RemoveMode::Orphans;
                 mode_flags++;
+            } else if (arg == "--ignore-mount-warning") {
+                opts.ignore_mount_warning = true;
             } else if (arg == "--dry-run") {
                 opts.dry_run = true;
             } else if (arg == "--yes" || arg == "-y") {

@@ -493,7 +493,19 @@ void ScanEngine::run_reconcile(ScanResult& result) {
     // parent directory still exists — a missing parent (unmounted subtree) or an
     // errored existence check keeps the row, so a transient mount/permission
     // problem can't purge metadata for intact files.
-    std::vector<std::string> removed_paths = paths_safe_to_delete(db_paths);
+    //
+    // --ignore-mount-warning means "proceed past the mount heuristic", so it also
+    // treats a missing parent as a genuine deletion (same meaning the flag has on
+    // `rm --orphans`). A path whose existence couldn't be determined at all is
+    // never included: that's an unknown state, not a judgement about mounting.
+    SafeToDeleteResult safe = paths_safe_to_delete(db_paths);
+    std::vector<std::string> removed_paths = std::move(safe.deletable);
+    if (opts_.ignore_mount_warning) {
+        removed_paths.insert(removed_paths.end(), safe.parent_missing.begin(),
+                             safe.parent_missing.end());
+    }
+    result.skipped_parent_missing = opts_.ignore_mount_warning ? 0 : safe.parent_missing.size();
+    result.skipped_check_failed = safe.check_failed.size();
     size_t removed_count = 0;
     int relinked_count = 0;
     int demoted_count = 0;

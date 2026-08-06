@@ -1,12 +1,16 @@
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 
 #include "database.h"
@@ -422,4 +426,120 @@ TEST_F(RemoveExecTest, RmOrphansDropsMissingKeepsPresent) {
     auto rows = db->get_all_images();
     ASSERT_EQ(rows.size(), 1u);
     EXPECT_EQ(rows[0].path, present);  // present kept, missing dropped
+}
+
+// ---- --orphans and the mount guard (plan 032) ----
+
+// Captures stdout for the duration of a cmd_rm call: the reported bug is about
+// what the command prints, so row counts alone can't verify the fix.
+class CaptureStdout {
+   public:
+    CaptureStdout() : old_(std::cout.rdbuf(buf_.rdbuf())) {}
+    ~CaptureStdout() { std::cout.rdbuf(old_); }
+    std::string str() const { return buf_.str(); }
+
+   private:
+    std::ostringstream buf_;
+    std::streambuf* old_;
+};
+
+TEST_F(RemoveExecTest, RmOrphansSkipsRowsWhoseParentIsMissingByDefault) {
+    // A whole directory is gone: looks like an unmounted drive, so the guard
+    // keeps the rows unless explicitly overridden.
+    fs::path album = photos / "2026" / "07";
+    std::string a = (album / "a.jpg").string();
+    std::string b = (album / "b.jpg").string();
+    write_file(a, "x");
+    write_file(b, "x");
+    insert_row(a);
+    insert_row(b);
+    fs::remove_all(photos / "2026");  // parent directory itself deleted
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.mode = RemoveMode::Orphans;
+    opts.assume_yes = true;
+    opts.argv_str = "phig rm --orphans";
+
+    std::string output;
+    {
+        CaptureStdout cap;
+        EXPECT_EQ(cmd_rm(opts), 0);
+        output = cap.str();
+    }
+
+    EXPECT_EQ(db->get_all_images().size(), 2u) << "guard must keep possibly-unmounted rows";
+
+    // The reported bug: the skip was silent and the output said nothing matched.
+    EXPECT_EQ(output.find("No matching entries found."), std::string::npos) << "output was:\n"
+                                                                            << output;
+    EXPECT_NE(output.find("2"), std::string::npos) << "output was:\n" << output;
+    EXPECT_NE(output.find("--ignore-mount-warning"), std::string::npos) << "output was:\n"
+                                                                        << output;
+}
+
+TEST_F(RemoveExecTest, RmOrphansRemovesMissingParentRowsWithIgnoreMountWarning) {
+    fs::path album = photos / "2026" / "07";
+    std::string a = (album / "a.jpg").string();
+    std::string b = (album / "b.jpg").string();
+    write_file(a, "x");
+    write_file(b, "x");
+    insert_row(a);
+    insert_row(b);
+    fs::remove_all(photos / "2026");
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.mode = RemoveMode::Orphans;
+    opts.assume_yes = true;
+    opts.ignore_mount_warning = true;
+    opts.argv_str = "phig rm --orphans --ignore-mount-warning";
+
+    EXPECT_EQ(cmd_rm(opts), 0);
+    EXPECT_TRUE(db->get_all_images().empty()) << "override must remove the orphaned rows";
+}
+
+TEST_F(RemoveExecTest, RmOrphansNeverRemovesPresentFilesEvenWithIgnoreMountWarning) {
+    std::string present = (photos / "here.jpg").string();
+    write_file(present, "x");
+    insert_row(present);
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.mode = RemoveMode::Orphans;
+    opts.assume_yes = true;
+    opts.ignore_mount_warning = true;
+    opts.argv_str = "phig rm --orphans --ignore-mount-warning";
+
+    EXPECT_EQ(cmd_rm(opts), 0);
+    auto rows = db->get_all_images();
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].path, present);
+    EXPECT_TRUE(fs::exists(present));
+}
+
+TEST_F(RemoveExecTest, RmOrphansNeverRemovesUnreadablePathsEvenWithIgnoreMountWarning) {
+    // An unreadable parent makes existence unknowable — an unknown state, not a
+    // mount heuristic, so the override must not reach it.
+    if (geteuid() == 0) GTEST_SKIP() << "root bypasses directory permissions";
+
+    fs::path locked = photos / "locked";
+    std::string inside = (locked / "img.jpg").string();
+    write_file(inside, "x");
+    insert_row(inside);
+    ASSERT_EQ(chmod(locked.c_str(), 0000), 0);
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.mode = RemoveMode::Orphans;
+    opts.assume_yes = true;
+    opts.ignore_mount_warning = true;
+    opts.argv_str = "phig rm --orphans --ignore-mount-warning";
+
+    int rc = cmd_rm(opts);
+    size_t remaining = db->get_all_images().size();
+    chmod(locked.c_str(), 0755);  // restore so TearDown can clean up
+
+    EXPECT_EQ(rc, 0);
+    EXPECT_EQ(remaining, 1u) << "an unreadable path is never overridden";
 }

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -462,17 +463,21 @@ class SafeToDeleteTest : public ::testing::Test {
 TEST_F(SafeToDeleteTest, PresentFilesAreNotDeletable) {
     fs::path a = root / "a.jpg";
     touch(a);
-    auto del = paths_safe_to_delete({a.string()});
-    EXPECT_TRUE(del.empty());
+    auto res = paths_safe_to_delete({a.string()});
+    EXPECT_TRUE(res.deletable.empty());
+    // A present file is the normal case: reported under no reason at all.
+    EXPECT_TRUE(res.parent_missing.empty());
+    EXPECT_TRUE(res.check_failed.empty());
 }
 
 TEST_F(SafeToDeleteTest, GenuinelyMissingFileWithPresentParentIsDeletable) {
     // Parent dir exists, file within it is gone -> a real deletion.
     fs::path missing = root / "album" / "gone.jpg";
     fs::create_directories(missing.parent_path());  // parent present, file absent
-    auto del = paths_safe_to_delete({missing.string()});
-    ASSERT_EQ(del.size(), 1u);
-    EXPECT_EQ(del[0], missing.string());
+    auto res = paths_safe_to_delete({missing.string()});
+    ASSERT_EQ(res.deletable.size(), 1u);
+    EXPECT_EQ(res.deletable[0], missing.string());
+    EXPECT_TRUE(res.parent_missing.empty());
 }
 
 TEST_F(SafeToDeleteTest, MissingFileUnderAbsentParentIsKept) {
@@ -480,8 +485,11 @@ TEST_F(SafeToDeleteTest, MissingFileUnderAbsentParentIsKept) {
     // NOT an individual deletion. Must be kept.
     fs::path under_unmounted = root / "removable" / "2020" / "img.jpg";
     // Do NOT create the parent dirs.
-    auto del = paths_safe_to_delete({under_unmounted.string()});
-    EXPECT_TRUE(del.empty());
+    auto res = paths_safe_to_delete({under_unmounted.string()});
+    EXPECT_TRUE(res.deletable.empty());
+    // Kept, and the caller can now see why.
+    ASSERT_EQ(res.parent_missing.size(), 1u);
+    EXPECT_EQ(res.parent_missing[0], under_unmounted.string());
 }
 
 TEST_F(SafeToDeleteTest, PartialUnmountKeepsUnmountedSubtreeDeletesRealMissing) {
@@ -496,15 +504,41 @@ TEST_F(SafeToDeleteTest, PartialUnmountKeepsUnmountedSubtreeDeletesRealMissing) 
 
     fs::path unmounted = root / "mnt2020" / "x.jpg";  // parent dir absent
 
-    auto del = paths_safe_to_delete(
+    auto res = paths_safe_to_delete(
         {present1.string(), present2.string(), real_deleted.string(), unmounted.string()});
 
     // Only the genuinely-deleted file (present parent) is removed.
-    ASSERT_EQ(del.size(), 1u);
-    EXPECT_TRUE(contains(del, real_deleted.string()));
-    EXPECT_FALSE(contains(del, unmounted.string()));  // unmounted subtree preserved
-    EXPECT_FALSE(contains(del, present1.string()));
-    EXPECT_FALSE(contains(del, present2.string()));
+    ASSERT_EQ(res.deletable.size(), 1u);
+    EXPECT_TRUE(contains(res.deletable, real_deleted.string()));
+    EXPECT_FALSE(contains(res.deletable, unmounted.string()));  // unmounted subtree preserved
+    EXPECT_FALSE(contains(res.deletable, present1.string()));
+    EXPECT_FALSE(contains(res.deletable, present2.string()));
+
+    // The skipped subtree is attributed, the present files are not.
+    ASSERT_EQ(res.parent_missing.size(), 1u);
+    EXPECT_EQ(res.parent_missing[0], unmounted.string());
+}
+
+TEST_F(SafeToDeleteTest, UnreadableParentIsCheckFailedNotParentMissing) {
+    // A parent directory that cannot be traversed (chmod 000) makes the file's
+    // existence unknowable. That is a different condition from "parent gone":
+    // it must land in check_failed, which no caller flag may override.
+    if (geteuid() == 0) GTEST_SKIP() << "root bypasses directory permissions";
+
+    fs::path locked_dir = root / "locked";
+    fs::path inside = locked_dir / "img.jpg";
+    fs::create_directories(locked_dir);
+    ASSERT_EQ(chmod(locked_dir.c_str(), 0000), 0);
+
+    auto res = paths_safe_to_delete({inside.string()});
+
+    // Restore before asserting so TearDown can always clean up.
+    chmod(locked_dir.c_str(), 0755);
+
+    EXPECT_TRUE(res.deletable.empty());
+    EXPECT_TRUE(res.parent_missing.empty());
+    ASSERT_EQ(res.check_failed.size(), 1u);
+    EXPECT_EQ(res.check_failed[0], inside.string());
 }
 
 // ---- atomic writes ----

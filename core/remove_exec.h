@@ -38,6 +38,10 @@ struct RemoveOptions {
     RemoveMode mode = RemoveMode::Trash;
     bool dry_run = false;
     bool assume_yes = false;
+    // --orphans only: treat a row whose parent directory is missing as a genuine
+    // deletion rather than a possibly-unmounted drive. Never overrides a path
+    // whose existence could not be determined at all (EACCES/EIO).
+    bool ignore_mount_warning = false;
     std::string db_path;
     bool log_enabled = true;
     int log_max_entries = 100000;

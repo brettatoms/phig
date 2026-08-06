@@ -82,13 +82,40 @@ int cmd_rm(const RemoveOptions& opts, const ConfirmFn& confirm) {
         if (passes_selection(img.path, opts.matches, opts.excludes)) matched.push_back(img.path);
     }
 
-    // --orphans narrows to rows whose files are missing (mount-safe).
+    // --orphans narrows to rows whose files are missing (mount-safe). What the
+    // guard declined to touch is reported before the empty check below, so a run
+    // that skipped everything says so instead of looking like a clean no-op.
+    bool reported_skips = false;
     if (opts.mode == RemoveMode::Orphans) {
-        matched = paths_safe_to_delete(matched);
+        SafeToDeleteResult safe = paths_safe_to_delete(matched);
+        matched = std::move(safe.deletable);
+
+        if (!safe.parent_missing.empty()) {
+            if (opts.ignore_mount_warning) {
+                matched.insert(matched.end(), safe.parent_missing.begin(),
+                               safe.parent_missing.end());
+            } else {
+                std::cout
+                    << "Skipped " << safe.parent_missing.size()
+                    << " entries whose parent directory is missing — this usually means an\n"
+                       "unmounted drive. If the drive is mounted and the directory really was\n"
+                       "deleted, re-run with --ignore-mount-warning.\n";
+                reported_skips = true;
+            }
+        }
+        // Never overridden: an unreadable path is an unknown state, not a
+        // heuristic judgement about whether a drive is mounted.
+        if (!safe.check_failed.empty()) {
+            std::cout << "Skipped " << safe.check_failed.size()
+                      << " entries whose files could not be checked (permission or I/O error).\n";
+            reported_skips = true;
+        }
     }
 
     if (matched.empty()) {
-        std::cout << "No matching entries found.\n";
+        // A skip report already explained why nothing is actionable; saying
+        // "nothing matched" on top of it would contradict what was just printed.
+        if (!reported_skips) std::cout << "No matching entries found.\n";
         return 0;
     }
 

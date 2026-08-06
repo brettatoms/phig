@@ -99,6 +99,12 @@ struct ScanResult {
     size_t images = 0, videos = 0, faces = 0, thumbs = 0;
     size_t removed = 0, relinked = 0, demoted = 0;
     size_t total_files = 0;
+    // Rows reconcile left alone: the file is gone but its parent directory is too
+    // (possible unmount — overridable with ignore_mount_warning, and 0 when that
+    // is set), or its existence couldn't be determined at all (EACCES/EIO, never
+    // overridden). Reported so a skip is never silent.
+    size_t skipped_parent_missing = 0;
+    size_t skipped_check_failed = 0;
     bool completed = true;
     bool mount_warning = false;
 };

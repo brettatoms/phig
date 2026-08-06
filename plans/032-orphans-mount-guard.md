@@ -1,6 +1,6 @@
 ---
 name: rm --orphans Mount Guard
-status: planned
+status: completed
 created: 2026-08-06
 description: >
   Make `rm --orphans` able to remove orphaned rows whose parent directory was
@@ -141,11 +141,11 @@ missing, versus this per-row parent test. Two decisions belong to this plan:
 
 - Scan's reconcile reports `parent_missing` and `check_failed` counts in its
   summary, so the two commands stop reporting the same condition differently.
-- Whether scan's `--ignore-mount-warning` should also make reconcile delete
-  missing-parent rows. Leaning **yes** for consistency, since the flag already
-  means "proceed past the mount heuristic" there. Confirm before implementing:
-  it widens what an existing flag deletes, which is a behaviour change for
-  current users, not just new surface.
+- Scan's `--ignore-mount-warning` **also** makes reconcile delete missing-parent
+  rows (decided 2026-08-06). One flag, one meaning across both commands: it
+  means "proceed past the mount heuristic". This widens what an existing flag
+  deletes, which is a behaviour change for current users of the flag, not only
+  new surface. `check_failed` is never included either way.
 
 ## Tests
 
@@ -178,3 +178,10 @@ evidence, but they may already have been cleared by the `--db-only` workaround.
 Check with `rm --orphans --dry-run` before treating the collection as a
 reproduction; if the rows are gone, the tests above are the reproduction and no
 real-run check is possible for the missing-parent path.
+
+**Outcome (2026-08-06):** the rows were already cleared — `rm --orphans
+--dry-run` on the real collection reports nothing, so the tests are the
+reproduction. The bug was also reproduced end-to-end on a scratch collection
+(3 indexed files, their directory deleted, drive mounted): before the fix
+`No matching entries found.`, after it a skip count naming
+`--ignore-mount-warning`, and the flag then removes exactly those 3 rows.

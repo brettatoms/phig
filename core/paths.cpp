@@ -279,25 +279,35 @@ bool atomic_write_file(const std::string& dest, const void* data, size_t size) {
     return true;
 }
 
-std::vector<std::string> paths_safe_to_delete(const std::vector<std::string>& db_paths) {
+SafeToDeleteResult paths_safe_to_delete(const std::vector<std::string>& db_paths) {
     namespace fs = std::filesystem;
-    std::vector<std::string> deletable;
+    SafeToDeleteResult result;
     for (const auto& p : db_paths) {
         std::error_code ec;
         bool exists = fs::exists(p, ec);
-        if (ec) continue;      // existence check errored (EACCES/EIO) -> keep
-        if (exists) continue;  // file still there -> keep
+        if (ec) {
+            result.check_failed.push_back(p);  // EACCES/EIO -> unknown state
+            continue;
+        }
+        if (exists) continue;  // file still there -> not an orphan
 
-        // File is gone. Only delete if its parent directory still exists — a
+        // File is gone. Only deletable if its parent directory still exists — a
         // missing parent means the subtree is unmounted/unreachable, not that
         // this file was individually removed.
         fs::path parent = fs::path(p).parent_path();
         bool parent_exists = fs::exists(parent, ec);
-        if (ec || !parent_exists) continue;  // parent gone/unknown -> keep
+        if (ec) {
+            result.check_failed.push_back(p);
+            continue;
+        }
+        if (!parent_exists) {
+            result.parent_missing.push_back(p);
+            continue;
+        }
 
-        deletable.push_back(p);
+        result.deletable.push_back(p);
     }
-    return deletable;
+    return result;
 }
 
 std::string resolve_conflict(const std::string& dest, const std::string& on_conflict,
