@@ -40,8 +40,14 @@ std::string attr_value(const std::string& xml, const std::string& attr) {
     return xml.substr(pos, end - pos);
 }
 
-// Format y/m/d/H/M/S into "YYYY:MM:DD HH:MM:SS".
+// Format y/m/d/H/M/S into "YYYY:MM:DD HH:MM:SS", or "" if any field is out of
+// range. Callers pass unvalidated sscanf output from sidecar files phig does not
+// control, so a nonsense year like 99999 must be rejected rather than formatted:
+// it would not fit the fixed EXIF shape and would silently yield a wrong date.
 std::string exif_shape(int y, int mo, int d, int h, int mi, int s) {
+    if (y < 1 || y > 9999) return "";
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return "";
+    if (h < 0 || h > 23 || mi < 0 || mi > 59 || s < 0 || s > 60) return "";  // 60 = leap second
     char buf[20];
     std::snprintf(buf, sizeof(buf), "%04d:%02d:%02d %02d:%02d:%02d", y, mo, d, h, mi, s);
     return buf;

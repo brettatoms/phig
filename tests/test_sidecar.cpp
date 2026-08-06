@@ -136,6 +136,41 @@ TEST_F(SidecarTest, DatelessSidecarReturnsEmpty) {
     EXPECT_EQ(sidecar_date(dir / "d.xmp"), "");
 }
 
+// A sidecar is a file phig does not control, so its date fields are untrusted
+// input. An out-of-range field must be rejected outright: it cannot fit the
+// fixed-width EXIF shape, and formatting it anyway would truncate into a
+// plausible-looking but wrong date that organize would then file under.
+TEST_F(SidecarTest, OutOfRangeDateFieldsAreRejectedNotTruncated) {
+    struct Case {
+        const char* name;
+        const char* value;
+    };
+    const Case cases[] = {
+        {"f.xmp", "99999-01-01T00:00:00"},  // 5-digit year overflows %04d
+        {"g.xmp", "2147483647-01-01T00:00:00"} /* INT_MAX */,
+        {"h.xmp", "-1-01-01T00:00:00"},    // negative year
+        {"i.xmp", "2010-13-01T00:00:00"},  // month 13
+        {"j.xmp", "2010-01-32T00:00:00"},  // day 32
+        {"k.xmp", "2010-01-01T24:00:00"},  // hour 24
+        {"l.xmp", "2010-01-01T00:60:00"},  // minute 60
+    };
+    for (const auto& c : cases) {
+        write(dir / c.name,
+              std::string(R"(<rdf:Description exif:DateTimeOriginal=")") + c.value + R"("/>)");
+        EXPECT_EQ(sidecar_date(dir / c.name), "") << "should reject: " << c.value;
+    }
+}
+
+TEST_F(SidecarTest, WidestAndNarrowestLegalDatesFormatToFixedWidth) {
+    // The bounds of what the fixed 20-byte buffer must hold. Both are 19 chars,
+    // so a legal date can never truncate.
+    write(dir / "m.xmp", R"(<rdf:Description exif:DateTimeOriginal="9999-12-31T23:59:60"/>)");
+    EXPECT_EQ(sidecar_date(dir / "m.xmp"), "9999:12:31 23:59:60");  // leap second allowed
+
+    write(dir / "n.xmp", R"(<rdf:Description exif:DateTimeOriginal="0001-01-01T00:00:00"/>)");
+    EXPECT_EQ(sidecar_date(dir / "n.xmp"), "0001:01:01 00:00:00");  // zero-padded to 4 digits
+}
+
 TEST_F(SidecarTest, MissingFileReturnsEmpty) { EXPECT_EQ(sidecar_date(dir / "nope.xmp"), ""); }
 
 // Verifies the seam main.cpp's date fallback chain relies on: a media file
