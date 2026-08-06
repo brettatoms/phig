@@ -1,4 +1,27 @@
 # SDD ledger — plan: /home/brett/devel/phig/docs/plans/2026-08-04-phig-gtk-m0.md
+
+> **CORRECTION 2026-08-06 — the frame-timing findings in this ledger are wrong.**
+> Kept unedited below as a historical record; do not cite its frame numbers.
+>
+> - **"over_16ms=199 of 210 frames (95%)"** (Task 7, ~line 381) is a measurement
+>   bug, not a finding. The harness counted a frame late at a flat 16.000 ms, but
+>   a correctly delivered 60 Hz frame is 16.667 ms, so every healthy frame was
+>   counted as a failure. Re-measured on the same code: ~3% of frames miss a whole
+>   refresh interval, and p50 sits on 16.666 ms. Fixed in `2962f7a`.
+> - **The 66.668/83.335 ms "exact 4x/5x vsync multiple" reasoning** (~line 437)
+>   is sound arithmetic pointing the wrong way: those are a handful of genuinely
+>   dropped frames, and exact multiples indicate *waiting* for the next interval,
+>   not a per-frame fixed cost. The conclusion that texture scaling at draw time
+>   was the cause is disproven — stubbing thumbnail loading out entirely leaves
+>   frame timing unchanged.
+> - **Multi-second worst frames** are the compositor throttling an unfocused or
+>   occluded window (Wayland stops frame callbacks, GTK's frame clock pauses).
+>   The main thread is not blocked during them.
+>
+> Net: no evidence the M0 grid misses 60 fps while visible and focused. Startup
+> (73.8 ms median) and the RSS numbers stand. See `plans/037-thumbnail-sizing-zoom.md`
+> and `gtk/README.md` for the corrected picture.
+
 SPANS TWO REPOS:
   ~/devel/phig/phig      — branch phig-pc-for-clients (from master 20c7ad4). Only Task 1 touches it (phig.pc).
   ~/devel/phig/phig-gtk  — NEW repo, created in Task 1. All other tasks live here.

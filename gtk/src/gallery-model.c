@@ -10,8 +10,10 @@
  * rounded up to an odd budget so eviction has a clear least-recently-used
  * end. Measured at 1, 2, and 4 against the full 29,953-row scroll
  * (task-7-report.md): all three produce the same frame timings and
- * comparable RSS, because main-thread texture/placeholder work dominates,
- * not page-fetch latency. 2 is kept as a starting point that measured no
+ * comparable RSS. The original explanation — that main-thread texture and
+ * placeholder work dominates — was disproven on 2026-08-06: stubbing thumbnail
+ * loading out entirely leaves frame timing unchanged, so page-fetch radius was
+ * never going to move it either. 2 is kept as a starting point that measured no
  * worse than the alternatives. */
 #define PHIG_PAGE_RADIUS 2
 #define PHIG_MAX_RESIDENT_PAGES (2 * PHIG_PAGE_RADIUS + 1)
