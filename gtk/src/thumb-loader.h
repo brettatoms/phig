@@ -54,10 +54,18 @@ void thumb_loader_shutdown(ThumbLoader* self);
  * (PhigImageRow), so passing it here avoids a second query to reverse it
  * from the sha.
  *
- * Asynchronous and cancellable. `max_dim` is the largest edge the caller can
- * use; the backend ignores it because the cache holds one size, but it is in
- * the signature so a later backend that generates at a requested size — in
- * process or in a phig-decode subprocess — needs no call-site change.
+ * Asynchronous and cancellable, except on a texture-cache hit: an already-cached
+ * (sha256, max_dim) texture is delivered synchronously before returning, so `cb`
+ * may run inside this call. That avoids a worker round-trip plus a redundant
+ * decode on every rebind, which matters because zoom re-requests every visible
+ * cell at a new size.
+ *
+ * `max_dim` is the largest edge in PHYSICAL pixels (cell size times the scale
+ * factor). The thumbnail is decoded to that size on a worker and cached under
+ * (sha256, max_dim), so requests at different sizes do not evict or alias each
+ * other. Pass 0 for the cache's native size, unscaled. Callers should quantise
+ * the value rather than passing raw pixel sizes, or the cache grows a generation
+ * per distinct size.
  *
  * On a cache miss this generates the thumbnail via phig_thumb_generate before
  * replying, so it is far slower than a hit — hundreds of milliseconds versus

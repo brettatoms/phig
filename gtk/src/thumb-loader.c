@@ -24,6 +24,7 @@ typedef struct {
     ThumbLoader* loader;
     int64_t image_id;
     char sha256[65];
+    guint32 max_dim; /* 0 = load the cache's native size unscaled */
     GCancellable* cancellable; /* reffed, or NULL */
     ThumbCallback cb;
     gpointer user_data;
@@ -48,13 +49,27 @@ static void thumb_request_free(ThumbRequest* req) {
 /* One cached texture plus its LRU linkage. entries owns the GList node; the
  * hash table and the LRU list both index the same entries, neither owns the
  * texture exclusively — dropping an entry always goes through
- * thumb_cache_entry_free so the byte total and the texture ref stay in sync. */
+ * thumb_cache_entry_free so the byte total and the texture ref stay in sync.
+ *
+ * Keyed by "<sha256>@<size>", not sha256 alone: the same image is cached at
+ * whatever sizes the grid has asked for, so a zoom that changes the cell size
+ * cannot be served a stale texture built for the previous size. `key` owns the
+ * string; `size` is kept for readability and eviction decisions. */
 typedef struct {
-    char* sha256;
+    char* key;
+    char sha256[65];
+    guint32 size;
     GdkTexture* texture;
     gsize bytes;
     GList* lru_link; /* node in loader->lru, ->data == this entry */
 } ThumbCacheEntry;
+
+/* Cache key for one (image, requested size) pair. Size 0 means "the cache's
+ * native size, unscaled" and gets its own key rather than aliasing any
+ * particular pixel size. */
+static char* thumb_cache_key(const char* sha256, guint32 size) {
+    return g_strdup_printf("%s@%u", sha256, size);
+}
 
 struct _ThumbLoader {
     GObject parent_instance;
@@ -66,7 +81,7 @@ struct _ThumbLoader {
     guint n_threads;
 
     GMutex cache_lock;
-    GHashTable* cache;   /* sha256 -> ThumbCacheEntry*, owns the entry */
+    GHashTable* cache;   /* "<sha256>@<size>" -> ThumbCacheEntry*, owns the entry */
     GQueue lru;          /* front = least recently used; holds ThumbCacheEntry*, not owned here */
     gsize cache_bytes;
 
@@ -88,7 +103,7 @@ struct _ThumbLoader {
 G_DEFINE_FINAL_TYPE(ThumbLoader, thumb_loader, G_TYPE_OBJECT)
 
 static void thumb_cache_entry_free(ThumbCacheEntry* entry) {
-    g_free(entry->sha256);
+    g_free(entry->key);
     g_object_unref(entry->texture);
     g_free(entry);
 }
@@ -98,21 +113,23 @@ static void thumb_loader_evict_locked(ThumbLoader* self) {
     while (self->cache_bytes > self->cache_bytes_budget && !g_queue_is_empty(&self->lru)) {
         ThumbCacheEntry* victim = g_queue_pop_head(&self->lru);
         self->cache_bytes -= victim->bytes;
-        g_hash_table_remove(self->cache, victim->sha256); /* frees victim via GDestroyNotify */
+        g_hash_table_remove(self->cache, victim->key); /* frees victim via GDestroyNotify */
     }
 }
 
 /* Inserts a freshly loaded texture into the cache, taking ownership of the
  * reference passed in. Returns a new ref for the caller to deliver, since the
  * cache's own ref may be evicted (and dropped) before the callback runs. */
-static GdkTexture* thumb_loader_cache_insert(ThumbLoader* self, const char* sha256,
+static GdkTexture* thumb_loader_cache_insert(ThumbLoader* self, const char* sha256, guint32 size,
                                               GdkTexture* texture) {
     g_mutex_lock(&self->cache_lock);
 
-    ThumbCacheEntry* existing = g_hash_table_lookup(self->cache, sha256);
+    char* key = thumb_cache_key(sha256, size);
+    ThumbCacheEntry* existing = g_hash_table_lookup(self->cache, key);
     if (existing != NULL) {
-        /* Already cached by a concurrent request for the same sha; keep the
-         * existing entry, drop the one just loaded, and just touch the LRU. */
+        /* Already cached by a concurrent request for the same sha and size;
+         * keep the existing entry, drop the one just loaded, touch the LRU. */
+        g_free(key);
         g_object_unref(texture);
         g_queue_unlink(&self->lru, existing->lru_link);
         g_queue_push_tail_link(&self->lru, existing->lru_link);
@@ -122,11 +139,13 @@ static GdkTexture* thumb_loader_cache_insert(ThumbLoader* self, const char* sha2
     }
 
     ThumbCacheEntry* entry = g_new0(ThumbCacheEntry, 1);
-    entry->sha256 = g_strdup(sha256);
+    entry->key = key; /* takes ownership */
+    g_strlcpy(entry->sha256, sha256, sizeof(entry->sha256));
+    entry->size = size;
     entry->texture = texture; /* takes ownership of the ref passed in */
     entry->bytes = (gsize)gdk_texture_get_width(texture) * (gsize)gdk_texture_get_height(texture) * 4;
 
-    g_hash_table_insert(self->cache, entry->sha256, entry);
+    g_hash_table_insert(self->cache, entry->key, entry);
     g_queue_push_tail(&self->lru, entry);
     entry->lru_link = self->lru.tail;
     self->cache_bytes += entry->bytes;
@@ -166,7 +185,8 @@ static gboolean thumb_loader_deliver(gpointer user_data) {
         return G_SOURCE_REMOVE;
 
     if (req->result == THUMB_OK) {
-        GdkTexture* cached = thumb_loader_cache_insert(loader, req->sha256, req->texture);
+        GdkTexture* cached =
+            thumb_loader_cache_insert(loader, req->sha256, req->max_dim, req->texture);
         req->texture = NULL; /* ownership moved into thumb_loader_cache_insert */
         req->cb(THUMB_OK, cached, req->user_data);
         g_object_unref(cached);
@@ -263,7 +283,37 @@ static gpointer thumb_loader_worker(gpointer data) {
             req->result = THUMB_MISS;
         } else {
             GError* error = NULL;
-            GdkTexture* texture = gdk_texture_new_from_filename(path, &error);
+            GdkTexture* texture = NULL;
+            /* Decode straight to the requested display size when the caller
+             * asked for one smaller than the cache's 512px: the scale is paid
+             * once per (sha, size) here on a worker rather than by the GPU on
+             * every frame, and the resident texture shrinks with the square of
+             * the size, so the byte budget holds proportionally more of them. */
+            if (req->max_dim > 0) {
+                /* Decode straight to the requested size: scaling here costs one
+                 * pass per (sha, size) on a worker instead of leaving the GPU to
+                 * downscale a 512px texture into a smaller cell, and the smaller
+                 * texture is what makes the byte budget hold proportionally more
+                 * of them. gdk_texture_downscale does not exist in GTK 4.22, and
+                 * gdk_texture_new_for_pixbuf is deprecated, so go via
+                 * GdkMemoryTexture over the pixbuf's own buffer. */
+                GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file_at_size(
+                    path, (int)req->max_dim, (int)req->max_dim, &error);
+                if (pixbuf != NULL) {
+                    GBytes* bytes = g_bytes_new(gdk_pixbuf_get_pixels(pixbuf),
+                                                (gsize)gdk_pixbuf_get_rowstride(pixbuf) *
+                                                    (gsize)gdk_pixbuf_get_height(pixbuf));
+                    texture = GDK_TEXTURE(gdk_memory_texture_new(
+                        gdk_pixbuf_get_width(pixbuf), gdk_pixbuf_get_height(pixbuf),
+                        gdk_pixbuf_get_has_alpha(pixbuf) ? GDK_MEMORY_R8G8B8A8
+                                                         : GDK_MEMORY_R8G8B8,
+                        bytes, (gsize)gdk_pixbuf_get_rowstride(pixbuf)));
+                    g_bytes_unref(bytes);
+                    g_object_unref(pixbuf);
+                }
+            } else {
+                texture = gdk_texture_new_from_filename(path, &error);
+            }
             if (texture == NULL) {
                 g_warning("thumb loader: failed to load %s: %s", path,
                           error ? error->message : "unknown error");
@@ -383,17 +433,45 @@ ThumbLoader* thumb_loader_new(phig_ctx* ctx, guint n_threads, gsize cache_bytes)
     return self;
 }
 
+/* Returns a ref to an already-cached texture for (sha256, size), or NULL.
+ * Touches the LRU on a hit. */
+static GdkTexture* thumb_loader_cache_probe(ThumbLoader* self, const char* sha256, guint32 size) {
+    char* key = thumb_cache_key(sha256, size);
+    g_mutex_lock(&self->cache_lock);
+    ThumbCacheEntry* entry = g_hash_table_lookup(self->cache, key);
+    GdkTexture* ref = NULL;
+    if (entry != NULL) {
+        g_queue_unlink(&self->lru, entry->lru_link);
+        g_queue_push_tail_link(&self->lru, entry->lru_link);
+        ref = g_object_ref(entry->texture);
+    }
+    g_mutex_unlock(&self->cache_lock);
+    g_free(key);
+    return ref;
+}
+
 void thumb_loader_request(ThumbLoader* self, int64_t image_id, const char* sha256,
                            guint32 max_dim, GCancellable* cancellable, ThumbCallback cb,
                            gpointer user_data) {
-    (void)max_dim; /* the backend serves one fixed cache size; see header. */
-
     if (cancellable != NULL && g_cancellable_is_cancelled(cancellable))
         return; /* never dispatched, so cb must not run: matches the header's contract */
+
+    /* Probe before dispatching: without this, a rebind onto an already-cached
+     * texture still pays a phig_thumb_lookup plus a file decode on a worker
+     * (~0.5ms) before the cache is consulted in thumb_loader_deliver. Matters
+     * more now that zoom re-requests every visible cell at a new size and the
+     * previous size may still be resident. */
+    GdkTexture* cached = thumb_loader_cache_probe(self, sha256, max_dim);
+    if (cached != NULL) {
+        cb(THUMB_OK, cached, user_data);
+        g_object_unref(cached);
+        return;
+    }
 
     ThumbRequest* req = g_new0(ThumbRequest, 1);
     req->loader = self;
     req->image_id = image_id;
+    req->max_dim = max_dim;
     g_strlcpy(req->sha256, sha256, sizeof(req->sha256));
     req->cancellable = cancellable != NULL ? g_object_ref(cancellable) : NULL;
     req->cb = cb;
