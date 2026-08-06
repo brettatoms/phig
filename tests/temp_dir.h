@@ -25,5 +25,12 @@ inline std::filesystem::path make_temp_dir(const std::string& label,
     auto base = root.empty() ? std::filesystem::temp_directory_path() : root;
     auto dir = base / ("phig-" + label + "-" + unique);
     std::filesystem::create_directories(dir);
-    return dir;
+    // Canonical, so a fixture path matches what production code computes.
+    // Engines canonicalize before comparing (e.g. ScanEngine::run_reconcile
+    // builds its prefix with fs::canonical), and on macOS the temp root is
+    // under /var, a symlink to /private/var — an uncanonical fixture path then
+    // never matches the stored rows and the engine silently finds nothing.
+    std::error_code ec;
+    auto canonical = std::filesystem::canonical(dir, ec);
+    return ec ? dir : canonical;
 }

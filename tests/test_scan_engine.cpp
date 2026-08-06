@@ -19,6 +19,7 @@
 #include "progress_queue.h"
 #include "scan_engine.h"
 #include "scanner.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -29,10 +30,10 @@ struct ScratchCollection {
     std::string db_path;
 
     explicit ScratchCollection(int n) {
-        dir = fs::temp_directory_path() / ("phig_scan_engine_" + std::to_string(::getpid()) + "_" +
-                                           std::to_string(reinterpret_cast<uintptr_t>(this)));
-        fs::remove_all(dir);
-        fs::create_directories(dir);
+        // make_temp_dir, not fs::temp_directory_path() directly: it returns a
+        // canonical path, which ScanEngine's fs::canonical-built prefix has to
+        // match. See ReconcileOrderScratch below for the macOS symlink detail.
+        dir = make_temp_dir("scan-engine");
         db_path = (dir / "phig.db").string();
         for (int i = 0; i < n; ++i) {
             fs::copy_file("tests/data/test_red.mov", dir / ("v" + std::to_string(i) + ".mov"));
@@ -509,10 +510,12 @@ struct ReconcileOrderScratch {
     bool had_orig_state;
 
     ReconcileOrderScratch() {
-        dir = fs::temp_directory_path() / ("phig_reconcile_order_" + std::to_string(::getpid()) +
-                                           "_" + std::to_string(reinterpret_cast<uintptr_t>(this)));
-        fs::remove_all(dir);
-        fs::create_directories(dir);
+        // Via make_temp_dir, not fs::temp_directory_path() directly: the helper
+        // returns a canonical path, and ScanEngine::run_reconcile builds its
+        // prefix with fs::canonical. On macOS the temp root is under /var, a
+        // symlink to /private/var, so a raw path never matches the stored rows
+        // and reconcile silently finds nothing to do.
+        dir = make_temp_dir("reconcile-order");
 
         const char* xdg = std::getenv("XDG_STATE_HOME");
         had_orig_state = xdg != nullptr;

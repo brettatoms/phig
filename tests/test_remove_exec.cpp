@@ -2,6 +2,9 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +23,25 @@
 #include "types.h"
 
 namespace fs = std::filesystem;
+
+// Directory holding the running test binary. /proc/self/exe exists only on
+// Linux; macOS needs _NSGetExecutablePath. Returns an empty path if neither
+// works, so callers fall back to a relative build path.
+static fs::path test_binary_dir() {
+    std::error_code ec;
+#if defined(__APPLE__)
+    char buf[4096];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) {
+        fs::path p = fs::canonical(buf, ec);
+        if (!ec) return p.parent_path();
+    }
+#else
+    fs::path p = fs::canonical("/proc/self/exe", ec);
+    if (!ec) return p.parent_path();
+#endif
+    return {};
+}
 
 class RemoveExecTest : public ::testing::Test {
    protected:
@@ -347,8 +369,7 @@ TEST_F(RemoveExecTest, ConfirmCallbackBroadRemovalWarningTextIsExact) {
 // isn't linked into phig-tests, so nothing above exercises it. Invoke the
 // built `phig` binary as a subprocess to pin that the guard is still there.
 TEST_F(RemoveExecTest, CliRefusesNonInteractiveConfirmationEvenWithPipedYes) {
-    fs::path exe_dir = fs::canonical("/proc/self/exe").parent_path();
-    fs::path phig_bin = exe_dir / "phig";
+    fs::path phig_bin = test_binary_dir() / "phig";
     if (!fs::exists(phig_bin)) phig_bin = "./build/phig";
     if (!fs::exists(phig_bin)) {
         GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
