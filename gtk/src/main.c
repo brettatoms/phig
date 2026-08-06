@@ -99,6 +99,7 @@ typedef struct {
     guint timeout_id;
     double step; /* adjustment units per timeout tick */
     gboolean returning; /* sweeping back down after reaching upper bound */
+    gint64 refresh_interval_us; /* from the frame clock; 0 until first sampled */
 } PhigMeasureState;
 
 static void phig_measure_state_free(PhigMeasureState* state) {
@@ -110,6 +111,11 @@ static gboolean phig_measure_tick(GtkWidget* widget, GdkFrameClock* clock, gpoin
     (void)widget;
     PhigMeasureState* state = user_data;
     gint64 now_us = gdk_frame_clock_get_frame_time(clock);
+    if (state->refresh_interval_us == 0) {
+        gint64 interval = 0, presentation = 0;
+        gdk_frame_clock_get_refresh_info(clock, now_us, &interval, &presentation);
+        state->refresh_interval_us = interval;
+    }
     if (state->have_last_frame) {
         gint64 delta = now_us - state->last_frame_time_us;
         g_array_append_val(state->frame_deltas_us, delta);
@@ -121,19 +127,52 @@ static gboolean phig_measure_tick(GtkWidget* widget, GdkFrameClock* clock, gpoin
     return G_SOURCE_CONTINUE;
 }
 
+static int phig_measure_cmp_us(const void* a, const void* b) {
+    gint64 x = *(const gint64*)a, y = *(const gint64*)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/* A frame is only late once it misses a whole refresh interval: a correctly
+ * delivered 60 Hz frame is 16.667 ms, so counting frames over a flat 16.000 ms
+ * marks every healthy frame as a failure. That bug is what produced M0's
+ * "95% of frames over 16 ms" — the real figure at the time was ~5% dropped.
+ * The interval comes from the frame clock, so a 120 Hz or 144 Hz display
+ * measures against its own budget rather than a hardcoded 60 Hz.
+ *
+ * Percentiles are reported alongside the count because a single ratio hid that
+ * bug for a whole milestone: a p50 sitting exactly on the refresh interval is
+ * the tell that the grid is healthy and the threshold is wrong. */
 static void phig_measure_report(PhigMeasureState* state) {
     GArray* deltas = state->frame_deltas_us;
-    gint64 worst_us = 0;
-    guint over_16ms = 0;
-    for (guint i = 0; i < deltas->len; i++) {
-        gint64 d = g_array_index(deltas, gint64, i);
-        if (d > worst_us)
-            worst_us = d;
-        if (d > 16000)
-            over_16ms++;
+    if (deltas->len == 0) {
+        g_printerr("PHIG_MEASURE scroll frames=0\n");
+        return;
     }
-    g_printerr("PHIG_MEASURE scroll frames=%u worst_frame_ms=%.3f over_16ms=%u\n", deltas->len,
-               worst_us / 1000.0, over_16ms);
+
+    gint64 interval_us = state->refresh_interval_us > 0 ? state->refresh_interval_us : 16667;
+
+    /* Late = missed the next vsync deadline. A small tolerance keeps jitter in
+     * the timestamp itself from reading as a drop. */
+    const gint64 tolerance_us = interval_us / 10;
+    guint late = 0;
+    for (guint i = 0; i < deltas->len; i++) {
+        if (g_array_index(deltas, gint64, i) > interval_us + tolerance_us)
+            late++;
+    }
+
+    GArray* sorted = g_array_sized_new(FALSE, FALSE, sizeof(gint64), deltas->len);
+    g_array_append_vals(sorted, deltas->data, deltas->len);
+    qsort(sorted->data, sorted->len, sizeof(gint64), phig_measure_cmp_us);
+    gint64 p50 = g_array_index(sorted, gint64, sorted->len / 2);
+    gint64 p90 = g_array_index(sorted, gint64, (guint)(sorted->len * 0.90));
+    gint64 p99 = g_array_index(sorted, gint64, (guint)(sorted->len * 0.99));
+    gint64 worst = g_array_index(sorted, gint64, sorted->len - 1);
+    g_array_free(sorted, TRUE);
+
+    g_printerr("PHIG_MEASURE scroll frames=%u refresh_ms=%.3f p50_ms=%.3f p90_ms=%.3f "
+               "p99_ms=%.3f worst_ms=%.3f late=%u (%.1f%%)\n",
+               deltas->len, interval_us / 1000.0, p50 / 1000.0, p90 / 1000.0, p99 / 1000.0,
+               worst / 1000.0, late, 100.0 * late / deltas->len);
 }
 
 /* Advances the vertical adjustment one step per timeout firing: sweeps from
