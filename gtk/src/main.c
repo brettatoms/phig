@@ -13,16 +13,27 @@
  * size. Zoom picks the column count; resizing keeps the count and changes the
  * cell size.
  *
- * The initial column count is derived from the window width rather than being a
- * fixed number: a fixed count gives wildly different cell sizes across window
- * sizes (5 columns is 256px cells at 1280px wide but 512px at 2560px). Aim for
- * PHIG_CELL_TARGET_PX and round to whole columns. The bounds stop the grid
- * reflowing to unusably small cells on a wide monitor (max) or to cells the
- * thumbnail cache cannot serve sharply (min is additionally clamped at runtime —
- * see phig_min_columns_for_width). */
+ * Zoom sets a target cell size, and the column count is derived from it and the
+ * viewport width. Resizing the window therefore reflows the columns and keeps
+ * thumbnails about the size the user picked, rather than stretching them. The
+ * derived cell size is then whatever divides the width exactly, so it lands
+ * within half a column of the target.
+ *
+ * The bounds stop the grid reflowing to unusably small cells on a wide monitor
+ * (max) or to cells the thumbnail cache cannot serve sharply (min is
+ * additionally clamped at runtime — see phig_min_columns_for_width). */
 #define PHIG_CELL_TARGET_PX 200
-#define PHIG_COLUMNS_MIN 2
-#define PHIG_COLUMNS_MAX 16
+
+/* Zoom range, as logical cell sizes. The steps are multiplicative so each zoom
+ * feels like the same amount of change at every size. The top of the range is
+ * bounded by what the thumbnail cache can serve sharply at the current scale
+ * factor (see phig_min_columns_for_width), not by PHIG_CELL_MAX_PX alone. */
+#define PHIG_CELL_MIN_PX 80
+#define PHIG_CELL_MAX_PX 480
+#define PHIG_ZOOM_STEP 1.25
+
+#define PHIG_COLUMNS_MIN 1
+#define PHIG_COLUMNS_MAX 24
 
 /* Largest thumbnail the phig cache holds (longest edge, core/thumbs.cpp
  * THUMB_SIZE). A cell needing more physical pixels than this would be upscaled
@@ -92,12 +103,12 @@ typedef struct {
     /* Zoom state. `columns` is the resting column count; `pinch_columns` tracks
      * the fractional count during a live pinch so the snap decision can see
      * which direction the gesture is going. */
-    guint columns;
-    gboolean columns_chosen; /* FALSE until a real viewport width picked the initial count */
+    guint target_cell_px;    /* what zoom sets; held constant across window resizes */
+    guint columns;           /* derived from target_cell_px and the viewport width */
     guint relayout_id;       /* pending phig_relayout_idle, 0 if none */
     gboolean relayout_needs_rebind; /* geometry changed: re-request textures at the new size */
-    double pinch_columns;
-    guint pinch_base_columns; /* columns when the current gesture began */
+    double pinch_cell;      /* live target size during a pinch */
+    guint pinch_base_cell;  /* target size when the gesture began */
 } PhigApp;
 
 /* Shutdown order matters: loader workers must stop touching ctx before ctx is
@@ -376,13 +387,13 @@ static guint phig_min_columns_for_width(int viewport_width, int scale) {
     return needed > PHIG_COLUMNS_MIN ? needed : PHIG_COLUMNS_MIN;
 }
 
-/* Column count that puts the cell size closest to PHIG_CELL_TARGET_PX for this
- * viewport width. Used for the initial layout and whenever the width is first
- * known. */
-static guint phig_default_columns_for_width(int viewport_width) {
-    if (viewport_width <= 0)
+/* Column count that puts the derived cell size closest to `target_px` for this
+ * viewport width. This is the whole resize policy: the target is held and the
+ * count moves, so thumbnails keep their size and the grid reflows instead. */
+static guint phig_columns_for_target(int viewport_width, guint target_px) {
+    if (viewport_width <= 0 || target_px == 0)
         return 1; /* clamped once a real width arrives */
-    guint columns = (guint)((viewport_width + PHIG_CELL_TARGET_PX / 2) / PHIG_CELL_TARGET_PX);
+    guint columns = (guint)(((guint)viewport_width + target_px / 2) / target_px);
     return columns > 0 ? columns : 1;
 }
 
@@ -426,13 +437,21 @@ static void phig_apply_columns(PhigApp* app) {
     gtk_grid_view_set_max_columns(app->grid, app->columns);
 }
 
-static void phig_set_columns(PhigApp* app, guint columns) {
-    guint clamped = phig_clamp_columns(app, columns);
-    if (clamped == app->columns)
+static void phig_queue_relayout(PhigApp* app);
+
+/* Zoom entry point: sets the size thumbnails should be, then re-derives the
+ * column count. Everything else (resize, scale change) goes through
+ * phig_queue_relayout, which re-derives from the unchanged target. */
+static void phig_set_target_cell(PhigApp* app, guint target_px) {
+    guint lo = PHIG_CELL_MIN_PX, hi = PHIG_CELL_MAX_PX;
+    if (target_px < lo)
+        target_px = lo;
+    if (target_px > hi)
+        target_px = hi;
+    if (target_px == app->target_cell_px)
         return;
-    app->columns = clamped;
-    app->relayout_needs_rebind = TRUE; /* cell size changed: textures are now the wrong size */
-    phig_apply_columns(app);
+    app->target_cell_px = target_px;
+    phig_queue_relayout(app);
 }
 
 /* Snap a fractional column count to a whole one, with direction-dependent
@@ -488,20 +507,17 @@ static gboolean phig_relayout_idle(gpointer user_data) {
     if (width <= 0)
         return G_SOURCE_REMOVE;
 
-    if (!app->columns_chosen) {
-        /* First real width: choose the count that lands nearest the target cell
-         * size, rather than keeping the provisional value. Set the field
-         * directly — phig_set_columns would clamp against the provisional
-         * count and can no-op if the clamp happens to agree with it. */
-        app->columns_chosen = TRUE;
-        app->columns = phig_clamp_columns(app, phig_default_columns_for_width(width));
+    /* Re-derive the column count from the target cell size. A resize changes the
+     * count and keeps thumbnails at their chosen size; zoom changes the target
+     * and is what makes thumbnails bigger or smaller. Assigning directly rather
+     * than via phig_set_columns because that clamps against the current count
+     * and no-ops when the clamp agrees with it, which would strand the
+     * provisional value on the first pass. */
+    guint derived = phig_clamp_columns(app, phig_columns_for_target(width, app->target_cell_px));
+    if (derived != app->columns) {
+        app->columns = derived;
         app->relayout_needs_rebind = TRUE;
         phig_apply_columns(app);
-    } else {
-        /* Width changed, so the derived cell size changed even though the column
-         * count did not. Re-clamp too: a narrower window can push the sharpness
-         * floor above the current count. */
-        phig_set_columns(app, app->columns);
     }
     phig_resize_visible_cells(app);
     /* Cells bound before this point requested a texture for the previous cell
@@ -535,12 +551,9 @@ static void on_grid_width_changed(GObject* object, GParamSpec* pspec, gpointer u
 static void on_scale_factor_changed(GObject* object, GParamSpec* pspec, gpointer user_data) {
     (void)object;
     (void)pspec;
-    PhigApp* app = user_data;
     /* Moving between monitors changes how many physical pixels a cell needs, so
-     * the clamp and the requested texture size both change. Existing cells keep
-     * their current texture until they rebind. */
-    phig_set_columns(app, app->columns);
-    phig_resize_visible_cells(app);
+     * the sharpness clamp and the requested texture size both change. */
+    phig_queue_relayout(user_data);
 }
 
 /* Trackpad pinch. The gesture is continuous but the resting state is always a
@@ -549,8 +562,8 @@ static void on_zoom_begin(GtkGesture* gesture, GdkEventSequence* sequence, gpoin
     (void)gesture;
     (void)sequence;
     PhigApp* app = user_data;
-    app->pinch_base_columns = app->columns;
-    app->pinch_columns = (double)app->columns;
+    app->pinch_base_cell = app->target_cell_px;
+    app->pinch_cell = (double)app->target_cell_px;
 }
 
 static void on_zoom_scale_changed(GtkGestureZoom* gesture, double scale, gpointer user_data) {
@@ -558,17 +571,23 @@ static void on_zoom_scale_changed(GtkGestureZoom* gesture, double scale, gpointe
     PhigApp* app = user_data;
     if (scale <= 0.0)
         return;
-    /* Pinching out (scale > 1) magnifies, which means fewer, bigger cells. */
-    app->pinch_columns = (double)app->pinch_base_columns / scale;
+    /* Pinching out (scale > 1) magnifies, i.e. bigger thumbnails. */
+    app->pinch_cell = (double)app->pinch_base_cell * scale;
 }
 
+/* Snap on release so the resting state is a whole number of columns filling the
+ * width, then adopt the cell size that count implies as the new target. Uses the
+ * hysteresis rule so a pinch resting on a boundary does not oscillate. */
 static void on_zoom_end(GtkGesture* gesture, GdkEventSequence* sequence, gpointer user_data) {
     (void)gesture;
     (void)sequence;
     PhigApp* app = user_data;
-    guint snapped = phig_snap_columns(app->pinch_columns, app->columns);
-    phig_set_columns(app, snapped);
-    phig_resize_visible_cells(app);
+    int width = phig_viewport_width(app);
+    if (width <= 0 || app->pinch_cell <= 0.0)
+        return;
+    double fractional = (double)width / app->pinch_cell;
+    guint snapped = phig_clamp_columns(app, phig_snap_columns(fractional, app->columns));
+    phig_set_target_cell(app, phig_cell_size_for(width, snapped));
 }
 
 /* Ctrl+scroll, for mice. Discrete by nature, so it steps one column per notch
@@ -583,12 +602,10 @@ static gboolean on_scroll(GtkEventControllerScroll* controller, double dx, doubl
         return GDK_EVENT_PROPAGATE; /* plain scroll must still scroll the grid */
     if (dy == 0.0)
         return GDK_EVENT_STOP;
-    /* Scrolling up (dy < 0) zooms in: fewer columns. */
-    guint next = dy < 0.0 ? app->columns - 1 : app->columns + 1;
-    if (dy < 0.0 && app->columns == 1)
-        next = 1;
-    phig_set_columns(app, next);
-    phig_resize_visible_cells(app);
+    /* Scrolling up (dy < 0) zooms in: bigger thumbnails. */
+    double next = dy < 0.0 ? app->target_cell_px * PHIG_ZOOM_STEP
+                           : app->target_cell_px / PHIG_ZOOM_STEP;
+    phig_set_target_cell(app, (guint)(next + 0.5));
     return GDK_EVENT_STOP;
 }
 
@@ -873,8 +890,8 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
     app->grid = GTK_GRID_VIEW(gtk_grid_view_new(NULL, NULL));
     /* Provisional until the first width notification; phig_default_columns_for_width
      * cannot run before the scroller has been allocated. */
-    app->columns = 1;
-    app->columns_chosen = FALSE;
+    app->columns = 1; /* provisional until the first real viewport width */
+    app->target_cell_px = PHIG_CELL_TARGET_PX;
     /* min == max pins the column count: the grid must lay out exactly the count
      * zoom chose, so cells divide the width instead of GridView picking its own
      * count from the cells' requested size. */
