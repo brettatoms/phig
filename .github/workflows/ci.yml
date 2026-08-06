@@ -66,11 +66,25 @@ jobs:
             libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
             libgtest-dev libspdlog-dev libraw-dev
-          # Pin clang tools to the dev environment's version (Nix clang 21) so
-          # formatting/analysis is version-stable across machines and CI.
+          # Pin clang tools to the version mise pins, so formatting/analysis is
+          # version-stable across machines and CI.
           pipx install clang-format==21.1.8
           pipx install clang-tidy==21.1.6
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The pin is only real if PATH actually resolves to it. Ubuntu ships its
+      # own clang-format/clang-tidy, and a silently-shadowed pin means the gate
+      # reports different findings than a local run — which is what happened
+      # before: run-clang-tidy resolved clang-tidy-18 and reported 0 findings
+      # where the pinned 21.1.6 reports 45.
+      - name: Verify pinned lint tool versions
+        run: |
+          for tool_ver in clang-format:21.1.8 clang-tidy:21.1.6; do
+            tool="${tool_ver%:*}"; want="${tool_ver#*:}"
+            got="$("$tool" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+            echo "$tool: want $want, got $got ($(command -v "$tool"))"
+            [ "$got" = "$want" ] || { echo "::error::$tool is $got, expected $want"; exit 1; }
+          done
 
       - name: clang-format
         run: |

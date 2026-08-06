@@ -1,3 +1,22 @@
+# Disabled checks and why:
+#   bugprone-easily-swappable-parameters  — noisy by design
+#   bugprone-branch-clone                 — noisy on intentional parallel branches
+#   bugprone-narrowing-conversions        — too broad for this codebase
+#   bugprone-empty-catch                  — deliberate best-effort cleanup paths
+#   bugprone-exception-escape             — noisy on main/destructor analysis
+#   bugprone-unused-local-non-trivial-variable
+#       Broken liveness analysis: flags strings that are used on the very next
+#       line (in a lambda, a stream expression, or a ternary). Measured on
+#       clang-tidy 21.1.6: 44 findings, all false, none actionable.
+#   clang-analyzer-deadcode.DeadStores    — noisy
+#   performance-trivially-destructible
+#       Doesn't model pimpl: FaceDetector's ~FaceDetector must stay declared in
+#       faces.h and defined in faces.cpp where Impl is complete, so defaulting
+#       it at the first declaration would not compile.
+#
+# NOTE: `Checks:` below is a YAML folded scalar — a `#` inside it is literal
+# text, not a comment, and silently swallows the entries that follow it. Keep
+# rationale up here, never between the check names.
 Checks: >
   -*,
   bugprone-*,
@@ -6,8 +25,10 @@ Checks: >
   -bugprone-narrowing-conversions,
   -bugprone-empty-catch,
   -bugprone-exception-escape,
+  -bugprone-unused-local-non-trivial-variable,
   clang-analyzer-*,
   -clang-analyzer-deadcode.DeadStores,
-  performance-*
+  performance-*,
+  -performance-trivially-destructible
 WarningsAsErrors: '*'
 HeaderFilterRegex: '^(core|libphig|cli)/'
