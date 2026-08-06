@@ -54,12 +54,19 @@ TEST(FormatTime, EpochZeroFormatsAsUnixEpochInUtc) {
     auto path = make_temp_file();
     // Pin the exact output, not just its shape: a UTC->local-time regression
     // still produces a valid-looking 20-char ISO-8601 string, and that is the
-    // change that would make every tracked file look modified. The file
-    // clock's own default-constructed epoch is not the Unix epoch on this
-    // platform, so build the Unix epoch via system_clock and clock_cast it
-    // into file_time_type instead of relying on file_time_type{}.
+    // change that would make every tracked file look modified. The file clock's
+    // own default-constructed epoch is not the Unix epoch on every platform, so
+    // convert a known system_clock instant into file_time_type rather than
+    // relying on file_time_type{}.
+    //
+    // The conversion is the offset between the two clocks, sampled at the same
+    // moment — the inverse of what format_time itself does. std::chrono::
+    // clock_cast would express this directly but is absent from libc++, so it
+    // cannot be used here.
     auto sys_epoch = std::chrono::system_clock::from_time_t(0);
-    auto file_epoch = std::chrono::clock_cast<std::filesystem::file_time_type::clock>(sys_epoch);
+    auto file_now = std::filesystem::file_time_type::clock::now();
+    auto sys_now = std::chrono::system_clock::now();
+    auto file_epoch = file_now + (sys_epoch - sys_now);
     std::filesystem::last_write_time(path, file_epoch);
 
     EXPECT_EQ(format_time(std::filesystem::last_write_time(path)), "1970-01-01T00:00:00Z");
