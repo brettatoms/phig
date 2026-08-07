@@ -3,6 +3,7 @@
 #include <libraw/libraw.h>
 
 #include <filesystem>
+#include <memory>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -85,17 +86,22 @@ cv::Mat raw_decode(const std::string& raw_path) {
             return img;
         }
 
-        LibRaw ip;
-        if (ip.open_file(raw_path.c_str()) != LIBRAW_SUCCESS) {
+        // Heap, not stack: sizeof(LibRaw) is ~750 KB, and macOS gives secondary
+        // threads a 512 KB stack by default (Linux gives 8 MB). As a local this
+        // overflows the stack of any worker thread that decodes a RAW — a bus
+        // error before a single pixel is read, since the cost is the object
+        // itself and not the decode.
+        auto ip = std::make_unique<LibRaw>();
+        if (ip->open_file(raw_path.c_str()) != LIBRAW_SUCCESS) {
             return cv::Mat();
         }
 
-        img = try_embedded_preview(ip);
+        img = try_embedded_preview(*ip);
         if (!img.empty()) {
             return img;
         }
 
-        return try_full_decode(ip);
+        return try_full_decode(*ip);
     } catch (...) {
         return cv::Mat();
     }

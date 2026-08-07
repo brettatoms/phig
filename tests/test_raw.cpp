@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <libraw/libraw.h>
 
 #include <filesystem>
 #include <opencv2/core.hpp>
@@ -61,4 +62,22 @@ TEST_F(RawDecodeTest, NonExistentFileReturnsEmpty) {
     cv::Mat result;
     EXPECT_NO_THROW(result = raw_decode((fs::path(test_dir) / "missing.cr2").string()));
     EXPECT_TRUE(result.empty());
+}
+
+// raw_decode must not put LibRaw on the stack: sizeof(LibRaw) is ~750 KB and
+// macOS gives secondary threads a 512 KB stack by default, so a stack-local
+// instance overflows before decoding anything. This crashed
+// HasherTest.DecodeWarningNotMisattributedAcrossThreads with a bus error on
+// macOS CI while passing everywhere on Linux, whose threads get 8 MB.
+//
+// Asserting on the object's size rather than trying to overflow a stack: a
+// thread with a deliberately small stack would crash the whole test binary
+// rather than fail, which is exactly the failure mode being prevented.
+TEST(RawStack, LibRawIsTooLargeToLiveOnAThreadStack) {
+    // If this ever shrinks below a thread stack, the heap allocation in
+    // raw_decode is merely unnecessary rather than load-bearing — but it is
+    // currently ~750 KB against macOS's 512 KB, so it is load-bearing.
+    EXPECT_GT(sizeof(LibRaw), 512u * 1024u)
+        << "sizeof(LibRaw) = " << sizeof(LibRaw)
+        << "; if this is now small, revisit the comment in raw_decode";
 }
