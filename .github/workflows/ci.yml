@@ -49,7 +49,23 @@ jobs:
       # Runs both phig-tests and phig-perf-tests: gtest_discover_tests
       # registers each target's cases into the same ctest run, so this one
       # invocation gates on the perf suite too, not just the fast default one.
-      - name: Test
+      #
+      # OMP_NUM_THREADS=1 on macOS is a DIAGNOSTIC, not a settled setting:
+      # HasherTest.DecodeWarningNotMisattributedAcrossThreads dies with a bus
+      # error there and cannot be reproduced on Linux. Homebrew's OpenCV pulls
+      # in libomp, and that test drives 12 threads through cv::imread, each
+      # entering OpenMP regions. If pinning to one OpenMP thread clears it, the
+      # cause is that nesting and this should become a real fix rather than an
+      # env var; if it does not, the theory is eliminated. Linux deliberately
+      # keeps the default so it still exercises the real threading.
+      - name: Test (Linux)
+        if: runner.os == 'Linux'
+        run: ctest --test-dir build --output-on-failure --parallel
+
+      - name: Test (macOS)
+        if: runner.os == 'macOS'
+        env:
+          OMP_NUM_THREADS: 1
         run: ctest --test-dir build --output-on-failure --parallel
 
   lint:
