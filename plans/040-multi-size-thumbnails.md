@@ -88,20 +88,26 @@ bool generate_thumb(const std::string& image_path, const std::string& sha256, in
 Callers to update: `core/scan_engine.cpp` (5 sites), `core/thumbs_engine.cpp`
 (3), `libphig/thumbs.cpp` (5), `cli/main.cpp` (4).
 
-### ABI: change in place, bump to 2.0
+### ABI: change in place, and do not touch the version
 
 `phig_thumb_lookup` and `phig_thumb_generate` gain a size argument, changing
 their signatures. That is a break, and it costs nothing here: phig is
 pre-release, `libphig.so` is not installed or linked by anything outside this
 repo, and its only consumer is `gtk/`, updated in the same commit.
 
-So: change them in place, no `_sized` variant and no compatibility shim. Bump
-`PHIG_ABI_VERSION_MAJOR` to 2 as an honest signal, not because anything depends
-on it.
+So: change them in place, no `_sized` variant and no compatibility shim, and
+**leave `PHIG_ABI_VERSION_MAJOR` alone**.
 
-The versioned boundary means breaks are *expressible*, not that every change
-needs a migration story. Revisit that once something outside this repo links
-against libphig.
+A bump was tried first and reverted. The argument for it — "an honest signal" —
+does not survive the question *a signal to whom*: nothing outside this repo reads
+the number. The cost is real, though. `libphig/CMakeLists.txt` tracks
+`VERSION`/`SOVERSION` separately from the header, bumping only the header leaves
+a stale `libphig.so.<old>` on the library path, and an old implementation then
+loads silently — which is exactly what happened, writing the pre-migration flat
+cache layout until the stale artifact was found and deleted.
+
+Start versioning honestly the first time something outside this repo links
+against libphig. Until then the number is bookkeeping that can only drift.
 
 ### What phig decides vs what the client decides
 
@@ -113,7 +119,7 @@ texture for display — that is presentation.
 
 ## Decisions
 
-1. **ABI.** Change in place, bump to 2.0. See above.
+1. **ABI.** Change signatures in place; leave the version at 1.2. See above.
 2. **Migration.** Move the existing flat `thumbs/ab/<sha>.jpg` into
    `thumbs/512/ab/<sha>.jpg` on first run. They are all 512px, so it is a
    rename with no re-encode — seconds, and all 24,529 stay usable. Skipping it
@@ -158,10 +164,10 @@ Gate: `ctest --test-dir build --parallel` green, plus the real-run checks
 Implemented as designed. `THUMB_SIZE` is gone; `get_thumb_path`, `thumb_exists`
 and `generate_thumb` all take a size, and the cache is
 `thumbs/<size>/ab/<sha>.jpg`. `phig_thumb_lookup`/`phig_thumb_generate` gained
-the argument, so ABI is 2.0 — with `libphig/CMakeLists.txt`'s `VERSION`/
-`SOVERSION` bumped alongside the header, which is easy to miss: a stale
-`libphig.so.1` on the library path silently kept the old layout and rewrote flat
-directories until it was removed.
+the argument. The version stays at 1.2: a bump was tried and reverted (see the
+ABI section). The stale-shared-object trap it caused is worth remembering —
+`libphig.so.<old>` left on the library path silently kept the old layout and
+rewrote flat directories until it was deleted.
 
 Migration ran against the real cache: 24,529 thumbnails moved into `512/` in
 0.6s, byte-identical (938,210,582 bytes before and after), and a second run is a

@@ -34,8 +34,20 @@ extern "C" {
 #define PHIG_API __attribute__((visibility("default")))
 #endif
 
-#define PHIG_ABI_VERSION_MAJOR 2u
-#define PHIG_ABI_VERSION_MINOR 0u
+/* Pre-release: this version is deliberately NOT bumped for breaking changes.
+ * Nothing outside this repo links libphig — its only consumer is gtk/, built
+ * from the same tree — so a bump signals nothing to anybody and the number just
+ * drifts. Signatures change in place; callers change with them in the same
+ * commit.
+ *
+ * It still has to match libphig/CMakeLists.txt's VERSION/SOVERSION, which is the
+ * trap: leaving a stale libphig.so.N on the library path lets an old
+ * implementation load silently. tests/test_libphig_install guards exactly that.
+ *
+ * Start versioning honestly the first time something outside this repo links
+ * against libphig. */
+#define PHIG_ABI_VERSION_MAJOR 1u
+#define PHIG_ABI_VERSION_MINOR 2u
 
 /* Values are published ABI: append only, never renumber. */
 typedef enum {
