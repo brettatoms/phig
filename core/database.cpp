@@ -184,8 +184,17 @@ Database::Database(const std::string& path, bool read_only) {
 
     // Read-only callers must not create a database; read-write keeps the
     // historical create-if-missing behavior.
+    //
+    // SQLITE_OPEN_FULLMUTEX is explicit rather than inherited: libphig's header
+    // promises a phig_ctx may be called concurrently from several threads, and
+    // that ctx shares one connection. Without the flag the mode comes from how
+    // the system SQLite was compiled — serialized (THREADSAFE=1) gives a mutexed
+    // connection, but multi-thread (THREADSAFE=2) defaults to NOMUTEX, where
+    // sharing a connection is undefined and crashes rather than blocks. Asking
+    // for it means the promise does not depend on the packager's choice.
     const int flags =
-        read_only ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
+        (read_only ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)) |
+        SQLITE_OPEN_FULLMUTEX;
     int rc = sqlite3_open_v2(path.c_str(), &db_, flags, nullptr);
     if (rc != SQLITE_OK) {
         std::string err = sqlite3_errmsg(db_);
