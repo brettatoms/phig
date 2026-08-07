@@ -5,6 +5,7 @@ add_library(phig_abi SHARED
     records.cpp
     thumbs.cpp
     mutate.cpp
+    operations.cpp
     settings.cpp
 )
 set_target_properties(phig_abi PROPERTIES

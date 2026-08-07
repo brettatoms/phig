@@ -1265,6 +1265,17 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
                     std::cout << "Generating thumbnails for " << p.total << " images...\n";
                     break;
                 case ThumbsStage::FileDone:
+                    if (!p.warning.empty()) {
+                        std::cout << "\r\033[K" << std::flush;
+                        log_warn(p.warning);
+                    }
+                    if (!p.error.empty()) {
+                        // Clear the progress line, then log the warning. Both
+                        // happen on this thread with no progress print able to
+                        // land in between, so the warning cannot be overwritten.
+                        std::cout << "\r\033[K" << std::flush;
+                        log_warn(p.error);
+                    }
                     if (p.show_path) {
                         fs::path path(p.path);
                         std::string display =
@@ -1393,6 +1404,15 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
     }
 
     std::string subcmd = argv[2];
+    // `name` needs the lock for correctness, not just serialization: it reads a
+    // face id from find_closest_face and writes to it two statements later, and
+    // faces.id is INTEGER PRIMARY KEY without AUTOINCREMENT, so a rebuild that
+    // deletes and reinserts in that window puts a different face on the id. The
+    // lock excludes `face rebuild` here; it does NOT exclude libphig's faces
+    // operation, which takes no lock by design (plan 031). Plan 045 removes the
+    // reuse itself. `identify` needs no such window — its write re-checks the
+    // embedding — but still takes the lock so a rebuild does not fight it for
+    // SQLite's single writer for the whole run.
     std::unique_ptr<WriterLock> lock;
     if (subcmd == "name" || subcmd == "identify" || subcmd == "rebuild") {
         lock = acquire_writer_lock(no_wait);
@@ -1451,60 +1471,21 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         }
         std::string name = argv[3];
 
-        // Get the person's reference embeddings (all faces already named as this person)
-        auto people = db.list_people();
-        int64_t person_id = -1;
-        for (const auto& p : people) {
-            if (p.name == name) {
-                person_id = p.id;
-                break;
-            }
-        }
-        if (person_id < 0) {
+        std::cout << "Searching for \"" << name << "\"..." << std::flush;
+        IdentifyResult res = identify_person(db, name, 0.6f);
+        std::cout << "\r\033[K" << std::flush;
+        if (!res.person_found) {
             std::cerr << "Unknown person: " << name << "\n"
                       << "Use 'phig face name <image> <name>' first.\n";
             return 1;
         }
-
-        // Get all face embeddings for this person (as reference)
-        // Then search the entire DB for matching untagged faces
-        auto all_images = db.get_all_images();
-        std::cout << "Searching " << all_images.size() << " images for \"" << name << "\"...\n";
-
-        // Get reference embeddings from already-named faces
-        // We use the vec_faces table to find all faces near the named ones
-        auto named_paths = db.get_images_for_person(name);
-        if (named_paths.empty()) {
+        if (res.references == 0) {
             std::cerr << "No reference faces found for \"" << name << "\".\n"
                       << "Use 'phig face name <image> <name>' to provide a reference.\n";
             return 1;
         }
-
-        // Get embeddings of named faces
-        // For each named face, search for similar untagged faces
-        auto ref_rows = db.get_face_embeddings_for_person(person_id);
-        std::vector<std::array<float, 128>> ref_embeddings;
-        ref_embeddings.reserve(ref_rows.size());
-        for (const auto& row : ref_rows) {
-            ref_embeddings.push_back(row.embedding);
-        }
-
-        // Scan all untagged faces and check each against the reference embeddings.
-        size_t labeled = 0;
-        auto untagged_rows = db.get_unlabeled_face_embeddings();
-        for (const auto& row : untagged_rows) {
-            // Check against all reference embeddings
-            for (const auto& ref_emb : ref_embeddings) {
-                float dist = embedding_distance(ref_emb, row.embedding);
-                if (dist <= 0.6) {
-                    db.set_face_person(row.face_id, person_id);
-                    labeled++;
-                    break;
-                }
-            }
-        }
-
-        std::cout << "Labeled " << labeled << " additional faces as \"" << name << "\"\n";
+        std::cout << "Searched " << res.candidates << " unlabeled faces for \"" << name << "\"\n";
+        std::cout << "Labeled " << res.labeled << " additional faces as \"" << name << "\"\n";
         return 0;
 
     } else if (subcmd == "rebuild") {
@@ -1560,6 +1541,17 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
                               << " instances)...\n";
                     break;
                 case FacesStage::FileDone: {
+                    if (!p.warning.empty()) {
+                        std::cout << "\r\033[K" << std::flush;
+                        log_warn(p.warning);
+                    }
+                    if (!p.error.empty()) {
+                        // Clear the progress line, then log the warning. Both
+                        // happen on this thread with no progress print able to
+                        // land in between, so the warning cannot be overwritten.
+                        std::cout << "\r\033[K" << std::flush;
+                        log_warn(p.error);
+                    }
                     fs::path path(p.path);
                     std::string display =
                         (path.parent_path().filename() / path.filename()).string();
@@ -1586,6 +1578,9 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         }
 
         std::cout << "\n\nDone. " << result.faces_detected << " faces detected.\n";
+        if (result.errors > 0) {
+            std::cout << "  Errors: " << result.errors << " file(s) could not be read.\n";
+        }
         return 0;
 
     } else if (subcmd == "list") {

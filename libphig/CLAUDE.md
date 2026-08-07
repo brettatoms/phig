@@ -1,7 +1,7 @@
 # libphig/
 
 The versioned C ABI (`libphig.so`) — the boundary for foreign callers
-(`gtk/`, and later Elixir). ABI 1.2, soname 1, 42 exported symbols. Hidden
+(`gtk/`, and later Elixir). ABI 1.2, soname 1, 56 exported symbols. Hidden
 visibility by default; the exported surface is declared explicitly by a
 linker version script (`libphig/phig.version` on Linux,
 `libphig/phig.exported_symbols` on macOS), not inferred from headers.
@@ -12,15 +12,38 @@ client may include — see `gtk/CLAUDE.md`.
 ## Coverage — and what it lags
 
 The ABI covers paginated queries, per-image metadata, thumbnail lookup and
-generation, settings, and tag/gallery/favorite writes.
+generation, settings, tag/gallery/favorite writes, and three long-running
+operations — index, thumbs, faces (plan 031).
 
-**It does not cover the long-running operations** — scan, organize, remove,
-face detection. Those engines exist and work in `core/` (`ScanEngine`,
-`FacesEngine`, `organize_exec`, `remove_exec`); they have simply never been
-given ABI surface, because the only client so far (`gtk/` M0) is a read-only
-thumbnail grid that does not need them. This is a lag, not a design
-exclusion — plan 031 covers closing it, including the progress and
-cancellation convention the ABI currently has no shape for.
+**Operations are handle-plus-poll.** `phig_op_*_start` spawns a worker and
+returns a `phig_op*`; the caller polls progress and status from whatever thread
+suits it, and must call `phig_op_free`, which joins. No callback ever runs on
+an engine's thread. Each operation opens its own `Database` rather than sharing
+`phig_ctx::db`, so the client's queries keep working while one runs.
+
+**Operations take no writer lock.** Index's write-set is unknowable before the
+walk, thumbs writes only the filesystem cache, and faces commits per image.
+SQLite serializes writers itself, so metadata writes stay available for an
+operation's whole duration. `PHIG_ERR_BUSY` comes from those small mutations
+contending with a CLI command that does hold the lock.
+
+**A lock-free operation is not excluded by the CLI's lock**, which is the
+consequence that bites: `phig face rebuild` and the faces operation do the same
+delete-and-reinsert of face rows, and `faces.id` is reused (plan 045), so a
+read-then-write elsewhere can land on a face it never read. `identify_person`
+handles this itself — its write matches on the embedding it compared, not the
+row id — but `phig face name` still relies on the lock and is therefore only
+safe against other lock-takers. Any new read-then-write on `faces.id` must
+assume an ABI operation is running beside it.
+
+**Index is the additive half of scan only.** It runs
+`ScanEngine::run_workers`, never `run_reconcile`, so rows for deleted or moved
+files survive a run. A client must not present it as "sync with disk". Plan 041
+splits reconcile into a decision and an application the caller authorizes.
+
+**Still absent:** organize (cp/mv) and remove, plus that reconcile phase —
+plans 041, 042. `ScanOptions::thumbs`/`faces` must never be exposed: the ABI
+models the three as independent operations, and those flags refuse that.
 
 Consequently `cli/` links `phig-core` and includes `core/` headers directly
 rather than going through libphig. **The CLI is a peer of libphig over
@@ -48,9 +71,11 @@ defensible. Unresolved, and out of scope for plan 031.
   `SOVERSION`.** `SOVERSION` is the major alone; an additive, backward
   -compatible change keeps the soname so existing callers don't need a
   rebuild. Only an incompatible change bumps `SOVERSION`/`MAJOR`.
-- New symbols go in the version script alongside the header declaration —
-  a symbol missing from `phig.version`/`phig.exported_symbols` is hidden
-  and unlinkable even if it's declared in `phig.h`.
+- **The export lists match on the `phig_` prefix, not on a list of names.**
+  `phig.version` is `global: phig_*` and `phig.exported_symbols` is `_phig_*`,
+  so a new entry point is exported by being named `phig_something` and needs no
+  edit to either file. A public symbol that does not start with `phig_` is
+  hidden and unlinkable however it is declared in `phig.h`.
 
 ## Not covered by CI lint
 

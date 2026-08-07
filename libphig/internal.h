@@ -1,18 +1,27 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+#include "cancel.h"
 #include "database.h"
+#include "faces_engine.h"
 #include "lockfile.h"
 #include "paths.h"
 #include "phig/phig.h"
+#include "progress_queue.h"
+#include "scan_engine.h"
 #include "settings.h"
+#include "thumbs_engine.h"
 
 struct phig_ctx {
     std::unique_ptr<Database> db;
@@ -125,6 +134,74 @@ struct phig_settings {
     }
 };
 
+// One running long-operation. Defined here rather than in a per-unit header
+// because libphig keeps every internal struct in this file; operations.cpp is
+// the only translation unit that touches it.
+//
+// The operation owns its own Database rather than borrowing phig_ctx::db. The
+// engines serialize database access behind their own mutex and require that no
+// caller touch the connection while run() executes — but the ctx's connection
+// stays in use by every query the client keeps making. A separate connection
+// keeps those reads safe and lets SQLite arbitrate, which is the whole reason
+// these operations need no writer lock.
+struct phig_op {
+    enum class Kind { Index, Thumbs, Faces };
+
+    explicit phig_op(Kind k) : kind(k) {
+        // Reserved up front so the vector never reallocates. Growing it would
+        // move the strings, and a short one lives inside its std::string rather
+        // than on the heap — the const char* handed out by phig_op_error_at
+        // would then dangle, which the header promises it never does.
+        retained_errors.reserve(PHIG_OP_MAX_RETAINED_ERRORS);
+    }
+
+    Kind kind;
+    std::unique_ptr<Database> db;
+    CancelToken cancel;
+
+    // Sized to match the CLI's queue. Drop-oldest under back-pressure: a stale
+    // position is worthless once a newer one exists.
+    ProgressQueue<ScanProgress> index_progress{1024};
+    ProgressQueue<ThumbsProgress> thumbs_progress{1024};
+    ProgressQueue<FacesProgress> faces_progress{1024};
+
+    std::thread worker;
+    std::atomic<phig_op_state> state{PHIG_OP_RUNNING};
+
+    // Written by the worker before `state` leaves PHIG_OP_RUNNING, read by the
+    // caller only after it observes that transition. The release/acquire pair on
+    // `state` is what publishes them; nothing else synchronizes these.
+    ScanResult index_result;
+    ThumbsResult thumbs_result;
+    FacesResult faces_result;
+    std::string failure;
+
+    // Per-file failures kept for inspection after the run. Bounded by
+    // PHIG_OP_MAX_RETAINED_ERRORS; the result's own error count stays exact.
+    // Guarded by `errors_mutex` because two producers append: phig_op_poll on
+    // the caller's thread, and the worker sweeping whatever the caller never
+    // polled. Both may see the same update, hence `retained_seen`.
+    std::mutex errors_mutex;
+    std::vector<std::string> retained_errors;
+    // Texts already retained, so the two producers cannot record one failure
+    // twice. Every error text names its file, so the text identifies the
+    // failure. Stops growing once the vector is full, since nothing is added
+    // past that point.
+    std::unordered_set<std::string> retained_seen;
+
+    // Backing store for the const char* handed out by phig_op_poll, valid until
+    // the next poll on this handle — which is exactly what the header promises.
+    std::string poll_path;
+    std::string poll_error;
+
+    void retain_error(const std::string& text) {
+        std::lock_guard<std::mutex> g(errors_mutex);
+        if (retained_errors.size() >= PHIG_OP_MAX_RETAINED_ERRORS) return;
+        if (!retained_seen.insert(text).second) return;
+        retained_errors.push_back(text);
+    }
+};
+
 // Builds a phig_image_list (with its own string arena) from search results.
 // Defined in records.cpp.
 phig_image_list* phig_make_image_list(const std::vector<ImageInfo>& rows);
@@ -145,6 +222,10 @@ void phig_acquire_write_lock(phig_ctx* ctx, std::unique_ptr<WriterLock>& out);
     phig_thread_last_error().clear();                  \
     try {
 #define PHIG_CATCH(ctx)                                      \
+    }                                                        \
+    catch (const LockBusy& e) {                              \
+        phig_thread_last_error() = e.what();                 \
+        return PHIG_ERR_BUSY;                                \
     }                                                        \
     catch (const std::exception& e) {                        \
         phig_thread_last_error() = e.what();                 \

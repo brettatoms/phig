@@ -237,6 +237,55 @@ TEST(ThumbsEngineRun, PublishesSelectedCountBeforeAnyFileCompletes) {
     EXPECT_EQ(file_done, 3u);
 }
 
+TEST(ThumbsEngineRun, UndecodableFilePublishesTheDecodeErrorOnProgress) {
+    // The count already exists; the reason does not. generate_thumb collapses
+    // "could not decode", "empty sha", "bad size", and "imencode failed" into a
+    // single false, and the worker's catch(...) drops any exception message —
+    // so 40 failed thumbnails give a user no way to tell one corrupt file from
+    // a full disk. decode_image_with_warning already captures OpenCV's own text
+    // per decode; route it instead of discarding it.
+    ScratchThumbs coll(1);
+    fs::path junk = coll.dir / "broken.jpg";
+    {
+        std::ofstream(junk) << "not an image";
+    }
+    ImageInfo info;
+    info.path = junk.string();
+    info.filename = "broken.jpg";
+    info.extension = "jpg";
+    info.file_size = fs::file_size(junk);
+    info.media_type = "image";
+    info.sha256 = std::string(63, '1') + "1";
+    info.created_at = "2024-01-01T00:00:00Z";
+    info.modified_at = "2024-01-01T00:00:00Z";
+    coll.db->insert(info);
+
+    ThumbsOptions opts;
+    opts.parallel = 1;
+    ThumbsEngine engine(opts, *coll.db);
+    CancelToken tok;
+    ProgressQueue<ThumbsProgress> q(64);
+
+    ThumbsResult r = engine.run(tok, &q);
+    q.close();
+
+    EXPECT_EQ(r.errors, 1u);
+    EXPECT_EQ(r.generated, 1u);
+
+    bool saw_error = false;
+    ThumbsProgress p;
+    while (q.pop(p)) {
+        if (p.path != junk.string()) {
+            EXPECT_TRUE(p.error.empty()) << "decodable file reported an error: " << p.error;
+            continue;
+        }
+        saw_error = !p.error.empty();
+        EXPECT_NE(p.error.find("broken.jpg"), std::string::npos)
+            << "error text should name the file: " << p.error;
+    }
+    EXPECT_TRUE(saw_error) << "no error text published for the undecodable file";
+}
+
 TEST(ThumbsEngineRun, SelectionFiltersRestrictWhatIsProcessed) {
     ScratchThumbs coll(4);
     ThumbsOptions opts;

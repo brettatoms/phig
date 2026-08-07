@@ -434,9 +434,9 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                 // the matching progress update, so the warning and the progress
                 // line are emitted by one thread in order — logging from the
                 // worker let another worker's progress line overwrite the
-                // warning on a terminal. A caller that passes no queue gets no
-                // per-file warning, only the aggregate error count; that is the
-                // documented cost of declining progress.
+                // warning on a terminal. A caller that passes no queue has
+                // nowhere to route it, so log it here rather than drop it —
+                // there is no competing progress line to overwrite.
                 if (progress == nullptr) log_warn(error_text);
             }
 

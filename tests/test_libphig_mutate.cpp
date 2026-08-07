@@ -216,7 +216,9 @@ TEST(AbiMutate, WriteFailsWhileAnotherProcessHoldsTheWriterLock) {
     WriterLock held(tmp.path + ".lock", /*no_wait=*/true);
 
     phig_status st = phig_tag_add(ctx, ids.data(), ids.size(), "contended");
-    EXPECT_EQ(st, PHIG_ERR_DB);
+    // Contention is reported as BUSY, not the generic DB error: the caller can
+    // retry this, and a GUI can say why rather than showing a failure.
+    EXPECT_EQ(st, PHIG_ERR_BUSY);
     EXPECT_STRNE(phig_last_error(ctx), "");
 
     Database db(tmp.path);
@@ -231,7 +233,7 @@ TEST(AbiMutate, WriteSucceedsAfterTheLockIsReleased) {
 
     {
         WriterLock held(tmp.path + ".lock", /*no_wait=*/true);
-        EXPECT_EQ(phig_tag_add(ctx, ids.data(), 1, "blocked"), PHIG_ERR_DB);
+        EXPECT_EQ(phig_tag_add(ctx, ids.data(), 1, "blocked"), PHIG_ERR_BUSY);
     }  // released here
 
     // The ABI must recover, not stay wedged after a contended attempt.
@@ -260,7 +262,7 @@ TEST(AbiMutate, ConcurrentFailuresOnSharedCtxDoNotCorrupt) {
         threads.emplace_back([&] {
             for (int i = 0; i < kIterations; ++i) {
                 phig_status st = phig_tag_add(ctx, ids.data(), 1, "contended");
-                if (st == PHIG_ERR_DB && std::string(phig_last_error(ctx)) != "") {
+                if (st == PHIG_ERR_BUSY && std::string(phig_last_error(ctx)) != "") {
                     ++failures;
                 }
             }
@@ -292,7 +294,7 @@ TEST(AbiMutate, EachThreadSeesOnlyItsOwnError) {
     std::thread failing([&] {
         for (int i = 0; i < kIterations; ++i) {
             phig_status st = phig_tag_add(ctx, ids.data(), 1, "contended");
-            if (st != PHIG_ERR_DB) contamination = true;
+            if (st != PHIG_ERR_BUSY) contamination = true;
         }
     });
 

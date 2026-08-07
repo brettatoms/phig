@@ -26,6 +26,13 @@ struct ScanOptions {
     bool recursive = false;
     bool fail_on_error = false;
     ForceOptions force;
+    // Fold face detection / thumbnail generation into the indexing pass, saving
+    // a second walk. This exists for the CLI's `scan --faces` / `--thumbs`
+    // convenience only, and MUST NOT be exposed through libphig: the ABI models
+    // indexing, thumbnails, and faces as three independent operations a client
+    // schedules separately (plan 031), and a flag mapping onto these would
+    // reintroduce the fusion it decomposes. libphig's index operation leaves
+    // both false.
     bool faces = false;
     bool thumbs = false;
     bool ignore_mount_warning = false;

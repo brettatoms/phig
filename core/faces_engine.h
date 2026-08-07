@@ -16,17 +16,70 @@ struct FacesRebuildOptions {
     int parallel = -1;  // -1 = auto
 };
 
+// `error` is non-empty when the file could not be decoded: it is the
+// already-formatted warning text, and the CALLER is responsible for logging it.
+// Matches ScanProgress::error — the engine does not log from a worker thread,
+// where another worker's progress line can overwrite the warning. A caller that
+// passes no queue has nowhere to route it, so the engine logs it directly
+// instead of dropping it.
 struct FacesProgress {
     FacesStage stage = FacesStage::FileDone;
     size_t done = 0, total = 0;
+    // Running count of files that failed to decode, matching the `errors` on
+    // ScanProgress and ThumbsProgress so a caller can render a failure tally as
+    // the run proceeds rather than only from the result.
+    size_t errors = 0;
     std::string path;
+    std::string error;
+    // Non-empty when the decoder complained but still produced an image. The
+    // file succeeded and its faces were detected; this is not counted in
+    // `errors`. Carried separately so a caller can surface it without treating
+    // it as a failure.
+    std::string warning;
 };
 
 struct FacesResult {
     size_t total_selected = 0;
     size_t faces_detected = 0;
+    // Files that could not be decoded. Counted rather than fatal: one unreadable
+    // image must not abandon a rebuild over a whole collection, but it must not
+    // be silent either — without this an unreadable file is indistinguishable
+    // from one containing no faces.
+    size_t errors = 0;
     bool completed = true;
 };
+
+struct IdentifyResult {
+    bool person_found = false;
+    size_t references = 0;  // already-named faces used as the comparison set
+    size_t candidates = 0;  // unlabeled faces examined
+    size_t labeled = 0;
+};
+
+// Labels every unlabeled face within `threshold` of any face already named as
+// `person`, in one transaction.
+//
+// Two-phase, and deliberately so. Phase 1 reads the reference and candidate
+// embeddings and compares them with NO transaction open, because the comparison
+// is pure computation over every unlabeled face in the collection — holding a
+// write transaction across it would block every other writer for its whole
+// duration. Phase 2 commits the matches inside a single BEGIN IMMEDIATE, so the
+// labels land together rather than as one implicit transaction per face.
+//
+// Nothing serializes the gap between the phases, so phase 2 does not trust the
+// face ids phase 1 read. faces.id is INTEGER PRIMARY KEY without AUTOINCREMENT,
+// so SQLite reuses a deleted rowid: a concurrent rebuild that deletes and
+// reinserts a candidate in the gap can put a *different* face on an id phase 1
+// read. `set_face_person_if_unchanged` therefore matches on the embedding that
+// was compared, not the row number, so such a write updates zero rows — which is
+// why `labeled` counts changed rows rather than statements issued. A caller
+// needs no lock for this to be correct. Plan 045 removes the rowid reuse itself.
+//
+// SCALE: phase 1 materializes every unlabeled embedding (128 floats each) in
+// memory. That is the wrong shape for a collection with millions of faces; plan
+// 044 covers paging it. The transaction behavior here does not change when that
+// is fixed.
+IdentifyResult identify_person(Database& db, const std::string& person, float threshold);
 
 // Re-detects faces for images a database already knows about, replacing each
 // image's existing face rows.

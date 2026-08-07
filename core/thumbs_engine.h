@@ -38,6 +38,18 @@ struct ThumbsProgress {
     size_t done = 0, total = 0;
     size_t generated = 0, skipped = 0, errors = 0;
     std::string path;
+    // Non-empty when this file failed: the already-formatted warning text, which
+    // the CALLER is responsible for logging. Matches ScanProgress::error — the
+    // engine does not log from a worker thread, where another worker's progress
+    // line can overwrite the warning. A caller that passes no queue has nowhere
+    // to route it, so the engine logs it directly instead of dropping it.
+    std::string error;
+    // Non-empty when the decoder complained but still produced an image — a
+    // truncated JPEG that decodes partially, say. Distinct from `error`, which
+    // means the file failed: this file succeeded and the caller got a
+    // thumbnail. Carried separately so a caller can surface it without
+    // counting it as a failure.
+    std::string warning;
     // False for the terse tick emitted when a file is skipped, reproducing the
     // CLI's two progress formats.
     bool show_path = false;

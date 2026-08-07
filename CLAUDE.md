@@ -326,6 +326,13 @@ before implementing.
 
 ## Known issues
 
+Three `DatabaseTest` cases fail on master — `UpdatePathOntoStaleDestClearsItsFaces`,
+`DeletePathsCascadesTagsAndFaces`, `PurgeSnapshotMarksOmittedFaces` — all with
+`Failed to delete face vectors: SQL logic error` from
+`delete_faces_for_image`'s DELETE against the `vec_faces` vec0 virtual table.
+Reproducible from a clean build at `3177320`, so a change that leaves exactly
+these three failing has not caused them. Diagnosis in progress: plan 046.
+
 `DatabaseConcurrency.ConcurrentMigrationIsSafe` was a genuine 10% flake
 caused by `sqlite3_busy_timeout` being set after `PRAGMA
 journal_mode=WAL`; fixed in `73d1e1a`. If a single unattributed test

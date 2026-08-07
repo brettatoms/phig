@@ -230,6 +230,87 @@ TEST(FacesEngineRun, UndecodableFileIsSkippedWithoutFailingTheRun) {
     EXPECT_TRUE(r.completed);
 }
 
+TEST(FacesEngineRun, UndecodableFileIsCountedAsAnError) {
+    // Skipping the file is right; skipping it silently is not. Without a count,
+    // an unreadable image is indistinguishable from one with no faces in it, so
+    // a rebuild over a collection with unreadable files reports total success.
+    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    ScratchFaces coll(2);
+    fs::path junk = coll.dir / "broken.jpg";
+    {
+        std::ofstream(junk) << "not an image";
+    }
+    ImageInfo info;
+    info.path = junk.string();
+    info.filename = "broken.jpg";
+    info.extension = "jpg";
+    info.file_size = fs::file_size(junk);
+    info.media_type = "image";
+    std::string prefix = std::to_string(reinterpret_cast<uintptr_t>(&coll));
+    info.sha256 = (prefix + std::string(63, '8')).substr(0, 63) + "8";
+    info.created_at = "2024-01-01T00:00:00Z";
+    info.modified_at = "2024-01-01T00:00:00Z";
+    coll.db->insert(info);
+
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    FacesEngine engine(opts, *coll.db);
+    CancelToken tok;
+
+    FacesResult r = engine.run(tok, nullptr);
+
+    EXPECT_EQ(r.total_selected, 3u);
+    EXPECT_EQ(r.errors, 1u);
+    EXPECT_TRUE(r.completed);  // one bad file does not fail the run
+}
+
+TEST(FacesEngineRun, UndecodableFilePublishesTheDecodeErrorOnProgress) {
+    // The reason already exists — decode_image_with_warning captures OpenCV's
+    // own message per decode — and is currently discarded. Route it to the
+    // caller the way ScanProgress::error does, so a client can say which file
+    // failed and why rather than only how many did.
+    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    ScratchFaces coll(1);
+    fs::path junk = coll.dir / "broken.jpg";
+    {
+        std::ofstream(junk) << "not an image";
+    }
+    ImageInfo info;
+    info.path = junk.string();
+    info.filename = "broken.jpg";
+    info.extension = "jpg";
+    info.file_size = fs::file_size(junk);
+    info.media_type = "image";
+    std::string prefix = std::to_string(reinterpret_cast<uintptr_t>(&coll));
+    info.sha256 = (prefix + std::string(63, '7')).substr(0, 63) + "7";
+    info.created_at = "2024-01-01T00:00:00Z";
+    info.modified_at = "2024-01-01T00:00:00Z";
+    coll.db->insert(info);
+
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    FacesEngine engine(opts, *coll.db);
+    CancelToken tok;
+    ProgressQueue<FacesProgress> q(64);
+
+    engine.run(tok, &q);
+    q.close();
+
+    bool saw_error = false;
+    FacesProgress p;
+    while (q.pop(p)) {
+        if (p.stage != FacesStage::FileDone) continue;
+        if (p.path != junk.string()) {
+            EXPECT_TRUE(p.error.empty()) << "decodable file reported an error: " << p.error;
+            continue;
+        }
+        saw_error = !p.error.empty();
+        EXPECT_NE(p.error.find("broken.jpg"), std::string::npos)
+            << "error text should name the file: " << p.error;
+    }
+    EXPECT_TRUE(saw_error) << "no error text published for the undecodable file";
+}
+
 TEST(FacesEngineRun, SelectionFiltersRestrictWhatIsProcessed) {
     if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
     ScratchFaces coll(4);

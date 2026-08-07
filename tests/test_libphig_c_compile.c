@@ -14,6 +14,20 @@ struct phig_status_abi_pin {
     int readonly : (PHIG_ERR_READONLY == 4) ? 1 : -1;
     int internal : (PHIG_ERR_INTERNAL == 5) ? 1 : -1;
     int schema : (PHIG_ERR_SCHEMA == 6) ? 1 : -1;
+    int busy : (PHIG_ERR_BUSY == 7) ? 1 : -1;
+};
+
+/* Same for the operation enums: a client compiled against one numbering and
+ * run against another would misread every state and stage. */
+struct phig_op_abi_pin {
+    int running : (PHIG_OP_RUNNING == 0) ? 1 : -1;
+    int done : (PHIG_OP_DONE == 1) ? 1 : -1;
+    int cancelled : (PHIG_OP_CANCELLED == 2) ? 1 : -1;
+    int failed : (PHIG_OP_FAILED == 3) ? 1 : -1;
+    int file_done : (PHIG_STAGE_FILE_DONE == 0) ? 1 : -1;
+    int walked : (PHIG_STAGE_WALKED == 1) ? 1 : -1;
+    int selected : (PHIG_STAGE_SELECTED == 2) ? 1 : -1;
+    int models : (PHIG_STAGE_LOADING_FACE_MODELS == 3) ? 1 : -1;
 };
 
 void phig_c_compile_check(void) {
@@ -82,6 +96,54 @@ void phig_c_compile_check(void) {
         (void)phig_settings_save(st, "/tmp/phig-c-compile-check.ini");
         (void)phig_settings_to_config(st, &cfg);
         phig_settings_free(st);
+    }
+
+    {
+        static const char* const globs[1] = {"*.jpg"};
+        phig_op* op = NULL;
+        phig_op_progress prog;
+        phig_index_options iopts;
+        phig_thumbs_options topts;
+        phig_faces_options fopts;
+        phig_index_result ires;
+        phig_thumbs_result tres;
+        phig_faces_result fres;
+
+        iopts.directory = "/nonexistent";
+        iopts.recursive = true;
+        iopts.include_hidden = false;
+        iopts.force = false;
+        iopts.media = PHIG_MEDIA_ANY;
+        iopts.parallel = 0;
+        (void)phig_op_index_start(ctx, &iopts, &op);
+
+        topts.match = globs;
+        topts.match_count = 1;
+        topts.exclude = NULL;
+        topts.exclude_count = 0;
+        topts.size = 0;
+        topts.force = false;
+        topts.parallel = 0;
+        (void)phig_op_thumbs_start(ctx, &topts, &op);
+
+        fopts.match = NULL;
+        fopts.match_count = 0;
+        fopts.exclude = NULL;
+        fopts.exclude_count = 0;
+        fopts.parallel = 0;
+        (void)phig_op_faces_start(ctx, &fopts, &op);
+
+        (void)phig_op_status(op);
+        (void)phig_op_poll(op, &prog);
+        phig_op_cancel(op);
+        phig_op_wait(op);
+        (void)phig_op_index_result(op, &ires);
+        (void)phig_op_thumbs_result(op, &tres);
+        (void)phig_op_faces_result(op, &fres);
+        (void)phig_op_error_count(op);
+        (void)phig_op_error_at(op, 0);
+        (void)phig_op_error(op);
+        phig_op_free(op);
     }
 
     phig_shutdown(ctx);

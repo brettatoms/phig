@@ -8,9 +8,65 @@
 
 #include "faces.h"
 #include "hasher.h"
+#include "log.h"
 #include "parallel.h"
 #include "scan_engine.h"  // detector_for_worker
 #include "selection.h"
+
+IdentifyResult identify_person(Database& db, const std::string& person, float threshold) {
+    IdentifyResult result;
+
+    int64_t person_id = -1;
+    for (const auto& p : db.list_people()) {
+        if (p.name == person) {
+            person_id = p.id;
+            break;
+        }
+    }
+    if (person_id < 0) return result;
+    result.person_found = true;
+
+    // Phase 1: read and compare with no transaction open. See the header — the
+    // comparison is O(candidates * references) and must not hold a write lock.
+    std::vector<Database::FaceEmbeddingRow> refs = db.get_face_embeddings_for_person(person_id);
+    result.references = refs.size();
+    if (refs.empty()) return result;
+
+    std::vector<Database::FaceEmbeddingRow> candidates = db.get_unlabeled_face_embeddings();
+    result.candidates = candidates.size();
+
+    // The whole matched row, not just its id: phase 2 writes against the
+    // embedding it compared, so the id alone is not enough to identify the face
+    // again.
+    std::vector<Database::FaceEmbeddingRow> matches;
+    for (const auto& c : candidates) {
+        for (const auto& ref : refs) {
+            if (embedding_distance(ref.embedding, c.embedding) <= threshold) {
+                matches.push_back(c);
+                break;
+            }
+        }
+    }
+    if (matches.empty()) return result;
+
+    // Phase 2: one transaction for every label. Each write re-checks that the
+    // row is still the face phase 1 compared, so a face deleted — or deleted and
+    // replaced on the same rowid — updates zero rows instead of taking a label
+    // it never earned.
+    size_t labeled = 0;
+    db.begin_transaction();
+    try {
+        for (const auto& m : matches) {
+            if (db.set_face_person_if_unchanged(m.face_id, person_id, m.embedding)) ++labeled;
+        }
+        db.commit_transaction();
+    } catch (...) {
+        db.rollback_transaction();
+        throw;
+    }
+    result.labeled = labeled;
+    return result;
+}
 
 FacesEngine::FacesEngine(const FacesRebuildOptions& opts, Database& db) : opts_(opts), db_(db) {}
 
@@ -61,28 +117,50 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
 
     std::atomic<size_t> total_faces{0};
     std::atomic<size_t> done{0};
+    std::atomic<size_t> errors{0};
     std::mutex db_mutex;
 
-    auto publish_done = [&](const ImageInfo& img_info) {
+    auto publish_done = [&](const ImageInfo& img_info, const std::string& error = "",
+                            const std::string& warning = "") {
         size_t d = done.fetch_add(1) + 1;
         if (progress) {
             FacesProgress p;
             p.stage = FacesStage::FileDone;
             p.done = d;
             p.total = images.size();
+            p.errors = errors.load();
             p.path = img_info.path;
+            p.error = error;
+            p.warning = warning;
             progress->push(p);
         }
     };
 
     auto worker = [&](size_t idx, int worker_id) {
         const ImageInfo& img_info = images[idx];
-        cv::Mat img = decode_image(img_info.path);
-        if (img.empty()) {
+        // decode_image_with_warning rather than decode_image: the latter logs
+        // OpenCV's message and discards it, which loses the reason from a worker
+        // thread. Routing it to the caller keeps the warning and the progress
+        // line together, on one thread, in order.
+        DecodeResult decoded = decode_image_with_warning(img_info.path);
+        if (decoded.img.empty()) {
+            errors.fetch_add(1);
+            std::string text = "faces: " + img_info.path;
+            if (!decoded.warning.empty()) text += " -- " + decoded.warning;
+            // Nowhere to route it when the caller declined progress, so log it
+            // here instead of dropping it.
+            if (progress == nullptr) log_warn(text);
             // Still counted so the final tally reaches `total`.
-            publish_done(img_info);
+            publish_done(img_info, text);
             return;
         }
+        // Decoded, but the decoder complained. Reported, not counted.
+        std::string warning;
+        if (!decoded.warning.empty()) {
+            warning = "faces: " + img_info.path + " -- " + decoded.warning;
+            if (progress == nullptr) log_warn(warning);
+        }
+        cv::Mat img = decoded.img;
 
         auto faces = detector_for_worker(detectors, worker_id)->detect(img);
 
@@ -109,10 +187,11 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
             }
         }
 
-        publish_done(img_info);
+        publish_done(img_info, "", warning);
     };
 
     result.completed = parallel_for_each(images.size(), num_threads, cancel, worker);
     result.faces_detected = total_faces.load();
+    result.errors = errors.load();
     return result;
 }

@@ -59,7 +59,14 @@ typedef enum {
     PHIG_ERR_INTERNAL = 5,
     /* The database's schema version does not match what this build of libphig
        queries. See phig_init. */
-    PHIG_ERR_SCHEMA = 6
+    PHIG_ERR_SCHEMA = 6,
+    /* phig's process-wide advisory writer lock is held by another process — a
+       running CLI mv/cp/rm/scan/face command, or another client. Returned by
+       the metadata writes below, which take the lock without waiting so a GUI
+       never freezes behind a long CLI job; nothing was written, and retrying
+       once the holder finishes will succeed. The operations at the end of this
+       header do not take the lock and never return this. */
+    PHIG_ERR_BUSY = 7
 } phig_status;
 
 typedef enum { PHIG_READ_ONLY = 0, PHIG_READ_WRITE = 1 } phig_access_mode;
@@ -353,6 +360,258 @@ PHIG_API phig_status phig_settings_save(phig_settings* s, const char* path);
  * than dangling or picking up the new one — safe, but stale; re-run
  * phig_settings_to_config if you need the current value in that case. */
 PHIG_API phig_status phig_settings_to_config(phig_settings* s, phig_config* cfg);
+
+/* ---- Long-running operations ----
+ *
+ * Three operations: index (scan a directory into the database), thumbs
+ * (generate thumbnails), faces (re-detect faces). Separate rather than one
+ * fused "scan", because they are independent jobs over the same collection —
+ * a client schedules whichever it needs. `phig scan --thumbs --faces` runs all
+ * three in one pass; that fusion is a CLI convenience, not the model here.
+ *
+ * Index is ADDITIVE ONLY, and is not the whole of `phig scan`. It walks, hashes,
+ * extracts and upserts; it does not run scan's reconcile phase. Rows whose files
+ * have been deleted or moved therefore survive an index run — nothing is
+ * removed, no moved file is re-linked to its old row, and no RAW/JPEG pair is
+ * demoted. A client must not present it as "sync the library with disk". The
+ * reconcile half is deliberately absent until it can be offered as a decision
+ * the caller authorizes rather than a silent deletion; see plan 041.
+ *
+ * Each runs on its own thread and is driven by polling, never a callback. A
+ * callback would run library code on the engine's worker thread, potentially
+ * while it holds a database lock, and would force every foreign caller (a GTK
+ * main loop, an Elixir NIF) to be reentrant on a thread it did not create.
+ * Instead: start an operation, poll it from whatever thread suits the caller,
+ * read the result when it finishes.
+ *
+ * Locking: none of these take phig's advisory writer lock. Index's write-set
+ * is the whole subtree and unknowable before the walk; thumbs reads the
+ * database once and writes only the filesystem cache; faces commits through
+ * per-image transactions. SQLite serializes concurrent writers itself (WAL +
+ * BEGIN IMMEDIATE + a 30s busy timeout), so a metadata write from this ABI
+ * stays available for the whole duration of an operation. PHIG_ERR_BUSY comes
+ * from the small mutations above contending with a CLI command that does take
+ * the lock (mv/cp/rm), not from these.
+ *
+ * Thumbnail generation is not a prerequisite for display: phig_thumb_generate
+ * fills a miss on demand. Running the thumbs operation warms the cache ahead
+ * of a client needing it. The two coexist — a client may keep servicing misses
+ * with phig_thumb_generate while the bulk operation runs. The cache is keyed by
+ * (sha256, size), so the worst case is that both generate the same thumbnail
+ * and write identical bytes to the same path; neither fails, and nothing is
+ * corrupted.
+ */
+
+typedef struct phig_op phig_op;
+
+typedef enum {
+    PHIG_OP_RUNNING = 0,
+    PHIG_OP_DONE = 1,
+    /* Ran to completion but stopped early because the caller cancelled. */
+    PHIG_OP_CANCELLED = 2,
+    /* Aborted. phig_op_error gives the message. */
+    PHIG_OP_FAILED = 3
+} phig_op_state;
+
+/* What an operation is currently doing. Every operation reports FILE_DONE per
+ * item; the others are one-shot notices, and which appear depends on the
+ * operation. Values are published ABI: append only, never renumber. */
+typedef enum {
+    PHIG_STAGE_FILE_DONE = 0,
+    /* Index: the directory walk finished; `total` is the file count. */
+    PHIG_STAGE_WALKED = 1,
+    /* Thumbs/faces: the selection is known; `total` is how many were selected. */
+    PHIG_STAGE_SELECTED = 2,
+    /* Faces: loading detector models, which is slow and happens before any file
+       is processed. `total` is the instance count. */
+    PHIG_STAGE_LOADING_FACE_MODELS = 3
+} phig_op_stage;
+
+/* A snapshot of an operation's progress, filled by phig_op_poll.
+ *
+ * `path` and `error` point into the operation and stay valid only until the
+ * next phig_op_poll on the same handle. Copy anything to be kept.
+ *
+ * `error` is non-empty when the file named by `path` failed. The operation
+ * continues — a file that cannot be read never aborts a run — and `errors`
+ * counts them. A caller polling too slowly to see every update still gets the
+ * total from the result, plus a bounded list of retained failures.
+ *
+ * Every counter is absolute rather than a delta, and every operation fills
+ * `done`, `total` and `errors`. `processed` and `skipped` are index and thumbs
+ * only — faces has no such split, since a selected file either yields its faces
+ * or fails, and leaves both 0. For thumbs, `processed` is the running count of
+ * thumbnails generated, matching `generated` on its result. */
+typedef struct {
+    phig_op_stage stage;
+    uint64_t done;  /* items finished, across all outcomes */
+    uint64_t total; /* items expected, or the stage-specific count above */
+    uint64_t processed;
+    uint64_t skipped;
+    uint64_t errors;
+    const char* path;  /* "" when the stage carries no file */
+    const char* error; /* "" unless this file failed */
+} phig_op_progress;
+
+/* Results. One per operation rather than a single flattened struct: the three
+ * report genuinely different things, and a shared struct would hand a caller
+ * fields that are meaningless for the operation it ran. Asking for the wrong
+ * one returns PHIG_ERR_INVALID_ARG. */
+
+typedef struct {
+    uint64_t total_files; /* files the walk found */
+    uint64_t processed;
+    uint64_t skipped; /* unchanged since a previous run, or attached to a RAW */
+    uint64_t errors;
+    uint64_t images;
+    uint64_t videos;
+    bool completed; /* false if cancellation stopped it early */
+} phig_index_result;
+
+typedef struct {
+    uint64_t total_selected;
+    uint64_t generated;
+    uint64_t skipped; /* already cached, or no sha256 to key on */
+    uint64_t errors;
+    bool completed;
+} phig_thumbs_result;
+
+typedef struct {
+    uint64_t total_selected;
+    uint64_t faces_detected;
+    uint64_t errors; /* files that could not be decoded */
+    bool completed;
+} phig_faces_result;
+
+typedef struct {
+    const char* directory; /* required */
+    bool recursive;
+    bool include_hidden;
+    /* Reprocess files a previous scan already indexed, instead of skipping
+       those whose path and mtime are unchanged. */
+    bool force;
+    /* PHIG_MEDIA_ANY indexes both images and videos. */
+    phig_media_type media;
+    /* Threads for the parallel hash/extract phase. 0 or negative = auto. */
+    int parallel;
+} phig_index_options;
+
+typedef struct {
+    /* Glob filters over the collection. NULL/0 selects everything. Exclude wins
+       where the two overlap. The pointers need only outlive the _start call. */
+    const char* const* match;
+    size_t match_count;
+    const char* const* exclude;
+    size_t exclude_count;
+    /* Longest edge in pixels. 0 uses phig's default. Sizes are independent —
+       generating one never invalidates another. */
+    int size;
+    /* Regenerate thumbnails that already exist in the cache. */
+    bool force;
+    int parallel;
+} phig_thumbs_options;
+
+typedef struct {
+    const char* const* match;
+    size_t match_count;
+    const char* const* exclude;
+    size_t exclude_count;
+    /* Each worker loads its own detector (~150MB of model state, and the
+       detector is not thread-safe), so this bounds memory as much as speed.
+       0 or negative = auto, which is deliberately conservative. */
+    int parallel;
+} phig_faces_options;
+
+/* Start an operation. On PHIG_OK, *out receives a handle the caller must pass
+ * to phig_op_free — including after it fails or is cancelled. On failure *out
+ * is NULL.
+ *
+ * Each requires a PHIG_READ_WRITE context and returns PHIG_ERR_READONLY on a
+ * read-only one. Work begins immediately on an internal thread; these return
+ * as soon as it is running.
+ *
+ * The handle does not borrow the context: an operation reads its configuration
+ * at start and opens its own database connection, so it keeps running correctly
+ * after phig_shutdown. The handle must still be freed. */
+PHIG_API phig_status phig_op_index_start(phig_ctx* ctx, const phig_index_options* opts,
+                                         phig_op** out);
+PHIG_API phig_status phig_op_thumbs_start(phig_ctx* ctx, const phig_thumbs_options* opts,
+                                          phig_op** out);
+PHIG_API phig_status phig_op_faces_start(phig_ctx* ctx, const phig_faces_options* opts,
+                                         phig_op** out);
+
+/* Threading: phig_op_status, phig_op_cancel and phig_op_error may be called
+ * from any thread at any time. phig_op_poll, phig_op_wait and phig_op_free must
+ * not be called concurrently with themselves or each other — one thread drives
+ * a handle's lifecycle. Two threads polling would split the update stream
+ * between them; two calling phig_op_wait is undefined. */
+
+/* Current state. NULL reports PHIG_OP_FAILED. */
+PHIG_API phig_op_state phig_op_status(phig_op* op);
+
+/* Take the next progress update, if one is waiting.
+ *
+ * Returns true and fills `out` when an update was available, false when none
+ * was — false means "nothing new yet", not "finished"; use phig_op_status for
+ * that. A caller typically drains in a loop until false, then repaints.
+ *
+ * Updates are queued with a bounded capacity and the OLDEST is dropped when a
+ * caller cannot keep up, because a stale position is worthless once a newer one
+ * exists. Counters in each update are absolute, so dropping intermediate
+ * updates loses detail but never leaves a total wrong. */
+PHIG_API bool phig_op_poll(phig_op* op, phig_op_progress* out);
+
+/* Ask the operation to stop. Returns immediately; the operation does not stop
+ * instantly. Work already in flight finishes first — for faces that is a full
+ * detection pass per busy worker — so a caller should show "stopping" rather
+ * than treating the operation as over. Poll phig_op_status until it leaves
+ * PHIG_OP_RUNNING.
+ *
+ * Whatever completed before the cancellation is committed, not rolled back: a
+ * cancelled index leaves the files it already indexed in the database. The
+ * result reports completed = false. Safe to call more than once, and on an
+ * operation that has already finished (a no-op). */
+PHIG_API void phig_op_cancel(phig_op* op);
+
+/* Block until the operation is no longer running. Equivalent to polling
+ * phig_op_status without the loop. Returns once it is DONE, CANCELLED, or
+ * FAILED. */
+PHIG_API void phig_op_wait(phig_op* op);
+
+/* Read the result. Returns PHIG_ERR_INVALID_ARG if the operation is still
+ * running, or if the getter does not match the operation's kind. On a FAILED
+ * operation returns PHIG_ERR_INTERNAL — see phig_op_error. */
+PHIG_API phig_status phig_op_index_result(phig_op* op, phig_index_result* out);
+PHIG_API phig_status phig_op_thumbs_result(phig_op* op, phig_thumbs_result* out);
+PHIG_API phig_status phig_op_faces_result(phig_op* op, phig_faces_result* out);
+
+/* Per-file failures retained for inspection after the operation finishes, so a
+ * caller that was not polling still learns what went wrong. Retained as the
+ * caller polls and again from whatever it never polled, so both a client that
+ * watched the run and one that only waited end up with a list; a failure seen
+ * by both routes is recorded once. Bounded: at most PHIG_OP_MAX_RETAINED_ERRORS
+ * are kept, while the result's `errors` field counts every one. A client that
+ * polls slowly enough for updates to be dropped can still lose error text this
+ * way, so the count is the authority on how many failed, not the list's length.
+ * Index i is in [0, phig_op_error_count).
+ *
+ * Read them once the operation has stopped: mid-run the list is still growing.
+ * Returned pointers stay valid until phig_op_free. */
+#define PHIG_OP_MAX_RETAINED_ERRORS 64
+PHIG_API size_t phig_op_error_count(phig_op* op);
+PHIG_API const char* phig_op_error_at(phig_op* op, size_t i);
+
+/* Why the operation failed as a whole, or "" if it did not. Distinct from the
+ * per-file errors above: this is the exception that stopped everything. Reads
+ * "" while the operation is still running, since nothing has failed yet.
+ * Valid until phig_op_free. */
+PHIG_API const char* phig_op_error(phig_op* op);
+
+/* Release the handle. Blocks until the operation's thread has stopped, so a
+ * caller that frees a running operation waits for it — call phig_op_cancel
+ * first to avoid waiting for a full run. Safe with NULL. After this the handle
+ * and every pointer obtained from it are invalid. */
+PHIG_API void phig_op_free(phig_op* op);
 
 #ifdef __cplusplus
 }

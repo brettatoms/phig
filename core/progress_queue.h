@@ -59,6 +59,16 @@ class ProgressQueue {
         return true;
     }
 
+    // Visits every queued item without consuming it, under the queue's lock.
+    // For a second consumer that needs to inspect what is pending — libphig
+    // retains per-file error text this way — without taking those items out of
+    // the stream the real consumer is draining.
+    template <typename F>
+    void for_each(F fn) const {
+        std::lock_guard<std::mutex> lock(m_);
+        for (const T& v : items_) fn(v);
+    }
+
     // Wakes every waiter. Items already queued stay readable, so a consumer
     // draining after close() still sees them.
     void close() {

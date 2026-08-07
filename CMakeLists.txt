@@ -133,10 +133,12 @@ add_executable(phig-tests
     tests/test_scan_engine.cpp
     tests/test_thumbs_engine.cpp
     tests/test_faces_engine.cpp
+    tests/test_faces_identify.cpp
     tests/test_search_engine.cpp
     tests/test_libphig_query.cpp
     tests/test_libphig_abi.cpp
     tests/test_libphig_mutate.cpp
+    tests/test_libphig_operations.cpp
     tests/test_libphig_settings.cpp
     tests/test_libphig_c_compile.c
 )

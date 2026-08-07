@@ -215,7 +215,22 @@ class Database {
 
     // People / face naming
     int64_t get_or_create_person(const std::string& name);
-    void set_face_person(int64_t face_id, int64_t person_id);
+    // Returns false when no row matched — the face was deleted since the caller
+    // looked it up. Callers reporting a label count must use this, not the
+    // number of calls they made.
+    bool set_face_person(int64_t face_id, int64_t person_id);
+    // Labels a face only if it is still the face the caller compared: still
+    // unlabeled, and still carrying `embedding` byte-for-byte. Returns false
+    // otherwise, having written nothing.
+    //
+    // For a caller that read a face id, released its read, and comes back to
+    // write. `faces.id` is INTEGER PRIMARY KEY without AUTOINCREMENT, so SQLite
+    // hands a deleted rowid to the next insert and a bare `WHERE id = ?` can
+    // land on a face the caller never saw. The embedding is the thing that was
+    // compared, so matching on it is what makes the write refer to the same
+    // face rather than the same row number.
+    bool set_face_person_if_unchanged(int64_t face_id, int64_t person_id,
+                                      const std::array<float, 128>& embedding);
     int64_t find_closest_face(const std::array<float, 128>& embedding, float threshold);
 
     // One face's id and its embedding, read only when the stored blob is

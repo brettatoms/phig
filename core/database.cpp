@@ -1722,7 +1722,7 @@ int64_t Database::get_or_create_person(const std::string& name) {
     return sqlite3_last_insert_rowid(db_);
 }
 
-void Database::set_face_person(int64_t face_id, int64_t person_id) {
+bool Database::set_face_person(int64_t face_id, int64_t person_id) {
     const char* sql = "UPDATE faces SET person_id = ? WHERE id = ?";
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -1733,6 +1733,29 @@ void Database::set_face_person(int64_t face_id, int64_t person_id) {
     sqlite3_bind_int64(stmt, 2, face_id);
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
+    // Zero changes means the row is gone: a caller counting labels must report
+    // what it actually wrote, not how many statements it issued.
+    return sqlite3_changes(db_) > 0;
+}
+
+bool Database::set_face_person_if_unchanged(int64_t face_id, int64_t person_id,
+                                            const std::array<float, 128>& embedding) {
+    // `person_id IS NULL` makes this a compare-and-set against another labeler;
+    // `embedding = ?` makes it one against rowid reuse. See the header.
+    const char* sql =
+        "UPDATE faces SET person_id = ? WHERE id = ? AND person_id IS NULL AND embedding = ?";
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare update: " + std::string(sqlite3_errmsg(db_)));
+    }
+    sqlite3_bind_int64(stmt, 1, person_id);
+    sqlite3_bind_int64(stmt, 2, face_id);
+    sqlite3_bind_blob(stmt, 3, embedding.data(), static_cast<int>(embedding.size() * sizeof(float)),
+                      SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return sqlite3_changes(db_) > 0;
 }
 
 int64_t Database::find_closest_face(const std::array<float, 128>& embedding, float threshold) {
