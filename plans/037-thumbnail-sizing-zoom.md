@@ -1,6 +1,6 @@
 ---
 name: Thumbnail Sizing, HiDPI & Grid Zoom
-status: planned
+status: completed
 created: 2026-08-05
 description: >
   HiDPI-correct thumbnail sizing and a zoomable grid. The plan began as a fix
@@ -18,9 +18,9 @@ description: >
 
 # 037 — Thumbnail Sizing, HiDPI & Grid Zoom
 
-**Status is `planned`.** This is now a **feature** plan: all three open
-decisions are settled and the zoom model is specified, so it is ready to
-implement. The
+**Status is `completed`.** Shipped 2026-08-06/07. The performance half closed as
+measurement artifacts (see the diagnosis); the feature half is implemented, with
+two pieces deliberately deferred — see Outcome. The
 performance half is closed: the original diagnosis was inferred from code plus a
 frame-time pattern rather than an isolating experiment, and when the experiment
 was run (2026-08-06, all of steps 1-3 below) it came back negative three times
