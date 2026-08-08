@@ -170,16 +170,33 @@ collection:
 
 ## Interface discipline
 
-**Clients go through phig's defined interfaces only.** `gtk/` and any future
-client read phig only through `libphig`'s C ABI (`<phig/phig.h>`). No client
-reads phig's SQLite schema, table names, or thumbnail cache layout directly
-— those are private and change. When a client needs something the interface
-lacks, the capability is added to libphig and tracked in `plans/`.
+**Clients go through phig's defined interfaces only.** A client reads phig
+through `libphig`'s C ABI (`<phig/phig.h>`) when the collection is local, and
+through the phig wire protocol when it is remote — plan 052, `designing`;
+`phigd` does not exist yet, so `libphig` is the only interface that works
+today. No client reads phig's SQLite schema, table names, or thumbnail cache
+layout directly — those are private and change. The two interfaces cover the
+same capabilities deliberately: a client chooses a transport at connect time,
+it does not learn a second vocabulary. When a client needs something an
+interface lacks, the capability is added there and tracked in `plans/`.
+
+**libphig should reach all of phig's features, not the subset it reaches
+today.** A capability that exists only in `core/` and `cli/` is a gap with a
+schedule, not a boundary on what a client may do, and no other design may
+read the ABI's current coverage as the limit of what phig can offer.
+Deliberate exclusions are few and are named in `libphig/CLAUDE.md`, which also
+carries the inventory of what is missing; plan 053 tracks closing it.
 
 **Non-GUI functionality belongs in libphig, not the clients.** Logic that
 isn't specific to rendering a UI — filtering, formatting, business rules —
 goes in `core/` behind a `libphig` entry point, not duplicated in `gtk/` or
 any other client.
+
+**`cli/` — and `phigd` when it exists — are peers of libphig over `core/`, not
+clients of it.** Both link `phig-core` and include `core/` headers directly,
+so both are entitled to whatever `core/` has the moment it lands. That
+standing comes from being phig rather than a foreign caller; it is not a
+licence for a client to do the same.
 
 ## Platform boundaries
 
@@ -202,7 +219,7 @@ rather than one portable client.
 
 Being platform-specific buys a client native UI and native performance work.
 It does not buy it a private path into phig's data: every client still reads
-phig through `libphig`'s C ABI only, per Interface discipline above.
+phig through a defined interface only, per Interface discipline above.
 
 Current state: macOS builds and tests green in CI. Windows is not yet a
 supported target — plan 039 tracks the remaining port, where `lockfile.cpp` is

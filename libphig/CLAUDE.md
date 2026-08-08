@@ -11,6 +11,12 @@ client may include — see `gtk/CLAUDE.md`.
 
 ## Coverage — and what it lags
 
+**The target is every phig feature, not the subset below.** The ABI is what a
+client is allowed to use, so a capability reachable only from `core/` and
+`cli/` is a gap with a schedule, not a statement about what clients may do.
+Root `CLAUDE.md`'s Interface discipline carries the rule; plan 053 is the
+inventory and the order of work.
+
 The ABI covers paginated queries, per-image metadata, thumbnail lookup and
 generation, settings, tag/gallery/favorite writes, and three long-running
 operations — index, thumbs, faces (plan 031).
@@ -41,14 +47,44 @@ assume an ABI operation is running beside it.
 files survive a run. A client must not present it as "sync with disk". Plan 041
 splits reconcile into a decision and an application the caller authorizes.
 
-**Still absent:** organize (cp/mv) and remove, plus that reconcile phase —
-plans 041, 042. `ScanOptions::thumbs`/`faces` must never be exposed: the ABI
-models the three as independent operations, and those flags refuse that.
+### What is missing
 
-Consequently `cli/` links `phig-core` and includes `core/` headers directly
-rather than going through libphig. **The CLI is a peer of libphig over
-`core/`, not a wrapper around it.** Anything written as though the CLI sits on
-libphig is wrong.
+| Missing | Exists in `core/` as | Tracked by |
+|---|---|---|
+| Organize — cp/mv | `organize_plan.h`, `organize_exec.h` | 042 |
+| Scan's reconcile phase | `ScanEngine::run_reconcile` | 041 |
+| Remove — `rm`'s modes, `trash empty` | `remove_exec.h`'s `cmd_rm` | 053 |
+| Duplicates — exact and near groups | `duplicates.h`, `Database::get_exact_duplicates` | 053 |
+| People and faces, read | `list_people`, `get_images_for_person`, `search_faces` | 053 |
+| Face labelling | `set_face_person`, `identify_person`, `auto_label_face` | 053 |
+| Person / face / similar search | `SearchEngine`'s other three `SearchMode`s | 053 |
+| Glob and path selection on queries | `SearchQuery::matches`/`excludes` | 053 |
+| One image's tags, read | `get_tags_for_image` | 053 |
+| Tag and gallery lists with counts | `get_tag_counts`, `get_gallery_counts` | 053 |
+| Face model download | `models.h`'s `download_face_models` | 053 |
+| `thumbs clean` | `is_thumbnail_filename`; the loop itself is in `cli/` | 053 |
+| Activity log, read | nothing — `Database` writes the log and never reads it | 053 |
+
+Two of those are more than a missing entry point. The activity log has no
+reader anywhere in `core/`, so it is core work before it is ABI work. And
+query selection is an inconsistency inside the ABI rather than only a
+shortfall: `phig_thumbs_options` and `phig_faces_options` take
+`match`/`exclude` while `phig_query` does not, so a client can restrict a
+thumbnail run by glob but cannot search for a filename.
+
+Writes and operations also disagree on how a caller names its subject — the
+metadata writes take image ids because a GUI holds a selection, the operations
+take globs. Anything added above has to pick one deliberately.
+
+`ScanOptions::thumbs`/`faces` is the deliberate exclusion and must never be
+exposed: the ABI models the three as independent operations, and those flags
+refuse that.
+
+`cli/` links `phig-core` and includes `core/` headers directly rather than
+going through libphig. **The CLI is a peer of libphig over `core/`, not a
+wrapper around it** — it is phig running in a terminal, entitled to whatever
+`core/` has when core has it, which is the same standing plan 052 claims for
+`phigd`. Anything written as though the CLI sits on libphig is wrong.
 
 Pixel decoding is also absent. `gtk/CLAUDE.md` anticipates decode moving
 out-of-process; measurement (0 crashes in 12,684 probes) argues in-process is
