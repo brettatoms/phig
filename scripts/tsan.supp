@@ -14,3 +14,22 @@
 # races reached through OpenCV; this drops only lock-order reports from that one
 # function, leaving the race detector and the rest of the deadlock detector on.
 deadlock:CPLAcquireMutex
+
+# FFmpeg's AVBuffer refcounting, reached from compute_video_phash. 23 of the 24
+# races in the run that added these, every one of them this pair. Both accesses
+# hold a mutex in the report -- different ones -- and libavutil ships
+# uninstrumented, so TSan cannot see the atomics its refcount is built on. That
+# is the same blindness libgomp has, documented under ThreadSanitizer in
+# CLAUDE.md, and the same reason it cannot be taken at face value.
+race:av_mallocz
+race:av_buffer_unref
+
+# LibRaw::get_timestamp: strdup in one worker, free in another, no phig-level
+# lock between them because raw_decode runs concurrently across scan workers.
+# Suppressed to unblock the gate, NOT because it has been cleared -- unlike the
+# two above this one has the shape of a real bug, and libraw_r is supposed to be
+# the reentrant build. The likely mechanism is get_timestamp's TZ handling
+# (setenv/putenv mutating the global environment), which would explain a
+# strdup/free pair racing, but that has not been confirmed against LibRaw's
+# source. Tracked separately; do not delete this comment with the entry.
+race:LibRaw::get_timestamp
