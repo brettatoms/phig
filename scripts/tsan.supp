@@ -15,14 +15,21 @@
 # function, leaving the race detector and the rest of the deadlock detector on.
 deadlock:CPLAcquireMutex
 
-# FFmpeg's AVBuffer refcounting, reached from compute_video_phash. 23 of the 24
-# races in the run that added these, every one of them this pair. Both accesses
-# hold a mutex in the report -- different ones -- and libavutil ships
-# uninstrumented, so TSan cannot see the atomics its refcount is built on. That
-# is the same blindness libgomp has, documented under ThreadSanitizer in
-# CLAUDE.md, and the same reason it cannot be taken at face value.
-race:av_mallocz
-race:av_buffer_unref
+# FFmpeg's internal buffer machinery, reached from compute_video_phash. Ubuntu
+# ships libavcodec and libavutil uninstrumented, so TSan cannot see the atomics
+# their refcounting is built on and reports every allocation they hand to the
+# interceptors -- the same blindness libgomp has, documented under
+# ThreadSanitizer in CLAUDE.md. Both accesses in these reports hold a mutex,
+# just not one TSan can prove covers both.
+#
+# By library, not by symbol, because by symbol does not converge: suppressing
+# av_mallocz and av_buffer_unref removed 23 reports and uncovered 23 more on
+# av_frame_unref and av_frame_new_side_data_from_buf. The racy accesses are all
+# allocator interceptors (free, realloc, memset) called from these libraries,
+# which is what called_from_lib is for. A race in phig's own code is not called
+# from them, so this does not silence one.
+called_from_lib:libavcodec.so
+called_from_lib:libavutil.so
 
 # LibRaw::get_timestamp: strdup in one worker, free in another, no phig-level
 # lock between them because raw_decode runs concurrently across scan workers.
