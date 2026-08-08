@@ -69,7 +69,9 @@ void phig_c_compile_check(void) {
     {
         char path[4096];
         bool exists = false;
-        (void)phig_thumb_lookup(ctx, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 512, path, sizeof(path), &exists);
+        (void)phig_thumb_lookup(ctx,
+                                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                                512, path, sizeof(path), &exists);
     }
 
     {

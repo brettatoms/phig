@@ -34,21 +34,38 @@ fi
 # The version is part of the gate's result, so make it visible in CI logs.
 echo "using $tidy_bin ($("$tidy_bin" --version | awk '/version/{print $NF; exit}'))" >&2
 
-# GCC's own builtin-include dir, resolved rather than pattern-matched.
-gcc_builtin="$(g++ -print-file-name=include)"
-gcc_builtin_fixed="$(g++ -print-file-name=include-fixed)"
+# Canonicalize a path. `readlink -m` is GNU-only and macOS ships BSD readlink,
+# which has no -m. These are directories from a compiler's own search list, so
+# cd + `pwd -P` resolves them; a path that does not exist (include-fixed often
+# does not) keeps its literal spelling, which is enough — it only ever has to
+# compare equal to itself.
+canon() {
+    if [ -d "$1" ]; then (cd "$1" && pwd -P); else printf '%s\n' "$1"; fi
+}
 
 isystem=()
-while IFS= read -r dir; do
-    # Compare canonicalized paths: the search list spells dirs with ../ segments.
-    real="$(readlink -m -- "$dir")"
-    if [ "$real" = "$(readlink -m -- "$gcc_builtin")" ] ||
-        [ "$real" = "$(readlink -m -- "$gcc_builtin_fixed")" ]; then
-        continue
-    fi
-    isystem+=("-isystem$dir")
-done < <(g++ -E -x c++ - -v </dev/null 2>&1 |
-    awk '/#include <...> search starts/{f=1;next} /End of search list/{f=0} f{gsub(/^ +/,"");print}')
+if [ "$(uname -s)" = "Darwin" ]; then
+    # macOS has no GCC to interrogate — /usr/bin/g++ is a clang shim with no
+    # GCC search list — and the headers live in the SDK. AppleClang finds that
+    # implicitly, so compile_commands.json never names it and a clang-tidy from
+    # pip cannot find <cstddef> or even <unistd.h> without being told.
+    isystem+=("-isysroot" "$(xcrun --show-sdk-path)")
+else
+    # GCC's own builtin-include dir, resolved rather than pattern-matched.
+    gcc_builtin="$(g++ -print-file-name=include)"
+    gcc_builtin_fixed="$(g++ -print-file-name=include-fixed)"
+
+    while IFS= read -r dir; do
+        # Compare canonicalized paths: the search list spells dirs with ../ segments.
+        real="$(canon "$dir")"
+        if [ "$real" = "$(canon "$gcc_builtin")" ] ||
+            [ "$real" = "$(canon "$gcc_builtin_fixed")" ]; then
+            continue
+        fi
+        isystem+=("-isystem$dir")
+    done < <(g++ -E -x c++ - -v </dev/null 2>&1 |
+        awk '/#include <...> search starts/{f=1;next} /End of search list/{f=0} f{gsub(/^ +/,"");print}')
+fi
 
 if command -v run-clang-tidy >/dev/null 2>&1; then
     args=()
@@ -58,10 +75,17 @@ if command -v run-clang-tidy >/dev/null 2>&1; then
 fi
 
 # Fallback: invoke clang-tidy per file, failing if any file reports findings.
+#
+# Sources only, no headers, to match what the run-clang-tidy branch above
+# actually covers: it filters compile_commands.json, which holds translation
+# units and therefore no .h entries at all. Passing a header to clang-tidy
+# directly makes it the main file, which surfaces diagnostics in it that CI
+# never reports — so globbing headers here made the local gate fail while CI
+# passed. Headers are still analyzed as they are included by these sources.
 args=()
 for inc in "${isystem[@]}"; do args+=("--extra-arg=$inc"); done
 status=0
 while IFS= read -r file; do
     "$tidy_bin" -p build "${args[@]}" "$file" "$@" || status=1
-done < <(find core libphig cli -maxdepth 1 -type f \( -name '*.cpp' -o -name '*.h' \))
+done < <(find core libphig cli -maxdepth 1 -type f -name '*.cpp')
 exit "$status"

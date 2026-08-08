@@ -88,7 +88,8 @@ jobs:
 
       - name: clang-format
         run: |
-          find core libphig cli tests -maxdepth 1 -type f \( -name '*.cpp' -o -name '*.h' \) \
+          find core libphig cli tests -maxdepth 1 -type f \
+            \( -name '*.cpp' -o -name '*.h' -o -name '*.c' \) \
             -print0 | xargs -0 clang-format --dry-run --Werror
 
       - name: Configure (generate compile_commands.json + version.h)

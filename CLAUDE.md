@@ -100,11 +100,11 @@ collection:
 
 - **Formatting:** clang-format, Google style / 4-space / 100-col
   (`.clang-format`). CI's lint step globs `core libphig cli tests -maxdepth
-  1` (commit `6a13144` — `src/` no longer exists, this replaced a glob on
-  it). `vendor/` is excluded. Check with `clang-format --dry-run --Werror
-  <files>`. **`-maxdepth 1` means nested files are not covered** —
-  `libphig/include/phig/phig.h` in particular is not linted by CI; check it
-  manually.
+  1` for `*.cpp`, `*.h` and `*.c` (commit `6a13144` — `src/` no longer
+  exists, this replaced a glob on it). `vendor/` is excluded. Check with
+  `clang-format --dry-run --Werror <files>`. **`-maxdepth 1` means nested
+  files are not covered** — `libphig/include/phig/phig.h` in particular is
+  not linted by CI; check it manually.
 - **Warnings:** first-party code builds with `-Wall -Wextra`; configure with
   `-DPHIG_WERROR=ON` to make them fatal (CI does). Vendored code (`vendor/`)
   is a separate `phig-vendor` target without these flags.
@@ -141,6 +141,34 @@ lacks, the capability is added to libphig and tracked in `plans/`.
 isn't specific to rendering a UI — filtering, formatting, business rules —
 goes in `core/` behind a `libphig` entry point, not duplicated in `gtk/` or
 any other client.
+
+## Platform boundaries
+
+**The engine is portable; the clients are not.** `core/` and `libphig/` must
+compile cleanly and pass their tests on Linux, macOS and Windows. Code that
+genuinely has to differ per platform belongs behind a narrow split in the one
+file that owns that concern (`paths.cpp`, `lockfile.cpp`), never as `#ifdef`s
+threaded through the engines.
+
+Each desktop client targets exactly one platform and may use it fully,
+including platform-specific optimizations — that is the point of having three
+rather than one portable client.
+
+| Path | Platform |
+|---|---|
+| `core/`, `libphig/` | Linux, macOS, Windows |
+| `gtk/` | Linux — GTK4/libadwaita |
+| `macos/` | macOS — SwiftUI/AppKit. Planned, see 047 |
+| `windows/` | Windows — WinUI 3. Planned, see 047 |
+
+Being platform-specific buys a client native UI and native performance work.
+It does not buy it a private path into phig's data: every client still reads
+phig through `libphig`'s C ABI only, per Interface discipline above.
+
+Current state: macOS builds and tests green in CI. Windows is not yet a
+supported target — plan 039 tracks the remaining port, where `lockfile.cpp` is
+a rewrite and `paths.cpp` needs a platform split. `cli/` still has POSIX
+surface (`unistd.h`) and has not been audited for portability.
 
 ## CLI command reference
 
