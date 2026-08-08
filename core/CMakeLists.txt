@@ -21,6 +21,7 @@ add_library(phig-core STATIC
     dates.cpp
     duplicates.cpp
     raw.cpp
+    image_codec.cpp
     lockfile.cpp
     parallel.cpp
     scan_engine.cpp
