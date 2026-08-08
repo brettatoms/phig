@@ -40,9 +40,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite (~1s), 636 tests
+./build/phig-tests        # fast suite (~1s), 686 tests
 ./build/phig-perf-tests   # performance suite (~3s), 4 tests
-ctest --test-dir build --parallel   # both — 640, what CI runs (~7s; 48s without --parallel)
+ctest --test-dir build --parallel   # both — 690, what CI runs (~7s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -51,9 +51,15 @@ Optionally install [mise](https://mise.jdx.dev/) and run `mise install`
 CI pins — not required for a build, only for the lint gate to agree with CI.
 
 Performance tests live in a separate target so the everyday suite stays
-fast. One test is a pre-existing, unrelated skip:
-`ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing`. If a single
-unattributed failure shows up instead, check
+fast. Which tests skip depends on the machine, so a skip count only matches
+an environment, not the tree. With face models present in
+`~/.cache/phig/models`, the only skip is
+`ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing`. Without them that
+test runs and nine others skip instead — `ScanEngine.DetectsFacesWithMultipleWorkers`
+plus the eight `FacesEngineRun` cases — each naming the missing model file.
+`MoveFileTest.CrossDevice*` (three) skips unless the temp directory is on a
+different filesystem from the test's working directory. If a single
+unattributed failure shows up, check
 `DatabaseConcurrency.ConcurrentMigrationIsSafe` first — see Known issues
 below before assuming your change caused it.
 
@@ -331,7 +337,9 @@ Three `DatabaseTest` cases fail on master — `UpdatePathOntoStaleDestClearsItsF
 `Failed to delete face vectors: SQL logic error` from
 `delete_faces_for_image`'s DELETE against the `vec_faces` vec0 virtual table.
 Reproducible from a clean build at `3177320`, so a change that leaves exactly
-these three failing has not caused them. Diagnosis in progress: plan 046.
+these three failing has not caused them. **Platform-dependent**: all three pass
+on macOS at `7c59d2d` against Apple's system SQLite 3.51.0, so a clean run
+proves the machine, not the fix. Diagnosis in progress: plan 046.
 
 `DatabaseConcurrency.ConcurrentMigrationIsSafe` was a genuine 10% flake
 caused by `sqlite3_busy_timeout` being set after `PRAGMA

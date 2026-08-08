@@ -1,18 +1,15 @@
 ---
 name: faces.id Rowid Reuse
-status: designing
+status: planned
 created: 2026-08-07
 description: >
   `faces.id` is `INTEGER PRIMARY KEY` without `AUTOINCREMENT`, so SQLite hands a
   deleted rowid back to the next insert. Any read-then-write that remembers a
   face id across a gap can land on a different face than the one it read —
-  silently attaching a person label to a face that was never compared.
-  `identify_person` no longer depends on the writer lock for this — its write
-  matches on the embedding it compared rather than the row id (plan 031) — but
-  that is one caller defending itself, not the reuse being fixed. `phig face
-  name` still relies on the lock and is therefore unprotected against plan 031's
-  lock-free ABI operations. Schema v8 migration to AUTOINCREMENT removes the
-  hazard at the source; deciding whether the lock can then come off follows.
+  silently attaching a person label to a face that was never compared. Schema v8
+  migrates the column to AUTOINCREMENT, which removes the hazard at the source
+  and lets `face name`, `face identify` and `face rebuild` drop the writer lock;
+  the lock-free rebuild then has to tolerate an image deleted underneath it.
 ---
 
 # 045 — faces.id Rowid Reuse
@@ -71,43 +68,156 @@ hazard the lock was supposed to hide. Two changes landed with 031 in response:
   is the same read-then-write window, and unlike identify it has no embedding
   from the stored row to match on, so it cannot defend itself the same way.
 
-**So the remaining exposure is `face name` against a lock-free ABI faces
-operation.** That is narrow — the window is a SELECT plus an INSERT, widened
-only when `get_or_create_person` waits on the busy timeout — and it is the one
-this plan removes at the source. Fixing it before then would mean either giving
-`find_closest_face` a row-returning variant so `name` can match on the embedding
-too, or making the ABI operation take the lock, which reverses 031's design.
+So the remaining exposure is `face name` against a lock-free ABI faces
+operation. That is what this plan removes at the source.
+
+## Measurements
+
+Harness at `docs/plans/2026-08-07-045-rowid-reuse-bench.cpp` (build command in
+its header), built against the same Apple SQLite 3.51.0 and vendored sqlite-vec
+the build links, using phig's `faces`/`vec_faces`/`images`/`people` DDL and
+phig's connection setup (WAL, 30s busy timeout, `foreign_keys=ON`). macOS arm64,
+2026-08-07. Every number below is re-derivable by running it.
+
+**The migration is cheap and linear.** 2.0 µs/row — 2.01s for 1,000,000 faces,
+1.9 µs/row at 50,000. It preserves row count, `max(id)`, `person_id`, and the
+`vec_faces` row count; leaves zero orphaned vectors; seeds `sqlite_sequence` to
+`max(id)` without being told to; KNN still returns a row afterward; and a
+delete-then-insert at the tail no longer reuses.
+
+**AUTOINCREMENT costs about 5% on the insert path**, which is what `face
+rebuild` pays forever after (200,000 inserts into an empty table, 5 reps, min,
+configurations alternated rep by rep):
+
+| | plain rowid | AUTOINCREMENT | delta |
+|---|---|---|---|
+| faces only | 0.662s | 0.711s | +7.5% |
+| faces + vec_faces | 1.566s | 1.646s | +5.1% |
+
+**`PRAGMA foreign_keys=OFF` is ignored inside the migration transaction**, as
+expected — `Database::init_schema` opens `BEGIN IMMEDIATE` around every
+migration step and the pragma is a no-op in a transaction. The recipe below
+runs to completion anyway, because `faces` is a pure FK child.
+
+**Test state at `7c59d2d`:** 690 tests pass (`ctest --parallel`, 12.9s), 12
+skipped (face models absent, cross-device move). The three `DatabaseTest`
+failures in CLAUDE.md's Known issues do not reproduce on macOS against Apple
+SQLite 3.51.0, so that failure is platform- or version-specific — see 046.
 
 ## Scope
 
-- Schema v8: migrate `faces.id` to `INTEGER PRIMARY KEY AUTOINCREMENT`, which
-  makes SQLite track the high-water mark in `sqlite_sequence` and never reuse.
-  Forward-only, like every other phig migration.
-- Decide whether `face identify` and `face rebuild` can then drop the writer
-  lock. AUTOINCREMENT removes the *wrong-face* hazard; a deleted-and-not-reused
-  id is already harmless (`set_face_person` returns false and identify does not
-  count it). That likely makes the lock unnecessary, but it is a data-safety
-  claim that needs its own test rather than an inference.
-- Invert `RowidReuseMeansAStaleIdCanHitADifferentFace`, and add a test that a
-  delete-then-reinsert in the phase gap no longer collides.
+### 1. Schema v8 — `faces.id` to AUTOINCREMENT
 
-## Open questions
+Change the fresh-schema DDL, bump `CURRENT_SCHEMA_VERSION` to 8, and add the
+migration as a plain string in `migrations()`. No C++ special-casing (as v6
+needed) — the recipe works with `foreign_keys` on:
 
-- **Migration cost on a large table.** `AUTOINCREMENT` cannot be added with
-  `ALTER TABLE`; it needs a new table plus a copy. On a collection with millions
-  of faces that is a long one-time migration, and `vec_faces` references face
-  ids, so it has to be kept consistent through the copy.
-- **Does `vec_faces` need the same treatment?** It is a vec0 virtual table keyed
-  on `face_id`; whether it has its own reuse behavior needs checking rather than
-  assuming.
-- **Any other table with the same shape.** `images.id` and `people.id` are
-  plausibly identical declarations. Worth an audit in the same pass — the same
-  argument applies wherever an id is remembered across a gap.
+```sql
+CREATE TABLE faces_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+  embedding BLOB NOT NULL, x INTEGER, y INTEGER, width INTEGER, height INTEGER,
+  person_id INTEGER REFERENCES people(id));
+INSERT INTO faces_new(id, image_id, embedding, x, y, width, height, person_id)
+  SELECT id, image_id, embedding, x, y, width, height, person_id FROM faces;
+DROP TABLE faces;
+ALTER TABLE faces_new RENAME TO faces;
+CREATE INDEX idx_faces_image ON faces(image_id);
+```
+
+Columns are listed explicitly rather than `SELECT *` because the two origins
+differ in column order: the pre-migration path creates `faces` without
+`person_id` and adds it by `ALTER TABLE`. `vec_faces` is not touched — ids are
+preserved, so every `face_id` it holds stays valid.
+
+### 2. Drop the writer lock from `face name`, `identify` and `rebuild`
+
+`cli/main.cpp` takes it for all three. After v8 none of them needs it:
+
+- `name`'s only reason was the reuse hazard, which is gone.
+- `identify` already documents the lock as throughput, not correctness — its
+  write re-checks the embedding, proven by
+  `ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch`.
+- `rebuild`'s delete-then-reinsert is already atomic per image under
+  `BEGIN IMMEDIATE` (`core/faces_engine.cpp`), so two concurrent rebuilds
+  serialize per image and each converges on a complete face set.
+
+The lock never gave full exclusion regardless: libphig's faces operation takes
+none, so a CLI rebuild and an ABI faces op already run together.
+
+### 3. A lock-free rebuild must tolerate a vanishing image
+
+This is what makes 2 safe, not a nicety. Today the lock is the only thing
+stopping `phig rm --hard` from deleting image rows during a rebuild. Without it,
+the worker reads `image_id` outside its transaction, `rm` deletes the row, and
+the next `insert_face` violates the foreign key — measured, `rc=19 FOREIGN KEY
+constraint failed`. `parallel_for_each` stores the first exception and sets
+`failed`, which every other worker checks at the top of its loop, so **one
+deleted image abandons the entire rebuild**.
+
+Move the image-existence check inside the per-image transaction. `BEGIN
+IMMEDIATE` holds the write lock, so a re-check inside it cannot be invalidated
+by another writer. If the image is gone: roll back, skip it, and count and
+report it the way the undecodable-file path already does. Do not throw.
+
+### 4. `face name` must not report success it did not achieve
+
+It discards `set_face_person`'s return and prints `Named face as "X"`
+unconditionally. `database.h` documents that return as "false when no row
+matched — the face was deleted since the caller looked it up", and names this
+exact misuse. Check it and report honestly.
+
+## Tests
+
+- Invert `RowidsAreReusedAfterADelete`: the next insert must get a fresh id.
+- Re-target `AReusedRowidIsNotLabeledBecauseItsEmbeddingChanged` — its
+  `ASSERT_EQ(reused, doomed)` premise dies with v8. The embedding guard stays:
+  `AnUnchangedFaceIsStillLabeled` shows it is also a compare-and-set against
+  another labeler, not only a reuse guard.
+- New: a v7 database with faces, person labels and vectors migrates to v8 with
+  ids, labels and `vec_faces` rows intact, and inserts after it do not reuse.
+- New: `face name` concurrent with a rebuild does not name a face it did not
+  match.
+- New: a rebuild skips, rather than aborts, when an image is deleted mid-run.
+
+## Resolved questions
+
+- **Migration cost.** 2.0 µs/row, linear to 1M. Not a concern at any collection
+  size phig targets, and the ongoing cost is ~5% per face insert.
+- **Does `vec_faces` need the same treatment?** No. `insert_face` always
+  supplies `face_id` explicitly from `faces.id`, so vec0 never generates one and
+  has no independent reuse behavior — it inherits `faces.id`'s. Its shadow
+  tables (`vec_faces_rowids`, `vec_faces_chunks`) use AUTOINCREMENT for their
+  own bookkeeping, which is not the id phig hands around.
+- **Any other table with the same shape?** `images.id`, `people.id`, `tags.id`,
+  `operations.id` and `operation_entries.id` are all bare `INTEGER PRIMARY KEY`.
+  They are deliberately out of scope, because the recipe above is **not** safe
+  on them: `faces` is the only one that is a pure FK child.
+  - `images`, `tags` and `operations` have children with `ON DELETE CASCADE`.
+    `DROP TABLE images` succeeds and the implicit `DELETE FROM` cascades —
+    measured: 5 faces and 1 image_tag silently deleted, 5 orphaned `vec_faces`
+    rows left behind, no error.
+  - `people` is referenced by `faces.person_id` with no `ON DELETE` action, so
+    the drop aborts: `rc=19 FOREIGN KEY constraint failed`.
+
+  The 12-step ALTER procedure avoids both by requiring `foreign_keys=OFF`, which
+  cannot be set inside the transaction the migration loop opens. Migrating those
+  four means restructuring that loop to toggle the pragma outside the
+  transaction — machinery every migration runs through. That is its own plan,
+  and it wants a demonstrated hazard first.
 
 ## Relationship to other plans
 
 - **Plan 031** — its ABI operations are lock-free, which is what makes this
   reachable outside the CLI. `core/faces_engine.h` points here.
 - **Plan 044** — the comparison phase this lock is held across is the same one
-  044 wants on `vec_faces` KNN. Fixing either shortens the window.
+  044 wants on `vec_faces` KNN.
+- **Plan 046** — an orphaned `vec_faces` row plus a reused id gives `UNIQUE
+  constraint failed on vec_faces primary key` from `insert_face`, and
+  `find_closest_face` returns the id of a face that no longer exists.
+  AUTOINCREMENT removes the collision but not the dead-id read, which stays 046's.
+- **Plan 047** — its People/Faces screen names unnamed faces from a GUI, which
+  requires libphig to export face ids held across human-scale time. A client
+  cannot use the embedding-match defense, because it has no embedding. This plan
+  is the prerequisite.
 - **Plan 010** — introduced the faces schema and `vec_faces`.
