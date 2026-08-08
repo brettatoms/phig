@@ -4,6 +4,8 @@
 #include <fstream>
 #include <string>
 
+#include "duplicates.h"
+#include "hasher.h"
 #include "image_codec.h"
 #include "image_codec_internal.h"
 #include "scanner.h"
@@ -181,6 +183,58 @@ TEST(ImageIODecode, ReturnsEmptyMatForMissingFile) {
     cv::Mat img;
     EXPECT_NO_THROW({ img = codec_decode_imageio("/nonexistent/file.heic"); });
     EXPECT_TRUE(img.empty());
+}
+
+// The invariant that actually matters across platforms: a phash computed on
+// macOS is compared against one computed on Linux, so the two decoders must
+// produce the same hash. Per-pixel equality is deliberately NOT the assertion
+// here -- see the test below for why it cannot be.
+//
+// Caveat on strength: these fixtures are a flat field with one marker block,
+// so their phash is nearly all zeros and agreement is easy. A photographic
+// fixture would exercise this properly; one arrives with plan 049's real
+// Photos-library files, and this test should be re-pointed at it then.
+TEST(CrossDecoderAgreement, PerceptualHashesMatch) {
+    for (const char* name : {"orient_1.heic", "orient_6.heic", "exif_sample.heic", "sample.avif"}) {
+        cv::Mat apple = codec_decode_imageio(fixture(name));
+        cv::Mat heif = codec_decode_libheif(fixture(name));
+        ASSERT_FALSE(apple.empty()) << name;
+        ASSERT_FALSE(heif.empty()) << name;
+
+        PhashResult from_apple = compute_phash(apple);
+        PhashResult from_heif = compute_phash(heif);
+        EXPECT_EQ(hamming_distance(from_apple.hash, from_heif.hash), 0)
+            << name << ": the two decoders would hash this file differently";
+    }
+}
+
+// The decoders do not agree pixel-for-pixel, and cannot: both fixtures are
+// 4:2:0, so chroma is stored at half resolution and a sample straddling a
+// sharp colour edge is upsampled differently by each implementation. Measured
+// on these fixtures: agreement is exact across the flat interior, and the
+// disagreements are confined to the marker block's boundary -- 117 of 60,000
+// channel values (0.195%), peaking at 217/255 on the corner pixel itself.
+//
+// So the bound asserted is on how *widespread* the disagreement is, not how
+// large. A backend that started colour-managing, or switched colour matrix,
+// would shift the whole image and blow through this immediately.
+TEST(CrossDecoderAgreement, DisagreementIsConfinedToChromaSubsampledEdges) {
+    for (const char* name : {"orient_1.heic", "orient_6.heic", "exif_sample.heic", "sample.avif"}) {
+        cv::Mat apple = codec_decode_imageio(fixture(name));
+        cv::Mat heif = codec_decode_libheif(fixture(name));
+        ASSERT_FALSE(apple.empty()) << name;
+        ASSERT_EQ(apple.size(), heif.size()) << name;
+        ASSERT_EQ(apple.type(), heif.type()) << name;
+
+        cv::Mat diff;
+        cv::absdiff(apple, heif, diff);
+        cv::Mat flat = diff.reshape(1);
+        const int total = flat.rows * flat.cols;
+        const int disagreeing = cv::countNonZero(flat > 8);
+        EXPECT_LT(100.0 * disagreeing / total, 1.0)
+            << name << ": " << disagreeing << " of " << total
+            << " channel values differ by more than 8 -- too widespread to be edge chroma";
+    }
 }
 
 #endif  // __APPLE__
