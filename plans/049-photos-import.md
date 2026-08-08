@@ -46,11 +46,56 @@ non-path-backed asset would touch every one of them, for a macOS-only feature.
 The cost of exporting is honest and must be stated to the user: **it duplicates
 the storage.** A 200 GB Photos library becomes 200 GB more on disk.
 
-## Dependency on 048
+## Dependencies: 048 (shipped) and 038 (not yet)
 
-Modern iPhone photos are HEIC, which phig cannot currently decode (plan 048,
-measured). Importing before 048 lands produces rows with no thumbnail, no phash
-and no date. 048 is a hard prerequisite, not a nicety.
+**048 shipped 2026-08-08.** It was a hard prerequisite and the probe shows why:
+**92% of the measured library is HEIC** (1,739 of 1,894). Importing before 048
+would have produced 1,739 rows with no thumbnail, no phash and no date.
+
+**038 is now also a prerequisite.** Live Photos are 21% of the measured library,
+and they are to be treated the way a RAW is treated with its sidecar — always
+paired, still indexed, MOV a carried attachment. That is 038's model, so this
+plan cannot export them correctly until it lands. 038's own blockers cleared on
+the same day: 048 made the still decodable, and this probe supplies real files.
+
+## What the probe measured
+
+A read-only PhotoKit survey (`macos/PhigProbe`) run 2026-08-08 against a
+1,894-asset library. **Read the two halves below differently.** The first
+generalizes; the second describes one library and must not be used to scope the
+feature — a 200k-asset library curated over twenty years will look nothing like
+it.
+
+### Capability findings — these generalize
+
+- **`PHAssetResource.fileSize` is readable** (via KVC; not public API, so read
+  defensively). An up-front size estimate is therefore possible, which settles
+  open question 4.
+- **PhotoKit reports Live Photo pairing directly**, so the importer never has to
+  infer it from filenames.
+- **Apple's Content Identifier survives export in both halves.** Verified on
+  four exported pairs: the MOV's `com.apple.quicktime.content.identifier`
+  appears in its HEIC every time, and a Live still carries exactly one more
+  UUID-shaped string than an ordinary still. This is what makes 038's
+  identifier-based pairing work on exported files rather than only on originals.
+- **`.fullSizePhoto`/`.fullSizeVideo` marks an edited asset**, so "was this
+  adjusted in Photos" is detectable per asset.
+- **Paired videos are a large fraction of the disk cost.** Measured: originals
+  4.63 GB, paired videos 1.35 GB — pairing costs **29% more** than stills alone.
+  A size estimate that counts only `.photo`/`.video` understates the import,
+  and an early version of this probe made exactly that mistake.
+- **iCloud-only originals are a real state, not a corner case.** Every one of 40
+  sampled assets required downloading, consistent with "Optimize Mac Storage".
+  Design for download-by-default.
+
+### One library's numbers — do NOT scope from these
+
+1,894 assets: 92% HEIC, 21% Live Photos, 8 albums, 0 photos in more than one
+album, 7 edited, 0 shared or iTunes-synced, dated 2025-01 to 2026-08.
+
+Useful for end-to-end validation, useless for deciding whether the
+album-to-gallery collision rule matters — it plainly does for someone, and this
+library simply does not exercise it.
 
 ## This plan creates the app
 
@@ -191,15 +236,16 @@ bundle, authorization, and a real library. So the tests split:
 2. **Album-to-gallery collision.** phig allows one gallery per image; Photos
    allows many albums per photo. First album wins, deepest folder path wins, or
    skip multi-album photos and report them?
-3. **Live Photos.** An asset may carry a paired video resource. Export the still
-   only and let plan 038 pair the MOV later, or export both now? Exporting the
-   MOV before 038 exists means it indexes as a separate video row, which 038
-   would then have to migrate — 038 already lists that migration as an open
-   question.
-4. **Size estimate before import.** `PHAssetResource` exposes no public file
-   size, so the "this will use N GB" warning cannot be computed exactly up
-   front. Estimate from asset count, sum incrementally and warn on the fly, or
-   ask the user to confirm a rough figure?
+3. ~~**Live Photos.**~~ **Answered: export both, always paired**, on plan 026's
+   master/attachment model — the still is the indexed row, the MOV a carried
+   attachment, exactly as a RAW carries its sidecar. This makes 038 a
+   prerequisite rather than a follow-up, since exporting MOVs before pairing
+   exists would create spurious video rows for a fifth of the library.
+4. ~~**Size estimate before import.**~~ **Answered.** `fileSize` is readable
+   through KVC, so the total can be summed before a byte moves. It must include
+   `.pairedVideo`, which is 29% of the cost in the measured library. Read
+   defensively and fall back to summing during export if the key ever
+   disappears.
 5. **Where the destination defaults to.** `~/Pictures/phig/`, a sibling of the
    Photos library, or force an explicit choice with no default?
 6. **Shared and syndication libraries.** `com.apple.photolibraryd` preferences

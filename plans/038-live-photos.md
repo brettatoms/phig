@@ -8,21 +8,25 @@ description: >
   plan 026's RAW+JPEG model. Pairing must key on Apple's Content Identifier
   UUID (still: Apple MakerNote 0x0011; MOV:
   `com.apple.quicktime.content.identifier`), not same-basename, which would
-  mis-pair the Canon `MVI_*.MOV` clips already in the collection. Not
-  scheduled: the collection contains zero Live Photos today, so there is
-  nothing to validate against. Three open decisions plus a real-file source
-  come before implementation.
+  mis-pair the Canon `MVI_*.MOV` clips already in the collection. Unblocked
+  2026-08-08: 048 made the HEIC still decodable, and 049's Photos probe found
+  390 Live Photos to validate against. Now on 049's critical path, since 21% of
+  a real library is Live Photos and they must import as master+attachment. Two
+  open decisions remain — identifier fallback and MOV row migration.
 ---
 
 # 038 — Apple Live Photos
 
-**Status is `designing`, and the build is gated on files existing.** As of
-2026-08-06 the collection has zero HEIC rows and nine MOV rows, all of them
-Canon camera clips (`MVI_*.MOV`, 2008–2014) — no Live Photos. Building against
-synthetic fixtures alone would break the project's rule that data-safety
-changes ship with real-behavior tests. This plan exists to record the design
-and, more importantly, the Content Identifier finding, so neither has to be
-rediscovered.
+**Status is `designing`; the file-availability gate has lifted.** This plan was
+written on 2026-08-06 when the collection had zero HEIC rows and nine MOV rows,
+all Canon camera clips (`MVI_*.MOV`, 2008–2014) and no Live Photos — building
+against synthetic fixtures alone would have broken the project's rule that
+data-safety changes ship with real-behavior tests.
+
+That gate is gone. On 2026-08-08 plan 049's Photos probe measured 390 Live
+Photos in a 1,894-asset library, and plan 048 made the HEIC still decodable.
+Real files and a working decoder both exist, so what is left is this plan's own
+two open decisions.
 
 ## Goal
 
@@ -116,23 +120,39 @@ still/MOV pairing, which remains this plan's subject.
 
 ## Before this becomes implementable
 
-- **A real source of Live Photos.** Whether an iPhone feeding this collection,
-  or an ingested library (iCloud/Takeout export — note Takeout mangles naming,
-  which strengthens decision 1). Without files, goal 4 in particular cannot be
-  verified: round-trip fidelity means an actual Apple client accepting the
-  result.
-- **Resolve decision 3 by measurement**, since it may insert a prerequisite
-  plan ahead of this one.
-- **Plan 031 (libphig operations surface)** for goal 3 — the GTK client cannot
-  surface a Live badge or play motion until libphig exposes the pairing.
-  031 is itself still `designing`.
+**All three of these cleared on 2026-08-08.** This plan was blocked on evidence
+it now has.
+
+- ~~**A real source of Live Photos.**~~ Cleared. Plan 049's read-only Photos
+  probe found **390 Live Photos** in a 1,894-asset library — 21% of it. That is
+  a development corpus and a validation corpus in one. The probe can export
+  samples with their identifier metadata intact, since it writes original
+  resource bytes.
+- ~~**Resolve decision 3 by measurement.**~~ Cleared, and it did insert a
+  prerequisite plan: OpenCV cannot decode HEIC, and plan 048 is the decode tier
+  this decision predicted would be needed. 048 shipped 2026-08-08, so the still
+  is now decodable.
+- ~~**Plan 031.**~~ Stale as written: 031 completed 2026-08-07.
+
+What remains is this plan's own two open decisions — identifier fallback and
+MOV row migration — neither of which is blocked by anything external.
+
+### Why this is now on 049's critical path
+
+Plan 049 imports a Photos library, and Live Photos are not a rare corner of
+one: 21% in the library measured. They are to be treated the way a RAW is
+treated with its sidecar — always paired, the still indexed, the MOV a carried
+attachment — which is exactly this plan's model. So 049 cannot export them
+correctly until this lands, and 049 depends on it.
 
 ## Dependencies
 
 Depends on 025 (sidecar carry machinery), 026 (the master/attachment model and
 its scan transitions), 023 (relink primitive for demotion). Goal 3 additionally
-depends on 031. Also depends on 048, which makes the HEIC still decodable —
-decision 3, previously an open question, resolved as a hard prerequisite.
+depends on 031 (completed). Also depends on 048, which makes the HEIC still
+decodable — decision 3, previously an open question, resolved as a hard
+prerequisite and shipped. Plan 049 depends on this plan in turn: it cannot
+export Live Photos as master+attachment until the pairing exists.
 
 ## Scope notes
 

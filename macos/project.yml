@@ -1,0 +1,43 @@
+name: Phig
+
+# Generated with `xcodegen generate`; Phig.xcodeproj is gitignored. This spec is
+# the checked-in source of truth — a pbxproj diffs badly and is error-prone to
+# edit by hand.
+
+options:
+  bundleIdPrefix: org.banzai.phig
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.3.0"
+    # No Developer ID on this machine, so builds sign ad-hoc to run locally.
+    # TCC ties a Photos grant to the app's code identity, so a rebuild can
+    # invalidate the grant and re-prompt. That is a development annoyance, not
+    # a correctness problem.
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: "YES"
+    CODE_SIGNING_ALLOWED: "YES"
+
+targets:
+  PhigProbe:
+    type: application
+    platform: macOS
+    sources:
+      - path: PhigProbe
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.banzai.phig.probe
+        INFOPLIST_FILE: PhigProbe/Info.plist
+        ENABLE_HARDENED_RUNTIME: "YES"
+        # libphig is built by the repo's own CMake build, not by Xcode. These
+        # point at that output; the rpath entry is what lets the bundle find
+        # the dylib at runtime without installing it.
+        SWIFT_OBJC_BRIDGING_HEADER: PhigProbe/PhigProbe-Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(SRCROOT)/../libphig/include
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/../build
+        LD_RUNPATH_SEARCH_PATHS: $(SRCROOT)/../build
+        OTHER_LDFLAGS: -lphig
