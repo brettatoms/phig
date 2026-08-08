@@ -52,6 +52,41 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure --parallel
 
+  # gtk/ is a separate CMake project that consumes phig through pkg-config
+  # rather than by source path, so this installs libphig first and points
+  # PKG_CONFIG_PATH at it. Linux only — gtk/ is the Linux client (see
+  # "Platform boundaries" in CLAUDE.md).
+  gtk:
+    name: build & test (gtk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
+            libgtest-dev libspdlog-dev libraw-dev \
+            libgtk-4-dev libadwaita-1-dev
+
+      - name: Build and install libphig
+        run: |
+          cmake -B build -DPHIG_WERROR=ON
+          cmake --build build --parallel
+          cmake --install build --prefix "$PWD/prefix"
+
+      - name: Build gtk client
+        run: |
+          PKG_CONFIG_PATH="$PWD/prefix/lib/pkgconfig" \
+            cmake -S gtk -B gtk/build
+          cmake --build gtk/build --parallel
+
+      - name: Test gtk client
+        run: ctest --test-dir gtk/build --output-on-failure --parallel
+
   lint:
     name: lint (clang-format + clang-tidy)
     runs-on: ubuntu-latest

@@ -121,9 +121,11 @@ collection:
     against the absolute path, so a leading `^` matches nothing and silently
     suppresses every finding in phig's own headers — which is what it did,
     hiding 16 of them, until commit `b89d6e8`'s follow-up.
-- **CI:** `.github/workflows/ci.yml` builds + tests on ubuntu-latest and
-  macos-latest (with `-DPHIG_WERROR=ON`) and runs the lint gate. GitHub
-  Actions are pinned to full commit SHAs.
+- **CI:** `.github/workflows/ci.yml` runs three jobs — build + test on
+  ubuntu-latest and macos-latest (with `-DPHIG_WERROR=ON`), a gtk job that
+  installs libphig and then builds and tests `gtk/` against it through
+  pkg-config, and the lint gate. GitHub Actions are pinned to full commit
+  SHAs.
 
 ## Tech stack
 
