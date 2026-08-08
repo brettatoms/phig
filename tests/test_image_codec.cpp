@@ -198,6 +198,39 @@ TEST(CodecExif, ReturnsEmptyBlobForMissingFile) {
     EXPECT_TRUE(blob.empty());
 }
 
+// The dispatch in decode_image_with_warning: whichever backend the platform
+// selects, a HEIC must come out of the scan path decoded and upright.
+TEST(CodecDecodeIntegration, DecodeImageHandlesHeic) {
+    DecodeResult result = decode_image_with_warning(fixture("orient_1.heic"));
+    EXPECT_FALSE(result.img.empty());
+    EXPECT_TRUE(result.warning.empty()) << result.warning;
+    EXPECT_EQ(result.img.cols, 200);
+    EXPECT_EQ(result.img.rows, 100);
+}
+
+TEST(CodecDecodeIntegration, DecodeImageHandlesAvif) {
+    DecodeResult result = decode_image_with_warning(fixture("sample.avif"));
+    EXPECT_FALSE(result.img.empty());
+    EXPECT_TRUE(result.warning.empty()) << result.warning;
+}
+
+TEST(CodecDecodeIntegration, HeicOrientationIsAppliedOnTheScanPath) {
+    DecodeResult result = decode_image_with_warning(fixture("orient_6.heic"));
+    ASSERT_FALSE(result.img.empty());
+    EXPECT_EQ(result.img.cols, 100) << "orientation was not applied on the scan path";
+    EXPECT_EQ(result.img.rows, 200);
+}
+
+// An undecodable HEIC has to say why. Before plan 031 the thumbs path collapsed
+// every failure into a bare bool; a silent skip here would be the same defect.
+TEST(CodecDecodeIntegration, ReportsAReasonWhenAHeicCannotBeDecoded) {
+    std::string path = write_garbage("bad_integration.heic");
+    DecodeResult result = decode_image_with_warning(path);
+    EXPECT_TRUE(result.img.empty());
+    EXPECT_FALSE(result.warning.empty()) << "an undecodable HEIC must report a reason";
+    fs::remove(path);
+}
+
 #ifdef __APPLE__
 
 // ImageIO is the production decoder on macOS, so its output has to be

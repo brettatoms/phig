@@ -19,6 +19,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "image_codec.h"
 #include "log.h"
 #include "raw.h"
 #include "scanner.h"
@@ -266,9 +267,20 @@ void install_cv_error_handler() {
 DecodeResult decode_image_with_warning(const std::string& path) {
     DecodeResult result;
 
-    if (is_raw_extension(std::filesystem::path(path).extension().string())) {
+    const std::string ext = std::filesystem::path(path).extension().string();
+
+    if (is_raw_extension(ext)) {
         result.img = raw_decode(path);
         if (result.img.empty()) result.warning = "Cannot decode RAW file: " + path;
+        return result;
+    }
+
+    // HEIC/HEIF/AVIF: OpenCV's imgcodecs links no codec for these, so they
+    // reach cv::imread only to be rejected. Handled the same way as RAW —
+    // a dedicated decoder behind a narrow, never-throwing function.
+    if (is_codec_extension(ext)) {
+        result.img = codec_decode(path);
+        if (result.img.empty()) result.warning = "Cannot decode image: " + path;
         return result;
     }
 
