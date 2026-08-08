@@ -107,6 +107,17 @@ defensible. Unresolved, and out of scope for plan 031.
   `SOVERSION`.** `SOVERSION` is the major alone; an additive, backward
   -compatible change keeps the soname so existing callers don't need a
   rebuild. Only an incompatible change bumps `SOVERSION`/`MAJOR`.
+- **`phig_op_progress` cannot gain a field.** It is caller-allocated and filled
+  by `phig_op_poll`, with no size or version member, so a client built against
+  an older header would have a newer `libphig.so` write past the end of its
+  buffer — corruption the client cannot detect, not an error it can check for.
+  A new field therefore means a new struct and a new poll symbol
+  (`phig_op_progress2` / `phig_op_poll2`), which is additive and keeps the
+  soname. Adding a size member to the existing struct is the cleaner fix and is
+  free only while nothing outside the repo links libphig (plan 040); that window
+  closes the moment a client ships against it. Note `phig_op_stage` has the
+  provision the struct lacks — "append only, never renumber" — so enums may grow
+  where the record may not.
 - **The export lists match on the `phig_` prefix, not on a list of names.**
   `phig.version` is `global: phig_*` and `phig.exported_symbols` is `_phig_*`,
   so a new entry point is exported by being named `phig_something` and needs no
