@@ -12,6 +12,7 @@ add_library(phig-core STATIC
     paths.cpp
     config.cpp
     settings.cpp
+    organize_engine.cpp
     organize_exec.cpp
     organize_plan.cpp
     remove_exec.cpp

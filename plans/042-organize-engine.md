@@ -145,17 +145,48 @@ with no soname bump, so neither direction is foreclosed.
 
 ### 4. Both cp and mv get the plan phase
 
-Copy is additive to the *database*, not to the filesystem: `organize_exec.h:14-17`
-records that on copy, "if `dest` already exists it is backed up first (to a
-unique sibling) so a DB failure can restore it." So a copy can destroy a
-destination file under `overwrite`, and wants the same preview as a move. Two
-shapes for one engine would cost more than the symmetry saves.
+Not because copy destroys anything today. `cmd_organize`'s `is_protected`
+predicate (`cli/main.cpp:671-676`) returns true for any path that exists on
+disk, and `resolve_conflict` turns `overwrite` into `rename` for a protected
+destination (`paths.h:97-99`). So through the CLI, `overwrite` differs from
+`rename` only on an intra-run collision — two sources resolving to one
+destination that nothing occupies yet. `execute_organize_action`'s
+backup-and-restore is a net that predicate keeps from ever firing.
+
+Copy gets the plan phase for two other reasons. A conflict changes what copy
+does — the file lands under a name the user did not choose — and that is worth
+seeing before authorizing. And after decision 6 an explicit override makes copy
+genuinely able to destroy bytes, so the preview stops being a convenience.
+
+Two shapes for one engine would cost more than the symmetry saves.
 
 ### 5. Cancellation follows the existing transaction boundaries
 
 `execute_organize_action` commits each file's disk action and its log entry in
 one transaction, so the boundaries already exist per file. The token is polled
 between files. This matches 041's decision 5 without needing its own argument.
+
+### 6. An explicit override bypasses the on-disk guard, never the batch guard
+
+Per-file resolution does not work at all without this. A user who sees the plan,
+sees that `IMG_1234.CR2` already occupies the destination, and chooses Replace
+would have `is_protected` turn that into a rename — their choice silently
+discarded.
+
+So an item carrying an explicit override skips the `fs::exists` arm of the
+guard. That arm exists to prevent *silent* data loss (audit findings #1 and #4),
+and an override is the opposite of silent: the plan showed the conflict and the
+user answered it.
+
+The `batch_sources` arm is never bypassable. That path is another image's
+not-yet-moved source file — a tracked original about to be moved — and
+overwriting it destroys bytes phig is in the middle of relocating. No user
+intent makes that correct, so an override targeting a batch source is rejected
+rather than honored.
+
+The plan reports whether the occupying file is tracked by phig, so a client can
+warn harder when it is not. An untracked file is one phig cannot restore from
+its own records, which is exactly when a confirmation should be loudest.
 
 ## ABI shape
 
@@ -197,6 +228,11 @@ const char* phig_organize_plan_dest_at(const phig_organize_plan*, size_t i);
 bool        phig_organize_plan_conflicts_at(const phig_organize_plan*, size_t i);
 phig_conflict_resolution
             phig_organize_plan_resolution_at(const phig_organize_plan*, size_t i);
+
+/* Whether the file occupying this item's destination is tracked by phig.
+ * Meaningless unless conflicts_at(i). False means phig cannot restore it from
+ * its own records, which is when a client should warn hardest. */
+bool        phig_organize_plan_occupant_tracked_at(const phig_organize_plan*, size_t i);
 
 /* Override one item. Only meaningful where conflicts_at(i) is true; recomputes
  * that item's destination so dest_at reflects the choice. */
@@ -250,6 +286,15 @@ caller could get it wrong.
   disk.
 - An override on a non-conflicting item is rejected rather than silently
   ignored.
+- Without an override, `overwrite` still falls through to `rename` for a
+  destination that exists on disk. This is the regression test for today's
+  behavior, which the extraction must not change.
+- With an explicit override to `overwrite`, an existing untracked file at the
+  destination *is* replaced — decision 6's bypass actually working.
+- An override targeting another image's not-yet-moved source is rejected, and
+  that source still exists afterwards.
+- `occupant_tracked_at` is false for a file phig has no row for and true for one
+  it does.
 - Apply re-verifies: a destination occupied between plan and apply falls back to
   the run policy, and one that became free is simply written.
 - Sidecars and an attached JPEG travel with their parent, count in
