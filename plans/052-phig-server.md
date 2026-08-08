@@ -6,11 +6,13 @@ description: >
   `phigd`, a headless daemon that serves a phig collection over HTTP so
   clients can reach it remotely: paged queries, per-image metadata, duplicates,
   people and faces, tag/gallery/favorite writes, the three long-running
-  operations with SSE progress, and media — thumbnail bytes, originals, and
-  byte-range video. A peer of `cli/` over `core/`, not a client of `libphig`,
-  which is what puts duplicates and faces on the protocol at all. Clients gain
-  a second interface: `libphig` when the collection is local, this protocol
-  when it is remote. Single identity, bearer token, behind a reverse proxy.
+  operations with polled progress, and media — thumbnail bytes, originals, and
+  byte-range video. A peer of `cli/` over `core/` rather than a client of
+  `libphig`: it is phig running headless, entitled to whatever `core/` has the
+  moment core has it. Clients gain a second interface: `libphig` when the
+  collection is local, this protocol when it is remote. Single identity,
+  bearer token, behind a reverse proxy, on libmicrohttpd. Holds no long-lived
+  connections: push-to-browser is the web tier's concern, not phig's.
   First of six sub-projects; the remaining five are listed below and get their
   own numbers when designed.
 ---
@@ -39,7 +41,7 @@ them would not be executable.
 | **S1** | **Protocol + `phigd`** — this plan | — |
 | S1b | Import: upload from a client, organize server-side | S1, plan 042, plan 021 |
 | S2 | Native clients speak the protocol | S1 |
-| S3 | Web client (server-rendered UI) | S1 |
+| S3 | Web client (server-rendered UI); also owns push-to-browser | S1 |
 | S4 | Accounts and multi-user | S1 |
 | S5 | Share a single gallery by link | S4 |
 
@@ -58,13 +60,16 @@ the collection's host.
 ### `phigd` is a peer of `cli/` over `core/`, not a client of `libphig`
 
 `phigd` is phig running headless, not a foreign caller. It links `phig-core`
-and includes `core/` headers directly, exactly as `cli/` does.
+and includes `core/` headers directly, exactly as `cli/` does, and is entitled
+to whatever `core/` has the moment core has it rather than waiting on an ABI
+plan.
 
-The alternative — building the daemon on the C ABI — was rejected on
-coverage. `libphig` has no duplicates, no people or faces, no organize, no
-remove and no reconcile, so a server built on it could not serve two of
-047's nine screens, and every gap would become an ABI plan before the server
-could move.
+**That is the durable argument; the ABI's present coverage is not.** `libphig`
+should eventually expose every phig feature, so today's gaps are a schedule
+fact. What they do establish is the cost of choosing wrong: with no
+duplicates, people, faces, organize, remove or reconcile in the ABI, a daemon
+built on it could not serve two of 047's nine screens today, and each gap
+would become an ABI plan blocking the server.
 
 **Consequence: clients now have two interfaces, not one.**
 
@@ -77,6 +82,30 @@ Both cover the same capabilities. That is deliberate — S2's job is choosing a
 transport at connect time, not learning a second vocabulary. Root `CLAUDE.md`'s
 Interface discipline section currently reads as though `libphig` is the only
 way in and needs amending, not footnoting.
+
+### The web tier is an HTTP client too, not a `libphig` caller
+
+S3 could call `libphig` in-process through Java's FFM instead of speaking this
+protocol. It should not, for three reasons that hold no matter how complete the
+ABI becomes:
+
+- **Parity by construction.** A web app with a private in-process path can do
+  things native clients cannot, and over time it will. Making it an ordinary
+  HTTP client is what keeps the two surfaces equal — the same reasoning behind
+  Interface discipline generally.
+- **Colocation, permanently.** `libphig` needs the database, the media and the
+  thumbnail cache on its own filesystem, and SQLite in WAL mode over a network
+  mount is unsafe. Calling it directly welds the web tier to the collection's
+  host. As an HTTP client it can live in a container, on a VPS in front of a
+  home NAS, anywhere with a route.
+- **`phig_last_error` is thread-local** and documented as readable only on the
+  thread whose call failed. FFM gives no guarantee a call stays on one carrier
+  thread and virtual threads migrate, so error text would come back wrong or
+  empty — intermittently, on failure paths only.
+
+The rule this leaves: **`libphig` is the local, in-process interface; the wire
+protocol is the one that works from anywhere.** The web app is not a special
+case, it is a remote client that renders HTML.
 
 ### HTTP, chosen for reach rather than speed
 
@@ -128,9 +157,17 @@ run.
 Operations do **not** survive a daemon restart. The work is idempotent — a
 rescan skips unchanged files — so resume is complexity bought for no safety.
 
-Progress is delivered by SSE. `GET /operations/{id}` is not a rival polling
-path but the resource itself: listing, result-fetching and SSE
-reconnect-resync all need it.
+**Progress is polled, not pushed.** `GET /operations/{id}` is the resource,
+and clients read it on whatever interval suits them; at 1 Hz a progress bar is
+indistinguishable from a pushed one. This reverses an earlier choice of SSE,
+and the reason is that push-to-browser is a web-app problem rather than a phig
+one: S3 polls this endpoint once and fans out to however many browser
+subscribers it has, over a runtime built for that. Native clients poll
+directly, which is also what `libphig`'s operations already do.
+
+The consequence is architectural, not cosmetic: **`phigd` holds no long-lived
+connections.** That removes the hardest constraint from the daemon — see the
+HTTP library decision below, which it largely settles.
 
 ### Creation splits per type; lifecycle does not
 
@@ -188,6 +225,62 @@ built that way in the GTK client (plans 035, 037), specified for all three
 clients in 047 — and cursors cannot serve a jump to an arbitrary position.
 `limit` is capped by config. Plan 044 owns making offset scale.
 
+### libmicrohttpd, and why not the alternatives
+
+With progress polled, `phigd`'s HTTP needs are routing, JSON bodies,
+byte-range file responses, and handlers that block on phig. Nothing holds a
+connection open.
+
+**libmicrohttpd, chosen.** Its epoll modes
+(`MHD_USE_EPOLL_INTERNAL_THREAD` with a thread pool) multiplex connections, so
+idle keep-alives and slow transfers cost file descriptors rather than threads.
+`MHD_create_response_from_fd_at_offset64` makes range-serving a media file the
+library's job — phig resolves the path and hands over an fd, MHD runs the
+write loop from its event loop with no thread parked per transfer, and range
+responses fall out of the offset and length arguments. Connection limits,
+per-connection memory pool and timeouts are configured rather than discovered.
+It brings no logger, no config format and no JSON to overlap what phig already
+owns. In Ubuntu since 22.04, Homebrew 1.0.9, LGPL 2.1+ so dynamic linking.
+Debian popcon puts it at 5,102 installs against Drogon's 13 — which overstates
+the gap, since Drogon's users skew to containers and vcpkg that popcon cannot
+see, but this is an HTTP parser facing a network and adversarial exposure
+counts for something.
+
+Accepted costs: routing and JSON are hand-written, and it is a C API inside a
+C++20 codebase.
+
+**One thing to confirm before writing much against it**, because the whole
+worker-dispatch design rests on it: that `MHD_suspend_connection` /
+`MHD_resume_connection` behave as needed under the epoll-plus-thread-pool mode
+specifically, including that a client disconnecting while a connection is
+suspended is detected and cleaned up rather than leaked. Suspend/resume did
+**not** leave with SSE — it is how a handler hands blocking phig work to a
+worker without occupying an event loop. The usage is far simpler than the SSE
+one would have been (suspend, work, resume, one complete response, once per
+request, rather than a content-reader callback driving a long-lived stream),
+but it is the same primitive and it is load-bearing. An afternoon against a
+stub, not a comparative spike.
+
+**Thread-per-connection was rejected**, which rules out `cpp-httplib` despite
+it being header-only, vendorable, immune to distro availability and the least
+work to adopt. Two things hold connections open here with no SSE involved: a
+client pulling a multi-gigabyte video over a slow link occupies a thread for
+the duration, and browser keep-alive holds up to six idle connections per
+origin for a minute or more, so a few tabs sit on a dozen-plus threads doing
+nothing. `cpp-httplib` sizes its pool from `hardware_concurrency`, so on an
+eight-core NAS exhaustion is reachable — and the failure mode is the daemon
+silently not answering rather than an error anyone can see. It is tunable, but
+the tuning is a number you discover was wrong in production.
+
+**Drogon was rejected** once SSE moved out. Its advantages here were the event
+loop and streaming responses; its costs did not move — trantor's own event
+library *and* logger against `CLAUDE.md`'s rule that all logging goes through
+`core/log.h`, plus jsoncpp and its own config format, three subsystems
+overlapping things phig already owns. Verified available (`libdrogon-dev` in
+Ubuntu universe from noble, Homebrew 1.9.13, MIT, 14,172 stars, pushed
+2026-08-04) and it remains the fallback if hand-written routing proves worse
+than the dependency overlap.
+
 ## Architecture
 
 ```
@@ -200,24 +293,27 @@ native (S2) ──┘   └──────────────┘       �
 
 New top-level `server/`, producing `phigd`. Four units:
 
-- **transport** — routing, byte ranges, SSE framing, JSON encoding. Knows
-  nothing about phig; testable against a stub.
+- **transport** — routing, byte ranges, JSON encoding, and the MHD callback
+  plumbing. Knows nothing about phig; testable against a stub.
 - **resources** — one file per resource (images, media, operations,
   duplicates, people, tags). The only layer that knows both HTTP and phig.
-- **operations registry** — id allocation, lifecycle, cancel tokens, progress
-  fan-out to SSE subscribers. Owns the fact that operations outlive their
-  originating client.
+- **operations registry** — id allocation, lifecycle, cancel tokens, and a
+  progress snapshot any number of pollers can read without disturbing the
+  running engine. Owns the fact that operations outlive their originating
+  client.
 - **auth** — constant-time bearer check and signed-URL minting, nothing else.
 
 Configuration extends `core/config.cpp`'s existing INI with a `[server]`
 section rather than introducing a second config format.
 
 **Handlers never call phig directly.** `core/` is synchronous and blocking
-throughout — SQLite, OpenCV decode, LibRaw. On an event loop a blocking
-handler stalls every connection multiplexed onto its thread, so an unrelated
-client's SSE stream stutters because someone missed the thumbnail cache. The
-design is an event loop for I/O plus an explicit worker pool for phig calls.
-The loop makes connections cheap; it does not make phig non-blocking.
+throughout — SQLite, OpenCV decode, LibRaw. MHD multiplexes connections onto a
+small set of threads, so a handler that blocks for 300 ms on a thumbnail cache
+miss stalls every other connection sharing that thread. Phig calls go to an
+explicit worker pool and the response completes from there, using MHD's
+suspend and resume. Multiplexing makes connections cheap; it does not make
+phig non-blocking, and forgetting that converts a slow request into a stalled
+server.
 
 **Portability.** `core/` plus an HTTP library is portable, so `phigd` belongs
 in the Linux/macOS/Windows row alongside `core/` and `libphig/`, building in
@@ -312,9 +408,11 @@ POST   /api/v1/faces    → 202 + Location: /api/v1/operations/{id}
 
 GET    /api/v1/operations
 GET    /api/v1/operations/{id}          state, progress, errors, result
-GET    /api/v1/operations/{id}/events   SSE
 DELETE /api/v1/operations/{id}          → 202; cancel is prompt, not instant
 ```
+
+No streaming endpoint. Clients poll `GET /operations/{id}`; S3 polls it once
+and pushes to browsers itself.
 
 `DELETE` returns 202 because plan 031 established that cancellation stops an
 operation promptly rather than immediately.
@@ -383,12 +481,14 @@ source file that is gone is an ordinary state, not corruption, matching what
 
 All configurable, all with defined behaviour at the limit: page size, allowed
 thumbnail sizes, scan roots, concurrent operations, concurrent thumbnail
-generations, SSE subscribers, HTTP connection pool and worker pool sizes.
+generations, concurrent connections, MHD's per-connection memory pool, MHD's
+thread pool size, worker pool size, and connection timeouts.
 
-The pool sizes are not incidental. SSE holds a connection open and a browser
-opens several per origin, so a pool sized for concurrent *requests* rather
-than concurrent *connections* exhausts and the daemon stops answering — a
-hang, not an error.
+These are not incidental. Because handlers suspend rather than block, the MHD
+thread pool sizes the *event loops* and the worker pool sizes *phig
+concurrency* — conflating them is how you end up with either idle threads or a
+stalled server. The connection limit and timeout are what stop a client
+holding transfers open indefinitely from consuming the descriptor budget.
 
 ## Testing
 
@@ -405,48 +505,25 @@ from `tests/temp_dir.h`; a hardcoded temp path passes alone and fails under
   outside it.
 - Operations: start, poll, cancel mid-run, completion, and survival of client
   disconnect.
-- SSE: delivery from a worker thread, reconnect resync against
-  `GET /operations/{id}`.
+- Progress snapshots: many concurrent pollers on one running operation, with
+  no effect on its throughput and no torn reads of the progress record.
+- Suspend/resume: a handler whose phig work runs on a worker completes
+  correctly; a client that disconnects mid-work does not leak a suspended
+  connection; and a slow handler does not stall unrelated connections sharing
+  its event loop — the specific failure the design exists to prevent.
 - Concurrency: a metadata write during a running index; a CLI writer lock
   producing 409 rather than a block.
 - Caps: each one returning its error rather than queueing.
 
 ## Open questions
 
-1. **HTTP library — Drogon or libmicrohttpd.** To be settled by spiking the
-   same three endpoints on each: a JSON query, a range-served original, an SSE
-   progress stream.
-
-   Drogon is an event loop with routing, JSON, file responses with ranges,
-   streaming responses and a thread pool; verified in Ubuntu universe
-   (`libdrogon-dev`, noble onward) and Homebrew 1.9.13; 14,172 GitHub stars,
-   pushed 2026-08-04, MIT. It brings trantor — its own event library *and*
-   logger — plus jsoncpp and its own config format, overlapping three things
-   phig already owns, and `CLAUDE.md` requires all logging to go through
-   `core/log.h`.
-
-   libmicrohttpd brings nothing and imposes nothing: no logger, no config, no
-   JSON, and `MHD_create_response_from_fd_at_offset64` covers most of the
-   media half. In Ubuntu since 22.04 and Homebrew 1.0.9; LGPL 2.1+, so
-   dynamic linking. Debian popcon puts it at 5,102 installs against Drogon's
-   13 — though that overstates the gap, since Drogon's users skew to
-   containers and vcpkg, which popcon does not see. Its answer to "progress
-   arrives on a worker thread and must reach an open SSE connection" is
-   `MHD_suspend_connection`/`MHD_resume_connection` plus a content-reader
-   callback, which is the most awkward corner of the whole design.
-
-   The spike must also show, for whichever wins: logging routed into
-   `core/log.h`, SSE fed from a worker thread, a multi-gigabyte file
-   range-served from a database-resolved path, and a clean build from packages
-   on both CI runners.
-
-2. **Is `GET /duplicates` a request or an operation?** Near-duplicate
+1. **Is `GET /duplicates` a request or an operation?** Near-duplicate
    detection compares against the full database by design (plan 002), so it
    may be a sub-second read at 29,925 images and a multi-minute job at a
    million. `tests/perf_duplicates.cpp` exists to answer this against the real
    collection. Measure before choosing.
 
-3. **Does the image record expose the server's filesystem path?** It is
+2. **Does the image record expose the server's filesystem path?** It is
    informational and phig's whole philosophy is that files stay where they are
    with names unchanged, so a user wants to see it — but it leaks server
    layout to every authenticated client, and S4 may have clients that should

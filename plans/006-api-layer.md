@@ -5,11 +5,11 @@ created: 2026-03-28
 description: >
   Superseded by 052 (phig Server — Protocol & Daemon), which builds the
   HTTP/JSON API this plan deferred. Every open question below is answered
-  there: HTTP over `cpp-httplib`-class libraries rather than a higher-level
-  language wrapping the DB (settled by spiking Drogon against libmicrohttpd),
-  resource-oriented REST, a daemon linking `phig-core` as a peer of `cli/`
-  rather than wrapping the CLI, bearer-token auth on a loopback bind behind a
-  reverse proxy, and SSE for long-running operation progress. Scope differs
+  there: HTTP on libmicrohttpd rather than a higher-level language wrapping
+  the DB, resource-oriented REST, a daemon linking `phig-core` as a peer of
+  `cli/` rather than wrapping the CLI, bearer-token auth on a loopback bind
+  behind a reverse proxy, and polled progress for long-running operations.
+  Scope differs
   from what was sketched here: organize and remove are deliberately excluded,
   and media serving — thumbnails, originals, byte-range video — was not
   anticipated by this plan at all.
