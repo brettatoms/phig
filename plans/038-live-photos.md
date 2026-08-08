@@ -68,10 +68,47 @@ plan 048 fixes (see decision 3).
 Apple's authoritative link is a **Content Identifier UUID** stored in both
 files:
 
-| File | Where | Notes |
+| File | Where | How it is actually reached |
 |---|---|---|
-| Still | Apple MakerNote tag **0x0011** | Reachable via libexif's `exif_data_get_mnote_data()`; libexif 0.6.26 ships an Apple MakerNote parser, so no new dependency. |
-| MOV | QuickTime metadata key **`com.apple.quicktime.content.identifier`** | libavformat already exposes QuickTime metadata; `core/metadata.cpp` reads this container today. |
+| MOV | QuickTime metadata key **`com.apple.quicktime.content.identifier`** | One `av_dict_get` on the container metadata `core/metadata.cpp` already opens. Verified on four exported pairs; the value differs per shot. |
+| Still | Apple MakerNote tag **0x0011** | **Not reachable through libexif.** See below. |
+
+### Correction: libexif cannot read the still's identifier
+
+This plan originally stated that the still's tag was "reachable via libexif's
+`exif_data_get_mnote_data()`; libexif 0.6.26 ships an Apple MakerNote parser,
+so no new dependency". **That is false, and was measured 2026-08-08:**
+
+- `exif_data_get_mnote_data()` returns NULL on real Live Photo HEICs.
+- `libexif.dylib` 0.6.26 exports **zero** Apple symbols; its MakerNote modules
+  are Canon, Olympus and Pentax only.
+
+The data is present — the EXIF block contains the UUID and carries a MakerNote
+tag of ~1700 bytes — libexif simply has no parser for it.
+
+Nor is a pattern scan of the MakerNote a safe substitute. Measured: a Live
+Photo still carries **three** UUID-shaped strings in its MakerNote and an
+ordinary still carries **two**, so "take the first UUID" works only by
+positional accident, and Apple owes no such contract.
+
+### The mechanism: identify from the MOV, test containment on the still
+
+The MOV's identifier is authoritative and cleanly readable. The still is then
+tested for **containment** of that exact UUID within its MakerNote bytes:
+
+- No parsing of untrusted binary structure — the same objection that ruled out
+  a hand-rolled ISOBMFF parser in plan 048.
+- No positional assumption about Apple's MakerNote layout.
+- No new dependency, and therefore no licensing decision (see plan 054: exiv2
+  would read tag 0x0011 properly but is GPL, while every dependency phig links
+  today is LGPL).
+- A false pair would require a 36-character UUID collision.
+
+Ambiguity is refused rather than guessed: if two stills contain the same MOV's
+identifier, neither is paired and the MOV stays an independent row.
+
+If phig later adopts a metadata library with Apple MakerNote support, the still
+side can be swapped to read tag 0x0011 directly behind the same interface.
 
 Same-basename matching is only a heuristic. It breaks on export and rename,
 and it produces false pairs: this collection already contains
@@ -83,20 +120,21 @@ not an optimization over the heuristic.
 
 ## Open decisions
 
-**1. Fallback when the identifier is absent.** Exports and re-encodes strip
-MakerNotes. Options: (a) identifier-only, refuse to guess — safest, misses
-hand-edited exports; (b) identifier first, then same-basename *guarded* by
-signals that exclude ordinary camera clips (still is HEIC, or MOV ≤5s with no
-audio track). Recommendation: (b), because export-stripped pairs are likely to
-be the common case in any ingested library, and the guards are what keep the
-`MVI_*` clips out. Not settled.
+**1. ~~Fallback when the identifier is absent.~~ Settled 2026-08-08:
+identifier only, refuse to guess.** A wrong pairing is a data-safety bug — it
+silently removes a video row and makes `mv` drag a file to the wrong place — so
+an unpaired still and MOV simply stay independent rows, which is today's
+behaviour. The failure mode is "no improvement", never "corrupted". A guarded
+basename fallback was considered and deferred: there are no real
+identifier-stripped files to measure a guard against, and inventing heuristics
+without them is how the `MVI_*` mis-pairing happens.
 
-**2. Migration of existing MOV rows.** Adopting the model demotes any already
+**2. ~~Migration of existing MOV rows.~~ Direction settled 2026-08-08: the
+still is master.** Live Photos are to be treated the way a RAW is treated with
+its sidecar, which fixes the direction. Adopting the model demotes any already
 indexed MOV that turns out to be paired, transferring user metadata to the
 still row first — plan 023's relink primitive, exactly as plan 026 demotes a
-JPEG. Needs confirming that the still-as-master direction is right, since it
-inverts the current state where the MOV is a normal row. Recommendation: still
-is master; it carries the EXIF, the faces, and the thumbnail.
+JPEG. What remains is implementation, not decision.
 
 **3. HEIC decode. Answered 2026-08-08: OpenCV cannot decode HEIC**, and the
 prerequisite this decision anticipated is now plan 048.

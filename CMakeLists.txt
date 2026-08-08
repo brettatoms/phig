@@ -118,6 +118,7 @@ add_executable(phig-tests
     tests/test_scanner.cpp
     tests/test_hasher.cpp
     tests/test_image_codec.cpp
+    tests/test_live_photo.cpp
     tests/test_exif.cpp
     tests/test_database.cpp
     tests/test_organize.cpp
