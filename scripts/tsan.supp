@@ -31,12 +31,22 @@ deadlock:CPLAcquireMutex
 called_from_lib:libavcodec.so
 called_from_lib:libavutil.so
 
-# LibRaw::get_timestamp: strdup in one worker, free in another, no phig-level
-# lock between them because raw_decode runs concurrently across scan workers.
-# Suppressed to unblock the gate, NOT because it has been cleared -- unlike the
-# two above this one has the shape of a real bug, and libraw_r is supposed to be
-# the reentrant build. The likely mechanism is get_timestamp's TZ handling
-# (setenv/putenv mutating the global environment), which would explain a
-# strdup/free pair racing, but that has not been confirmed against LibRaw's
-# source. Tracked separately; do not delete this comment with the entry.
+# LibRaw::get_timestamp: strdup in one scan worker, free in another. Looked like
+# a real bug at first -- raw_decode runs unserialized across workers, and
+# libraw_r is meant to be the reentrant build -- so it was investigated rather
+# than assumed. It is glibc, and it is safe:
+#
+#   1. get_timestamp calls exactly one libc function, mktime, twice. It touches
+#      no global or static state of its own.
+#   2. glibc's mktime calls __tzset(), which takes tzset_lock.
+#   3. tzset_internal does `free (old_tz); old_tz = __strdup (tz);` -- the
+#      reported strdup/free pair -- and __tzset() holds the lock across it.
+#   4. tzset_lock is a __libc_lock, not a pthread mutex TSan intercepts. The
+#      report shows no mutexes held, while the FFmpeg reports above show
+#      "(mutexes: write M0)": TSan can see FFmpeg's locks and not glibc's.
+#
+# So the synchronization is there and TSan cannot see it, which is this file's
+# recurring theme. POSIX requires mktime to be thread-safe, and 5 runs of
+# HasherTest.DecodeWarningNotMisattributedAcrossThreads under TSan against
+# LibRaw 0.22.2 reproduced nothing. phig needs no lock around RAW decode.
 race:LibRaw::get_timestamp
