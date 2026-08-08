@@ -1,6 +1,6 @@
 ---
 name: Modern Image Codecs (HEIC/HEIF/AVIF/JXL)
-status: in-progress
+status: completed
 created: 2026-08-08
 description: >
   phig advertises heic, heif, avif and jxl in `known_extensions()` and cannot
