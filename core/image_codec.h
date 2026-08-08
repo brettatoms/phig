@@ -18,7 +18,11 @@ bool is_codec_extension(const std::string& ext);
 // Never throws.
 cv::Mat codec_decode(const std::string& path);
 
-// The container's raw EXIF block, positioned at the TIFF header so it can be
-// handed to exif_data_load_data. Empty if the file carries none. Thread-safe.
-// Never throws.
+// The container's raw EXIF block, trimmed so it begins at the TIFF header
+// ("II*\0" or "MM\0*"). Empty if the file carries none. Thread-safe. Never
+// throws.
+//
+// This is the bare TIFF block, not a libexif-ready buffer: libexif parses JPEG
+// APP1 payloads and needs a leading "Exif\0\0", which core/exif.cpp adds. Note
+// that omitting it fails silently rather than loudly.
 std::vector<unsigned char> codec_exif_blob(const std::string& path);

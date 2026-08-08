@@ -5,6 +5,7 @@
 #include <string>
 
 #include "duplicates.h"
+#include "exif.h"
 #include "hasher.h"
 #include "image_codec.h"
 #include "image_codec_internal.h"
@@ -16,6 +17,25 @@ namespace {
 
 std::string fixture(const std::string& name) {
     return (fs::path(__FILE__).parent_path() / "data" / name).string();
+}
+
+// Removes one "Key":"Value" pair, and its adjoining comma, from a flat JSON
+// object string. Adequate for extract_exif_json's output, which never nests
+// and never emits a quote inside a value.
+std::string erase_json_key(std::string json, const std::string& key) {
+    const std::string needle = "\"" + key + "\":\"";
+    size_t start = json.find(needle);
+    if (start == std::string::npos) return json;
+    size_t end = json.find('"', start + needle.size());
+    if (end == std::string::npos) return json;
+    ++end;  // past the value's closing quote
+    if (end < json.size() && json[end] == ',') {
+        ++end;
+    } else if (start > 0 && json[start - 1] == ',') {
+        --start;
+    }
+    json.erase(start, end - start);
+    return json;
 }
 
 // Writes a file that is named like a container image but is not one, for the
@@ -120,6 +140,62 @@ TEST(LibheifDecode, ReturnsEmptyMatForMissingFile) {
     cv::Mat img;
     EXPECT_NO_THROW({ img = codec_decode_libheif("/nonexistent/file.heic"); });
     EXPECT_TRUE(img.empty());
+}
+
+// exif_sample.heic and exif_sample.jpg were written from one source with the
+// same tag values, so a difference between the two extractions is a defect in
+// the HEIC path rather than a difference in the files. This is the test that
+// catches a future platform-specific metadata shortcut producing different
+// JSON keys on macOS and Linux -- which would silently change json_extract()
+// results for a database moved between them.
+//
+// The two dimension tags are excluded, and only those: HEIF records dimensions
+// in the container's `ispe` box rather than duplicating them into EXIF, so
+// ImageIO writes PixelXDimension/PixelYDimension for the JPEG and not for the
+// HEIC. phig takes dimensions from the decoded image, never from EXIF.
+TEST(CodecExif, HeicMetadataMatchesJpegControl) {
+    const std::string from_heic = extract_exif_json(fixture("exif_sample.heic"));
+    std::string from_jpeg = extract_exif_json(fixture("exif_sample.jpg"));
+    ASSERT_NE(from_heic, "{}") << "no EXIF extracted from the HEIC at all";
+
+    from_jpeg = erase_json_key(from_jpeg, "PixelXDimension");
+    from_jpeg = erase_json_key(from_jpeg, "PixelYDimension");
+    EXPECT_EQ(from_heic, from_jpeg);
+}
+
+// The date is the reason this matters: without it a HEIC files under its copy
+// date rather than when it was taken, breaking organize and date sort.
+TEST(CodecExif, HeicCarriesTheOriginalCaptureDate) {
+    std::string json = extract_exif_json(fixture("exif_sample.heic"));
+    EXPECT_NE(json.find("2026:08:08 14:32:11"), std::string::npos) << json;
+}
+
+TEST(CodecExif, ExtractsBlobFromHeicContainer) {
+    std::vector<unsigned char> blob = codec_exif_blob(fixture("exif_sample.heic"));
+    EXPECT_FALSE(blob.empty());
+}
+
+// The blob must start at the TIFF header for exif_data_load_data to parse it.
+TEST(CodecExif, BlobStartsAtTheTiffHeader) {
+    std::vector<unsigned char> blob = codec_exif_blob(fixture("exif_sample.heic"));
+    ASSERT_GE(blob.size(), 4u);
+    const bool little = blob[0] == 'I' && blob[1] == 'I' && blob[2] == 42 && blob[3] == 0;
+    const bool big = blob[0] == 'M' && blob[1] == 'M' && blob[2] == 0 && blob[3] == 42;
+    EXPECT_TRUE(little || big) << "blob does not begin with a TIFF byte-order marker";
+}
+
+TEST(CodecExif, ReturnsEmptyBlobForGarbageAndDoesNotThrow) {
+    std::string path = write_garbage("garbage_exif.heic");
+    std::vector<unsigned char> blob;
+    EXPECT_NO_THROW({ blob = codec_exif_blob(path); });
+    EXPECT_TRUE(blob.empty());
+    fs::remove(path);
+}
+
+TEST(CodecExif, ReturnsEmptyBlobForMissingFile) {
+    std::vector<unsigned char> blob;
+    EXPECT_NO_THROW({ blob = codec_exif_blob("/nonexistent/file.heic"); });
+    EXPECT_TRUE(blob.empty());
 }
 
 #ifdef __APPLE__

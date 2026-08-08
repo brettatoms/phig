@@ -23,6 +23,7 @@ add_library(phig-core STATIC
     raw.cpp
     image_codec.cpp
     image_codec_libheif.cpp
+    image_codec_exif.cpp
     lockfile.cpp
     parallel.cpp
     scan_engine.cpp
