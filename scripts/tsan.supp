@@ -1,0 +1,16 @@
+# ThreadSanitizer suppressions. Wired in by the sanitizers job in
+# .github/workflows/ci.yml; pass it locally with
+#   TSAN_OPTIONS=suppressions=$PWD/scripts/tsan.supp
+#
+# GDAL's own lock ordering. Ubuntu's libopencv-imgcodecs links libgdal for its
+# raster backends, so every phig test that decodes an image pulls it in, and
+# TSan's deadlock detector reports a lock-order inversion inside GDAL's
+# CPLAcquireMutex. Measured on this gate's first CI run: 20 warnings, all of
+# them this one, all in libgdal.so.34, sinking 71 of 689 tests. Zero data races
+# were reported -- phig's own locking came back clean on Linux/GCC, and the
+# inversion is in a library phig neither owns nor calls into directly.
+#
+# Deliberately narrow. `called_from_lib:libgdal.so` would also silence genuine
+# races reached through OpenCV; this drops only lock-order reports from that one
+# function, leaving the race detector and the rest of the deadlock detector on.
+deadlock:CPLAcquireMutex

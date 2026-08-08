@@ -58,6 +58,21 @@ jobs:
   # instrumentation overhead blows through — measured, TSan takes 1957ms and
   # 2526ms against a 1500ms budget. That is the harness losing to the sanitizer,
   # not a regression, and gating on it would only teach people to ignore red.
+  #
+  # Three things here exist to keep the build from dwarfing the run. Measured on
+  # the first attempt, with GCC at -O2 building every target: TSan finished in
+  # 7m16s but ASan+UBSan was still compiling after 25 minutes and had to be
+  # cancelled.
+  #
+  #   clang    ASan/UBSan/TSan are LLVM projects and clang's instrumentation is
+  #            the reference implementation; GCC's is what blew up. This gate
+  #            exists to find races and UB, not to match the production
+  #            compiler — the ubuntu test job above already covers GCC.
+  #   -O1      What upstream recommends for sanitizer builds. UBSan's extra
+  #            branches are exactly what makes -O2 expensive, and -O2 buys a
+  #            gate nothing.
+  #   --target Only phig-tests is run, so building the phig CLI and
+  #            phig-perf-tests is wasted work.
   sanitizers:
     name: sanitizers (${{ matrix.san }})
     runs-on: ubuntu-latest
@@ -75,21 +90,33 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
+          # build-essential stays alongside clang: it supplies make and the
+          # libstdc++ headers clang uses as its standard library on Linux.
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config \
+            build-essential clang cmake pkg-config \
             libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
             libgtest-dev libspdlog-dev libraw-dev
 
       - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        # -O1 goes in the per-config flags, not CMAKE_CXX_FLAGS: CMake appends
+        # the config's flags after the general ones, so a build type's own -O
+        # would win and silently override it.
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_FLAGS_RELWITHDEBINFO="-O1 -g" \
+            -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g" \
             -DCMAKE_C_FLAGS="${{ matrix.flags }}" \
             -DCMAKE_CXX_FLAGS="${{ matrix.flags }}" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
 
+      # Only what the Test step runs. CMake registers a failing placeholder for
+      # the target that is skipped, which the -E below filters out.
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel --target phig-tests
 
       # OMP_NUM_THREADS=1 is required, not tidiness. OpenCV's parallel backend
       # on Linux is OpenMP, libgomp is not TSan-instrumented, so TSan cannot see
@@ -110,14 +137,19 @@ jobs:
       # detect_leaks=0 is a deliberate limit, not an oversight: leak detection
       # would report through OpenCV and LibRaw, which this gate has no way to
       # fix. Memory errors and races are what it is for.
+      #
+      # scripts/tsan.supp drops GDAL's lock-order inversions, which arrive
+      # through OpenCV's imgcodecs on every image decode — see that file.
       - name: Test
         env:
           OMP_NUM_THREADS: 1
           GTEST_DEATH_TEST_STYLE: threadsafe
           ASAN_OPTIONS: detect_leaks=0
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-          TSAN_OPTIONS: halt_on_error=1
-        run: ctest --test-dir build --output-on-failure --parallel -E DuplicatesPerf
+          TSAN_OPTIONS: halt_on_error=1:suppressions=${{ github.workspace }}/scripts/tsan.supp
+        run: |
+          ctest --test-dir build --output-on-failure --parallel \
+            -E 'DuplicatesPerf|_NOT_BUILT'
 
   # gtk/ is a separate CMake project that consumes phig through pkg-config
   # rather than by source path, so this installs libphig first and points
