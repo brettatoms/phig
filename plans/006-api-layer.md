@@ -1,13 +1,27 @@
 ---
 name: API Layer
-status: deferred
+status: superseded
 created: 2026-03-28
 description: >
-  HTTP/JSON API exposing scan, duplicates, organize, and query operations.
-  Foundation for TUI/GUI clients.
+  Superseded by 052 (phig Server — Protocol & Daemon), which builds the
+  HTTP/JSON API this plan deferred. Every open question below is answered
+  there: HTTP over `cpp-httplib`-class libraries rather than a higher-level
+  language wrapping the DB (settled by spiking Drogon against libmicrohttpd),
+  resource-oriented REST, a daemon linking `phig-core` as a peer of `cli/`
+  rather than wrapping the CLI, bearer-token auth on a loopback bind behind a
+  reverse proxy, and SSE for long-running operation progress. Scope differs
+  from what was sketched here: organize and remove are deliberately excluded,
+  and media serving — thumbnails, originals, byte-range video — was not
+  anticipated by this plan at all.
 ---
 
 # API Layer
+
+**Superseded by plan 052.** This sat deferred from 2026-03-28 while `libphig`
+took over the client-interface role, and `docs/specs/2026-07-31-phig-gtk-design.md`
+recorded the ABI as superseding it. That was true for local clients and never
+covered remote ones. 052 builds the server properly, and the open questions
+below are answered there rather than here.
 
 ## Goal
 

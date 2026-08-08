@@ -10,7 +10,8 @@ features say so.
 
 ## Status
 
-- **Last updated:** 2026-08-05
+- **Last updated:** 2026-08-08 — the newest section is a recorded position with
+  no new sources behind it; everything dated 2026-08-05 and earlier is research.
 - **Sources so far:** three buying-guide roundups, targeted web searches, and six
   forum/Reddit threads read in full. No user interviews, no download or
   install-funnel data, no measurement of any competitor.
@@ -1437,6 +1438,18 @@ same corpus. Do not put it in any pitch until measured.
   likely fetchable (not Cloudflare-hard).
 - Excire Foto's reception among actual users, not reviewers. Closest analogue to
   a phig product at $189.
+- **Media servers as an architectural analogue** — Jellyfin, Plex, Emby. They
+  solved the exact split plan 052 is building: a server that owns the storage,
+  native clients per platform, and a web view over the same library. Their users
+  have years of public complaints about it. What did they get right, what do
+  users hate, and how do they handle the problems 052 has to solve anyway —
+  transcoding policy, authenticating media requests a browser makes without
+  headers, and clients that go offline. Cheapest available source of hard-won
+  design constraints, and none of it has been read.
+- **Re-survey the field with a server in scope.** The existing survey assumed a
+  desktop product. For the service-plus-clients shape the comparison set is
+  PhotoPrism, Immich, Piwigo, Nextcloud Memories and LibrePhotos, and only
+  Immich has been read. See the 2026-08-08 section.
 
 ## Decision: not pursued commercially (2026-08-05)
 
@@ -1506,3 +1519,45 @@ return is better realized as demonstrated capability than as licence sales.
 **Method note for next time:** six forum threads and one source audit answered
 this in an afternoon — after the engine was built. The sequence, not the code, was
 the expensive part.
+
+## Service + native clients + web view over a local database (2026-08-08)
+
+**This is a position, not a finding. No new sources were read.** It is recorded
+so a later reader can see what was believed on this date and check whether it
+survived contact with evidence.
+
+phig is building a server — plan 052, `phigd` over the collection, with native
+clients per platform (047) and a web view. Section 3's recommendation 1 says not
+to target the self-hosted NAS segment as a primary market, because Immich owns it
+and phig loses on every axis that audience named. **That recommendation stands
+as positioning and is not why 052 is being built**; its drivers are compute
+offload and remote access for one user. But the author's position is that there
+is a good bet in this shape and it should be tested rather than assumed dead.
+
+**What might be differentiated.** Not "self-hosted photo server" — that is
+Immich's, decisively. The shape is a service, native clients and a web view
+*around a local database that is an index rather than a container*. Immich's
+model is a server that owns the library; phig's is files that stay where they
+are with names unchanged, a rebuildable index, and an append-only activity log
+with restore snapshots. Recommendation 2 already identified transparency and
+recoverability as the one genuine opening, and noted it was unverifiable without
+`phig log`/`phig undo` shipped and a DB-rebuild story. 052 gives that opening a
+delivery vehicle it did not previously have — but does not supply the missing
+proof, which is still those two features.
+
+**Second possible distinction: nobody in the field has all three.** Immich has
+web and mobile with an incomplete desktop client. Lap is desktop-only with no
+server. digiKam is desktop-only. Photo Supreme and iMatch are desktop products
+whose remote story is a separate paid server (IMatch Anywhere). The
+multi-user/remote finding above already recorded that this is asked about and
+barely served.
+
+**Unresearched, named here so it is not later mistaken for evidence:** whether
+anyone wants native *and* web over one collection, whether index-not-container is
+legible to a buyer before they have lost data, and whether a single-user
+remote-access product has any audience beyond its author.
+
+This does not reverse the 2026-08-05 decision not to pursue phig commercially.
+It is a second live lead alongside the P2P/mobile-transfer thesis — untested
+rather than refuted — and it should be researched before it is either acted on
+or dropped.
