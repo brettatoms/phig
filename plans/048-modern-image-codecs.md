@@ -258,6 +258,32 @@ JPEG XL support is asymmetric and worth recording: ImageIO on macOS 26 reads
 libjxl. Both platforms need libjxl for JXL's EXIF box regardless, since libheif
 does not handle JXL.
 
+## Debian/Ubuntu splits libheif's codecs into plugins
+
+Measured 2026-08-08 on CI's ubuntu-latest (noble, libheif 1.17.6): installing
+`libheif-dev` gives AVIF but **not** HEIC. Five HEIC tests failed there while
+every AVIF, JXL and EXIF test passed.
+
+libheif 1.17 loads codec backends as dynamic plugins, and Debian packages them
+separately. AV1 decoding is compiled in, so AVIF works; HEVC decoding lives in
+`libheif-plugin-libde265`. Installing `libde265` alone does not help — CI had
+libde265 1.0.15 present and still could not decode HEIC, because libheif loads
+its plugin wrapper rather than linking the codec directly.
+
+So `libheif-plugin-libde265` is a runtime requirement on Debian/Ubuntu and is
+listed in both CI and the README. It is a runtime package, not a `-dev` one:
+the build succeeds without it and only decoding fails, which is why this could
+not have been caught at compile time.
+
+Unverified for the other distros: Fedora has historically excluded patent
+-encumbered HEVC from its main repositories, so `libheif-devel` there may need
+an RPM Fusion package for HEIC. Arch's `libheif` appears to bundle libde265.
+Neither has been tested — CI covers Ubuntu and macOS only.
+
+Failure mode when the plugin is absent is at least clean: `codec_decode`
+returns an empty `Mat` and scan reports "Cannot decode image" per file, rather
+than crashing or silently indexing a blank.
+
 ## Open questions
 
 1. **Where orientation normalization lives.** Inside each platform backend, or

@@ -34,7 +34,7 @@ jobs:
             build-essential cmake pkg-config \
             libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
-            libgtest-dev libspdlog-dev libraw-dev libheif-dev libjxl-dev
+            libgtest-dev libspdlog-dev libraw-dev libheif-dev libheif-plugin-libde265 libjxl-dev
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
@@ -96,7 +96,7 @@ jobs:
             build-essential clang cmake pkg-config \
             libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
-            libgtest-dev libspdlog-dev libraw-dev libheif-dev libjxl-dev
+            libgtest-dev libspdlog-dev libraw-dev libheif-dev libheif-plugin-libde265 libjxl-dev
 
       - name: Configure
         env:
@@ -182,7 +182,7 @@ jobs:
             build-essential cmake pkg-config \
             libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
-            libgtest-dev libspdlog-dev libraw-dev libheif-dev libjxl-dev \
+            libgtest-dev libspdlog-dev libraw-dev libheif-dev libheif-plugin-libde265 libjxl-dev \
             libgtk-4-dev libadwaita-1-dev
 
       - name: Build and install libphig
@@ -213,7 +213,7 @@ jobs:
             build-essential cmake pkg-config \
             libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
-            libgtest-dev libspdlog-dev libraw-dev libheif-dev libjxl-dev
+            libgtest-dev libspdlog-dev libraw-dev libheif-dev libheif-plugin-libde265 libjxl-dev
           # Pin clang tools to the version mise pins, so formatting/analysis is
           # version-stable across machines and CI.
           pipx install clang-format==21.1.8

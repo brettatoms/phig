@@ -34,7 +34,12 @@ works, and lint-tool version drift only shows up as noise in
 sudo apt install build-essential cmake pkg-config libopencv-dev libsqlite3-dev \
     libexif-dev libcurl4-openssl-dev libavformat-dev libavcodec-dev \
     libavutil-dev libswscale-dev libgtest-dev libspdlog-dev libraw-dev \
-    libheif-dev libjxl-dev
+    libheif-dev libheif-plugin-libde265 libjxl-dev
+
+# Debian/Ubuntu split libheif's codecs into plugins: libheif-dev alone decodes
+# AVIF but not HEIC, because HEVC decoding lives in libheif-plugin-libde265.
+# Installing libde265 by itself is not enough — libheif loads the plugin, not
+# the codec library directly.
 
 # Fedora
 sudo dnf install gcc-c++ cmake make pkgconf-pkg-config opencv-devel sqlite-devel \
