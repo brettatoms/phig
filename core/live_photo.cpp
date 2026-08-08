@@ -1,5 +1,10 @@
 #include "live_photo.h"
 
+#include <algorithm>
+
+#include "exif.h"
+#include "live_photo_internal.h"
+
 extern "C" {
 #include <libavformat/avformat.h>
 }
@@ -31,4 +36,19 @@ std::string live_photo_content_identifier(const std::string& video_path) try {
     return std::string(tag->value);
 } catch (...) {
     return {};
+}
+
+bool exif_blob_contains_identifier(const std::vector<unsigned char>& blob, const std::string& id) {
+    // Apple's identifier is a 36-character UUID. Anything else is refused
+    // outright: an empty needle would match every still and pair one video with
+    // all of them, and a short one invites accidental matches.
+    if (id.size() != 36 || blob.size() < id.size()) return false;
+    return std::search(blob.begin(), blob.end(), id.begin(), id.end()) != blob.end();
+}
+
+bool still_has_identifier(const std::string& still_path, const std::string& id) try {
+    if (id.size() != 36) return false;
+    return exif_blob_contains_identifier(extract_maker_note(still_path), id);
+} catch (...) {
+    return false;
 }

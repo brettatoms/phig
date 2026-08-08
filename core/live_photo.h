@@ -20,3 +20,14 @@
 // The Content Identifier from a video container, or empty when the file has no
 // such key, is not a video, or cannot be opened. Thread-safe. Never throws.
 std::string live_photo_content_identifier(const std::string& video_path);
+
+// True when `still_path`'s MakerNote contains `id`, i.e. the still is the
+// master of the video that identifier came from.
+//
+// Containment rather than extraction: Apple's identifier sits in a MakerNote
+// libexif cannot parse, and its position among the other UUIDs there is not a
+// contract Apple owes us — a Live still carries three UUID-shaped strings and
+// an ordinary still two. Searching for a UUID already known from the video
+// avoids both problems, and a false positive would need a 36-character
+// collision. Never throws.
+bool still_has_identifier(const std::string& still_path, const std::string& id);
