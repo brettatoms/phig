@@ -24,6 +24,7 @@ add_library(phig-core STATIC
     image_codec.cpp
     image_codec_libheif.cpp
     image_codec_exif.cpp
+    image_codec_libjxl.cpp
     lockfile.cpp
     parallel.cpp
     scan_engine.cpp
@@ -58,7 +59,7 @@ target_include_directories(phig-core PUBLIC
 # Keeping these off the public interface stops that leak at the source. The
 # libraries stay PUBLIC below: phig-core is STATIC, so consumers still resolve
 # its libheif symbols at final link.
-target_include_directories(phig-core PRIVATE ${LIBHEIF_INCLUDE_DIRS})
+target_include_directories(phig-core PRIVATE ${LIBHEIF_INCLUDE_DIRS} ${LIBJXL_INCLUDE_DIRS})
 
 target_link_libraries(phig-core PUBLIC
     phig-vendor
@@ -73,6 +74,7 @@ target_link_libraries(phig-core PUBLIC
     spdlog::spdlog
     ${LIBRAW_R_LIBRARIES}
     ${LIBHEIF_LIBRARIES}
+    ${LIBJXL_LIBRARIES}
     pthread
 )
 
@@ -82,6 +84,7 @@ target_link_directories(phig-core PUBLIC
     ${EXIF_LIBRARY_DIRS}
     ${LIBRAW_R_LIBRARY_DIRS}
     ${LIBHEIF_LIBRARY_DIRS}
+    ${LIBJXL_LIBRARY_DIRS}
     ${AVFORMAT_LIBRARY_DIRS}
     ${AVCODEC_LIBRARY_DIRS}
     ${AVUTIL_LIBRARY_DIRS}

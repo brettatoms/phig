@@ -55,6 +55,10 @@ pkg_check_modules(LIBRAW_R REQUIRED libraw_r>=0.20)
 # calls used (heif_decode_image, heif_image_handle_get_metadata) predate this
 # version by several releases; the floor tracks the distro baseline.
 pkg_check_modules(LIBHEIF REQUIRED libheif>=1.16)
+# 0.7: Debian bookworm's libjxl-dev. Decodes JPEG XL, which libheif does not
+# handle at all — HEIF-family containers only. The box API used for the Exif
+# payload (JxlDecoderSetDecompressBoxes) landed in 0.7.
+pkg_check_modules(LIBJXL REQUIRED libjxl>=0.7)
 # FFmpeg 5.1 (Debian bookworm) soname majors: avformat/avcodec 59, avutil 57,
 # swscale 6. core/metadata.cpp uses AVCodecParameters (FFmpeg 3.1+) and
 # av_display_rotation_get (FFmpeg 2.x+) — both far older than bookworm's

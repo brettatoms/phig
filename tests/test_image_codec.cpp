@@ -55,6 +55,8 @@ TEST(ImageCodecExtension, MatchesModernContainerFormats) {
     EXPECT_TRUE(is_codec_extension("avif"));
 }
 
+TEST(ImageCodecExtension, MatchesJpegXl) { EXPECT_TRUE(is_codec_extension("jxl")); }
+
 TEST(ImageCodecExtension, IsCaseInsensitiveAndDotTolerant) {
     EXPECT_TRUE(is_codec_extension("HEIC"));
     EXPECT_TRUE(is_codec_extension(".heic"));
@@ -140,6 +142,51 @@ TEST(LibheifDecode, ReturnsEmptyMatForMissingFile) {
     cv::Mat img;
     EXPECT_NO_THROW({ img = codec_decode_libheif("/nonexistent/file.heic"); });
     EXPECT_TRUE(img.empty());
+}
+
+// libjxl is the JXL decoder on Linux, and is compiled on macOS too so this
+// path is testable here rather than only in CI -- the same arrangement as
+// libheif. libheif does not handle JXL at all, so it gets its own backend.
+TEST(LibjxlDecode, DecodesJxlToThreeChannelBgr) {
+    cv::Mat img = codec_decode_libjxl(fixture("sample.jxl"));
+    ASSERT_FALSE(img.empty());
+    EXPECT_EQ(img.cols, 200);
+    EXPECT_EQ(img.rows, 100);
+    EXPECT_EQ(img.type(), CV_8UC3);
+}
+
+TEST(LibjxlDecode, ProducesBgrChannelOrderAndTopLeftOrigin) {
+    cv::Mat img = codec_decode_libjxl(fixture("sample.jxl"));
+    ASSERT_FALSE(img.empty());
+    cv::Vec3b marker = img.at<cv::Vec3b>(5, 5);
+    cv::Vec3b field = img.at<cv::Vec3b>(50, 150);
+    EXPECT_GT(marker[0], 200) << "blue channel high inside the marker";
+    EXPECT_LT(marker[2], 60) << "red channel low inside the marker";
+    EXPECT_LT(field[0], 60) << "blue channel low on the red field";
+    EXPECT_GT(field[2], 200) << "red channel high on the red field";
+}
+
+TEST(LibjxlDecode, ReturnsEmptyMatOnGarbageAndDoesNotThrow) {
+    std::string path = write_garbage("garbage_jxl.jxl");
+    cv::Mat img;
+    EXPECT_NO_THROW({ img = codec_decode_libjxl(path); });
+    EXPECT_TRUE(img.empty());
+    fs::remove(path);
+}
+
+// Whichever backend the platform picks, the scan path must handle JXL.
+TEST(CodecDecodeIntegration, DecodeImageHandlesJxl) {
+    DecodeResult result = decode_image_with_warning(fixture("sample.jxl"));
+    EXPECT_FALSE(result.img.empty());
+    EXPECT_TRUE(result.warning.empty()) << result.warning;
+    EXPECT_EQ(result.img.cols, 200);
+}
+
+// Same principle as HEIC: pixels without metadata would leave the format worse
+// than unsupported, since the photo would file under its copy date.
+TEST(CodecExif, JxlCarriesTheOriginalCaptureDate) {
+    std::string json = extract_exif_json(fixture("sample.jxl"));
+    EXPECT_NE(json.find("2026:08:08 14:32:11"), std::string::npos) << json;
 }
 
 // exif_sample.heic and exif_sample.jpg were written from one source with the
@@ -315,6 +362,18 @@ TEST(CrossDecoderAgreement, PerceptualHashesMatch) {
         EXPECT_EQ(hamming_distance(from_apple.hash, from_heif.hash), 0)
             << name << ": the two decoders would hash this file differently";
     }
+}
+
+// JXL carries the same exposure as HEIC: ImageIO decodes it on macOS,
+// libjxl on Linux, and the resulting phashes are compared across machines.
+TEST(CrossDecoderAgreement, JxlPerceptualHashesMatch) {
+    cv::Mat apple = codec_decode_imageio(fixture("sample.jxl"));
+    cv::Mat jxl = codec_decode_libjxl(fixture("sample.jxl"));
+    ASSERT_FALSE(apple.empty());
+    ASSERT_FALSE(jxl.empty());
+    ASSERT_EQ(apple.size(), jxl.size());
+    EXPECT_EQ(hamming_distance(compute_phash(apple).hash, compute_phash(jxl).hash), 0)
+        << "ImageIO and libjxl would hash this file differently";
 }
 
 // The decoders do not agree pixel-for-pixel, and cannot: both fixtures are

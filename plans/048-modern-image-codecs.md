@@ -248,8 +248,8 @@ The existing collection has no HEICs, so this check arrives properly with 049.
 
 ## Dependencies
 
-libheif and libjxl on both platforms. libheif 1.23.1 is already present on the
-development Mac; `jpeg-xl` is not yet installed there. README per-distro package
+libheif and libjxl on both platforms. Installed and verified on the
+development Mac: libheif 1.23.1, libjxl 0.12.0. README per-distro package
 lists and the CI workflow both need the two added.
 
 JPEG XL support is asymmetric and worth recording: ImageIO on macOS 26 reads

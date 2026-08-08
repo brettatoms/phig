@@ -1,8 +1,11 @@
 #include <libheif/heif.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <filesystem>
 
 #include "image_codec.h"
+#include "image_codec_internal.h"
 
 namespace {
 
@@ -27,6 +30,13 @@ class HeifPtr {
     T* p_ = nullptr;
 };
 
+bool is_jxl_path(const std::string& path) {
+    std::string ext = std::filesystem::path(path).extension().string();
+    if (!ext.empty() && ext.front() == '.') ext.erase(0, 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext == "jxl";
+}
+
 bool starts_with_tiff_header(const std::vector<unsigned char>& b, size_t at) {
     if (at + 4 > b.size()) return false;
     const bool little = b[at] == 'I' && b[at + 1] == 'I' && b[at + 2] == 42 && b[at + 3] == 0;
@@ -37,6 +47,9 @@ bool starts_with_tiff_header(const std::vector<unsigned char>& b, size_t at) {
 }  // namespace
 
 std::vector<unsigned char> codec_exif_blob(const std::string& path) try {
+    // libheif cannot open a JXL container, so its Exif box is read by libjxl.
+    if (is_jxl_path(path)) return codec_jxl_exif_blob(path);
+
     HeifPtr<heif_context, heif_context_free> ctx;
     ctx.reset(heif_context_alloc());
     if (!ctx.get()) return {};
@@ -63,29 +76,33 @@ std::vector<unsigned char> codec_exif_blob(const std::string& path) try {
         return {};
     }
 
-    // A HEIF Exif item is prefixed with a 4-byte big-endian offset to the TIFF
-    // header, per ISO/IEC 23008-12. libexif expects the payload to begin at
-    // that header, so the prefix and the gap it names are dropped.
+    // Both HEIF and JXL prefix the payload the same way, so the trimming rule
+    // lives in one place.
+    return codec_trim_to_tiff_header(raw);
+} catch (...) {
+    return {};
+}
+
+std::vector<unsigned char> codec_trim_to_tiff_header(const std::vector<unsigned char>& raw) {
     if (raw.size() < 4) return {};
+
+    // 4-byte big-endian offset from the end of the prefix to the TIFF header,
+    // per ISO/IEC 23008-12; JXL's Exif box uses the same convention.
     const size_t offset = (static_cast<size_t>(raw[0]) << 24) |
                           (static_cast<size_t>(raw[1]) << 16) | (static_cast<size_t>(raw[2]) << 8) |
                           static_cast<size_t>(raw[3]);
 
     size_t start = 4 + offset;
-    if (start > raw.size()) return {};
+    if (start > raw.size()) start = raw.size();
 
     // Not every writer emits the prefix: some store a bare TIFF header. Trust
-    // the byte-order marker over the declared offset, and fall back to the
-    // start of the block when the offset does not land on one.
+    // the byte-order marker over the declared offset, falling back to the start
+    // of the block, and give up if neither position has one rather than
+    // handing libexif bytes it will silently fail to parse.
     if (!starts_with_tiff_header(raw, start)) {
-        if (starts_with_tiff_header(raw, 0)) {
-            start = 0;
-        } else {
-            return {};
-        }
+        if (!starts_with_tiff_header(raw, 0)) return {};
+        start = 0;
     }
 
     return std::vector<unsigned char>(raw.begin() + static_cast<std::ptrdiff_t>(start), raw.end());
-} catch (...) {
-    return {};
 }
