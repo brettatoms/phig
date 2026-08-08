@@ -164,15 +164,27 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
 
         auto faces = detector_for_worker(detectors, worker_id)->detect(img);
 
+        std::string skipped;
         {
             std::lock_guard<std::mutex> lock(db_mutex);
-            int64_t image_id = db_.get_image_id(img_info.path);
-            if (image_id >= 0) {
-                // Delete-then-reinsert must be atomic: if the delete ran
-                // outside the transaction and we were interrupted before
-                // commit, the old faces would be gone with no re-detection.
-                db_.begin_transaction();
-                try {
+            // Delete-then-reinsert must be atomic: if the delete ran outside
+            // the transaction and we were interrupted before commit, the old
+            // faces would be gone with no re-detection.
+            db_.begin_transaction();
+            try {
+                // Read the image id inside the transaction, not before it. This
+                // runs lock-free beside `phig rm`, and BEGIN IMMEDIATE waits on
+                // the busy timeout, so an id read beforehand can be deleted
+                // while this thread waits -- and the face insert would then
+                // violate faces.image_id's foreign key and abandon the whole
+                // rebuild, since parallel_for_each stops every worker on the
+                // first exception. Inside the transaction the write lock is
+                // held, so what this reads cannot be deleted underneath it.
+                int64_t image_id = db_.get_image_id(img_info.path);
+                if (image_id < 0) {
+                    db_.rollback_transaction();
+                    skipped = "faces: " + img_info.path + " -- image no longer in the database";
+                } else {
                     db_.delete_faces_for_image(image_id);
                     for (const auto& face : faces) {
                         int64_t face_id = db_.insert_face(image_id, face);
@@ -180,11 +192,18 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
                     }
                     db_.commit_transaction();
                     total_faces.fetch_add(faces.size());
-                } catch (...) {
-                    db_.rollback_transaction();
-                    throw;
                 }
+            } catch (...) {
+                db_.rollback_transaction();
+                throw;
             }
+        }
+
+        if (!skipped.empty()) {
+            errors.fetch_add(1);
+            if (progress == nullptr) log_warn(skipped);
+            publish_done(img_info, skipped);
+            return;
         }
 
         publish_done(img_info, "", warning);

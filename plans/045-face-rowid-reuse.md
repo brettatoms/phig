@@ -1,6 +1,6 @@
 ---
 name: faces.id Rowid Reuse
-status: planned
+status: completed
 created: 2026-08-07
 description: >
   `faces.id` is `INTEGER PRIMARY KEY` without `AUTOINCREMENT`, so SQLite hands a

@@ -229,7 +229,7 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   libavformat. Videos stored with `media_type = 'video'`,
   searchable/filterable.
 - **Schema migrations** — `meta` table tracks schema version. Forward-only.
-  Version check on startup bails if DB is newer than code. Current: v7.
+  Version check on startup bails if DB is newer than code. Current: v8.
 - **`exif` column renamed to `metadata`** — stores JSON blob for any media
   type (EXIF for images, container metadata for videos).
 - **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.
@@ -264,9 +264,15 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   transactions use `BEGIN IMMEDIATE` so read-then-write paths don't hit
   BUSY_SNAPSHOT, and schema migrations re-check the version inside an
   IMMEDIATE transaction so concurrent first-runs don't re-apply DDL.
-  Mutating commands additionally take a process-wide advisory `flock` on
-  `<db>.lock` (`core/lockfile.cpp`) so whole operations serialize; reads
-  never take it. Per-machine only.
+  Most mutating commands additionally take a process-wide advisory `flock`
+  on `<db>.lock` (`core/lockfile.cpp`) so whole operations serialize; reads
+  never take it. Per-machine only. The `face` subcommands are the exception
+  — they run lock-free, matching libphig's faces operation, and defend
+  themselves instead: `faces.id` is AUTOINCREMENT so a face id never names a
+  different face, `identify` re-checks the embedding it compared, and
+  `rebuild` reads each image id inside the transaction that writes its
+  faces. A lock only excludes other lock-takers, so it was never protection
+  against an ABI caller anyway.
 - **RAW + JPEG pairing** — a RAW file (CR2, NEF, ARW, etc.) is the indexed
   shot; a same-basename JPEG beside it is not indexed as its own row.
   Instead it's an attachment: the RAW row's pixel source (for

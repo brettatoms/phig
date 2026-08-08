@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -170,36 +172,43 @@ TEST_F(IdentifyTest, StaleFaceIdUpdatesNoRowsAndIsNotCounted) {
     EXPECT_EQ(people[0].face_count, 1);
 }
 
-TEST_F(IdentifyTest, RowidsAreReusedAfterADelete) {
-    // The premise the guard below defends against. faces.id is INTEGER PRIMARY
-    // KEY without AUTOINCREMENT, so a deleted rowid comes back and a bare
-    // `WHERE id = ?` written from a stale read lands on a face nobody compared.
-    // When plan 045 migrates the id to AUTOINCREMENT this stops being true and
-    // the test should be inverted.
+TEST_F(IdentifyTest, RowidsAreNotReusedAfterADelete) {
+    // faces.id is INTEGER PRIMARY KEY AUTOINCREMENT, so SQLite tracks the high
+    // water mark in sqlite_sequence and a deleted id never comes back. Without
+    // that, a `WHERE id = ?` written from a stale read lands on a face nobody
+    // compared. Deleting the highest id is the case that matters: plain rowid
+    // assignment is max(rowid)+1, so deleting below the maximum frees nothing.
     int64_t doomed = add_face("/p/a.jpg", "sha_a", 5.0f);
     db->delete_faces_for_image(db->get_image_id("/p/a.jpg"));
 
     db->insert(make_image("/p/b.jpg", "sha_b"));
-    int64_t reused = db->insert_face(db->get_image_id("/p/b.jpg"), make_face(99.0f));
+    int64_t next = db->insert_face(db->get_image_id("/p/b.jpg"), make_face(99.0f));
 
-    EXPECT_EQ(reused, doomed) << "rowid was not reused — see plan 045";
+    EXPECT_GT(next, doomed) << "a deleted face id was handed out again";
 }
 
-TEST_F(IdentifyTest, AReusedRowidIsNotLabeledBecauseItsEmbeddingChanged) {
-    // The guard itself: phase 2 writes against the embedding it compared, so a
-    // rowid carrying a different face than the one phase 1 read updates zero
-    // rows instead of taking a label it never earned.
+TEST_F(IdentifyTest, AFaceWhoseEmbeddingChangedIsNotLabeled) {
+    // The guard's contract: phase 2 writes against the embedding it compared, so
+    // the write refers to the same face rather than the same row number. Schema
+    // v8 made rowid reuse unreachable, so the changed embedding is written
+    // directly here — the property under test is the UPDATE's predicate, not the
+    // route by which a row can come to hold different pixels.
     int64_t alice = db->get_or_create_person("Alice");
-    int64_t doomed = add_face("/p/a.jpg", "sha_a", 0.001f);
+    int64_t face = add_face("/p/a.jpg", "sha_a", 0.001f);
     std::array<float, 128> compared = make_face(0.001f).embedding;
 
-    db->delete_faces_for_image(db->get_image_id("/p/a.jpg"));
-    db->insert(make_image("/p/b.jpg", "sha_b"));
-    int64_t reused = db->insert_face(db->get_image_id("/p/b.jpg"), make_face(99.0f));
-    ASSERT_EQ(reused, doomed) << "rowid was not reused — see plan 045";
+    std::array<float, 128> replaced = make_face(99.0f).embedding;
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db->db_ptr(), "UPDATE faces SET embedding = ? WHERE id = ?", -1,
+                                 &s, nullptr),
+              SQLITE_OK);
+    sqlite3_bind_blob(s, 1, replaced.data(), 128 * sizeof(float), SQLITE_STATIC);
+    sqlite3_bind_int64(s, 2, face);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_DONE);
+    sqlite3_finalize(s);
 
     // What phase 2 does with the id and embedding it remembers from phase 1.
-    EXPECT_FALSE(db->set_face_person_if_unchanged(doomed, alice, compared));
+    EXPECT_FALSE(db->set_face_person_if_unchanged(face, alice, compared));
 
     auto people = db->list_people();
     ASSERT_EQ(people.size(), 1u);
@@ -292,4 +301,164 @@ TEST_F(IdentifyTest, ConcurrentFaceWritesDoNotBlockOrCorruptLabeling) {
     writer.join();
 
     EXPECT_EQ(r.labeled, 50u);
+}
+
+// Schema v8 migrates faces.id from a plain rowid to AUTOINCREMENT. The copy has
+// to carry ids across unchanged, because vec_faces is keyed on them and is a
+// vec0 virtual table the copy cannot touch: a shifted id would silently point
+// every embedding at the wrong face.
+TEST(FacesMigrationV8, PreservesIdsLabelsAndVectorsAndStopsReuse) {
+    auto dir = make_temp_dir("faces-v8");
+    auto db_path = (dir / "test.db").string();
+
+    std::vector<int64_t> ids;
+    int64_t alice = -1;
+    {
+        Database db(db_path);
+        db.init_schema();
+
+        // Rewind to a genuine v7 faces table: plain INTEGER PRIMARY KEY. Built
+        // by hand rather than by rolling the version back alone, because a
+        // fresh database already has AUTOINCREMENT and would make the migration
+        // a no-op that proves nothing.
+        const char* rewind = R"(
+            DROP TABLE faces;
+            CREATE TABLE faces (
+                id          INTEGER PRIMARY KEY,
+                image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                embedding   BLOB NOT NULL,
+                x INTEGER, y INTEGER, width INTEGER, height INTEGER,
+                person_id   INTEGER REFERENCES people(id)
+            );
+            CREATE INDEX idx_faces_image ON faces(image_id);
+            UPDATE meta SET value = '7' WHERE key = 'schema_version';
+        )";
+        ASSERT_EQ(sqlite3_exec(db.db_ptr(), rewind, nullptr, nullptr, nullptr), SQLITE_OK)
+            << sqlite3_errmsg(db.db_ptr());
+
+        for (int i = 0; i < 3; i++) {
+            ImageInfo info;
+            info.path = "/p/" + std::to_string(i) + ".jpg";
+            info.filename = std::to_string(i) + ".jpg";
+            info.extension = "jpg";
+            info.file_size = 1000;
+            info.sha256 = "sha" + std::to_string(i);
+            info.metadata_json = "{}";
+            db.insert(info);
+            FaceInfo fi;
+            fi.embedding.fill(0.1f * static_cast<float>(i + 1));
+            fi.x = fi.y = fi.width = fi.height = 1;
+            ids.push_back(db.insert_face(db.get_image_id(info.path), fi));
+        }
+        alice = db.get_or_create_person("Alice");
+        ASSERT_TRUE(db.set_face_person(ids[1], alice));
+
+        // The rewind is real: on this table a deleted id comes back.
+        int64_t top = ids.back();
+        db.delete_faces_for_image(db.get_image_id("/p/2.jpg"));
+        ImageInfo again;
+        again.path = "/p/again.jpg";
+        again.filename = "again.jpg";
+        again.extension = "jpg";
+        again.file_size = 1000;
+        again.sha256 = "sha_again";
+        again.metadata_json = "{}";
+        db.insert(again);
+        FaceInfo fi;
+        fi.embedding.fill(0.9f);
+        fi.x = fi.y = fi.width = fi.height = 1;
+        ids.back() = db.insert_face(db.get_image_id("/p/again.jpg"), fi);
+        ASSERT_EQ(ids.back(), top) << "the v7 rewind did not produce a reusing table";
+    }
+
+    // Reopening runs the v8 migration.
+    Database db(db_path);
+    db.init_schema();
+    EXPECT_EQ(db.schema_version(), 8);
+
+    std::vector<int64_t> after;
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db.db_ptr(), "SELECT id FROM faces ORDER BY id", -1, &s, nullptr),
+              SQLITE_OK);
+    while (sqlite3_step(s) == SQLITE_ROW) after.push_back(sqlite3_column_int64(s, 0));
+    sqlite3_finalize(s);
+    std::sort(ids.begin(), ids.end());
+    EXPECT_EQ(after, ids) << "face ids changed, so every vec_faces row now points at another face";
+
+    auto people = db.list_people();
+    ASSERT_EQ(people.size(), 1u);
+    EXPECT_EQ(people[0].face_count, 1) << "the person label did not survive the copy";
+
+    int64_t vec_rows = -1;
+    ASSERT_EQ(sqlite3_prepare_v2(db.db_ptr(), "SELECT COUNT(*) FROM vec_faces", -1, &s, nullptr),
+              SQLITE_OK);
+    if (sqlite3_step(s) == SQLITE_ROW) vec_rows = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    EXPECT_EQ(vec_rows, static_cast<int64_t>(ids.size()));
+
+    // KNN still resolves to a face that exists, and reuse is gone.
+    std::array<float, 128> probe;
+    probe.fill(0.2f);
+    EXPECT_EQ(db.find_closest_face(probe, 0.6f), ids[1]);
+
+    int64_t top = ids.back();
+    db.delete_faces_for_image(db.get_image_id("/p/again.jpg"));
+    ImageInfo last;
+    last.path = "/p/last.jpg";
+    last.filename = "last.jpg";
+    last.extension = "jpg";
+    last.file_size = 1000;
+    last.sha256 = "sha_last";
+    last.metadata_json = "{}";
+    db.insert(last);
+    FaceInfo fi;
+    fi.embedding.fill(0.5f);
+    fi.x = fi.y = fi.width = fi.height = 1;
+    EXPECT_GT(db.insert_face(db.get_image_id("/p/last.jpg"), fi), top);
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+// Mirrors cmd_face's `name` path in main.cpp: find_closest_face, then create the
+// person, then write the label. That is a read-then-write with two statements in
+// between, and it runs lock-free beside a rebuild. Unlike identify it has no
+// stored embedding to re-check against, so nothing but a stable face id keeps
+// the label on the face that was actually matched.
+TEST_F(IdentifyTest, NameDoesNotLabelAFaceItDidNotMatchWhenARebuildRecyclesIds) {
+    // Fillers first so the matched face holds the highest id: ids are handed out
+    // above the maximum, so deleting anything lower frees nothing to reuse.
+    for (int i = 0; i < 5; i++) {
+        add_face("/p/filler" + std::to_string(i) + ".jpg", "sha_f" + std::to_string(i), 5.0f);
+    }
+    int64_t matched = add_face("/p/target.jpg", "sha_target", 0.0f);
+    std::array<float, 128> probe = make_face(0.0f).embedding;
+
+    // The rebuild holds the write lock across its delete-and-reinsert. That is
+    // what widens the window: get_or_create_person below is a write, so it waits
+    // on the busy timeout while this runs, and the id it is about to write to is
+    // recycled onto a different face in the meantime.
+    std::atomic<bool> holding{false};
+    Database other(db_path);
+    std::thread rebuilder([&] {
+        other.begin_transaction();
+        holding.store(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        other.delete_faces_for_image(other.get_image_id("/p/target.jpg"));
+        other.insert_face(other.get_image_id("/p/filler0.jpg"), make_face(99.0f));
+        other.commit_transaction();
+    });
+    while (!holding.load()) std::this_thread::yield();
+
+    int64_t face_id = db->find_closest_face(probe, 0.6f);
+    ASSERT_EQ(face_id, matched) << "the read did not find the face this test is about";
+    int64_t mom = db->get_or_create_person("Mom");  // blocks until the rebuild commits
+    db->set_face_person(face_id, mom);
+    rebuilder.join();
+
+    size_t wrong = 0;
+    for (const auto& row : db->get_face_embeddings_for_person(mom)) {
+        if (embedding_distance(probe, row.embedding) > 0.6f) ++wrong;
+    }
+    EXPECT_EQ(wrong, 0u) << wrong << " face(s) far from the reference were named Mom";
 }

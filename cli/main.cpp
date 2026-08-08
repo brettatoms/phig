@@ -1392,8 +1392,7 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
 
 // ---- Face command ----
 
-int cmd_face(int argc, char* argv[], const std::string& db_path, int default_parallel,
-             bool no_wait) {
+int cmd_face(int argc, char* argv[], const std::string& db_path, int default_parallel) {
     if (argc < 3) {
         std::cerr << "Usage:\n"
                   << "  phig face name <image> <name>     Name a face from a single-face photo\n"
@@ -1404,19 +1403,16 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
     }
 
     std::string subcmd = argv[2];
-    // `name` needs the lock for correctness, not just serialization: it reads a
-    // face id from find_closest_face and writes to it two statements later, and
-    // faces.id is INTEGER PRIMARY KEY without AUTOINCREMENT, so a rebuild that
-    // deletes and reinserts in that window puts a different face on the id. The
-    // lock excludes `face rebuild` here; it does NOT exclude libphig's faces
-    // operation, which takes no lock by design (plan 031). Plan 045 removes the
-    // reuse itself. `identify` needs no such window — its write re-checks the
-    // embedding — but still takes the lock so a rebuild does not fight it for
-    // SQLite's single writer for the whole run.
-    std::unique_ptr<WriterLock> lock;
-    if (subcmd == "name" || subcmd == "identify" || subcmd == "rebuild") {
-        lock = acquire_writer_lock(no_wait);
-    }
+    // No writer lock here. It would only exclude other lock-takers anyway —
+    // libphig's faces operation takes none by design (plan 031) — and none of
+    // these three needs it:
+    //
+    //   name      reads a face id and writes it two statements later, but
+    //             faces.id is AUTOINCREMENT (schema v8), so the id it read
+    //             either still names the face it matched or names nothing.
+    //   identify  re-checks the embedding it compared on write.
+    //   rebuild   reads each image id inside the transaction that writes its
+    //             faces, so a row deleted underneath it skips one file.
     Database db(db_path);
     db.init_schema();
 
@@ -1457,9 +1453,16 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
             return 1;
         }
 
-        // Create or get person, assign to face
+        // Create or get person, assign to face. set_face_person reports whether
+        // it matched a row: nothing serializes this against a concurrent rebuild,
+        // so the face found above can be gone by the time this writes. Saying it
+        // was named when no row changed would be a lie about user metadata.
         int64_t person_id = db.get_or_create_person(name);
-        db.set_face_person(face_id, person_id);
+        if (!db.set_face_person(face_id, person_id)) {
+            std::cerr << "That face was removed from the database before it could be named "
+                         "(a face rebuild may be running). Nothing was written; try again.\n";
+            return 1;
+        }
 
         std::cout << "Named face as \"" << name << "\"\n";
         return 0;
@@ -2252,7 +2255,7 @@ int main(int argc, char* argv[]) {
             }
         }
         try {
-            return cmd_face(argc, argv, face_db, cfg.parallel.value_or(-1), no_wait);
+            return cmd_face(argc, argv, face_db, cfg.parallel.value_or(-1));
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
             return 1;

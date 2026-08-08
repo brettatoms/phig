@@ -2,11 +2,15 @@
 #include <sqlite3.h>
 #include <unistd.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "cancel.h"
 #include "database.h"
@@ -323,4 +327,72 @@ TEST(FacesEngineRun, SelectionFiltersRestrictWhatIsProcessed) {
     FacesResult r = engine.run(tok, nullptr);
 
     EXPECT_EQ(r.total_selected, 1u);
+}
+
+// A lock-free rebuild runs beside `phig rm`, so an image row can vanish while a
+// worker is mid-file. Reading the image id outside the write transaction leaves
+// a window where the row is gone by the time the face insert runs, and that
+// insert violates faces.image_id's foreign key. parallel_for_each keeps the
+// first exception and sets `failed`, which every other worker checks at the top
+// of its loop -- so one deleted image abandons the entire rebuild rather than
+// skipping one file.
+TEST(FacesEngineRun, ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun) {
+    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    ScratchFaces coll(40);
+
+    std::vector<std::string> paths;
+    {
+        sqlite3_stmt* s = nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(coll.db->db_ptr(), "SELECT path FROM images ORDER BY id", -1,
+                                     &s, nullptr),
+                  SQLITE_OK);
+        while (sqlite3_step(s) == SQLITE_ROW) {
+            paths.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)));
+        }
+        sqlite3_finalize(s);
+    }
+    ASSERT_EQ(paths.size(), 40u);
+
+    FacesRebuildOptions opts;
+    opts.parallel = 4;
+    FacesEngine engine(opts, *coll.db);
+    CancelToken tok;
+
+    // The gap between reading an image id and opening the write transaction is
+    // two statements wide, so a deleter that merely runs alongside never lands
+    // in it -- measured, 10 of 10 runs miss. What makes it reachable is the
+    // thing that widens it: BEGIN IMMEDIATE waits on the busy timeout. This
+    // deleter holds the write lock, so a worker reads a live image id and then
+    // blocks; the row is deleted and committed while it waits; it wakes up and
+    // writes faces for an image that is gone. That is the same window `phig rm`
+    // hits, held open long enough to observe.
+    std::atomic<bool> running{true};
+    Database other(coll.db_path);
+    std::thread deleter([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        other.begin_transaction();
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        for (const auto& p : paths) {
+            sqlite3_stmt* s = nullptr;
+            if (sqlite3_prepare_v2(other.db_ptr(), "DELETE FROM images WHERE path = ?", -1, &s,
+                                   nullptr) == SQLITE_OK) {
+                sqlite3_bind_text(s, 1, p.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_step(s);
+                sqlite3_finalize(s);
+            }
+        }
+        other.commit_transaction();
+        running.store(false);
+    });
+
+    std::string threw;
+    try {
+        engine.run(tok, nullptr);
+    } catch (const std::exception& e) {
+        threw = e.what();
+    }
+    running.store(false);
+    deleter.join();
+
+    EXPECT_TRUE(threw.empty()) << "the rebuild aborted instead of skipping: " << threw;
 }

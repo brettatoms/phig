@@ -18,7 +18,7 @@
 namespace fs = std::filesystem;
 
 // Schema version this code expects. Bump when adding migrations.
-static const int CURRENT_SCHEMA_VERSION = 7;
+static const int CURRENT_SCHEMA_VERSION = 8;
 
 // migrations()[N] upgrades from version N-1 to version N.
 // Version 1 = initial schema, created directly by init_schema().
@@ -100,6 +100,39 @@ static const std::vector<std::string>& migrations() {
                WHERE length(effective_date) >= 20
                  AND substr(effective_date,11,1) = 'T'
                  AND substr(effective_date,20,1) = 'Z';)",
+        // v8: faces.id to AUTOINCREMENT. A plain INTEGER PRIMARY KEY is the
+        // rowid, assigned max(rowid)+1, so deleting the highest face hands its
+        // id to the next insert -- and a caller that read an id, released its
+        // read, and comes back to write then lands on a face it never examined.
+        // A full `face rebuild` deletes and reinserts at the tail of this table
+        // for the whole collection, so that window is its steady state.
+        //
+        // Columns are listed rather than SELECT *: a database that reached here
+        // through the pre-migration path has person_id appended by ALTER TABLE,
+        // so column order differs from a freshly created one.
+        //
+        // vec_faces is deliberately untouched. It is keyed on faces.id and is a
+        // vec0 virtual table this copy cannot reach, so preserving ids exactly
+        // is what keeps its embeddings pointing at the right faces.
+        //
+        // Safe with foreign_keys=ON (which the migration loop cannot disable --
+        // the pragma is a no-op inside a transaction) only because faces is a
+        // pure FK child. Nothing references it, so the DROP cascades to nothing.
+        // The same recipe on images or people would not be safe.
+        R"(CREATE TABLE faces_new (
+         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+         image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+         embedding   BLOB NOT NULL,
+         x           INTEGER,
+         y           INTEGER,
+         width       INTEGER,
+         height      INTEGER,
+         person_id   INTEGER REFERENCES people(id));
+       INSERT INTO faces_new (id, image_id, embedding, x, y, width, height, person_id)
+         SELECT id, image_id, embedding, x, y, width, height, person_id FROM faces;
+       DROP TABLE faces;
+       ALTER TABLE faces_new RENAME TO faces;
+       CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id);)",
     };
     return table;
 }
@@ -396,7 +429,7 @@ void Database::init_schema() {
 
                 exec(R"(
                     CREATE TABLE IF NOT EXISTS faces (
-                        id          INTEGER PRIMARY KEY,
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
                         image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
                         embedding   BLOB NOT NULL,
                         x           INTEGER,
