@@ -22,6 +22,7 @@ add_library(phig-core STATIC
     duplicates.cpp
     raw.cpp
     image_codec.cpp
+    image_codec_libheif.cpp
     lockfile.cpp
     parallel.cpp
     scan_engine.cpp
@@ -49,6 +50,15 @@ target_include_directories(phig-core PUBLIC
     ${CMAKE_BINARY_DIR}
 )
 
+# PRIVATE, unlike every other dependency here: only image_codec_libheif.cpp
+# includes a libheif header, and libheif's pkg-config drags in its own codec
+# dependencies' include dirs — one of which (libvmaf) ships a `version.h` that
+# shadows phig's generated one, breaking `#include "version.h"` in cli/main.cpp.
+# Keeping these off the public interface stops that leak at the source. The
+# libraries stay PUBLIC below: phig-core is STATIC, so consumers still resolve
+# its libheif symbols at final link.
+target_include_directories(phig-core PRIVATE ${LIBHEIF_INCLUDE_DIRS})
+
 target_link_libraries(phig-core PUBLIC
     phig-vendor
     ${OpenCV_LIBS}
@@ -61,6 +71,7 @@ target_link_libraries(phig-core PUBLIC
     CURL::libcurl
     spdlog::spdlog
     ${LIBRAW_R_LIBRARIES}
+    ${LIBHEIF_LIBRARIES}
     pthread
 )
 
@@ -69,6 +80,7 @@ target_link_libraries(phig-core PUBLIC
 target_link_directories(phig-core PUBLIC
     ${EXIF_LIBRARY_DIRS}
     ${LIBRAW_R_LIBRARY_DIRS}
+    ${LIBHEIF_LIBRARY_DIRS}
     ${AVFORMAT_LIBRARY_DIRS}
     ${AVCODEC_LIBRARY_DIRS}
     ${AVUTIL_LIBRARY_DIRS}
