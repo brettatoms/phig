@@ -34,8 +34,8 @@ below in this file.
 
 ## Building and testing
 
-Native libraries (OpenCV, LibRaw, FFmpeg, libexif, SQLite3, spdlog, gtest,
-CURL) come from the system package manager — see `README.md` for per-distro
+Native libraries (OpenCV, LibRaw, libheif, libjxl, FFmpeg, libexif, SQLite3,
+spdlog, gtest, CURL) come from the system package manager — see `README.md` for per-distro
 package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
@@ -165,8 +165,13 @@ collection:
 - **Dev environment:** system-installed native libraries; `mise` (optional)
   pins `cmake`/`clang-format`/`clang-tidy` to the versions CI uses
 - **Dependencies:** OpenCV (image decode + phash + video keyframes), libexif
-  (EXIF extraction), FFmpeg/libavformat (video metadata), SQLite (database),
-  spdlog (diagnostic logging), GoogleTest (tests)
+  (EXIF extraction), libheif (HEIC/HEIF/AVIF decode and their EXIF block),
+  libjxl (JPEG XL decode and its Exif box; libheif handles HEIF-family
+  containers only) — on macOS decode goes through Apple's ImageIO instead,
+  and the two libraries are used only for the EXIF block there —
+  LibRaw (RAW decode), FFmpeg/libavformat (video
+  metadata), SQLite (database), spdlog (diagnostic logging), GoogleTest
+  (tests)
 
 ## Interface discipline
 

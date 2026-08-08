@@ -141,7 +141,11 @@ TEST_F(ScannerTest, KnownImageExtensions) {
     EXPECT_TRUE(is_known_image_extension("heic"));
     EXPECT_TRUE(is_known_image_extension("heif"));
     EXPECT_TRUE(is_known_image_extension("avif"));
-    EXPECT_TRUE(is_known_image_extension("psd"));
+
+    // psd is no longer claimed: nothing phig links decodes it, so scan skips it
+    // rather than reporting a decode error per file. See KnownExtensions in
+    // test_image_codec.cpp for the full pruned set.
+    EXPECT_FALSE(is_known_image_extension("psd"));
 
     // Case insensitive
     EXPECT_TRUE(is_known_image_extension("JPG"));

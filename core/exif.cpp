@@ -3,10 +3,13 @@
 #include <libexif/exif-data.h>
 
 #include <cstring>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "image_codec.h"
 
 namespace {
 
@@ -63,7 +66,28 @@ void collect_entries(ExifContent* content, void* user_data) {
 }  // anonymous namespace
 
 std::string extract_exif_json(const std::string& path) {
-    ExifData* data = exif_data_new_from_file(path.c_str());
+    // exif_data_new_from_file scans for a JPEG APP1 segment, which a HEIF
+    // container does not have — its EXIF lives in a separate item. Pull that
+    // block out first and parse it from memory, so the mapping below is shared
+    // by both paths and the resulting JSON keys are identical.
+    ExifData* data = nullptr;
+    if (is_codec_extension(std::filesystem::path(path).extension().string())) {
+        std::vector<unsigned char> blob = codec_exif_blob(path);
+        if (!blob.empty()) {
+            // libexif parses JPEG APP1 payloads, which begin with "Exif\0\0"
+            // before the TIFF header. A HEIF Exif item is a bare TIFF block, and
+            // handing that over unframed fails *silently*: exif_data_new_from_data
+            // returns a non-null ExifData with every IFD empty, so the caller sees
+            // "no EXIF" rather than an error. Measured on exif_sample.heic: 0
+            // entries unframed, 6 framed.
+            static constexpr unsigned char kExifHeader[6] = {'E', 'x', 'i', 'f', 0, 0};
+            blob.insert(blob.begin(), std::begin(kExifHeader), std::end(kExifHeader));
+            data = exif_data_new_from_data(blob.data(), static_cast<unsigned int>(blob.size()));
+        }
+    } else {
+        data = exif_data_new_from_file(path.c_str());
+    }
+
     if (!data) {
         return "{}";
     }

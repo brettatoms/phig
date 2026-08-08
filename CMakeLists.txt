@@ -50,6 +50,15 @@ find_package(CURL 7.88 REQUIRED)
 find_package(spdlog 1.10 REQUIRED)
 # 0.20: Debian bookworm's libraw-dev.
 pkg_check_modules(LIBRAW_R REQUIRED libraw_r>=0.20)
+# 1.16: Debian bookworm's libheif-dev. Decodes HEIC/HEIF and AVIF, which
+# OpenCV's imgcodecs does not, and exposes the container's EXIF block. The
+# calls used (heif_decode_image, heif_image_handle_get_metadata) predate this
+# version by several releases; the floor tracks the distro baseline.
+pkg_check_modules(LIBHEIF REQUIRED libheif>=1.16)
+# 0.7: Debian bookworm's libjxl-dev. Decodes JPEG XL, which libheif does not
+# handle at all — HEIF-family containers only. The box API used for the Exif
+# payload (JxlDecoderSetDecompressBoxes) landed in 0.7.
+pkg_check_modules(LIBJXL REQUIRED libjxl>=0.7)
 # FFmpeg 5.1 (Debian bookworm) soname majors: avformat/avcodec 59, avutil 57,
 # swscale 6. core/metadata.cpp uses AVCodecParameters (FFmpeg 3.1+) and
 # av_display_rotation_get (FFmpeg 2.x+) — both far older than bookworm's
@@ -108,6 +117,7 @@ find_package(GTest 1.12 REQUIRED)
 add_executable(phig-tests
     tests/test_scanner.cpp
     tests/test_hasher.cpp
+    tests/test_image_codec.cpp
     tests/test_exif.cpp
     tests/test_database.cpp
     tests/test_organize.cpp

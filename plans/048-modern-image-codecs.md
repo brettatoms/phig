@@ -1,6 +1,6 @@
 ---
 name: Modern Image Codecs (HEIC/HEIF/AVIF/JXL)
-status: designing
+status: completed
 created: 2026-08-08
 description: >
   phig advertises heic, heif, avif and jxl in `known_extensions()` and cannot
@@ -188,23 +188,32 @@ assumed. That is not an oversight: `cv::imread` applies EXIF orientation itself
 unless passed `IMREAD_IGNORE_ORIENTATION`. Every existing decode path inherits
 upright pixels for free.
 
-The replacements do not agree:
+**Measured 2026-08-08** on fixtures written at three orientations, correcting
+this section's original guess that both backends would need normalizing:
 
-| Decoder | Container `irot`/`imir` | EXIF orientation |
-|---|---|---|
-| `cv::imread` | n/a | applied |
-| ImageIO (`CGImageSourceCreateImageAtIndex`) | applied | **not applied** |
-| libheif | applied by default | **not applied** |
+| Decoder | orient_1 | orient_6 (90 CW) | orient_8 (90 CCW) | Needs correction |
+|---|---|---|---|---|
+| `cv::imread` (JPEG) | 200x100 | 100x200 | 100x200 | n/a — the reference |
+| libheif | 200x100 | 100x200 | 100x200 | **no** |
+| ImageIO | 200x100 | 200x100 | 200x100 | **yes** |
 
-So `codec_decode` must normalize explicitly on both platforms, and the two must
-agree with each other and with `cv::imread`'s existing behaviour. Get this wrong
-and HEICs are sideways on one platform and upright on the other, with every
-thumbnail and phash in the collection reflecting it. This is the detail most
-likely to ship broken, so it gets dedicated tests.
+libheif applies the container's transforms itself and so already matches
+`cv::imread`. ImageIO alone returns unrotated pixels — but it reports the
+orientation correctly through `kCGImagePropertyOrientation`, and that value
+already folds in the container transforms, so applying it reproduces the other
+two. The correction therefore lives only in the macOS backend.
+
+Get this wrong and HEICs are sideways on one platform and upright on the other,
+with every thumbnail and phash reflecting it, so the decode tests compare
+ImageIO's output against libheif's rather than against hardcoded numbers.
 
 Note `gtk/CLAUDE.md`'s existing rule still holds and is now load-bearing:
 orientation is applied at thumbnail generation time in `core/`, never in a
 client. A client that "helpfully" rotates would double-apply.
+
+## Execution
+
+Bite-sized TDD steps: `docs/plans/2026-08-08-048-modern-codecs.md`.
 
 ## Testing
 
@@ -239,8 +248,8 @@ The existing collection has no HEICs, so this check arrives properly with 049.
 
 ## Dependencies
 
-libheif and libjxl on both platforms. libheif 1.23.1 is already present on the
-development Mac; `jpeg-xl` is not yet installed there. README per-distro package
+libheif and libjxl on both platforms. Installed and verified on the
+development Mac: libheif 1.23.1, libjxl 0.12.0. README per-distro package
 lists and the CI workflow both need the two added.
 
 JPEG XL support is asymmetric and worth recording: ImageIO on macOS 26 reads
@@ -248,6 +257,32 @@ JPEG XL support is asymmetric and worth recording: ImageIO on macOS 26 reads
 62 readable types), so JXL costs nothing on macOS pixels, while Linux needs
 libjxl. Both platforms need libjxl for JXL's EXIF box regardless, since libheif
 does not handle JXL.
+
+## Debian/Ubuntu splits libheif's codecs into plugins
+
+Measured 2026-08-08 on CI's ubuntu-latest (noble, libheif 1.17.6): installing
+`libheif-dev` gives AVIF but **not** HEIC. Five HEIC tests failed there while
+every AVIF, JXL and EXIF test passed.
+
+libheif 1.17 loads codec backends as dynamic plugins, and Debian packages them
+separately. AV1 decoding is compiled in, so AVIF works; HEVC decoding lives in
+`libheif-plugin-libde265`. Installing `libde265` alone does not help — CI had
+libde265 1.0.15 present and still could not decode HEIC, because libheif loads
+its plugin wrapper rather than linking the codec directly.
+
+So `libheif-plugin-libde265` is a runtime requirement on Debian/Ubuntu and is
+listed in both CI and the README. It is a runtime package, not a `-dev` one:
+the build succeeds without it and only decoding fails, which is why this could
+not have been caught at compile time.
+
+Unverified for the other distros: Fedora has historically excluded patent
+-encumbered HEVC from its main repositories, so `libheif-devel` there may need
+an RPM Fusion package for HEIC. Arch's `libheif` appears to bundle libde265.
+Neither has been tested — CI covers Ubuntu and macOS only.
+
+Failure mode when the plugin is absent is at least clean: `codec_decode`
+returns an empty `Mat` and scan reports "Cannot decode image" per file, rather
+than crashing or silently indexing a blank.
 
 ## Open questions
 
