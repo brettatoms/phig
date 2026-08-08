@@ -56,7 +56,8 @@ Follows plan 026 (RAW as master, JPEG as attachment) almost exactly:
 - A MOV with no paired still is a normal video → its own row, as today.
 
 The pixel source is the still; unlike RAW there is no decode-tier question,
-except that HEIC must be decodable at all (see open decision 3).
+except that HEIC must be decodable at all — which it is not today, and which
+plan 048 fixes (see decision 3).
 
 ## The pairing rule — why basename is wrong
 
@@ -93,14 +94,25 @@ JPEG. Needs confirming that the still-as-master direction is right, since it
 inverts the current state where the MOV is a normal row. Recommendation: still
 is master; it carries the EXIF, the faces, and the thumbnail.
 
-**3. HEIC decode.** Unverified. `heic`/`heif` are in the extension list, but
-whether the OpenCV build actually decodes them was not established — the
-`opencv4.pc` files found on this machine are stale Nix paths left over from
-before plan 036 swapped devenv for mise, so the build's real capabilities were
-not measured. libheif 1.23.1 *is* installed. If OpenCV cannot decode HEIC,
-this plan has a prerequisite: a libheif decode tier structurally like plan
-026's LibRaw tiers, which is its own piece of work and arguably its own plan.
-**Measure before designing around it.**
+**3. HEIC decode. Answered 2026-08-08: OpenCV cannot decode HEIC**, and the
+prerequisite this decision anticipated is now plan 048.
+
+Measured by scanning a HEIC alongside a JPEG control: the HEIC was found by the
+walk, rejected by `cv::imread` with `Cannot decode image`, counted as an error
+and never indexed, while the control indexed normally. Homebrew's OpenCV
+`imgcodecs` links jpeg-turbo, webp, png, tiff and openjpeg — no HEIF codec —
+though libheif 1.23.1 is installed as another package's dependency.
+
+This decision's own guess at the shape of the fix was right: a decode tier
+structurally like plan 026's LibRaw tiers, as its own plan. Plan 048 is that
+work, with one refinement measurement forced — on macOS the tier is ImageIO
+rather than libheif, which decodes 4.5x faster in wall time and at 1/14th the
+CPU. 048 also covers HEIC's EXIF, which libexif's file loader cannot read
+either, so the still's date and camera survive.
+
+**This plan now depends on 048** for the still to be decodable at all. Nothing
+else here changes: 048 makes the still a normal indexed row and does no
+still/MOV pairing, which remains this plan's subject.
 
 ## Before this becomes implementable
 
@@ -119,7 +131,8 @@ this plan has a prerequisite: a libheif decode tier structurally like plan
 
 Depends on 025 (sidecar carry machinery), 026 (the master/attachment model and
 its scan transitions), 023 (relink primitive for demotion). Goal 3 additionally
-depends on 031. Possibly gated behind a HEIC decode plan, pending decision 3.
+depends on 031. Also depends on 048, which makes the HEIC still decodable —
+decision 3, previously an open question, resolved as a hard prerequisite.
 
 ## Scope notes
 
