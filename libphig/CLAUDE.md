@@ -112,6 +112,20 @@ defensible. Unresolved, and out of scope for plan 031.
   so a new entry point is exported by being named `phig_something` and needs no
   edit to either file. A public symbol that does not start with `phig_` is
   hidden and unlinkable however it is declared in `phig.h`.
+- **A destructive operation gets plan/apply, never a confirmation callback.**
+  Anything that deletes, moves or overwrites publishes a plan the caller
+  inspects, then authorizes with a second call. It does not ask mid-run: no
+  callback may run on an engine thread (see handle-plus-poll above), and a
+  callback has no meaning over the wire protocol, where nothing can call back
+  into a browser mid-request. `cmd_rm`'s `ConfirmFn` is a `cli/` affordance for
+  a command with no plan phase, not a model to copy here. Three properties come
+  with the shape: the plan is a caller-owned value the caller frees, so it
+  outlives the operation that computed it and can be edited without touching
+  engine-owned memory; apply re-verifies every decision at execution time, so a
+  stale plan can never cause an action the re-check would not independently
+  justify; and whether an item's decision is overridable is a property of the
+  decision type, not of the mechanism — organize's conflict resolutions are,
+  reconcile's deletions are not. Plans 041 and 042.
 
 ## Not covered by CI lint
 
