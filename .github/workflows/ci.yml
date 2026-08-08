@@ -86,9 +86,12 @@ jobs:
             [ "$got" = "$want" ] || { echo "::error::$tool is $got, expected $want"; exit 1; }
           done
 
+      # No -maxdepth: nested files were uncovered, which left the versioned
+      # public header include/phig/phig.h unlinted by the gate that exists to
+      # keep it consistent.
       - name: clang-format
         run: |
-          find core libphig cli tests -maxdepth 1 -type f \
+          find core libphig cli tests -type f \
             \( -name '*.cpp' -o -name '*.h' -o -name '*.c' \) \
             -print0 | xargs -0 clang-format --dry-run --Werror
 

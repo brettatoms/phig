@@ -13,6 +13,16 @@
 #       Doesn't model pimpl: FaceDetector's ~FaceDetector must stay declared in
 #       faces.h and defined in faces.cpp where Impl is complete, so defaulting
 #       it at the first declaration would not compile.
+#   performance-enum-size
+#       Not expressible where it fires hardest: 6 of its findings are in
+#       include/phig/phig.h, which CMakeLists pins to C99 and tests as C99 —
+#       fixed underlying types for enums are C23, so obeying it there breaks a
+#       tested invariant. Pinning enum widths at a C ABI boundary crossing GCC,
+#       AppleClang and MSVC is also a layout dependency across toolchains rather
+#       than a win. The rest are core/ enums passed as scalar arguments, not
+#       stored in bulk, which is the storage the check exists to shrink: no
+#       measured benefit, and this repo does not take performance changes on
+#       reasoning alone.
 #
 # NOTE: `Checks:` below is a YAML folded scalar — a `#` inside it is literal
 # text, not a comment, and silently swallows the entries that follow it. Keep
@@ -29,6 +39,11 @@ Checks: >
   clang-analyzer-*,
   -clang-analyzer-deadcode.DeadStores,
   performance-*,
-  -performance-trivially-destructible
+  -performance-trivially-destructible,
+  -performance-enum-size
 WarningsAsErrors: '*'
-HeaderFilterRegex: '^(core|libphig|cli)/'
+# Unanchored on purpose. clang-tidy matches this against the path as the
+# diagnostic reports it, which is absolute — CMake writes absolute paths into
+# compile_commands.json — so a leading '^' matches nothing and silently
+# suppressed every finding in phig's own headers. Measured: 16 of them.
+HeaderFilterRegex: '(core|libphig|cli)/'

@@ -15,7 +15,7 @@ LogLevel log_level_from_string(const std::string& s);
 // file sink can't be created, warns once on stderr and continues stderr-only.
 // Never throws. Call once at startup (tests may call again after log_close()).
 void log_init(const std::string& path, bool file_enabled, LogLevel file_level,
-              std::size_t max_bytes = 5 * 1024 * 1024);
+              std::size_t max_bytes = std::size_t{5} * 1024 * 1024);
 
 // Log one message to every sink whose level admits it. The message is logged
 // verbatim (never treated as a fmt format string — braces in filenames are

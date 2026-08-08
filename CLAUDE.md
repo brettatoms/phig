@@ -99,22 +99,28 @@ collection:
 ### Linting & CI
 
 - **Formatting:** clang-format, Google style / 4-space / 100-col
-  (`.clang-format`). CI's lint step globs `core libphig cli tests -maxdepth
-  1` for `*.cpp`, `*.h` and `*.c` (commit `6a13144` — `src/` no longer
+  (`.clang-format`). CI's lint step globs `core libphig cli tests` for
+  `*.cpp`, `*.h` and `*.c` at any depth (commit `6a13144` — `src/` no longer
   exists, this replaced a glob on it). `vendor/` is excluded. Check with
-  `clang-format --dry-run --Werror <files>`. **`-maxdepth 1` means nested
-  files are not covered** — `libphig/include/phig/phig.h` in particular is
-  not linted by CI; check it manually.
+  `clang-format --dry-run --Werror <files>`.
 - **Warnings:** first-party code builds with `-Wall -Wextra`; configure with
   `-DPHIG_WERROR=ON` to make them fatal (CI does). Vendored code (`vendor/`)
   is a separate `phig-vendor` target without these flags.
 - **clang-tidy:** high-signal set in `.clang-tidy` (bugprone/performance/
-  analyzer, noisy checks disabled). Run locally via
-  `./scripts/clang-tidy.sh` — it injects g++'s own libstdc++ header dirs at
-  runtime (discovered via `g++ -E -x c++ - -v`, never hardcoded) so
-  clang-tidy's clang frontend can find `<string>` etc. regardless of which
-  toolchain installed it. CI runs `run-clang-tidy` directly on its system
-  toolchain.
+  analyzer, noisy checks disabled). Both CI and local runs go through
+  `./scripts/clang-tidy.sh`, which supplies the standard-library headers
+  clang-tidy's frontend cannot find on its own — g++'s search dirs on Linux
+  (discovered via `g++ -E -x c++ - -v`, never hardcoded), the SDK sysroot
+  from `xcrun` on macOS.
+  - **Scope is sources under `core/`, `libphig/`, `cli/`.** `tests/` is
+    deliberately outside it. Headers are covered as those sources include
+    them, through `HeaderFilterRegex` — they cannot be listed directly,
+    because the file list comes from `compile_commands.json`, which holds
+    translation units only.
+  - **`HeaderFilterRegex` must stay unanchored.** clang-tidy matches it
+    against the absolute path, so a leading `^` matches nothing and silently
+    suppresses every finding in phig's own headers — which is what it did,
+    hiding 16 of them, until commit `b89d6e8`'s follow-up.
 - **CI:** `.github/workflows/ci.yml` builds + tests on ubuntu-latest and
   macos-latest (with `-DPHIG_WERROR=ON`) and runs the lint gate. GitHub
   Actions are pinned to full commit SHAs.

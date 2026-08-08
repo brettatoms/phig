@@ -67,11 +67,17 @@ else
         awk '/#include <...> search starts/{f=1;next} /End of search list/{f=0} f{gsub(/^ +/,"");print}')
 fi
 
+# Scope note for both branches below: sources under core/, libphig/ and cli/.
+# `tests/` is deliberately outside it — test code carries idioms (fixtures,
+# deliberate edge-case constructions) the check set is not tuned for. Headers
+# are covered as those sources include them, via HeaderFilterRegex in
+# .clang-tidy; they cannot be listed here, because both branches ultimately
+# draw on compile_commands.json, which holds translation units only.
 if command -v run-clang-tidy >/dev/null 2>&1; then
     args=()
     for inc in "${isystem[@]}"; do args+=("-extra-arg=$inc"); done
     exec run-clang-tidy -quiet -clang-tidy-binary "$tidy_bin" -p build "${args[@]}" \
-        '(core|libphig|cli)/.*\.(cpp|h)$' "$@"
+        '(core|libphig|cli)/.*\.cpp$' "$@"
 fi
 
 # Fallback: invoke clang-tidy per file, failing if any file reports findings.
