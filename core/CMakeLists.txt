@@ -87,4 +87,11 @@ target_link_directories(phig-core PUBLIC
     ${SWSCALE_LIBRARY_DIRS}
 )
 
+if(APPLE)
+    # ImageIO is a C API, so this is plain C++ — no Objective-C++, no .mm file.
+    target_sources(phig-core PRIVATE image_codec_apple.cpp)
+    target_link_libraries(phig-core PUBLIC "-framework ImageIO" "-framework CoreGraphics"
+                                           "-framework CoreFoundation")
+endif()
+
 target_compile_options(phig-core PRIVATE ${PHIG_WARNINGS})

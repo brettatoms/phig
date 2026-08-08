@@ -119,3 +119,68 @@ TEST(LibheifDecode, ReturnsEmptyMatForMissingFile) {
     EXPECT_NO_THROW({ img = codec_decode_libheif("/nonexistent/file.heic"); });
     EXPECT_TRUE(img.empty());
 }
+
+#ifdef __APPLE__
+
+// ImageIO is the production decoder on macOS, so its output has to be
+// indistinguishable from libheif's: a phash computed here is compared against
+// phashes computed on Linux.
+TEST(ImageIODecode, MatchesLibheifDimensionsForEveryOrientation) {
+    for (const char* name : {"orient_1.heic", "orient_6.heic", "orient_8.heic"}) {
+        cv::Mat apple = codec_decode_imageio(fixture(name));
+        cv::Mat heif = codec_decode_libheif(fixture(name));
+        ASSERT_FALSE(apple.empty()) << name;
+        ASSERT_FALSE(heif.empty()) << name;
+        EXPECT_EQ(apple.cols, heif.cols) << name;
+        EXPECT_EQ(apple.rows, heif.rows) << name;
+    }
+}
+
+// Orientation 6 is a 90-degree rotation, so the 200x100 source must come back
+// 100x200. This assertion fails if the reported orientation is ignored, and
+// equally if it is applied twice.
+TEST(ImageIODecode, AppliesOrientationSoResultIsUpright) {
+    cv::Mat upright = codec_decode_imageio(fixture("orient_1.heic"));
+    cv::Mat rotated = codec_decode_imageio(fixture("orient_6.heic"));
+    ASSERT_FALSE(upright.empty());
+    ASSERT_FALSE(rotated.empty());
+    EXPECT_EQ(upright.cols, 200);
+    EXPECT_EQ(upright.rows, 100);
+    EXPECT_EQ(rotated.cols, 100);
+    EXPECT_EQ(rotated.rows, 200);
+}
+
+TEST(ImageIODecode, ProducesBgrChannelOrder) {
+    cv::Mat img = codec_decode_imageio(fixture("orient_1.heic"));
+    ASSERT_FALSE(img.empty());
+    EXPECT_EQ(img.type(), CV_8UC3);
+    cv::Vec3b marker = img.at<cv::Vec3b>(5, 5);
+    cv::Vec3b field = img.at<cv::Vec3b>(50, 150);
+    EXPECT_GT(marker[0], 200) << "blue channel high inside the marker";
+    EXPECT_LT(marker[2], 60) << "red channel low inside the marker";
+    EXPECT_LT(field[0], 60) << "blue channel low on the red field";
+    EXPECT_GT(field[2], 200) << "red channel high on the red field";
+}
+
+TEST(ImageIODecode, DecodesAvif) {
+    cv::Mat img = codec_decode_imageio(fixture("sample.avif"));
+    ASSERT_FALSE(img.empty());
+    EXPECT_EQ(img.cols, 200);
+    EXPECT_EQ(img.rows, 100);
+}
+
+TEST(ImageIODecode, ReturnsEmptyMatOnGarbageAndDoesNotThrow) {
+    std::string path = write_garbage("garbage_io.heic");
+    cv::Mat img;
+    EXPECT_NO_THROW({ img = codec_decode_imageio(path); });
+    EXPECT_TRUE(img.empty());
+    fs::remove(path);
+}
+
+TEST(ImageIODecode, ReturnsEmptyMatForMissingFile) {
+    cv::Mat img;
+    EXPECT_NO_THROW({ img = codec_decode_imageio("/nonexistent/file.heic"); });
+    EXPECT_TRUE(img.empty());
+}
+
+#endif  // __APPLE__
