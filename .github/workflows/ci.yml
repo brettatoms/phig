@@ -52,6 +52,73 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure --parallel
 
+  # Sanitizers. Two configurations because ASan and TSan cannot be combined.
+  #
+  # Both exclude DuplicatesPerf: those tests assert wall-clock budgets, which
+  # instrumentation overhead blows through — measured, TSan takes 1957ms and
+  # 2526ms against a 1500ms budget. That is the harness losing to the sanitizer,
+  # not a regression, and gating on it would only teach people to ignore red.
+  sanitizers:
+    name: sanitizers (${{ matrix.san }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - san: asan-ubsan
+            flags: "-fsanitize=address,undefined -fno-omit-frame-pointer"
+          - san: tsan
+            flags: "-fsanitize=thread -fno-omit-frame-pointer"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
+            libgtest-dev libspdlog-dev libraw-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_FLAGS="${{ matrix.flags }}" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.flags }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # OMP_NUM_THREADS=1 is required, not tidiness. OpenCV's parallel backend
+      # on Linux is OpenMP, libgomp is not TSan-instrumented, so TSan cannot see
+      # its barriers and every parallel region inside a detect() or decode looks
+      # like unsynchronized access — roughly 120 false positives that bury any
+      # real finding. See "ThreadSanitizer" in CLAUDE.md.
+      #
+      # halt_on_error makes a finding fail the job: UBSan otherwise reports and
+      # keeps going, which would let a real diagnostic pass as green.
+      #
+      # GTEST_DEATH_TEST_STYLE=threadsafe is what keeps this gate from flaking.
+      # The suite has two EXPECT_EXIT tests, and gtest's default "fast" style
+      # forks without re-exec — leaving the child holding a sanitizer runtime
+      # that is not fork-safe. Measured on the concurrent-thumb EXPECT_EXIT
+      # under TSan: 3 of 40 runs died in the child with the default style, 0 of
+      # 40 with threadsafe, which re-execs instead.
+      #
+      # detect_leaks=0 is a deliberate limit, not an oversight: leak detection
+      # would report through OpenCV and LibRaw, which this gate has no way to
+      # fix. Memory errors and races are what it is for.
+      - name: Test
+        env:
+          OMP_NUM_THREADS: 1
+          GTEST_DEATH_TEST_STYLE: threadsafe
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure --parallel -E DuplicatesPerf
+
   # gtk/ is a separate CMake project that consumes phig through pkg-config
   # rather than by source path, so this installs libphig first and points
   # PKG_CONFIG_PATH at it. Linux only — gtk/ is the Linux client (see

@@ -72,6 +72,37 @@ hardcodes a temp path instead will pass alone and fail under `--parallel`.
 `gtk/` has its own build (`cmake -B build && cmake --build build -j` from
 inside `gtk/`) and 13 tests across two binaries — see `gtk/CLAUDE.md`.
 
+### Sanitizers
+
+CI runs ASan+UBSan and TSan as two ubuntu jobs on every push, configured
+through `CMAKE_CXX_FLAGS` (there is no `PHIG_SANITIZE` option). To reproduce
+one locally:
+
+```bash
+cmake -B build-san -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+OMP_NUM_THREADS=1 GTEST_DEATH_TEST_STYLE=threadsafe \
+  ctest --test-dir build-san --parallel -E DuplicatesPerf
+```
+
+Three things about that command are load-bearing:
+
+- **`-E DuplicatesPerf`.** Those tests assert wall-clock budgets that
+  instrumentation blows through — measured, TSan takes 1957ms and 2526ms
+  against a 1500ms budget. Excluding them is not hiding a regression.
+- **`GTEST_DEATH_TEST_STYLE=threadsafe`.** The suite has two `EXPECT_EXIT`
+  tests, and gtest's default `fast` style forks without re-exec, leaving the
+  child holding a sanitizer runtime that is not fork-safe. Measured on the
+  concurrent-thumb `EXPECT_EXIT` under TSan: 3 of 40 runs died in the child
+  with the default, 0 of 40 with `threadsafe`.
+- **`OMP_NUM_THREADS=1`** — see below.
+
+Leak detection is off (`ASAN_OPTIONS=detect_leaks=0`) because it reports
+through OpenCV and LibRaw, which this gate cannot fix. Measured cost on an
+M-series Mac, perf excluded: ASan+UBSan 25s, TSan 82s, against ~12s
+uninstrumented. CI runners are slower.
+
 ### ThreadSanitizer: always set `OMP_NUM_THREADS=1`
 
 ```bash
@@ -121,11 +152,11 @@ collection:
     against the absolute path, so a leading `^` matches nothing and silently
     suppresses every finding in phig's own headers — which is what it did,
     hiding 16 of them, until commit `b89d6e8`'s follow-up.
-- **CI:** `.github/workflows/ci.yml` runs three jobs — build + test on
-  ubuntu-latest and macos-latest (with `-DPHIG_WERROR=ON`), a gtk job that
-  installs libphig and then builds and tests `gtk/` against it through
-  pkg-config, and the lint gate. GitHub Actions are pinned to full commit
-  SHAs.
+- **CI:** `.github/workflows/ci.yml` runs four jobs — build + test on
+  ubuntu-latest and macos-latest (with `-DPHIG_WERROR=ON`), ASan+UBSan and
+  TSan (see Sanitizers above), a gtk job that installs libphig and then
+  builds and tests `gtk/` against it through pkg-config, and the lint gate.
+  GitHub Actions are pinned to full commit SHAs.
 
 ## Tech stack
 
