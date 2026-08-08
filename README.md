@@ -18,7 +18,8 @@ A command-line tool for managing image and video collections. Scan directories, 
 ## Building
 
 phig builds against stock system libraries — OpenCV (core modules only; no
-`contrib` needed), SQLite3, libexif, libcurl, FFmpeg, spdlog, and LibRaw.
+`contrib` needed), SQLite3, libexif, libcurl, FFmpeg, spdlog, LibRaw, and
+libheif.
 Install the dependencies with your package manager, then optionally install
 [mise](https://mise.jdx.dev/) and run `mise install` from the repo root to
 get the exact `cmake`, `clang-format`, and `clang-tidy` versions CI uses
@@ -32,17 +33,20 @@ works, and lint-tool version drift only shows up as noise in
 # Debian / Ubuntu
 sudo apt install build-essential cmake pkg-config libopencv-dev libsqlite3-dev \
     libexif-dev libcurl4-openssl-dev libavformat-dev libavcodec-dev \
-    libavutil-dev libswscale-dev libgtest-dev libspdlog-dev libraw-dev
+    libavutil-dev libswscale-dev libgtest-dev libspdlog-dev libraw-dev \
+    libheif-dev
 
 # Fedora
 sudo dnf install gcc-c++ cmake make pkgconf-pkg-config opencv-devel sqlite-devel \
-    libexif-devel libcurl-devel ffmpeg-free-devel gtest-devel spdlog-devel LibRaw-devel
+    libexif-devel libcurl-devel ffmpeg-free-devel gtest-devel spdlog-devel LibRaw-devel \
+    libheif-devel
 
 # Arch Linux
-sudo pacman -S base-devel cmake opencv sqlite libexif curl ffmpeg gtest spdlog libraw
+sudo pacman -S base-devel cmake opencv sqlite libexif curl ffmpeg gtest spdlog libraw \
+    libheif
 
 # macOS (Homebrew)
-brew install cmake pkg-config opencv sqlite libexif ffmpeg googletest spdlog libraw
+brew install cmake pkg-config opencv sqlite libexif ffmpeg googletest spdlog libraw libheif
 ```
 
 Then build and install:

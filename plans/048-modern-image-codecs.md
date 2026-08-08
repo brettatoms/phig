@@ -1,6 +1,6 @@
 ---
 name: Modern Image Codecs (HEIC/HEIF/AVIF/JXL)
-status: designing
+status: in-progress
 created: 2026-08-08
 description: >
   phig advertises heic, heif, avif and jxl in `known_extensions()` and cannot
@@ -188,23 +188,32 @@ assumed. That is not an oversight: `cv::imread` applies EXIF orientation itself
 unless passed `IMREAD_IGNORE_ORIENTATION`. Every existing decode path inherits
 upright pixels for free.
 
-The replacements do not agree:
+**Measured 2026-08-08** on fixtures written at three orientations, correcting
+this section's original guess that both backends would need normalizing:
 
-| Decoder | Container `irot`/`imir` | EXIF orientation |
-|---|---|---|
-| `cv::imread` | n/a | applied |
-| ImageIO (`CGImageSourceCreateImageAtIndex`) | applied | **not applied** |
-| libheif | applied by default | **not applied** |
+| Decoder | orient_1 | orient_6 (90 CW) | orient_8 (90 CCW) | Needs correction |
+|---|---|---|---|---|
+| `cv::imread` (JPEG) | 200x100 | 100x200 | 100x200 | n/a — the reference |
+| libheif | 200x100 | 100x200 | 100x200 | **no** |
+| ImageIO | 200x100 | 200x100 | 200x100 | **yes** |
 
-So `codec_decode` must normalize explicitly on both platforms, and the two must
-agree with each other and with `cv::imread`'s existing behaviour. Get this wrong
-and HEICs are sideways on one platform and upright on the other, with every
-thumbnail and phash in the collection reflecting it. This is the detail most
-likely to ship broken, so it gets dedicated tests.
+libheif applies the container's transforms itself and so already matches
+`cv::imread`. ImageIO alone returns unrotated pixels — but it reports the
+orientation correctly through `kCGImagePropertyOrientation`, and that value
+already folds in the container transforms, so applying it reproduces the other
+two. The correction therefore lives only in the macOS backend.
+
+Get this wrong and HEICs are sideways on one platform and upright on the other,
+with every thumbnail and phash reflecting it, so the decode tests compare
+ImageIO's output against libheif's rather than against hardcoded numbers.
 
 Note `gtk/CLAUDE.md`'s existing rule still holds and is now load-bearing:
 orientation is applied at thumbnail generation time in `core/`, never in a
 client. A client that "helpfully" rotates would double-apply.
+
+## Execution
+
+Bite-sized TDD steps: `docs/plans/2026-08-08-048-modern-codecs.md`.
 
 ## Testing
 
