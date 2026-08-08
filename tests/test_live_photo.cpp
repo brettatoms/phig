@@ -6,6 +6,7 @@
 
 #include "live_photo.h"
 #include "live_photo_internal.h"
+#include "temp_dir.h"
 
 namespace fs = std::filesystem;
 
@@ -111,4 +112,60 @@ TEST(LivePhotoRealFiles, DifferentShotsDoNotCrossMatch) {
     const std::string id = live_photo_content_identifier(dir + "/IMG_1112.MOV");
     ASSERT_FALSE(id.empty());
     EXPECT_FALSE(still_has_identifier(dir + "/IMG_1111.HEIC", id));
+}
+
+// ---- pairing over a set of paths ----
+
+TEST(LivePhotoPairing, LeavesAnOrdinaryVideoAlone) {
+    auto pairs = find_live_photo_pairs({fixture("test_red.mov"), fixture("orient_1.heic")});
+    EXPECT_TRUE(pairs.empty()) << "a camera clip must never be demoted to an attachment";
+}
+
+TEST(LivePhotoPairing, IgnoresAVideoWhoseStillIsAbsent) {
+    auto pairs = find_live_photo_pairs({fixture("live_photo.mov"), fixture("orient_1.heic")});
+    EXPECT_TRUE(pairs.empty());
+}
+
+TEST(LivePhotoPairing, HandlesAnEmptyInput) { EXPECT_TRUE(find_live_photo_pairs({}).empty()); }
+
+TEST(LivePhotoRealFiles, PairsAnExportedLivePhoto) {
+    const std::string dir = samples_dir();
+    if (!fs::exists(dir + "/IMG_1112.MOV")) GTEST_SKIP() << "no exported samples at " << dir;
+
+    auto pairs = find_live_photo_pairs(
+        {dir + "/IMG_1112.MOV", dir + "/IMG_1112.HEIC", dir + "/IMG_2147.HEIC"});
+    ASSERT_EQ(pairs.size(), 1u);
+    EXPECT_EQ(fs::path(pairs[0].still).filename(), "IMG_1112.HEIC");
+    EXPECT_EQ(fs::path(pairs[0].video).filename(), "IMG_1112.MOV");
+}
+
+TEST(LivePhotoRealFiles, PairsSeveralShotsIndependently) {
+    const std::string dir = samples_dir();
+    if (!fs::exists(dir + "/IMG_1112.MOV") || !fs::exists(dir + "/IMG_1111.MOV")) {
+        GTEST_SKIP() << "no exported samples at " << dir;
+    }
+    auto pairs = find_live_photo_pairs({dir + "/IMG_1112.MOV", dir + "/IMG_1111.MOV",
+                                        dir + "/IMG_1112.HEIC", dir + "/IMG_1111.HEIC"});
+    EXPECT_EQ(pairs.size(), 2u);
+    for (const auto& p : pairs) {
+        EXPECT_EQ(fs::path(p.still).stem(), fs::path(p.video).stem())
+            << "a shot was paired with another shot's video";
+    }
+}
+
+// Ambiguity is refused, never guessed. A wrong pairing silently removes a video
+// row and makes `mv` drag the file somewhere it does not belong, so two stills
+// claiming one video must leave that video independent.
+TEST(LivePhotoRealFiles, RefusesToPairWhenTwoStillsClaimOneVideo) {
+    const std::string dir = samples_dir();
+    if (!fs::exists(dir + "/IMG_1112.MOV")) GTEST_SKIP() << "no exported samples at " << dir;
+
+    const std::string tmp = make_temp_dir("livepair");
+    fs::copy_file(dir + "/IMG_1112.MOV", tmp + "/a.mov");
+    fs::copy_file(dir + "/IMG_1112.HEIC", tmp + "/a.heic");
+    fs::copy_file(dir + "/IMG_1112.HEIC", tmp + "/copy.heic");
+
+    auto pairs = find_live_photo_pairs({tmp + "/a.mov", tmp + "/a.heic", tmp + "/copy.heic"});
+    EXPECT_TRUE(pairs.empty()) << "an ambiguous match must pair nothing";
+    fs::remove_all(tmp);
 }

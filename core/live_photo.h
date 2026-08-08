@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 // Apple Live Photo pairing.
 //
@@ -31,3 +32,22 @@ std::string live_photo_content_identifier(const std::string& video_path);
 // avoids both problems, and a false positive would need a 36-character
 // collision. Never throws.
 bool still_has_identifier(const std::string& still_path, const std::string& id);
+
+struct LivePhotoPair {
+    std::string still;  // the master: holds the row, EXIF, phash, thumbnail, faces
+    std::string video;  // the attachment: carried, never indexed on its own
+};
+
+// The Live Photo pairs among `paths`. A video is absent from the result unless
+// it carries a Content Identifier and exactly one still in `paths` contains it:
+// no identifier, no match, or more than one match all leave it independent.
+//
+// Refusing ambiguity is deliberate. A wrong pairing silently removes a video row
+// and makes organize drag the file somewhere it does not belong, so the failure
+// mode is "not paired" — today's behaviour — and never "paired wrongly".
+//
+// Reads each still's MakerNote at most once, and does no still work at all when
+// no video in the set carries an identifier. Plan 044 measured what the naive
+// shape costs: has_sibling_raw re-listed a directory per file and made scan
+// quadratic in directory size.
+std::vector<LivePhotoPair> find_live_photo_pairs(const std::vector<std::string>& paths);

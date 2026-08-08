@@ -1,9 +1,12 @@
 #include "live_photo.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <unordered_map>
 
 #include "exif.h"
 #include "live_photo_internal.h"
+#include "scanner.h"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -51,4 +54,46 @@ bool still_has_identifier(const std::string& still_path, const std::string& id) 
     return exif_blob_contains_identifier(extract_maker_note(still_path), id);
 } catch (...) {
     return false;
+}
+
+std::vector<LivePhotoPair> find_live_photo_pairs(const std::vector<std::string>& paths) try {
+    // Pass 1: identifiers from the videos. Cheap — a container open, no decode.
+    std::vector<std::pair<std::string, std::string>> videos;  // (path, identifier)
+    for (const auto& p : paths) {
+        const std::string ext = std::filesystem::path(p).extension().string();
+        if (!is_known_video_extension(ext)) continue;
+        std::string id = live_photo_content_identifier(p);
+        if (id.size() == 36) videos.emplace_back(p, std::move(id));
+    }
+
+    // Nothing claims to be a Live Photo, so no still is touched at all. This is
+    // the common case for any collection without Apple media, and it keeps the
+    // cost off collections that gain nothing from pairing.
+    if (videos.empty()) return {};
+
+    // Pass 2: each still's MakerNote is read exactly once, then matched against
+    // every identifier. Reading per (video, still) instead would reintroduce the
+    // quadratic shape plan 044 measured.
+    std::unordered_map<std::string, std::vector<std::string>> claimants;  // id -> stills
+    for (const auto& p : paths) {
+        const std::string ext = std::filesystem::path(p).extension().string();
+        if (!is_known_image_extension(ext)) continue;
+        const std::vector<unsigned char> mnote = extract_maker_note(p);
+        if (mnote.empty()) continue;
+        for (const auto& [vpath, id] : videos) {
+            (void)vpath;
+            if (exif_blob_contains_identifier(mnote, id)) claimants[id].push_back(p);
+        }
+    }
+
+    std::vector<LivePhotoPair> pairs;
+    for (const auto& [vpath, id] : videos) {
+        auto it = claimants.find(id);
+        // Exactly one claimant, or the video stays independent.
+        if (it == claimants.end() || it->second.size() != 1) continue;
+        pairs.push_back({it->second.front(), vpath});
+    }
+    return pairs;
+} catch (...) {
+    return {};
 }
