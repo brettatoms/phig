@@ -140,16 +140,30 @@ jobs:
       #
       # scripts/tsan.supp drops GDAL's lock-order inversions, which arrive
       # through OpenCV's imgcodecs on every image decode — see that file.
+      # log_path is what makes a failure diagnosable. Without it the runtimes
+      # write to stderr, ctest --parallel interleaves that across processes, and
+      # the report headers are lost — leaving orphaned stack frames with no
+      # finding attached, which is exactly what the first failing run produced.
+      # Each process gets its own file instead, uploaded below.
       - name: Test
         env:
           OMP_NUM_THREADS: 1
           GTEST_DEATH_TEST_STYLE: threadsafe
-          ASAN_OPTIONS: detect_leaks=0
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-          TSAN_OPTIONS: halt_on_error=1:suppressions=${{ github.workspace }}/scripts/tsan.supp
+          ASAN_OPTIONS: detect_leaks=0:log_path=${{ github.workspace }}/sanlogs/asan
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1:log_path=${{ github.workspace }}/sanlogs/ubsan
+          TSAN_OPTIONS: halt_on_error=1:suppressions=${{ github.workspace }}/scripts/tsan.supp:log_path=${{ github.workspace }}/sanlogs/tsan
         run: |
+          mkdir -p sanlogs
           ctest --test-dir build --output-on-failure --parallel \
             -E 'DuplicatesPerf|_NOT_BUILT'
+
+      - name: Upload sanitizer reports
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sanitizer-reports-${{ matrix.san }}
+          path: sanlogs/
+          if-no-files-found: ignore
 
   # gtk/ is a separate CMake project that consumes phig through pkg-config
   # rather than by source path, so this installs libphig first and points
