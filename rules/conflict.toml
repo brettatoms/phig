@@ -10,3 +10,140 @@ protects = ["original-file"]
 tests = ["OrganizeEngineTest.OverwritePolicyStillRenamesAroundAnExistingFile"]
 test_kind = "witness"
 status = "holds"
+
+[[rule]]
+id = "R02"
+tier = "engine"
+concern = "conflict"
+statement = "A move to an occupied destination fails rather than replacing what is there, whatever the conflict policy decided."
+rationale = "This guard sits below the planner and answers a question the plan cannot: a file that appeared at the destination after planning, from a concurrent phig run or a sync app. It uses the kernel's atomic no-replace rename where one exists, then a hard-link emulation, so the check and the rename are one operation rather than two."
+enforced_at = ["core/paths.cpp:move_file", "core/paths.cpp:rename_noreplace"]
+binds = ["organize.move", "remove.trash"]
+protects = ["original-file", "attachment"]
+tests = [
+    "MoveFileTest.RefusesToOverwriteExistingDest",
+    "MoveFileTest.CrossDeviceRefusesToOverwriteExistingDest",
+    "OrganizeExecTest.MoveRefusesAnOccupiedDestinationWithoutAuthorization",
+    "RemoveExecTest.TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R03"
+tier = "engine"
+concern = "conflict"
+statement = "A destination already claimed by an earlier file in the same run is a conflict even when nothing occupies it on disk."
+rationale = "Two selected files can expand to one destination under the same format string. The first has not been written yet when the second is resolved, so no on-disk check can see the collision; only the claimed set can."
+enforced_at = ["core/paths.cpp:resolve_conflict"]
+binds = ["organize.copy", "organize.move", "organize.plan"]
+protects = ["original-file"]
+tests = [
+    "ResolveConflictTest.IntraRunCollisionRenameKeepsBoth",
+    "ResolveConflictTest.IntraRunCollisionSkipDropsSecond",
+    "ResolveConflictTest.IntraRunCollisionOverwriteRenamesSecond",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R05"
+tier = "engine"
+concern = "conflict"
+statement = "The copy branch renames an occupied destination aside before writing and puts it back if any step fails."
+rationale = "Defense in depth: the planner protects every existing on-disk path, so in normal use the destination is free, and this covers any caller that targets an occupied one anyway. The backup is a same-directory rename rather than a byte copy, so every failure path can restore it, and a failed restore is thrown rather than swallowed because the original then sits only at the backup path."
+enforced_at = ["core/organize_exec.cpp:execute_organize_action", "core/paths.cpp:unique_backup_path"]
+binds = ["organize.copy"]
+protects = ["original-file"]
+tests = [
+    "OrganizeExecTest.CopyRestoresPriorFileOnDbFailureOverwrite",
+    "OrganizeExecTest.CopyOverwriteSuccessLeavesNoBackup",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R06"
+tier = "engine"
+concern = "conflict"
+statement = "An authorized replace renames the occupant aside before the move and restores it if any later step fails."
+rationale = "move_file refuses to overwrite, so an occupied destination has to be cleared before the rename can succeed; doing it with a same-directory rename means the disk action, the path update and the log entry can all be undone. The backup is removed only after the transaction commits, which is the point at which the replacement the caller authorized has actually happened."
+enforced_at = ["core/organize_exec.cpp:execute_organize_action"]
+binds = ["organize.move"]
+protects = ["original-file"]
+tests = [
+    "OrganizeExecTest.MoveRestoresPriorFileOnDbFailureWhenOverwriteAllowed",
+    "OrganizeExecTest.MoveOverwriteSuccessLeavesNoBackup",
+    "AbiOrganizeTest.OverriddenOverwriteReplacesAnUntrackedOccupant",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R08"
+tier = "engine"
+concern = "conflict"
+statement = "A run started with on_conflict overwrite replaces the file at an occupied destination."
+rationale = "The flag offers three values and the code has two behaviors. The planner's is_protected returns true for any path that exists on disk and resolve_conflict renames around a protected destination, so a run-level overwrite differs from rename only on an intra-run collision. A user who asks to replace a file gets a renamed copy instead and is not told. R01 records the guard that produces this and is correct on its own terms; what is wrong is that the policy name promises something the guard never allows."
+enforced_at = ["core/organize_engine.cpp:OrganizeEngine::plan", "core/paths.cpp:resolve_conflict"]
+binds = ["organize.copy", "organize.move", "organize.plan"]
+protects = ["original-file"]
+tests = ["OrganizeEngineTest.OverwritePolicyStillRenamesAroundAnExistingFile"]
+test_kind = "witness"
+status = "violated"
+owner = "059"
+test_gap = "The listed test pins today's contrary behavior, which is the regression test plan 042 wanted. Nothing tests the statement, because no code path implements it. Plan 059 decides whether the policy changes or the flag does."
+
+[[rule]]
+id = "R09"
+tier = "engine"
+concern = "conflict"
+statement = "An explicit per-item override may replace a file that exists on disk, but never another image's not-yet-moved source."
+rationale = "An override is the caller answering a conflict the plan showed, which is the opposite of the silent loss the on-disk arm of the guard exists to stop, so that arm is bypassed. A batch source is a tracked original phig is in the middle of relocating; no caller intent makes destroying it correct, so an override that lands on one is refused rather than honored."
+enforced_at = [
+    "core/organize_engine.cpp:OrganizePlan::set_resolution",
+    "core/organize_engine.h:OrganizePlan::set_resolution",
+]
+binds = ["organize.copy", "organize.move"]
+protects = ["original-file"]
+tests = [
+    "OrganizeEngineTest.SetResolutionRefusesToTargetABatchSource",
+    "OrganizeEngineTest.ApplyHonorsAnOverrideAgainstAFileThatStillExists",
+    "OrganizeEngineTest.CopyHonorsAPerItemOverrideToo",
+    "AbiOrganizeTest.OverriddenOverwriteReplacesAnUntrackedOccupant",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R10"
+tier = "engine"
+concern = "conflict"
+statement = "A destination that became occupied between plan and apply is skipped, never re-resolved to a name the caller was not shown."
+rationale = "Re-running the resolver at execution time could file the photo under a name that appeared in no plan, which defeats the point of authorizing one. Skipping keeps the outcome a subset of what was shown, and the item lands in the skipped count so the caller can re-plan and see the new conflict. An item carrying an explicit override is exempt, because that override is the authority to replace what is there."
+enforced_at = ["core/organize_engine.cpp:OrganizeEngine::apply"]
+binds = ["organize.copy", "organize.move"]
+protects = ["original-file"]
+tests = [
+    "OrganizeEngineTest.ApplySkipsAnItemWhoseDestinationBecameOccupied",
+    "OrganizeEngineTest.ADestinationThatBecameFreeIsSimplyWritten",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R11"
+tier = "engine"
+concern = "conflict"
+statement = "A file whose resolved destination is its own path is left alone: nothing is written and nothing is logged."
+rationale = "Re-organizing a collection already at its target layout resolves most files onto themselves. Treating that as a conflict would rename every file aside, and on the copy path the backup-then-copy would read a file that has just been renamed away, corrupting it. The protection predicates exempt a file's own source for the same reason."
+enforced_at = ["core/organize_exec.cpp:execute_organize_action"]
+binds = ["organize.copy", "organize.move"]
+protects = ["original-file", "activity-log"]
+tests = [
+    "OrganizeExecTest.NoOpSelfMoveDoesNothingAndLogsNothing",
+    "OrganizeExecTest.NoOpSelfCopyDoesNotCorruptFile",
+    "ResolveConflictTest.SelfSourceNotProtected",
+]
+test_kind = "witness"
+status = "holds"
