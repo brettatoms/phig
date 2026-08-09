@@ -1,6 +1,6 @@
 ---
 name: Organize Engine & cp/mv ABI
-status: completed
+status: in-progress
 created: 2026-08-07
 description: >
   Extract an organize engine into `core/` matching the shape of ScanEngine,
@@ -307,10 +307,28 @@ caller could get it wrong.
   the database step fails, which is `organize_exec.h`'s stated contract and is
   now reachable through the ABI.
 
-## Outcome
+## Progress
 
-Shipped 2026-08-09 in seven commits, `692c1e1` through the ABI work. 13 new ABI
-symbols (69 total, ABI 1.3, soname unchanged), 30 new tests, 757 passing.
+Engine, CLI migration and the ABI surface landed 2026-08-09 in seven commits,
+`692c1e1` through `b6a77fa`: 13 ABI symbols (69 total, ABI 1.3, soname
+unchanged), 28 new tests, 757 passing locally.
+
+**Not complete.** Marked `completed` prematurely and reverted. Two defects and
+five missing tests, all found by asking whether the plan's own Testing section
+had actually been satisfied — none by a failing test, because the gaps are in
+paths nothing exercised:
+
+- `phig_op_poll` has no case for the `Plan`, `Copy` and `Move` kinds, so polling
+  an organize operation returns `false` forever and a client sees a frozen
+  progress bar. Decision 3's field mapping is specified here and implemented
+  nowhere.
+- That same missing case is a `-Wswitch` error under `-DPHIG_WERROR=ON`, which
+  is what CI builds with, so CI would fail. Local builds default to warnings-off
+  and the build output was being filtered for `error:` only.
+- No test covers: copy with a per-item override, cancel *between* files leaving
+  the logged operation `interrupted`, a RAW's attached JPEG counting in
+  `files_written`, copy-over-existing restoring its backup when the database step
+  fails, or a destination that became free between plan and apply.
 
 Three things the design did not anticipate, all found by reading the code being
 extracted rather than by testing:
@@ -329,27 +347,10 @@ extracted rather than by testing:
 3. **Progress denominators**: counting plan entries rather than actionable ones
    made a run with skips report progress toward a total it could never reach.
 
-Real-run check (Task 4), against three indexed fixtures:
-
-```
-$ phig cp /tmp/org-e2e/out --db /tmp/org-e2e/phig.db --dry-run
-Found 3 images in database
-
-Copy: 3 files, skip: 0 (conflict/exists)
-
-[DRY RUN]
-  Copy .../src/exif_sample.jpg → /tmp/org-e2e/out/2026/08/exif_sample.jpg
-  ...
-$ phig cp /tmp/org-e2e/out --db /tmp/org-e2e/phig.db
-Done.
-  Done: 3
-  Skipped: 0
-  Errors: 0
-```
-
-Dry-run created no files; the real run created all three. Organize tests are
-clean under ASan/UBSan, including the one that would catch the plan being
-borrowed rather than snapshotted at apply time.
+Real-run check (Task 4), against three indexed fixtures: dry-run created no
+files and listed three planned copies; the real run created all three under
+`out/2026/08/`. Organize tests are clean under ASan/UBSan, including the one
+that would catch the plan being borrowed rather than snapshotted at apply time.
 
 The three guards interacting is what plan 054 exists to write down.
 
