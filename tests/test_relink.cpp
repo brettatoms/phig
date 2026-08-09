@@ -229,3 +229,71 @@ TEST_F(RelinkTest, RelinkRunsBeforeDemoteOnSharedTarget) {
         count_rows(db->db_ptr(), "SELECT COUNT(*) FROM operation_entries WHERE kind = 'relink'"),
         2);
 }
+
+// ---- Live Photo demotion (plan 038) ----
+//
+// A collection indexed before pairing existed has independent video rows whose
+// files are still on disk, so they never appear as removed and must be demoted
+// explicitly. Tags on the old video row must land on the still, not vanish:
+// user-authored metadata is exactly what a rescan cannot rebuild.
+
+TEST(LivePhotoDemotion, MovesTheVideoRowsMetadataToItsStillAndDropsTheRow) {
+    const std::string samples = std::string(getenv("HOME") ?: "") + "/phig-live-samples";
+    if (!fs::exists(samples + "/IMG_1109.MOV")) GTEST_SKIP() << "no exported samples";
+
+    fs::path dir = make_temp_dir("live-demote");
+    fs::copy_file(samples + "/IMG_1109.HEIC", dir / "shot.heic");
+    fs::copy_file(samples + "/IMG_1109.MOV", dir / "shot.mov");
+
+    Database db((dir / "phig.db").string());
+    db.init_schema();
+
+    // Simulate the pre-038 state: both halves indexed as independent rows.
+    ImageInfo still;
+    still.path = (dir / "shot.heic").string();
+    still.filename = "shot.heic";
+    still.extension = "heic";
+    still.media_type = "image";
+    still.sha256 = "still-sha";
+    db.insert(still);
+
+    ImageInfo video;
+    video.path = (dir / "shot.mov").string();
+    video.filename = "shot.mov";
+    video.extension = "mov";
+    video.media_type = "video";
+    video.sha256 = "video-sha";
+    db.insert(video);
+
+    db.set_tag({video.path}, "holiday", true);
+
+    auto demoted = demote_live_photo_rows(db, dir.string(), 0);
+    ASSERT_EQ(demoted.size(), 1u) << "the paired video row must be demoted";
+    EXPECT_EQ(demoted[0], video.path);
+
+    auto tags = db.get_tags_for_image(still.path);
+    EXPECT_NE(std::find(tags.begin(), tags.end(), "holiday"), tags.end())
+        << "the tag must survive on the still, not be lost with the video row";
+
+    fs::remove_all(dir);
+}
+
+TEST(LivePhotoDemotion, LeavesAnOrdinaryVideoRowAlone) {
+    fs::path dir = make_temp_dir("live-demote-plain");
+    fs::copy_file("tests/data/test_red.mov", dir / "clip.mov");
+    fs::copy_file("tests/data/orient_1.heic", dir / "clip.heic");
+
+    Database db((dir / "phig.db").string());
+    db.init_schema();
+    ImageInfo v;
+    v.path = (dir / "clip.mov").string();
+    v.filename = "clip.mov";
+    v.extension = "mov";
+    v.media_type = "video";
+    v.sha256 = "plain-sha";
+    db.insert(v);
+
+    EXPECT_TRUE(demote_live_photo_rows(db, dir.string(), 0).empty())
+        << "a clip with no identifier keeps its row even beside a same-stem still";
+    fs::remove_all(dir);
+}

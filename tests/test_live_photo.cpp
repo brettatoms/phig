@@ -217,3 +217,20 @@ TEST(LivePhotoRealFiles, FindsTheVideoBelongingToAStill) {
         << "an unrelated still must claim nothing";
     fs::remove_all(tmp);
 }
+
+TEST(LivePhotoStillFor, ReturnsNothingForAnOrdinaryVideo) {
+    EXPECT_TRUE(live_photo_still_for(fixture("test_red.mov")).empty());
+}
+
+TEST(LivePhotoRealFiles, FindsTheStillBelongingToAVideo) {
+    const std::string dir = samples_dir();
+    if (!fs::exists(dir + "/IMG_1109.MOV")) GTEST_SKIP() << "no exported samples at " << dir;
+
+    fs::path tmp = make_temp_dir("livestill");
+    fs::copy_file(dir + "/IMG_1109.HEIC", tmp / "master.heic");
+    fs::copy_file(dir + "/IMG_1109.MOV", tmp / "motion.mov");
+    fs::copy_file(dir + "/IMG_2146.HEIC", tmp / "unrelated.heic");
+
+    EXPECT_EQ(live_photo_still_for(tmp / "motion.mov").filename(), "master.heic");
+    fs::remove_all(tmp);
+}

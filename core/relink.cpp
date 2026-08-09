@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <system_error>
 
+#include "live_photo.h"
 #include "scanner.h"
 
 namespace fs = std::filesystem;
@@ -69,6 +70,41 @@ std::vector<std::string> demote_jpeg_rows(Database& db, const std::string& scan_
         try {
             db.transfer_user_metadata(jpeg_id, raw_id);
             if (op_id > 0) db.log_add_entry(op_id, {"relink", path, raw_path.string(), ""});
+            db.commit_transaction();
+        } catch (...) {
+            db.rollback_transaction();
+            throw;
+        }
+        demoted.push_back(path);
+    }
+    return demoted;
+}
+
+std::vector<std::string> demote_live_photo_rows(Database& db, const std::string& scan_prefix,
+                                                int64_t op_id) {
+    std::vector<std::string> demoted;
+    for (const auto& path : db.get_paths_with_prefix(scan_prefix)) {
+        std::error_code ec;
+        if (!fs::exists(path, ec) || ec)
+            continue;  // gone from disk -> removed_paths handles it, not demotion
+
+        if (!is_known_video_extension(fs::path(path).extension().string())) continue;
+
+        fs::path still = live_photo_still_for(path);
+        if (still.empty()) continue;  // no identifier, no master, or ambiguous
+
+        int64_t still_id = db.get_image_id(still.string());
+        if (still_id < 0) continue;  // still not indexed yet — demote on a later scan
+
+        int64_t video_id = db.get_image_id(path);
+        if (video_id < 0) continue;
+
+        // Transfer + log entry commit together: the audit trail must never
+        // claim a re-link that didn't stick (plan 020 invariant).
+        db.begin_transaction();
+        try {
+            db.transfer_user_metadata(video_id, still_id);
+            if (op_id > 0) db.log_add_entry(op_id, {"relink", path, still.string(), ""});
             db.commit_transaction();
         } catch (...) {
             db.rollback_transaction();

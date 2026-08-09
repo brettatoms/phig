@@ -557,6 +557,17 @@ void ScanEngine::run_reconcile(ScanResult& result) {
         bool maybe_demotable = std::any_of(db_paths.begin(), db_paths.end(),
                                            [](const auto& p) { return has_sibling_raw(p); });
 
+        // The same peek for a Live Photo's video (plan 038). It is in the same
+        // position as a demoted JPEG — on disk, so never in removed_paths, but
+        // holding a stale row. Only videos are opened, and only their container
+        // metadata is read, so a collection of stills pays nothing here.
+        if (!maybe_demotable) {
+            maybe_demotable = std::any_of(db_paths.begin(), db_paths.end(), [](const auto& p) {
+                return is_known_video_extension(fs::path(p).extension().string()) &&
+                       live_photo_content_identifier(p).size() == 36;
+            });
+        }
+
         if (!removed_paths.empty() || maybe_demotable) {
             // Removing a row destroys user-authored metadata (tags, gallery,
             // faces) that a rescan cannot rebuild — record it like purge does,
@@ -567,6 +578,9 @@ void ScanEngine::run_reconcile(ScanResult& result) {
                     relinked_count = relink_moved_rows(db_, removed_paths, op_id);
                     std::vector<std::string> demoted_paths =
                         demote_jpeg_rows(db_, scan_prefix, op_id);
+                    for (auto& p : demote_live_photo_rows(db_, scan_prefix, op_id)) {
+                        demoted_paths.push_back(std::move(p));
+                    }
                     demoted_count = static_cast<int>(demoted_paths.size());
                     std::vector<std::string> to_delete = removed_paths;
                     to_delete.insert(to_delete.end(), demoted_paths.begin(), demoted_paths.end());
@@ -588,6 +602,9 @@ void ScanEngine::run_reconcile(ScanResult& result) {
             } else {
                 relinked_count = relink_moved_rows(db_, removed_paths, 0);
                 std::vector<std::string> demoted_paths = demote_jpeg_rows(db_, scan_prefix, 0);
+                for (auto& p : demote_live_photo_rows(db_, scan_prefix, 0)) {
+                    demoted_paths.push_back(std::move(p));
+                }
                 demoted_count = static_cast<int>(demoted_paths.size());
                 std::vector<std::string> to_delete = removed_paths;
                 to_delete.insert(to_delete.end(), demoted_paths.begin(), demoted_paths.end());

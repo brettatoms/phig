@@ -141,3 +141,30 @@ std::filesystem::path live_photo_video_in(const std::filesystem::path& still_for
 std::filesystem::path live_photo_video_for(const std::filesystem::path& still_path) {
     return live_photo_video_in(still_path, still_path.parent_path());
 }
+
+std::filesystem::path live_photo_still_for(const std::filesystem::path& video_path) try {
+    namespace fs = std::filesystem;
+
+    // The gate: an ordinary clip carries no identifier, so no still is opened.
+    const std::string id = live_photo_content_identifier(video_path.string());
+    if (id.size() != 36) return {};
+
+    fs::path found;
+    int matches = 0;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(video_path.parent_path(), ec)) {
+        if (ec) return {};
+        if (!entry.is_regular_file(ec)) continue;
+        if (!is_known_image_extension(entry.path().extension().string())) continue;
+
+        const std::vector<unsigned char> mnote = extract_maker_note(entry.path().string());
+        if (mnote.empty()) continue;
+        if (!exif_blob_contains_identifier(mnote, id)) continue;
+
+        found = entry.path();
+        if (++matches > 1) return {};  // ambiguous: demote nothing
+    }
+    return matches == 1 ? found : fs::path{};
+} catch (...) {
+    return {};
+}

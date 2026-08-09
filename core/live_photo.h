@@ -71,3 +71,12 @@ std::filesystem::path live_photo_video_for(const std::filesystem::path& still_pa
 // would find nothing at all.
 std::filesystem::path live_photo_video_in(const std::filesystem::path& still_for_metadata,
                                           const std::filesystem::path& search_dir);
+
+// The still that claims `video_path`'s Content Identifier, searched in the
+// video's own directory, or empty when there is none or more than one.
+//
+// The inverse of live_photo_video_in, needed by scan's reconcile phase: a
+// collection indexed before pairing existed has independent video rows whose
+// files are still on disk, so they never appear as "removed" and must be
+// demoted by looking up the master they belong to. Never throws.
+std::filesystem::path live_photo_still_for(const std::filesystem::path& video_path);
