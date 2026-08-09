@@ -6,6 +6,7 @@
 #include <string>
 #include <system_error>
 
+#include "live_photo.h"
 #include "paths.h"
 #include "scanner.h"
 #include "sidecar.h"
@@ -181,6 +182,64 @@ size_t carry_sidecars(Database& db, const std::string& parent_source,
                 parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}") : "";
             db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar", side.string(),
                                      side_dst.string(), rj});
+        }
+    }
+
+    // A Live Photo's video is an attachment of its still (plan 038): scan does
+    // not index it, so it is not in find_sidecars and would otherwise be left
+    // behind when the still moves. Found by Content Identifier rather than by
+    // name — the two halves need not share a stem after an export or rename —
+    // and renamed to the destination stem so the pair stays discoverable.
+    // Nothing to carry when the parent did not actually go anywhere. The guard
+    // is on the operation, not the paths: unlike a sidecar or a RAW's JPEG, a
+    // Live Photo's video need not share the parent's stem, so a path comparison
+    // would see lp_src != lp_dst and "carry" the file onto itself — renaming
+    // the user's video, or copying it to a second untracked name, during an
+    // operation that moved nothing.
+    if (src_media.parent_path() != dst_dir) {
+        // Metadata from the destination copy — the parent has already moved by
+        // the time this runs — but the video is still in the source directory.
+        fs::path lp_src = live_photo_video_in(dst_media, src_media.parent_path());
+
+        // Only carry a video that has no row of its own. Pairing says "this
+        // video belongs to that still"; it does not say scan agreed to treat it
+        // as an attachment. The two rules are not inverses — scan refuses a
+        // video claimed by two stills, while this function sees one match and
+        // would carry it — and on the migration path every pre-038 MOV still
+        // has a row. Carrying an indexed file moves it out from under its own
+        // row, which then points nowhere and is logged as a sidecar move.
+        if (!lp_src.empty() && db.get_image_id(lp_src.string()) < 0) {
+            fs::path lp_dst = dst_dir / (dst_stem + lp_src.extension().string());
+
+            // No-clobber, explicitly. move_file already refuses to overwrite,
+            // but atomic_copy_file ends in a rename that replaces silently — so
+            // on the cp path an existing file at this destination would be
+            // destroyed with no error and no restore snapshot. The parent's own
+            // destination is protected by resolve_conflict; this one is not
+            // seen by the conflict planner at all, and the name it lands on
+            // (IMG_NNNN.MOV) is one the user never chose.
+            std::error_code exists_ec;
+            if (fs::exists(lp_dst, exists_ec)) {
+                throw std::runtime_error("Live Photo video destination already exists: " +
+                                         lp_dst.string());
+            }
+
+            if (is_move) {
+                move_file(lp_src.string(), lp_dst.string());
+            } else {
+                atomic_copy_file(lp_src.string(), lp_dst.string());
+            }
+            // Counted like any other carried file: OrganizeEngine adds this
+            // return value to result.files_written, so omitting it would report
+            // fewer files than were actually written.
+            carried++;
+            if (logging) {
+                std::string rj = parent_id > 0
+                                     ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
+                                     : "";
+                db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar", lp_src.string(),
+                                         lp_dst.string(), rj});
+            }
         }
     }
 

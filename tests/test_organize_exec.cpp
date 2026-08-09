@@ -407,6 +407,181 @@ TEST_F(OrganizeExecTest, NoAttachedJpegForNonRawParent) {
     sqlite3_finalize(st);
 }
 
+// ---- Live Photo carry (plan 038) ----
+//
+// A Live Photo's video is an attachment of its still, so organize must move it
+// alongside — otherwise `mv` files the still under its date and strands the
+// motion where it was. Real exported files only: no committable fixture carries
+// an Apple MakerNote, so this skips in CI.
+
+TEST(OrganizeLivePhoto, MoveCarriesTheVideoWithItsStill) {
+    const std::string samples = std::string(getenv("HOME") ?: "") + "/phig-live-samples";
+    if (!fs::exists(samples + "/IMG_1112.MOV")) GTEST_SKIP() << "no exported samples";
+
+    fs::path root = make_temp_dir("organize-live");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst" / "2025" / "10";
+    fs::create_directories(src);
+    fs::create_directories(dst);
+    fs::copy_file(samples + "/IMG_1112.HEIC", src / "shot.heic");
+    fs::copy_file(samples + "/IMG_1112.MOV", src / "motion.mov");
+
+    // carry_sidecars runs after the parent has moved, which is why it reads the
+    // still's metadata from the destination and searches the source directory.
+    fs::rename(src / "shot.heic", dst / "renamed.heic");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    carry_sidecars(db, (src / "shot.heic").string(), (dst / "renamed.heic").string(), true, 0);
+
+    EXPECT_TRUE(fs::exists(dst / "renamed.mov"))
+        << "the video must follow the still and take its new stem";
+    EXPECT_FALSE(fs::exists(src / "motion.mov")) << "a move must not leave the motion behind";
+    fs::remove_all(root);
+}
+
+TEST(OrganizeLivePhoto, LeavesAnUnrelatedVideoWhereItIs) {
+    fs::path root = make_temp_dir("organize-live-plain");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst";
+    fs::create_directories(src);
+    fs::create_directories(dst);
+    fs::copy_file("tests/data/orient_1.heic", src / "photo.heic");
+    fs::copy_file("tests/data/test_red.mov", src / "clip.mov");
+    fs::rename(src / "photo.heic", dst / "photo.heic");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    carry_sidecars(db, (src / "photo.heic").string(), (dst / "photo.heic").string(), true, 0);
+
+    EXPECT_TRUE(fs::exists(src / "clip.mov")) << "an ordinary clip is not an attachment";
+    fs::remove_all(root);
+}
+
+// ---- Live Photo carry: review findings (plan 038) ----
+//
+// These use the committed synthetic fixtures rather than exported personal
+// media, so they run in CI. live_photo_still.jpg carries a MakerNote containing
+// the same identifier live_photo.mov carries; the pairing code only ever tests
+// containment, so this exercises the real paths.
+
+namespace {
+// A source directory holding a paired still and video under chosen names.
+fs::path make_pair_dir(const fs::path& dir, const std::string& stem,
+                       const std::string& video_stem) {
+    fs::create_directories(dir);
+    fs::copy_file("tests/data/live_photo_still.jpg", dir / (stem + ".jpg"));
+    fs::copy_file("tests/data/live_photo.mov", dir / (video_stem + ".mov"));
+    return dir / (stem + ".jpg");
+}
+}  // namespace
+
+// A copy must never destroy bytes already at the carried destination. The
+// parent's own destination is protected by resolve_conflict; this one is not
+// seen by the conflict planner at all, and atomic_copy_file ends in a rename
+// that replaces silently.
+TEST(OrganizeLivePhotoSafety, CopyRefusesToClobberAnExistingVideoAtTheDestination) {
+    fs::path root = make_temp_dir("lp-clobber");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst";
+    make_pair_dir(src, "shot", "shot");
+    fs::create_directories(dst);
+
+    // Something valuable already sitting exactly where the carry would land.
+    fs::copy_file("tests/data/test_red.mov", dst / "shot.mov");
+    const auto victim_size = fs::file_size(dst / "shot.mov");
+    fs::copy_file(src / "shot.jpg", dst / "shot.jpg");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    EXPECT_THROW(
+        carry_sidecars(db, (src / "shot.jpg").string(), (dst / "shot.jpg").string(), false, 0),
+        std::exception);
+    EXPECT_EQ(fs::file_size(dst / "shot.mov"), victim_size)
+        << "the pre-existing video was overwritten";
+    fs::remove_all(root);
+}
+
+// Pairing says "this video belongs to that still". It does not say scan agreed
+// to treat the video as an attachment — and on the migration path every
+// pre-038 video still has its own row.
+TEST(OrganizeLivePhotoSafety, DoesNotCarryAVideoThatHasItsOwnRow) {
+    fs::path root = make_temp_dir("lp-indexed");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst";
+    make_pair_dir(src, "shot", "shot");
+    fs::create_directories(dst);
+    fs::copy_file(src / "shot.jpg", dst / "shot.jpg");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    ImageInfo v;
+    v.path = (src / "shot.mov").string();
+    v.filename = "shot.mov";
+    v.extension = "mov";
+    v.media_type = "video";
+    v.sha256 = "indexed-video";
+    db.insert(v);
+
+    carry_sidecars(db, (src / "shot.jpg").string(), (dst / "shot.jpg").string(), true, 0);
+    EXPECT_TRUE(fs::exists(src / "shot.mov"))
+        << "a video with its own row must not be moved as an attachment";
+    fs::remove_all(root);
+}
+
+// The halves need not share a stem, so a path comparison would see
+// lp_src != lp_dst and "carry" the video onto itself during an operation that
+// moved nothing — renaming the user's file, or duplicating it.
+TEST(OrganizeLivePhotoSafety, DoesNothingWhenTheParentDidNotMove) {
+    fs::path root = make_temp_dir("lp-noop");
+    fs::path dir = root / "same";
+    make_pair_dir(dir, "shot", "motion");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    carry_sidecars(db, (dir / "shot.jpg").string(), (dir / "shot.jpg").string(), true, 0);
+
+    EXPECT_TRUE(fs::exists(dir / "motion.mov")) << "the user's video was renamed by a no-op";
+    EXPECT_FALSE(fs::exists(dir / "shot.mov")) << "a no-op created a duplicate video";
+    fs::remove_all(root);
+}
+
+// The positive path, in CI: an unindexed paired video follows its still.
+TEST(OrganizeLivePhotoSafety, CarriesAnUnindexedPairedVideo) {
+    fs::path root = make_temp_dir("lp-carry-ci");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst";
+    make_pair_dir(src, "shot", "motion");
+    fs::create_directories(dst);
+    fs::rename(src / "shot.jpg", dst / "renamed.jpg");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    carry_sidecars(db, (src / "shot.jpg").string(), (dst / "renamed.jpg").string(), true, 0);
+
+    EXPECT_TRUE(fs::exists(dst / "renamed.mov")) << "the video must follow and take the new stem";
+    EXPECT_FALSE(fs::exists(src / "motion.mov"));
+    fs::remove_all(root);
+}
+
+// OrganizeEngine adds this return value to result.files_written, so a carried
+// video that is not counted is a file the user is never told was written.
+TEST(OrganizeLivePhotoSafety, CountsTheCarriedVideoInTheReturnedTotal) {
+    fs::path root = make_temp_dir("lp-count");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst";
+    make_pair_dir(src, "shot", "motion");
+    fs::create_directories(dst);
+    fs::rename(src / "shot.jpg", dst / "shot.jpg");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    EXPECT_EQ(carry_sidecars(db, (src / "shot.jpg").string(), (dst / "shot.jpg").string(), true, 0),
+              1u)
+        << "the carried Live Photo video was not counted";
+    fs::remove_all(root);
+}
+
 // Move with allow_overwrite renames the occupant aside before moving, mirroring
 // what copy has always done. A database failure after the file has moved must
 // put both files back: the source where it was, and the occupant where it was.

@@ -23,3 +23,13 @@ int relink_moved_rows(Database& db, const std::vector<std::string>& removed_path
 // afterwards. Returns the demoted JPEG paths.
 std::vector<std::string> demote_jpeg_rows(Database& db, const std::string& scan_prefix,
                                           int64_t op_id);
+
+// Video rows that are really Live Photo attachments, demoted the way
+// demote_jpeg_rows demotes a sidecar JPEG: user metadata moves to the still,
+// then the caller deletes the returned paths.
+//
+// Needed because such a video is still on disk, so it never appears in
+// removed_paths — a collection indexed before pairing existed keeps its stale
+// video rows until this runs. Returns the paths demoted.
+std::vector<std::string> demote_live_photo_rows(Database& db, const std::string& scan_prefix,
+                                                int64_t op_id);

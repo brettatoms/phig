@@ -23,6 +23,7 @@ add_library(phig-core STATIC
     duplicates.cpp
     raw.cpp
     image_codec.cpp
+    live_photo.cpp
     image_codec_libheif.cpp
     image_codec_exif.cpp
     image_codec_libjxl.cpp

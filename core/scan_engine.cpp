@@ -8,12 +8,14 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "database.h"
 #include "dates.h"
 #include "exif.h"
 #include "hasher.h"
+#include "live_photo.h"
 #include "log.h"
 #include "metadata.h"
 #include "parallel.h"
@@ -144,6 +146,22 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
     }
     result.total_files = files.size();
 
+    // Live Photo attachments, decided once for the whole walk rather than per
+    // file. Pairing needs the set — a video's master is whichever still carries
+    // its Content Identifier — so it cannot be answered from one path the way
+    // has_sibling_raw is. find_live_photo_pairs scopes itself per directory and
+    // opens no still at all in directories whose videos carry no identifier, so
+    // an ordinary collection pays only the container opens.
+    std::unordered_set<std::string> live_photo_attachments;
+    {
+        std::vector<std::string> paths;
+        paths.reserve(files.size());
+        for (const auto& f : files) paths.push_back(f.string());
+        for (const auto& pair : find_live_photo_pairs(paths)) {
+            live_photo_attachments.insert(pair.video);
+        }
+    }
+
     // Determine thread count
     int num_threads;
     if (opts_.parallel > 0) {
@@ -265,6 +283,14 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
             }
 
             if (has_sibling_raw(filepath)) {
+                skipped.fetch_add(1);
+                return;
+            }
+
+            // The MOV half of a Live Photo. Not indexed: it is a carried
+            // attachment of the still, which holds the row (plan 038), exactly
+            // as a sidecar JPEG is an attachment of its RAW.
+            if (live_photo_attachments.count(filepath.string()) > 0) {
                 skipped.fetch_add(1);
                 return;
             }
@@ -531,6 +557,17 @@ void ScanEngine::run_reconcile(ScanResult& result) {
         bool maybe_demotable = std::any_of(db_paths.begin(), db_paths.end(),
                                            [](const auto& p) { return has_sibling_raw(p); });
 
+        // The same peek for a Live Photo's video (plan 038). It is in the same
+        // position as a demoted JPEG — on disk, so never in removed_paths, but
+        // holding a stale row. Only videos are opened, and only their container
+        // metadata is read, so a collection of stills pays nothing here.
+        if (!maybe_demotable) {
+            maybe_demotable = std::any_of(db_paths.begin(), db_paths.end(), [](const auto& p) {
+                return is_known_video_extension(fs::path(p).extension().string()) &&
+                       live_photo_content_identifier(p).size() == 36;
+            });
+        }
+
         if (!removed_paths.empty() || maybe_demotable) {
             // Removing a row destroys user-authored metadata (tags, gallery,
             // faces) that a rescan cannot rebuild — record it like purge does,
@@ -541,6 +578,9 @@ void ScanEngine::run_reconcile(ScanResult& result) {
                     relinked_count = relink_moved_rows(db_, removed_paths, op_id);
                     std::vector<std::string> demoted_paths =
                         demote_jpeg_rows(db_, scan_prefix, op_id);
+                    for (auto& p : demote_live_photo_rows(db_, scan_prefix, op_id)) {
+                        demoted_paths.push_back(std::move(p));
+                    }
                     demoted_count = static_cast<int>(demoted_paths.size());
                     std::vector<std::string> to_delete = removed_paths;
                     to_delete.insert(to_delete.end(), demoted_paths.begin(), demoted_paths.end());
@@ -562,6 +602,9 @@ void ScanEngine::run_reconcile(ScanResult& result) {
             } else {
                 relinked_count = relink_moved_rows(db_, removed_paths, 0);
                 std::vector<std::string> demoted_paths = demote_jpeg_rows(db_, scan_prefix, 0);
+                for (auto& p : demote_live_photo_rows(db_, scan_prefix, 0)) {
+                    demoted_paths.push_back(std::move(p));
+                }
                 demoted_count = static_cast<int>(demoted_paths.size());
                 std::vector<std::string> to_delete = removed_paths;
                 to_delete.insert(to_delete.end(), demoted_paths.begin(), demoted_paths.end());
