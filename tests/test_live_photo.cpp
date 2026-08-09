@@ -169,3 +169,21 @@ TEST(LivePhotoRealFiles, RefusesToPairWhenTwoStillsClaimOneVideo) {
     EXPECT_TRUE(pairs.empty()) << "an ambiguous match must pair nothing";
     fs::remove_all(tmp);
 }
+
+// Pairing is scoped to a directory. A still and its video are written together
+// by the camera, and restricting the search is what keeps a scan from reading
+// every still's MakerNote in a collection that has a Live Photo anywhere in it.
+TEST(LivePhotoRealFiles, DoesNotPairAcrossDirectories) {
+    const std::string dir = samples_dir();
+    if (!fs::exists(dir + "/IMG_1112.MOV")) GTEST_SKIP() << "no exported samples at " << dir;
+
+    const std::string tmp = make_temp_dir("livedirs");
+    fs::create_directories(tmp + "/a");
+    fs::create_directories(tmp + "/b");
+    fs::copy_file(dir + "/IMG_1112.MOV", tmp + "/a/shot.mov");
+    fs::copy_file(dir + "/IMG_1112.HEIC", tmp + "/b/shot.heic");
+
+    auto pairs = find_live_photo_pairs({tmp + "/a/shot.mov", tmp + "/b/shot.heic"});
+    EXPECT_TRUE(pairs.empty()) << "a still in another directory must not be claimed";
+    fs::remove_all(tmp);
+}

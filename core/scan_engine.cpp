@@ -8,12 +8,14 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "database.h"
 #include "dates.h"
 #include "exif.h"
 #include "hasher.h"
+#include "live_photo.h"
 #include "log.h"
 #include "metadata.h"
 #include "parallel.h"
@@ -144,6 +146,22 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
     }
     result.total_files = files.size();
 
+    // Live Photo attachments, decided once for the whole walk rather than per
+    // file. Pairing needs the set — a video's master is whichever still carries
+    // its Content Identifier — so it cannot be answered from one path the way
+    // has_sibling_raw is. find_live_photo_pairs scopes itself per directory and
+    // opens no still at all in directories whose videos carry no identifier, so
+    // an ordinary collection pays only the container opens.
+    std::unordered_set<std::string> live_photo_attachments;
+    {
+        std::vector<std::string> paths;
+        paths.reserve(files.size());
+        for (const auto& f : files) paths.push_back(f.string());
+        for (const auto& pair : find_live_photo_pairs(paths)) {
+            live_photo_attachments.insert(pair.video);
+        }
+    }
+
     // Determine thread count
     int num_threads;
     if (opts_.parallel > 0) {
@@ -265,6 +283,14 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
             }
 
             if (has_sibling_raw(filepath)) {
+                skipped.fetch_add(1);
+                return;
+            }
+
+            // The MOV half of a Live Photo. Not indexed: it is a carried
+            // attachment of the still, which holds the row (plan 038), exactly
+            // as a sidecar JPEG is an attachment of its RAW.
+            if (live_photo_attachments.count(filepath.string()) > 0) {
                 skipped.fetch_add(1);
                 return;
             }

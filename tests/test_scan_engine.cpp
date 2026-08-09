@@ -789,3 +789,69 @@ TEST(ScanEngine, DetectsFacesWithMultipleWorkers) {
         EXPECT_TRUE(db.has_faces(img.path)) << img.path << " got no faces";
     }
 }
+
+// ---- Live Photo pairing (plan 038) ----
+//
+// A Live Photo is one shot in two files. The still is indexed and the MOV is a
+// carried attachment, so a scan must produce one row, not two. Real exported
+// files only: a synthetic MOV can carry the identifier but no committable
+// fixture has an Apple MakerNote, so the still half cannot be faked.
+
+namespace {
+std::string live_samples() { return std::string(getenv("HOME") ?: "") + "/phig-live-samples"; }
+}  // namespace
+
+TEST(ScanEngineLivePhoto, IndexesTheStillAndNotItsPairedVideo) {
+    const std::string samples = live_samples();
+    if (!fs::exists(samples + "/IMG_1112.MOV")) GTEST_SKIP() << "no exported samples";
+
+    fs::path dir = make_temp_dir("scan-live");
+    fs::copy_file(samples + "/IMG_1112.HEIC", dir / "IMG_1112.HEIC");
+    fs::copy_file(samples + "/IMG_1112.MOV", dir / "IMG_1112.MOV");
+
+    ScanOptions o;
+    o.directory = dir.string();
+    o.db_path = (dir / "phig.db").string();
+    o.recursive = false;
+    o.parallel = 2;
+    o.log_enabled = false;
+
+    Database db(o.db_path);
+    db.init_schema();
+    ScanEngine engine(o, db);
+    CancelToken token;
+    engine.run(token, nullptr);
+
+    auto rows = db.get_all_images();
+    ASSERT_EQ(rows.size(), 1u) << "a Live Photo must index as one row, not two";
+    EXPECT_EQ(fs::path(rows[0].path).filename(), "IMG_1112.HEIC") << "the still is the master";
+    EXPECT_TRUE(fs::exists(dir / "IMG_1112.MOV")) << "the video must stay on disk, just unindexed";
+
+    fs::remove_all(dir);
+}
+
+// The guard that matters most: an ordinary camera clip carries no identifier
+// and must keep its own row. This is the MVI_*.MOV mis-pairing that ruled out
+// same-basename matching.
+TEST(ScanEngineLivePhoto, LeavesAnOrdinaryVideoIndexed) {
+    fs::path dir = make_temp_dir("scan-live-plain");
+    fs::copy_file("tests/data/test_red.mov", dir / "IMG_0001.MOV");
+    fs::copy_file("tests/data/orient_1.heic", dir / "IMG_0001.HEIC");
+
+    ScanOptions o;
+    o.directory = dir.string();
+    o.db_path = (dir / "phig.db").string();
+    o.recursive = false;
+    o.parallel = 2;
+    o.log_enabled = false;
+
+    Database db(o.db_path);
+    db.init_schema();
+    ScanEngine engine(o, db);
+    CancelToken token;
+    engine.run(token, nullptr);
+
+    EXPECT_EQ(db.get_all_images().size(), 2u)
+        << "same basename is not pairing evidence; both must be indexed";
+    fs::remove_all(dir);
+}
