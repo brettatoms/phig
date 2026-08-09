@@ -1,6 +1,6 @@
 ---
 name: Organize Engine & cp/mv ABI
-status: in-progress
+status: completed
 created: 2026-08-07
 description: >
   Extract an organize engine into `core/` matching the shape of ScanEngine,
@@ -316,38 +316,25 @@ caller could get it wrong.
   the database step fails, which is `organize_exec.h`'s stated contract and is
   now reachable through the ABI.
 
-## Progress
+## Outcome
 
-Engine, CLI migration and the ABI surface landed 2026-08-09 in seven commits,
-`692c1e1` through `b6a77fa`: 13 ABI symbols (69 total, ABI 1.3, soname
-unchanged), 28 new tests, 757 passing locally.
+Shipped 2026-08-09. 13 new ABI symbols (69 total, ABI 1.3, soname unchanged),
+36 new tests, 765 passing. Clean under `-DPHIG_WERROR=ON`, ASan/UBSan and TSan.
 
-**Not complete.** Marked `completed` prematurely and reverted. Two defects and
-five missing tests, all found by asking whether the plan's own Testing section
-had actually been satisfied — none by a failing test, because the gaps are in
-paths nothing exercised:
+`cli/`'s `cmd_organize` is now argv parsing, option filling and rendering; the
+selection, planning and execution it used to hold live in `OrganizeEngine`.
+Output is unchanged.
 
-- `phig_op_poll` has no case for the `Plan`, `Copy` and `Move` kinds, so polling
-  an organize operation returns `false` forever and a client sees a frozen
-  progress bar. Decision 3's field mapping is specified here and implemented
-  nowhere.
-- That same missing case is a `-Wswitch` error under `-DPHIG_WERROR=ON`, which
-  is what CI builds with, so CI would fail. Local builds default to warnings-off
-  and the build output was being filtered for `error:` only.
-- No test covers: copy with a per-item override, cancel *between* files leaving
-  the logged operation `interrupted`, a RAW's attached JPEG counting in
-  `files_written`, copy-over-existing restoring its backup when the database step
-  fails, or a destination that became free between plan and apply.
+### What the design got wrong about the code
 
-Three things the design did not anticipate, all found by reading the code being
-extracted rather than by testing:
+Three things, all found by reading what was being extracted rather than by a
+failing test. They are the reason plan 054 exists.
 
 1. **`--on-conflict overwrite` never replaced a file that exists on disk.**
    `cmd_organize`'s `is_protected` covers any existing path and
    `resolve_conflict` renames around a protected destination, so the policy
    differed from `rename` only on an intra-run collision. Decision 4 originally
-   claimed the opposite and was corrected before implementation. A regression
-   test pins the behavior.
+   claimed the opposite and was corrected before implementation.
 2. **`move_file` is a second guard**, independent of the planner's. It refuses to
    overwrite (plan 022's no-clobber rename), so an authorized override still
    failed at the syscall. `execute_organize_action` gained `allow_overwrite`,
@@ -356,12 +343,33 @@ extracted rather than by testing:
 3. **Progress denominators**: counting plan entries rather than actionable ones
    made a run with skips report progress toward a total it could never reach.
 
-Real-run check (Task 4), against three indexed fixtures: dry-run created no
-files and listed three planned copies; the real run created all three under
-`out/2026/08/`. Organize tests are clean under ASan/UBSan, including the one
-that would catch the plan being borrowed rather than snapshotted at apply time.
+### Marked completed prematurely, then reverted
 
-The three guards interacting is what plan 054 exists to write down.
+Worth recording because it explains why certain tests exist. The plan was marked
+`completed` with two defects outstanding, both in paths nothing exercised:
+
+- `phig_op_poll` had no case for the `Plan`, `Copy` and `Move` kinds, so polling
+  an organize operation returned `false` forever and decision 3's field mapping
+  was specified but unimplemented. Every ABI test used `phig_op_wait`, so nothing
+  touched the poll path.
+- That same missing case was a `-Wswitch` error under `-DPHIG_WERROR=ON`, which
+  is what CI builds with. Local builds default to warnings-off, and build output
+  was being filtered for `error:` only, so it was hidden twice over.
+
+Five tests this plan's own Testing section names had also not been written. Both
+defects and all five gaps are closed.
+`AbiOrganizeTest.PollReportsPlannedThenOneUpdatePerParent` exists specifically
+because its absence is what hid the switch.
+
+### Not verified locally
+
+Two CI gates this machine cannot reproduce: the **gtk job** (Linux-only; the ABI
+change is additive with the soname unchanged, so `gtk/` should link untouched,
+but that is reasoning rather than a run) and the **ubuntu `-Werror` build**
+(same config, different compiler).
+
+Real-run check: `phig cp --dry-run` listed three planned copies and created
+nothing; the real run created all three under `out/2026/08/`.
 
 ## Relationship to other plans
 
