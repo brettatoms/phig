@@ -1,6 +1,6 @@
 ---
 name: Organize Engine & cp/mv ABI
-status: planned
+status: completed
 created: 2026-08-07
 description: >
   Extract an organize engine into `core/` matching the shape of ScanEngine,
@@ -306,6 +306,52 @@ caller could get it wrong.
 - A copy over an existing destination under `overwrite` restores the backup when
   the database step fails, which is `organize_exec.h`'s stated contract and is
   now reachable through the ABI.
+
+## Outcome
+
+Shipped 2026-08-09 in seven commits, `692c1e1` through the ABI work. 13 new ABI
+symbols (69 total, ABI 1.3, soname unchanged), 30 new tests, 757 passing.
+
+Three things the design did not anticipate, all found by reading the code being
+extracted rather than by testing:
+
+1. **`--on-conflict overwrite` never replaced a file that exists on disk.**
+   `cmd_organize`'s `is_protected` covers any existing path and
+   `resolve_conflict` renames around a protected destination, so the policy
+   differed from `rename` only on an intra-run collision. Decision 4 originally
+   claimed the opposite and was corrected before implementation. A regression
+   test pins the behavior.
+2. **`move_file` is a second guard**, independent of the planner's. It refuses to
+   overwrite (plan 022's no-clobber rename), so an authorized override still
+   failed at the syscall. `execute_organize_action` gained `allow_overwrite`,
+   which renames the occupant aside and restores it if anything downstream
+   fails — the same dance the copy branch already did unconditionally.
+3. **Progress denominators**: counting plan entries rather than actionable ones
+   made a run with skips report progress toward a total it could never reach.
+
+Real-run check (Task 4), against three indexed fixtures:
+
+```
+$ phig cp /tmp/org-e2e/out --db /tmp/org-e2e/phig.db --dry-run
+Found 3 images in database
+
+Copy: 3 files, skip: 0 (conflict/exists)
+
+[DRY RUN]
+  Copy .../src/exif_sample.jpg → /tmp/org-e2e/out/2026/08/exif_sample.jpg
+  ...
+$ phig cp /tmp/org-e2e/out --db /tmp/org-e2e/phig.db
+Done.
+  Done: 3
+  Skipped: 0
+  Errors: 0
+```
+
+Dry-run created no files; the real run created all three. Organize tests are
+clean under ASan/UBSan, including the one that would catch the plan being
+borrowed rather than snapshotted at apply time.
+
+The three guards interacting is what plan 054 exists to write down.
 
 ## Relationship to other plans
 

@@ -160,3 +160,118 @@ TEST_F(AbiOrganizeTest, ConflictIsReportedWithWhetherPhigTracksTheOccupant) {
 
     phig_organize_plan_free(plan);
 }
+
+TEST_F(AbiOrganizeTest, MoveAppliesThePlanAndTheSourceIsGone) {
+    OrganizeFixture fx(1);
+    open(fx);
+    phig_organize_plan* plan = make_plan(fx);
+    std::string source = phig_organize_plan_source_at(plan, 0);
+
+    phig_op* apply_op = nullptr;
+    ASSERT_EQ(phig_op_move_start(ctx, plan, &apply_op), PHIG_OK);
+    phig_op_wait(apply_op);
+    ASSERT_EQ(phig_op_status(apply_op), PHIG_OP_DONE);
+
+    phig_organize_result r{};
+    ASSERT_EQ(phig_op_organize_result(apply_op, &r), PHIG_OK);
+    EXPECT_EQ(r.applied, 1u);
+    EXPECT_EQ(r.errors, 0u);
+    EXPECT_TRUE(r.completed);
+    EXPECT_FALSE(fs::exists(source));
+    EXPECT_TRUE(fs::exists(fs::path(fx.out_dir) / "2019" / "img0.jpg"));
+
+    phig_op_free(apply_op);
+    phig_organize_plan_free(plan);
+}
+
+TEST_F(AbiOrganizeTest, CopyAppliesThePlanAndTheSourceRemains) {
+    OrganizeFixture fx(1);
+    open(fx);
+    phig_organize_plan* plan = make_plan(fx);
+    std::string source = phig_organize_plan_source_at(plan, 0);
+
+    phig_op* apply_op = nullptr;
+    ASSERT_EQ(phig_op_copy_start(ctx, plan, &apply_op), PHIG_OK);
+    phig_op_wait(apply_op);
+
+    phig_organize_result r{};
+    ASSERT_EQ(phig_op_organize_result(apply_op, &r), PHIG_OK);
+    EXPECT_EQ(r.applied, 1u);
+    EXPECT_TRUE(fs::exists(source)) << "copy leaves the original in place";
+    EXPECT_TRUE(fs::exists(fs::path(fx.out_dir) / "2019" / "img0.jpg"));
+
+    phig_op_free(apply_op);
+    phig_organize_plan_free(plan);
+}
+
+// Decision 1 on the apply side: apply snapshots the plan at start, so a caller
+// may free it immediately. Run under ASan, this is what catches a borrow where
+// a copy was intended.
+TEST_F(AbiOrganizeTest, PlanMayBeFreedImmediatelyAfterApplyStarts) {
+    OrganizeFixture fx(3);
+    open(fx);
+    phig_organize_plan* plan = make_plan(fx);
+
+    phig_op* apply_op = nullptr;
+    ASSERT_EQ(phig_op_copy_start(ctx, plan, &apply_op), PHIG_OK);
+    phig_organize_plan_free(plan);  // before the operation finishes
+    phig_op_wait(apply_op);
+    EXPECT_EQ(phig_op_status(apply_op), PHIG_OP_DONE);
+
+    phig_organize_result r{};
+    ASSERT_EQ(phig_op_organize_result(apply_op, &r), PHIG_OK);
+    EXPECT_EQ(r.applied, 3u);
+
+    phig_op_free(apply_op);
+}
+
+TEST_F(AbiOrganizeTest, ResultIsRefusedForAPlanOperation) {
+    OrganizeFixture fx(1);
+    open(fx);
+    phig_organize_options opts{};
+    opts.destination = fx.out_dir.c_str();
+    opts.format = "%Y/%original";
+    opts.on_conflict = PHIG_CONFLICT_RENAME;
+
+    phig_op* op = nullptr;
+    ASSERT_EQ(phig_op_organize_plan_start(ctx, &opts, &op), PHIG_OK);
+    phig_op_wait(op);
+
+    phig_organize_result r{};
+    EXPECT_EQ(phig_op_organize_result(op, &r), PHIG_ERR_INVALID_ARG)
+        << "a plan operation produces a plan, not an organize result";
+    phig_op_free(op);
+}
+
+// An override taken through the ABI has to survive both the planner's guard and
+// move_file's refusal to overwrite.
+TEST_F(AbiOrganizeTest, OverriddenOverwriteReplacesAnUntrackedOccupant) {
+    OrganizeFixture fx(1);
+    open(fx);
+    fs::create_directories(fs::path(fx.out_dir) / "2019");
+    fs::path occupied = fs::path(fx.out_dir) / "2019" / "img0.jpg";
+    {
+        std::ofstream f(occupied);
+        f << "occupant";
+    }
+
+    phig_organize_plan* plan = make_plan(fx);
+    ASSERT_TRUE(phig_organize_plan_conflicts_at(plan, 0));
+    ASSERT_EQ(phig_organize_plan_set_resolution(plan, 0, PHIG_CONFLICT_OVERWRITE), PHIG_OK);
+    EXPECT_STREQ(phig_organize_plan_dest_at(plan, 0), occupied.c_str());
+
+    phig_op* apply_op = nullptr;
+    ASSERT_EQ(phig_op_move_start(ctx, plan, &apply_op), PHIG_OK);
+    phig_op_wait(apply_op);
+
+    phig_organize_result r{};
+    ASSERT_EQ(phig_op_organize_result(apply_op, &r), PHIG_OK);
+    EXPECT_EQ(r.applied, 1u);
+    std::ifstream f(occupied);
+    std::string content;
+    f >> content;
+    EXPECT_NE(content, "occupant") << "the authorized overwrite replaced it";
+
+    phig_op_free(apply_op);
+    phig_organize_plan_free(plan);
+}
