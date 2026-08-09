@@ -59,3 +59,29 @@ files are generated from these records, not hand-maintained.
 
 - `status` of `partial` or `violated` requires `owner`.
 - Any `test_gap` requires `owner`, regardless of `status`.
+
+## core_headers classification
+
+`operations.toml`'s `core_headers` lists the `core/` headers whose declared
+functions and methods must each be accounted for. Every name found there
+goes into exactly one of three buckets:
+
+- **An operation's `core_entry`** — the name is a thing phig can do,
+  something a person invokes through a command, an ABI call, or (later) a
+  URL.
+- **`core_internal`** — the name mutates real data but is the *inside* of
+  an operation already declared, with no caller outside `core/`. A rule
+  that lives in such a function anchors its `enforced_at` there and binds
+  the operation that covers it, rather than the internal function itself.
+  `rules/conflict.toml`'s R01 is the worked example: it anchors at
+  `core/paths.cpp:resolve_conflict` and binds `organize.copy` and
+  `organize.move`, and `resolve_conflict` is not an operation. Do not
+  promote an internal function to an operation to get it classified — an
+  operation carries `surfaces_abi`/`surfaces_cli`, and the generated
+  missing-coverage table treats an empty `surfaces_abi` as a capability
+  libphig lacks, so an internal executor listed as an operation
+  manufactures a false gap, and a rule bound to it drains the cell of the
+  user-facing operation a reader would actually consult.
+- **`core_read_only`** — the name changes nothing tracked, or is an
+  artifact of the scan's regex (comment prose, a control keyword, a type
+  name).
