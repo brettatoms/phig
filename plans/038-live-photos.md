@@ -1,6 +1,6 @@
 ---
 name: Apple Live Photos
-status: designing
+status: completed
 created: 2026-08-06
 description: >
   Treat an Apple Live Photo — a still (HEIC/JPEG) plus its ~3s MOV — as one
@@ -17,7 +17,39 @@ description: >
 
 # 038 — Apple Live Photos
 
-**Status is `designing`; the file-availability gate has lifted.** This plan was
+**Shipped 2026-08-09.** Goals 1 and 2 are done: one row per shot, and organize
+keeps the pair together. Execution script:
+`docs/plans/2026-08-08-038-live-photo-pairing.md`.
+
+## What shipped
+
+`core/live_photo` reads the Content Identifier from the MOV and tests the still
+for containment of it, because libexif cannot parse Apple's MakerNote at all.
+Six commits: identifier read, containment, pairing over a set, scan skipping the
+attachment, organize carrying it, and demotion of pre-existing video rows.
+
+Measured end to end: four exported Live Photos plus two ordinary stills index as
+6 rows from 10 files; `mv` moves both halves into the still's dated directory;
+and a collection indexed before this plan re-scans down to one row per shot with
+both files intact on disk.
+
+Deferred, unchanged from the original scope:
+
+- **Goal 3, libphig visibility.** A Live badge and playable motion is ABI
+  surface, not pairing; it belongs with the macOS client in plan 050.
+- **Goal 4, round-trip fidelity.** Needs a device, and writing Apple metadata
+  would be a new capability — see Scope notes.
+- **Identifier-stripped pairs.** No fallback, by decision; revisit only with real
+  stripped files to measure a guard against.
+
+**Coverage limit worth knowing:** no committable fixture can carry an Apple
+MakerNote, so every still-side assertion skips in CI and is proven only on a
+machine with exported samples at `~/phig-live-samples`. The MOV side has a
+synthetic fixture and is covered everywhere.
+
+---
+
+**Original status note, kept for the record: the file-availability gate lifted.** This plan was
 written on 2026-08-06 when the collection had zero HEIC rows and nine MOV rows,
 all Canon camera clips (`MVI_*.MOV`, 2008–2014) and no Live Photos — building
 against synthetic fixtures alone would have broken the project's rule that
