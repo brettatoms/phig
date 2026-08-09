@@ -17,9 +17,16 @@
 // transaction. On failure the copy is removed and any backup restored.
 //
 // op_id: pass the open operation id to log an entry, or 0 to skip logging.
+//
+// allow_overwrite: the caller explicitly authorized replacing an occupied
+// destination. Only then may `dest` already exist on a move — move_file refuses
+// to overwrite otherwise, which is the guard that keeps an unauthorized run from
+// destroying bytes. When set, the occupant is renamed aside first and restored if
+// anything below fails, matching what copy already does unconditionally.
+//
 // Throws std::exception on any failure (the disk state is left consistent).
 void execute_organize_action(Database& db, const std::string& source, const std::string& dest,
-                             bool is_move, int64_t op_id);
+                             bool is_move, int64_t op_id, bool allow_overwrite = false);
 
 // Move/copy every sidecar of `parent_source` to sit beside `parent_dest`,
 // deriving each sidecar's destination name from parent_dest's final name

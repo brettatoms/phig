@@ -155,10 +155,29 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
         p.stage = OrganizeStage::FileDone;
         p.total = actionable;
         p.path = act.source;
+
+        // The plan is advisory; this check is authoritative (plan 041 decision
+        // 4, inherited by 042). A destination that became occupied since
+        // planning is skipped rather than acted on, unless the caller
+        // explicitly authorized replacing what is there.
+        const bool authorized_overwrite =
+            act.overridden && act.resolution == ConflictResolution::Overwrite;
+        if (!authorized_overwrite && act.source != act.dest && fs::exists(act.dest)) {
+            result.skipped++;
+            if (progress) {
+                p.done = result.applied + result.errors;
+                p.skipped = result.skipped;
+                p.files_written = result.files_written;
+                progress->push(p);
+            }
+            continue;
+        }
+
         try {
             // Disk op, DB update and log entry commit together, with on-failure
             // compensation so disk and database never disagree.
-            execute_organize_action(db_, act.source, act.dest, is_move, op_id);
+            execute_organize_action(db_, act.source, act.dest, is_move, op_id,
+                                    authorized_overwrite);
             result.applied++;
             result.files_written++;
             result.files_written += carry_sidecars(db_, act.source, act.dest, is_move, op_id);

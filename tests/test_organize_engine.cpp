@@ -368,3 +368,60 @@ TEST_F(OrganizeEngineTest, OverwritePolicyStillRenamesAroundAnExistingFile) {
     f >> content;
     EXPECT_EQ(content, "occupant") << "run-level overwrite must not clobber an existing file";
 }
+
+// 041's decision 4, inherited here: the plan is advisory and apply's own check
+// is authoritative, so a destination occupied between plan and apply is not
+// silently overwritten.
+TEST_F(OrganizeEngineTest, ApplySkipsAnItemWhoseDestinationBecameOccupied) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    ASSERT_FALSE(plan.at(0).conflicts);
+
+    // Someone else writes the destination after planning.
+    fs::create_directories(dir / "out" / "2019");
+    {
+        std::ofstream f(dir / "out" / "2019" / "a.jpg");
+        f << "latecomer";
+    }
+
+    OrganizeResult result = engine.apply(plan, true, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 0u);
+    EXPECT_EQ(result.skipped, 1u);
+    std::ifstream f(dir / "out" / "2019" / "a.jpg");
+    std::string content;
+    f >> content;
+    EXPECT_EQ(content, "latecomer") << "the file that arrived first must survive";
+    EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg"));
+}
+
+// An explicit override is the caller's authority to replace, so re-verification
+// must not undo it.
+TEST_F(OrganizeEngineTest, ApplyHonorsAnOverrideAgainstAFileThatStillExists) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    fs::create_directories(dir / "out" / "2019");
+    {
+        std::ofstream f(dir / "out" / "2019" / "a.jpg");
+        f << "occupant";
+    }
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    ASSERT_TRUE(plan.set_resolution(0, ConflictResolution::Overwrite));
+
+    OrganizeResult result = engine.apply(plan, true, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 1u);
+    std::ifstream f(dir / "out" / "2019" / "a.jpg");
+    std::string content;
+    f >> content;
+    EXPECT_NE(content, "occupant") << "an explicit override replaces the occupant";
+}
