@@ -72,6 +72,15 @@ about whether to surface a plan as a value.
 Adopting it also means `--dry-run` stops being a mode and becomes the plan phase
 that every caller runs anyway.
 
+**A destination occupied since planning is skipped, not re-resolved.** An earlier
+draft of this plan said apply would fall back to the run policy. That would
+re-run `resolve_conflict` at execution time and could file the photo under a name
+the caller never saw, which contradicts the point of authorizing a plan.
+Skipping keeps apply's outcome a subset of what was shown; the item lands in
+`skipped`, so a caller can re-plan and see the new conflict. An item carrying an
+explicit override is exempt, since that override *is* the authority to replace
+what is there.
+
 ### 2. Conflict resolution is per file
 
 The run-level policy stays and remains the default, so `cli/` is unchanged and a
@@ -295,8 +304,8 @@ caller could get it wrong.
   that source still exists afterwards.
 - `occupant_tracked_at` is false for a file phig has no row for and true for one
   it does.
-- Apply re-verifies: a destination occupied between plan and apply falls back to
-  the run policy, and one that became free is simply written.
+- Apply re-verifies: a destination occupied between plan and apply is **skipped**,
+  and one that became free is written where it was planned.
 - Sidecars and an attached JPEG travel with their parent, count in
   `files_written`, and do not move `done`/`total`.
 - Copy and move both honor per-item overrides.
