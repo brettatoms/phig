@@ -12,9 +12,9 @@ files are generated from these records, not hand-maintained.
   files.
 - `tier` (required) — `engine` or `boundary`. `engine` binds operations via
   `binds`, naming entries from `operations.toml`. `boundary` binds surfaces
-  via `binds_surface` instead, naming a CLI command or ABI symbol directly —
-  for a rule that lives at an interface rather than inside a `core/`
-  primitive.
+  via `binds_surface` instead, naming a surface category (`abi`, `cli`, or
+  `http`) — for a rule that lives at an interface rather than inside a
+  `core/` primitive.
 - `concern` (required) — one of the nine values in `taxonomy.toml`'s
   `concerns` list.
 - `statement` (required) — the rule itself, stated as an invariant that
@@ -25,10 +25,14 @@ files are generated from these records, not hand-maintained.
 - `enforced_at` (required) — list of `path:symbol` anchors naming the code
   that enforces the rule. Verified to exist; a rule whose anchor cannot be
   grepped is a rule that has drifted from the code.
-- `binds` (required for `tier = "engine"`) — list of operation `id`s from
-  `operations.toml` this rule applies to.
-- `binds_surface` (required for `tier = "boundary"`) — list of CLI commands
-  or ABI symbols this rule applies to.
+- `binds` (required for `tier = "engine"`; must not appear on a
+  `tier = "boundary"` rule) — list of operation `id`s from `operations.toml`
+  this rule applies to.
+- `binds_surface` (required for `tier = "boundary"`; must not appear on a
+  `tier = "engine"` rule) — list of surface categories this rule applies to.
+  Exactly three legal values: `abi`, `cli`, `http`. Not a CLI command name or
+  an ABI symbol — those live one level down, in `operations.toml`'s
+  `surfaces_*` lists.
 - `protects` (required) — list of asset `id`s from `taxonomy.toml`'s
   `[[asset]]` entries.
 - `tests` (required) — list of `Suite.TestName` entries from `tests/`.
