@@ -3,7 +3,7 @@
 **Status:** approved, ready to plan
 **Date:** 2026-08-09
 **Owns:** plan 054, widened from its original conflict/reconcile scope
-**Splits out:** a new plan for the `--on-conflict overwrite` decision
+**Splits out:** plan 059 — the `--on-conflict overwrite` decision
 **Relates:** 020, 022, 023, 025, 026, 029, 031, 032, 041, 042, 045, 052, 053
 
 ## Why
@@ -52,12 +52,13 @@ The unit of the record is the primitive in `core/`, not the CLI subcommand and
 not the ABI symbol. Surfaces hang off it:
 
 ```toml
-[organize.move]
-core_entry   = "core/organize_engine.h:OrganizeEngine::apply"
-destructive  = true
-surfaces.abi = ["phig_op_move_start"]
-surfaces.cli = ["mv"]
-surfaces.http = []          # plan 052
+[[operation]]
+id = "organize.move"
+core_entry = "core/organize_engine.h:OrganizeEngine::apply"
+destructive = true
+surfaces_abi = ["phig_op_move_start"]
+surfaces_cli = ["mv"]
+surfaces_http = []          # plan 052
 ```
 
 `mv` and `phig_op_move_start` are one operation with two surfaces. A rule binds
@@ -77,9 +78,9 @@ rule whose enforcement site resolves under `cli/` now fails the build — the ro
 
 **`libphig/CLAUDE.md`'s "What is missing" table becomes generated.** It is 12
 hand-maintained rows today and it is the inventory plan 053 works from. With
-operations keyed on core entries and surfaces declared, `surfaces.abi = []` *is*
+operations keyed on core entries and surfaces declared, `surfaces_abi = []` *is*
 that list. Parity between libphig and the wire protocol becomes a diff of two
-columns rather than an argument, once 052 populates `surfaces.http`.
+columns rather than an argument, once 052 populates `surfaces_http`.
 
 **Coverage checking gets stronger.** "Every CLI subcommand maps to an
 operation" catches CLI drift only. "Every mutating `core/` entry point is a
@@ -89,7 +90,9 @@ primitive nobody wrote rules for.
 ## 2. The rule record
 
 ```toml
-[R04]
+[[rule]]
+id          = "R04"
+tier        = "engine"
 concern     = "recoverability"
 statement   = "Deleting a row captures a restore snapshot sufficient to rebuild that row's user-authored metadata."
 rationale   = "A rescan rebuilds hash, EXIF and thumbnails. It cannot rebuild a tag someone typed, a gallery assignment, or a face label."
@@ -128,7 +131,7 @@ They are not checked today.
 
 When `phigd` exists, its protocol rules (bearer auth, the `scan_roots`
 allowlist, HMAC-signed media URLs) become a third tier against the same
-machinery, bound to `surfaces.http`.
+machinery, bound to `surfaces_http`.
 
 ## 4. Taxonomy
 
@@ -309,7 +312,7 @@ before it is built against.
   change to a shipped flag and should not gate infrastructure.
 - **It does not own the fixes for the debt it records.** Plan 041 owns the
   restore snapshot. This design records the rule and points at the owner.
-- **It does not cover `cli/`.** The CLI appears only as a `surfaces.cli` string
+- **It does not cover `cli/`.** The CLI appears only as a `surfaces_cli` string
   — never an enforcement site, never a test target. That follows the existing
   rule that `cli/` holds no business logic, and check 8 enforces it.
 - **It does not generate the rules from the tests.** Tests cannot express a rule
