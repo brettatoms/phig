@@ -122,3 +122,108 @@ TEST_F(OrganizeEngineTest, PlanFlagsAnOccupiedDestinationAsConflicting) {
     EXPECT_TRUE(plan.at(0).conflicts);
     EXPECT_FALSE(plan.at(0).occupant_tracked) << "the occupant has no row";
 }
+
+TEST_F(OrganizeEngineTest, SetResolutionRejectsANonConflictingItem) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+
+    ASSERT_EQ(plan.size(), 1u);
+    ASSERT_FALSE(plan.at(0).conflicts);
+    EXPECT_FALSE(plan.set_resolution(0, ConflictResolution::Overwrite));
+    EXPECT_FALSE(plan.at(0).overridden);
+}
+
+TEST_F(OrganizeEngineTest, SetResolutionRejectsAnIndexOutOfRange) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    EXPECT_FALSE(plan.set_resolution(99, ConflictResolution::Skip));
+}
+
+// Overriding to Overwrite must produce the plain destination, not a renamed one.
+// Without the bypass, is_protected sees the existing file and resolve_conflict
+// renames around it, silently discarding the caller's choice.
+TEST_F(OrganizeEngineTest, OverridingToOverwriteTargetsTheOccupiedPath) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    fs::create_directories(dir / "out" / "2019");
+    {
+        std::ofstream f(dir / "out" / "2019" / "a.jpg");
+        f << "occupant";
+    }
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+
+    ASSERT_EQ(plan.size(), 1u);
+    ASSERT_TRUE(plan.at(0).conflicts);
+    ASSERT_TRUE(plan.set_resolution(0, ConflictResolution::Overwrite));
+    EXPECT_TRUE(plan.at(0).overridden);
+    EXPECT_EQ(plan.at(0).dest, (dir / "out" / "2019" / "a.jpg").string());
+}
+
+TEST_F(OrganizeEngineTest, OverridingToSkipEmptiesTheDestination) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    fs::create_directories(dir / "out" / "2019");
+    {
+        std::ofstream f(dir / "out" / "2019" / "a.jpg");
+        f << "occupant";
+    }
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+
+    ASSERT_TRUE(plan.set_resolution(0, ConflictResolution::Skip));
+    EXPECT_TRUE(plan.at(0).dest.empty());
+}
+
+// The one bypass that must never be granted: the occupying file is another
+// image's source, still waiting to be moved.
+TEST_F(OrganizeEngineTest, SetResolutionRefusesToTargetABatchSource) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    // This file sits exactly where src/a.jpg wants to land, and is itself indexed.
+    fs::path collide = dir / "out" / "2019" / "a.jpg";
+    fs::create_directories(collide.parent_path());
+    {
+        std::ofstream f(collide);
+        f << "b";
+    }
+    ImageInfo b;
+    b.path = collide.string();
+    b.filename = "a.jpg";
+    b.extension = ".jpg";
+    b.sha256 = "b-sha";
+    b.metadata_json = R"({"DateTimeOriginal":"2021:05:05 10:00:00"})";
+    db.insert(b);
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+
+    size_t idx = plan.size();
+    for (size_t i = 0; i < plan.size(); i++) {
+        if (plan.at(i).source.find("/src/") != std::string::npos) idx = i;
+    }
+    ASSERT_LT(idx, plan.size());
+    ASSERT_TRUE(plan.at(idx).conflicts);
+    EXPECT_TRUE(plan.at(idx).occupant_tracked);
+    EXPECT_FALSE(plan.set_resolution(idx, ConflictResolution::Overwrite))
+        << "overwriting another image's un-moved source must be refused";
+    EXPECT_TRUE(fs::exists(collide));
+}

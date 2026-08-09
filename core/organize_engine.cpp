@@ -27,7 +27,40 @@ const char* policy_string(ConflictResolution r) {
 
 }  // namespace
 
-bool OrganizePlan::set_resolution(size_t, ConflictResolution) { return false; }
+bool OrganizePlan::set_resolution(size_t i, ConflictResolution r) {
+    if (i >= actions_.size()) return false;
+    OrganizeAction& act = actions_[i];
+    if (!act.conflicts) return false;
+
+    const std::string& target = act.intended_dest;
+    const std::string& self_source = act.source;
+
+    // Never overwrite another image's not-yet-moved source: that is a tracked
+    // original phig is in the middle of relocating, and no caller intent makes
+    // destroying it correct. Rename and skip are unaffected — both go around it.
+    if (r == ConflictResolution::Overwrite && target != self_source &&
+        batch_sources_.count(target)) {
+        return false;
+    }
+
+    // Release this item's claim before recomputing, so its own earlier
+    // destination does not look like somebody else's.
+    if (!act.dest.empty()) claimed_.erase(act.dest);
+
+    // An explicit override carries the authority to replace a file that exists
+    // on disk — the caller saw the conflict in the plan and answered it. The
+    // batch-source arm above is the part that authority does not extend to, so
+    // this predicate deliberately does not consult fs::exists.
+    auto is_protected = [&](const std::string& path) -> bool {
+        if (path == self_source) return false;
+        return batch_sources_.count(path) > 0;
+    };
+
+    act.dest = resolve_conflict(target, policy_string(r), claimed_, is_protected);
+    act.resolution = r;
+    act.overridden = true;
+    return true;
+}
 
 OrganizeEngine::OrganizeEngine(const OrganizeOptions& opts, Database& db) : opts_(opts), db_(db) {}
 
