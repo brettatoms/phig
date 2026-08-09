@@ -138,6 +138,26 @@ void execute_organize_action(Database& db, const std::string& source, const std:
     }
 }
 
+namespace {
+
+// A carried attachment's destination is derived, not chosen by the user, and
+// the conflict planner never sees it — so unlike the parent's destination there
+// is no skip/overwrite/rename policy to consult and nothing renames it out of
+// the way. Refusing is the only safe default.
+//
+// move_file already declines to overwrite and throws, so mv was never at risk.
+// atomic_copy_file ends in a rename that replaces silently, so on the cp path
+// an occupied destination was destroyed with no error raised and no restore
+// snapshot written to the activity log.
+void refuse_occupied_carry_destination(const fs::path& dest) {
+    std::error_code ec;
+    if (fs::exists(dest, ec)) {
+        throw std::runtime_error("carry destination already exists: " + dest.string());
+    }
+}
+
+}  // namespace
+
 size_t carry_sidecars(Database& db, const std::string& parent_source,
                       const std::string& parent_dest, bool is_move, int64_t op_id) {
     const bool logging = op_id > 0;
@@ -171,6 +191,7 @@ size_t carry_sidecars(Database& db, const std::string& parent_source,
 
         if (src_media.parent_path() == dst_dir && side == side_dst) continue;  // no-op
 
+        refuse_occupied_carry_destination(side_dst);
         if (is_move) {
             move_file(side.string(), side_dst.string());
         } else {
@@ -211,19 +232,7 @@ size_t carry_sidecars(Database& db, const std::string& parent_source,
         if (!lp_src.empty() && db.get_image_id(lp_src.string()) < 0) {
             fs::path lp_dst = dst_dir / (dst_stem + lp_src.extension().string());
 
-            // No-clobber, explicitly. move_file already refuses to overwrite,
-            // but atomic_copy_file ends in a rename that replaces silently — so
-            // on the cp path an existing file at this destination would be
-            // destroyed with no error and no restore snapshot. The parent's own
-            // destination is protected by resolve_conflict; this one is not
-            // seen by the conflict planner at all, and the name it lands on
-            // (IMG_NNNN.MOV) is one the user never chose.
-            std::error_code exists_ec;
-            if (fs::exists(lp_dst, exists_ec)) {
-                throw std::runtime_error("Live Photo video destination already exists: " +
-                                         lp_dst.string());
-            }
-
+            refuse_occupied_carry_destination(lp_dst);
             if (is_move) {
                 move_file(lp_src.string(), lp_dst.string());
             } else {
@@ -253,6 +262,7 @@ size_t carry_sidecars(Database& db, const std::string& parent_source,
             fs::path jpeg_dst = dst_dir / (dst_stem + jpeg_src.extension().string());
 
             if (!(src_media.parent_path() == dst_dir && jpeg_src == jpeg_dst)) {  // skip no-op
+                refuse_occupied_carry_destination(jpeg_dst);
                 if (is_move) {
                     move_file(jpeg_src.string(), jpeg_dst.string());
                 } else {

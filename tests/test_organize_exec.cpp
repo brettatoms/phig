@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 
@@ -641,4 +642,87 @@ TEST_F(OrganizeExecTest, MoveRefusesAnOccupiedDestinationWithoutAuthorization) {
                  std::exception);
     EXPECT_EQ(read_file(dst), "ORIGINAL");
     EXPECT_TRUE(fs::exists(src));
+}
+
+// ---- carried attachments must never clobber (all carry paths) ----
+//
+// move_file is genuinely no-clobber and throws, so mv was always safe. cp goes
+// through atomic_copy_file, which ends in a rename that replaces silently — so
+// an existing file at a carried destination was destroyed with no error and no
+// restore snapshot in the activity log. The Live Photo carry was guarded when
+// it was written; these two paths predate it.
+//
+// The destination is not chosen by the user and is not seen by the conflict
+// planner, so refusing is the only safe default here.
+
+namespace {
+void put(const fs::path& p, const std::string& contents) {
+    fs::create_directories(p.parent_path());
+    std::ofstream(p) << contents;
+}
+std::string get(const fs::path& p) {
+    std::ifstream in(p);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+}  // namespace
+
+TEST(OrganizeCarryNoClobber, CopyRefusesToClobberAnExistingSidecar) {
+    fs::path root = make_temp_dir("carry-side");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst";
+    fs::create_directories(src);
+    fs::create_directories(dst);
+    put(src / "IMG_1.jpg", "photo");
+    put(src / "IMG_1.xmp", "NEW SIDECAR");
+    put(dst / "IMG_1.jpg", "photo");
+    put(dst / "IMG_1.xmp", "PRECIOUS");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    EXPECT_THROW(
+        carry_sidecars(db, (src / "IMG_1.jpg").string(), (dst / "IMG_1.jpg").string(), false, 0),
+        std::exception);
+    EXPECT_EQ(get(dst / "IMG_1.xmp"), "PRECIOUS") << "an existing sidecar was overwritten";
+    fs::remove_all(root);
+}
+
+TEST(OrganizeCarryNoClobber, CopyRefusesToClobberAnExistingSiblingJpeg) {
+    fs::path root = make_temp_dir("carry-jpeg");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst";
+    fs::create_directories(src);
+    fs::create_directories(dst);
+    put(src / "IMG_2.cr2", "raw");
+    put(src / "IMG_2.jpg", "NEW JPEG");
+    put(dst / "IMG_2.cr2", "raw");
+    put(dst / "IMG_2.jpg", "PRECIOUS");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    EXPECT_THROW(
+        carry_sidecars(db, (src / "IMG_2.cr2").string(), (dst / "IMG_2.cr2").string(), false, 0),
+        std::exception);
+    EXPECT_EQ(get(dst / "IMG_2.jpg"), "PRECIOUS") << "an existing sibling JPEG was overwritten";
+    fs::remove_all(root);
+}
+
+// A free destination must still work — the guard must refuse collisions, not
+// carrying itself.
+TEST(OrganizeCarryNoClobber, StillCarriesWhenTheDestinationIsFree) {
+    fs::path root = make_temp_dir("carry-free");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst";
+    fs::create_directories(src);
+    fs::create_directories(dst);
+    put(src / "IMG_3.jpg", "photo");
+    put(src / "IMG_3.xmp", "sidecar");
+    put(dst / "IMG_3.jpg", "photo");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    EXPECT_EQ(
+        carry_sidecars(db, (src / "IMG_3.jpg").string(), (dst / "IMG_3.jpg").string(), false, 0),
+        1u);
+    EXPECT_EQ(get(dst / "IMG_3.xmp"), "sidecar");
+    fs::remove_all(root);
 }
