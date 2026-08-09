@@ -229,6 +229,10 @@ size_t carry_sidecars(Database& db, const std::string& parent_source,
             } else {
                 atomic_copy_file(lp_src.string(), lp_dst.string());
             }
+            // Counted like any other carried file: OrganizeEngine adds this
+            // return value to result.files_written, so omitting it would report
+            // fewer files than were actually written.
+            carried++;
             if (logging) {
                 std::string rj = parent_id > 0
                                      ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")

@@ -564,6 +564,24 @@ TEST(OrganizeLivePhotoSafety, CarriesAnUnindexedPairedVideo) {
     fs::remove_all(root);
 }
 
+// OrganizeEngine adds this return value to result.files_written, so a carried
+// video that is not counted is a file the user is never told was written.
+TEST(OrganizeLivePhotoSafety, CountsTheCarriedVideoInTheReturnedTotal) {
+    fs::path root = make_temp_dir("lp-count");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst";
+    make_pair_dir(src, "shot", "motion");
+    fs::create_directories(dst);
+    fs::rename(src / "shot.jpg", dst / "shot.jpg");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    EXPECT_EQ(carry_sidecars(db, (src / "shot.jpg").string(), (dst / "shot.jpg").string(), true, 0),
+              1u)
+        << "the carried Live Photo video was not counted";
+    fs::remove_all(root);
+}
+
 // Move with allow_overwrite renames the occupant aside before moving, mirroring
 // what copy has always done. A database failure after the file has moved must
 // put both files back: the source where it was, and the occupant where it was.
