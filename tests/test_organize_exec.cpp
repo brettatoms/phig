@@ -406,3 +406,64 @@ TEST_F(OrganizeExecTest, NoAttachedJpegForNonRawParent) {
     EXPECT_EQ(sqlite3_column_int(st, 0), 1);
     sqlite3_finalize(st);
 }
+
+// Move with allow_overwrite renames the occupant aside before moving, mirroring
+// what copy has always done. A database failure after the file has moved must
+// put both files back: the source where it was, and the occupant where it was.
+TEST_F(OrganizeExecTest, MoveRestoresPriorFileOnDbFailureWhenOverwriteAllowed) {
+    fs::path src = dir / "src" / "a.jpg";
+    fs::path dst = dir / "dest" / "a.jpg";
+    write_file(src, "NEW");
+    write_file(dst, "ORIGINAL");
+    insert_row(src.string());
+
+    set_readonly(true);
+    EXPECT_THROW(execute_organize_action(*db, src.string(), dst.string(), /*is_move=*/true,
+                                         /*op_id=*/0, /*allow_overwrite=*/true),
+                 std::exception);
+    set_readonly(false);
+
+    ASSERT_TRUE(fs::exists(dst));
+    EXPECT_EQ(read_file(dst), "ORIGINAL") << "the occupant must be restored, not lost";
+    ASSERT_TRUE(fs::exists(src));
+    EXPECT_EQ(read_file(src), "NEW") << "the source must be back where it started";
+
+    int bak_count = 0;
+    for (auto& e : fs::directory_iterator(dst.parent_path()))
+        if (e.path().filename().string().find(".phig-bak.") != std::string::npos) bak_count++;
+    EXPECT_EQ(bak_count, 0) << "no stray backup left behind";
+}
+
+TEST_F(OrganizeExecTest, MoveOverwriteSuccessLeavesNoBackup) {
+    fs::path src = dir / "src" / "a.jpg";
+    fs::path dst = dir / "dest" / "a.jpg";
+    write_file(src, "NEW");
+    write_file(dst, "ORIGINAL");
+    insert_row(src.string());
+
+    execute_organize_action(*db, src.string(), dst.string(), /*is_move=*/true, /*op_id=*/0,
+                            /*allow_overwrite=*/true);
+
+    EXPECT_EQ(read_file(dst), "NEW") << "the authorized overwrite replaced it";
+    EXPECT_FALSE(fs::exists(src));
+    int bak_count = 0;
+    for (auto& e : fs::directory_iterator(dst.parent_path()))
+        if (e.path().filename().string().find(".phig-bak.") != std::string::npos) bak_count++;
+    EXPECT_EQ(bak_count, 0);
+}
+
+// Without the flag, move_file's no-clobber refusal stands. This is the guard
+// that keeps an unauthorized run from destroying bytes.
+TEST_F(OrganizeExecTest, MoveRefusesAnOccupiedDestinationWithoutAuthorization) {
+    fs::path src = dir / "src" / "a.jpg";
+    fs::path dst = dir / "dest" / "a.jpg";
+    write_file(src, "NEW");
+    write_file(dst, "ORIGINAL");
+    insert_row(src.string());
+
+    EXPECT_THROW(execute_organize_action(*db, src.string(), dst.string(), /*is_move=*/true,
+                                         /*op_id=*/0),
+                 std::exception);
+    EXPECT_EQ(read_file(dst), "ORIGINAL");
+    EXPECT_TRUE(fs::exists(src));
+}

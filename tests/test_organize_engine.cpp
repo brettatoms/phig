@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 #include "cancel.h"
 #include "database.h"
@@ -424,4 +426,139 @@ TEST_F(OrganizeEngineTest, ApplyHonorsAnOverrideAgainstAFileThatStillExists) {
     std::string content;
     f >> content;
     EXPECT_NE(content, "occupant") << "an explicit override replaces the occupant";
+}
+
+TEST_F(OrganizeEngineTest, CopyHonorsAPerItemOverrideToo) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    fs::create_directories(dir / "out" / "2019");
+    {
+        std::ofstream f(dir / "out" / "2019" / "a.jpg");
+        f << "occupant";
+    }
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    ASSERT_TRUE(plan.set_resolution(0, ConflictResolution::Overwrite));
+
+    OrganizeResult result = engine.apply(plan, /*is_move=*/false, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 1u);
+    std::ifstream f(dir / "out" / "2019" / "a.jpg");
+    std::string content;
+    f >> content;
+    EXPECT_NE(content, "occupant") << "an override applies to copy as well as move";
+    EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg")) << "copy still leaves the source";
+}
+
+// A RAW's same-basename JPEG is an attachment, not a row of its own, so it is
+// carried like a sidecar and counts as work done without moving the denominator.
+TEST_F(OrganizeEngineTest, AttachedJpegForARawCountsInFilesWritten) {
+    Database db(db_path);
+    db.init_schema();
+    fs::create_directories(dir / "src");
+    {
+        std::ofstream f(dir / "src" / "IMG_1.CR2");
+        f << "RAWDATA";
+    }
+    {
+        std::ofstream f(dir / "src" / "IMG_1.JPG");
+        f << "JPEGDATA";
+    }
+    ImageInfo raw;
+    raw.path = (dir / "src" / "IMG_1.CR2").string();
+    raw.filename = "IMG_1.CR2";
+    raw.extension = ".CR2";
+    raw.sha256 = "raw-sha";
+    raw.metadata_json = R"({"DateTimeOriginal":"2019:07:04 10:00:00"})";
+    db.insert(raw);
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    OrganizeResult result = engine.apply(plan, true, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 1u) << "one photo";
+    EXPECT_EQ(result.files_written, 2u) << "the RAW and its attached JPEG";
+    EXPECT_TRUE(fs::exists(dir / "out" / "2019" / "IMG_1.CR2"));
+    EXPECT_TRUE(fs::exists(dir / "out" / "2019" / "IMG_1.JPG"));
+    EXPECT_FALSE(fs::exists(dir / "src" / "IMG_1.JPG"));
+}
+
+TEST_F(OrganizeEngineTest, ADestinationThatBecameFreeIsSimplyWritten) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    fs::create_directories(dir / "out" / "2019");
+    fs::path occupied = dir / "out" / "2019" / "a.jpg";
+    {
+        std::ofstream f(occupied);
+        f << "occupant";
+    }
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    // Planning renamed around the occupant. It then goes away on its own.
+    ASSERT_TRUE(plan.at(0).conflicts);
+    std::string planned_dest = plan.at(0).dest;
+    ASSERT_NE(planned_dest, occupied.string());
+    fs::remove(occupied);
+
+    OrganizeResult result = engine.apply(plan, true, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 1u);
+    EXPECT_EQ(result.skipped, 0u);
+    EXPECT_TRUE(fs::exists(planned_dest))
+        << "apply writes the destination it planned, not the one that freed up";
+    EXPECT_FALSE(fs::exists(occupied)) << "apply must not opportunistically retarget";
+}
+
+// Cancelling partway must leave the logged operation marked interrupted rather
+// than lingering as in_progress, and disk and database agreeing on every file
+// that did move.
+TEST_F(OrganizeEngineTest, CancellationPartwayMarksTheOperationInterrupted) {
+    Database db(db_path);
+    db.init_schema();
+    for (int i = 0; i < 40; i++) {
+        add_image(db, "f" + std::to_string(i) + ".jpg", "2019:07:04 10:00:00");
+    }
+
+    OrganizeOptions o = base_opts();
+    o.log_enabled = true;
+    OrganizeEngine engine(o, db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+
+    ProgressQueue<OrganizeProgress> q(1024);
+    std::thread canceller([&] {
+        OrganizeProgress p;
+        while (q.pop(p)) {
+            if (p.stage == OrganizeStage::FileDone && p.done >= 3) {
+                cancel.cancel();
+                break;
+            }
+        }
+    });
+    OrganizeResult result = engine.apply(plan, true, cancel, &q);
+    q.close();
+    canceller.join();
+
+    EXPECT_FALSE(result.completed);
+    EXPECT_LT(result.applied, 40u) << "cancellation must stop short of the whole batch";
+
+    sqlite3_stmt* st = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db.db_ptr(), "SELECT status FROM operations ORDER BY id DESC", -1,
+                                 &st, nullptr),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(st), SQLITE_ROW);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), "interrupted");
+    sqlite3_finalize(st);
+
+    // Every row the run did move must point at a file that exists.
+    for (const auto& img : db.get_all_images()) {
+        EXPECT_TRUE(fs::exists(img.path)) << img.path << " is recorded but missing";
+    }
 }
