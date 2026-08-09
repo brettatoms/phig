@@ -58,8 +58,8 @@ test_gap = "Every listed test drives rm. ScanEngine.IgnoreMountWarningOverridesT
 id = "R15"
 tier = "engine"
 concern = "reconcile"
-statement = "When every tracked file under the scanned directory is missing, scan warns and deletes nothing."
-rationale = "An unmounted drive is indistinguishable from a deleted collection at the point reconcile runs, and losing a whole subtree's tags and faces to a forgotten mount is worse than leaving stale rows behind. The guard skips the entire destructive phase, not individual rows, and names the flag that overrides it."
+statement = "Scan skips its whole destructive phase when every tracked row under the scanned directory classifies as deletable."
+rationale = "An unmounted drive is indistinguishable from a deleted collection at the point reconcile runs, and losing a whole subtree's tags and faces to a forgotten mount is worse than leaving stale rows behind. The guard compares the deletable set against every row under the prefix, so it fires only when the two are the same size. A run that also has rows in parent_missing or check_failed does not trip it, and its deletable rows are deleted: those other rows are held by the per-row classifier of R12, not by this guard. The guard is coarse on purpose, and it names the flag that overrides it."
 enforced_at = ["core/scan_engine.cpp:ScanEngine::run_reconcile"]
 binds = ["scan.reconcile"]
 protects = ["user-metadata", "db-row"]
@@ -70,6 +70,8 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
+owner = "054"
+test_gap = "The listed tests cover all rows deletable (the guard fires), the flag override, and some files still present (it does not). None drives run_reconcile with a mixed set — some rows deletable, others parent_missing — which is the case where every tracked file is gone, the guard still does not fire, and the deletable rows are deleted."
 
 [[rule]]
 id = "R16"
@@ -110,6 +112,10 @@ tests = [
     "RelinkTest.DeletedJpegWithIndexedRawNotDemoted",
     "LivePhotoDemotion.MovesTheVideoRowsMetadataToItsStillAndDropsTheRow",
     "LivePhotoDemotion.LeavesAnOrdinaryVideoRowAlone",
+    "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget",
+    "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged",
 ]
 test_kind = "witness"
 status = "holds"
+owner = "054"
+test_gap = "Only the authoritative half is pinned. The six demote tests call demote_jpeg_rows and demote_live_photo_rows directly, and the two run_reconcile tests both have a non-empty removed_paths, so the block is entered whatever the peek answers. No test covers the case the peek exists for: removed_paths empty and the only work demotable."

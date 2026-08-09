@@ -60,6 +60,12 @@ files are generated from these records, not hand-maintained.
 - `status` of `partial` or `violated` requires `owner`.
 - Any `test_gap` requires `owner`, regardless of `status`.
 
+`owner` may name plan 054 itself when the gap is a missing test rather than
+missing behavior: 054's phase 3 is the pass that writes the tests this record
+set discovers are absent. A gap owned by 054 therefore means "no test pins
+this yet", and a gap owned by any other plan means that plan has to change the
+code before the rule can hold.
+
 ## core_headers classification
 
 `operations.toml`'s `core_headers` lists the `core/` headers whose declared
