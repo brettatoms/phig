@@ -131,7 +131,7 @@ tested for **containment** of that exact UUID within its MakerNote bytes:
 - No parsing of untrusted binary structure — the same objection that ruled out
   a hand-rolled ISOBMFF parser in plan 048.
 - No positional assumption about Apple's MakerNote layout.
-- No new dependency, and therefore no licensing decision (see plan 054: exiv2
+- No new dependency, and therefore no licensing decision (see plan 057: exiv2
   would read tag 0x0011 properly but is GPL, while every dependency phig links
   today is LGPL).
 - A false pair would require a 36-character UUID collision.
