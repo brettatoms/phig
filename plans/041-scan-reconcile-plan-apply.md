@@ -128,6 +128,12 @@ always reports `deletable`, `parent_missing` and `check_failed` as separate
 lists, so a caller passing the flag is acting on a list it was shown rather than
 on something it was not.
 
+**This diverges from plan 042's apply signature deliberately.** There, apply
+takes the plan and nothing else, because a per-item override already carries the
+caller's answer. Reconcile has no per-item overrides (decision 2), so the one
+choice a caller still has to make has nowhere else to live. Two apply shapes is
+the consequence of that difference, not an inconsistency to tidy away.
+
 The override was not put in the plan options, which would have kept apply
 argument-free at the cost of a full re-plan to flip it. Planning demotion runs
 `has_sibling_raw` per row, and plan 044 measured that doing a full
@@ -216,6 +222,25 @@ Restoring is not in scope. There is no reader for the activity log anywhere in
 write-only, with plan 053 owning the reader. This decision makes the record
 complete so a future undo has something to restore; it does not build the undo.
 
+## The guards on the delete path
+
+Deletion is gated in more than one place, and they are worth listing before the
+work starts rather than discovering one mid-implementation. Plan 042 found a
+second guard — `move_file`'s refusal to overwrite — only after an authorized
+action failed at the syscall, having already been approved by the guard the
+design knew about. Reconcile is more layered, not less.
+
+| Guard | Where | What it stops |
+|---|---|---|
+| Mount warning | `scan_engine.cpp:517-523` | Skips the entire destructive phase when every row under the prefix is missing |
+| `paths_safe_to_delete` | `core/paths.cpp` | Partitions into deletable / parent_missing / check_failed |
+| `delete_paths_logged` | `database.cpp:996-999` | Skips any path with no row, so a stale plan entry deletes nothing |
+
+The plan/apply split must not weaken any of them, and apply's re-check
+(decision 4) is a fourth layer rather than a replacement for these. Plan 054
+owns writing the full set down, including the reconcile side; this table is the
+inventory this plan's implementer needs in hand.
+
 ## ABI shape
 
 ```c
@@ -255,6 +280,14 @@ phig_status phig_op_reconcile_apply_result(phig_op*, phig_reconcile_result* out)
 Every symbol is additive, so `PHIG_ABI_VERSION_MINOR` and the CMake `VERSION`
 bump while `SOVERSION` stays, per `libphig/CLAUDE.md`.
 
+**`phig_op_poll` must gain a case for the new kinds.** Its switch in
+`libphig/operations.cpp` has no `default:`, so adding a `phig_op::Kind` without
+extending it is a `-Wswitch` error under `-DPHIG_WERROR=ON` — which is what CI
+builds with, and what a default local build does not. Plan 042 shipped exactly
+this omission: the kinds were added, the case was not, polling an organize
+operation returned `false` forever, and no test caught it because every ABI test
+called `phig_op_wait` rather than `phig_op_poll`. Do not repeat it.
+
 ## Core shape
 
 ```cpp
@@ -288,6 +321,9 @@ Real-behavior tests, per the repo convention for data-safety changes.
 - `check_failed` rows survive apply *with* the flag set.
 - The plan operation freed before apply starts still applies correctly, which is
   what decision 1 buys.
+- **An ABI test that polls, not waits.** `phig_op_poll` on both a reconcile plan
+  and a reconcile apply returns progress. This exists because its absence is what
+  hid a broken switch in plan 042 through an entire implementation.
 - Cancel mid-apply leaves the logged operation `interrupted` and the database
   consistent.
 - **Cancel mid-relink is idempotent**: relink, cancel partway, re-run, and assert
@@ -303,6 +339,29 @@ Decision 6 adds three more:
 - `phig rm` produces the same complete snapshot, since it shares
   `delete_paths_logged`. This is the regression test for fixing one caller and
   not the other.
+
+## Open — progress reporting
+
+Two decisions this plan does not yet make, raised by reviewing it against plan
+042's implementation. Both must be settled before implementation, because 042
+demonstrated what happens when a progress denominator is invented at the
+keyboard: it counted plan entries rather than actionable ones, so a run with
+skips reported progress toward a total it could never reach.
+
+1. **What the `phig_op_progress` fields mean for reconcile.** Plan 042 defines
+   its mapping explicitly — `done`/`total` are parents, `processed` is files
+   written. This plan defines nothing. Reconcile needs it more, not less: the
+   *plan* phase is the slow half, running `has_sibling_raw` per row, so a caller
+   watching it needs a denominator. Open: is `total` the row count under the
+   prefix? Does `done` count rows across relink, demote and delete together or
+   per phase? Does `processed` carry anything, or stay 0 the way faces leaves it?
+2. **Which progress type the core side uses.** The Core shape below reuses
+   `ProgressQueue<ScanProgress>`, but `ScanStage` is
+   `{FileDone, Walked, LoadingFaceModels}` and none of those means "planning
+   finished" or "relinking". Either `ScanStage` gains values or reconcile gets
+   its own progress struct. At the ABI level plan 042 reused
+   `PHIG_STAGE_SELECTED` for the same problem, which is available here too, but
+   the core-side type still needs deciding.
 
 ## Unmeasured
 
