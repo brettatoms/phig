@@ -71,8 +71,8 @@ test_gap = "The listed tests pin the ordering, not the boundaries. No test inter
 id = "R31"
 tier = "engine"
 concern = "atomicity"
-statement = "log_begin_operation commits its operation row on its own before the first entry, so an interrupted run leaves an operation behind — marked interrupted when the failure is an exception, and left in_progress when the process dies."
-rationale = "Opening the operation outside the work's transaction is what makes the row survive a rollback: delete_paths_logged rolls back its own transaction on failure and the operation row stays, so the run is not invisible. The cost is that the terminal status is a second write. Both destructive callers catch, mark the operation interrupted on a best-effort basis and rethrow. A process that dies instead — a signal, a crash, the machine going away — leaves in_progress, and no code anywhere reads the operations table looking for one, so it stays that way."
+statement = "log_begin_operation commits its operation row on its own before the first entry, so an interrupted run leaves an operation behind — marked interrupted by rm and by reconcile when the failure is an exception, and left in_progress when the process dies."
+rationale = "Opening the operation outside the work's transaction is what makes the row survive a rollback: delete_paths_logged rolls back its own transaction on failure and the operation row stays, so the run is not invisible. The cost is that the terminal status is a second write. Only two of the three callers close the loop: cmd_rm and run_reconcile catch, mark the operation interrupted on a best-effort basis and rethrow, while OrganizeEngine::apply has no such wrapper at all — it catches per file and still writes completed, which is R27's finding. A process that dies instead — a signal, a crash, the machine going away — leaves in_progress under every caller; plan 020 recorded that when it wrote log_finish_operation, noting the state is harmless for its own slice and meaningful for the deferred viewer that still does not exist."
 enforced_at = [
     "core/database.cpp:log_begin_operation",
     "core/scan_engine.cpp:ScanEngine::run_reconcile",
@@ -94,8 +94,8 @@ test_gap = "The listed test covers a cancelled run, which reaches log_finish_ope
 id = "R32"
 tier = "engine"
 concern = "atomicity"
-statement = "OrganizeEngine::apply commits each file's disk action, path update and log entry together before it starts the next, so a run that stops partway leaves every file before the stop point moved and recorded and every file after it untouched."
-rationale = "There is no batch transaction over a move: the file has already been renamed by the time its row is updated, so the largest unit that can be made atomic is one file. execute_organize_action makes it so by compensating — a database failure moves the file back, and a failed move-back is thrown with both paths named rather than swallowed, because the file then sits somewhere the row does not name. That per-file boundary is what lets the loop stop anywhere, which is what cancellation and the SIGINT handler rely on."
+statement = "OrganizeEngine::apply moves or copies one media file, then commits that file's path update and log entry in a single transaction and compensates if it fails, before starting the next — so a run that stops partway leaves every media file before the stop point moved and recorded and every one after it untouched."
+rationale = "A rename cannot go inside a SQL transaction, so the disk action happens first and outside: move_file runs, then begin_transaction covers only update_path_in_txn and log_add_entry. What makes the pair behave as a unit is compensation rather than a shared transaction — a database failure moves the file back, and a failed move-back is thrown with both paths named rather than swallowed, because the file then sits somewhere no row names. The unit is the media file alone: carry_sidecars runs after execute_organize_action has returned and its transaction has committed, so an attachment moved for that file is outside this boundary and is R33's window, not this rule's."
 enforced_at = [
     "core/organize_engine.cpp:OrganizeEngine::apply",
     "core/organize_exec.cpp:execute_organize_action",

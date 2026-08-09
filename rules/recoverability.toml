@@ -3,15 +3,15 @@ id = "R04"
 tier = "engine"
 concern = "recoverability"
 statement = "Deleting a row captures a restore snapshot sufficient to rebuild that row's user-authored metadata."
-rationale = "A rescan rebuilds hash, EXIF and thumbnails. It cannot rebuild a tag someone typed, a gallery assignment, or a face label."
+rationale = "A rescan rebuilds hash, EXIF and thumbnails. It cannot rebuild a tag someone typed, a gallery assignment, or a face label. Partial rather than violated because exactly one of the three survives: gallery is a column on images and is in the snapshot's sixteen, while tags live in image_tags and faces in faces/vec_faces and both cascade away uncaptured. Measured: tagging a file, deleting it from disk and rescanning wrote a purge_row entry whose restore_json holds only those sixteen columns — the tag name appears nowhere in it, the image_tags row is gone, and the name survives in the tags table attached to nothing. Plan 041 decision 6 owns closing this and its acceptance criteria already require the tag names in restore_json."
 enforced_at = ["core/database.cpp:delete_paths_logged"]
 binds = ["scan.reconcile", "remove.trash", "remove.hard", "remove.db-only", "remove.orphans"]
 protects = ["user-metadata", "db-row"]
-tests = ["DatabaseTest.PurgeSnapshotMarksOmittedFaces"]
+tests = ["DatabaseTest.PurgeSnapshotMarksOmittedFaces", "DatabaseTest.PurgeLogsRestorableSnapshot"]
 test_kind = "conformance"
 status = "partial"
 owner = "041"
-test_gap = "The test asserts the snapshot records a face count, not that the metadata round-trips. No restorer exists to round-trip against: plan 020 deferred phig undo and plan 053 records that the activity log has no reader in core/."
+test_gap = "The tests pin the shape the snapshot has today: one asserts a face count is recorded, the other that the path and sha256 are present. Neither asserts a tag, because no code path writes one, and neither round-trips the metadata. There is no restorer to round-trip against: plan 020 deferred phig undo and plan 053 records that the activity log has no reader in core/. PurgeSnapshotMarksOmittedFaces is also one of the three DatabaseTest cases plan 046 records as failing on Linux, so on that platform this rule's only other witness is PurgeLogsRestorableSnapshot."
 
 [[rule]]
 id = "R18"
@@ -70,7 +70,7 @@ id = "R20"
 tier = "engine"
 concern = "authorization"
 statement = "A dry-run removal takes no disk action, deletes no row and opens no logged operation, but it still creates the database file and applies any pending schema migration."
-rationale = "The preview returns before the confirmation guard and before log_begin_operation, so nothing on disk moves and nothing about the selection is recorded. What it does not skip is the connection: cmd_rm constructs a Database and calls init_schema before it reads dry_run, and both create-if-missing and the forward-only migration happen there. A preview that migrates a v7 database to v8 has changed the file it was asked not to touch, and no plan says so."
+rationale = "The preview returns before the confirmation guard and before log_begin_operation, so nothing on disk moves and nothing about the selection is recorded. What it does not skip is the connection: cmd_rm constructs a Database and calls init_schema before it reads dry_run, and both create-if-missing and the forward-only migration happen there. A preview that migrates a v7 database to v8 has changed the file it was asked not to touch, and no plan says so. This is the removal-shaped corner of a wider fact the record set cannot yet express: every CLI command that opens a collection opens it read-write and migrates it, including the two operations.toml lists in read_only_cli. Database's read_only constructor flag exists and libphig uses it; cli/ never does."
 enforced_at = ["core/remove_exec.cpp:cmd_rm"]
 binds = ["remove.trash", "remove.hard", "remove.db-only", "remove.orphans"]
 protects = ["original-file", "db-row", "activity-log"]
@@ -84,14 +84,16 @@ test_gap = "The test checks the file and the row survive; it does not check that
 id = "R21"
 tier = "engine"
 concern = "authorization"
-statement = "The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, so a dry run is the caller stopping after a decision core/ already made without side effects."
-rationale = "Keeping the preview in core/ rather than in a CLI branch is what lets every surface offer it: organize.plan is an operation with an ABI entry point, so a GUI showing a user what a move would do runs the same code the CLI's dry run runs. The alternative, a dry_run flag threaded into apply, would put the guard inside the function that writes, where every later edit has to remember it. Measured: a dry-run mv over three indexed files printed three destinations and left the operations table, the rows and the destination directory untouched."
+statement = "The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, but the command that calls it has already opened the database read-write and migrated it, so the preview is side-effect-free only below cli/."
+rationale = "Keeping the preview in core/ rather than in a CLI branch is what lets every surface offer it: organize.plan is an operation with an ABI entry point, so a GUI showing a user what a move would do runs the same code the CLI's dry run runs. The alternative, a dry_run flag threaded into apply, would put the guard inside the function that writes, where every later edit has to remember it. The second clause is the same defect R20 records for rm, from the same shape of code: cli/main.cpp:609-610 calls init_schema before the dry_run check at :640, exactly as core/remove_exec.cpp:73-74 does before :128. It cannot be anchored here because the enforcement that would fix it is in cli/. Measured: a dry-run mv over three indexed files printed three destinations and left the operations table, the rows and the destination directory untouched, and a dry-run mv against a database pinned at schema_version 7 left it at 8."
 enforced_at = ["core/organize_engine.cpp:OrganizeEngine::plan"]
 binds = ["organize.plan"]
 protects = ["original-file", "db-row", "activity-log"]
 tests = ["OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase"]
 test_kind = "witness"
 status = "holds"
+owner = "054"
+test_gap = "The listed test pins the first clause, at the engine. Nothing pins the second: no test drives cmd_organize, and the migration it performs on a dry run was measured by running the binary."
 
 [[rule]]
 id = "R22"
@@ -115,8 +117,8 @@ status = "holds"
 id = "R23"
 tier = "engine"
 concern = "recoverability"
-statement = "The default removal mode moves a file into phig's trash directory under a name no other file can take, so the removal is reversible from disk."
-rationale = "Trash is what lets rm be the ordinary removal command: the row goes, the bytes stay. The trash name is the file's stem plus eight random hex characters, generated rather than searched for, so two identically named files never race for the same slot, and move_file refuses to clobber if one ever collides — the caller retries with a fresh name. Measured: removing a tracked file with the default mode moved it to <data_dir>/trash/c.5904e5a1.jpg and logged a trash entry naming that path, beside the purge_row entry for its row."
+statement = "The default removal mode moves a file into phig's trash directory under a generated name, retrying with a fresh one if that name is taken, so the removal is reversible from disk and never destroys what is already in the trash."
+rationale = "Trash is what lets rm be the ordinary removal command: the row goes, the bytes stay. The trash name is the file's stem plus eight random hex characters, generated rather than searched for, so there is no window between choosing a name and taking it. Uniqueness is not asserted: move_file refuses to clobber and throws errc::file_exists, and execute_trash_action loops back for a fresh name — that retry, not the randomness, is what makes the no-clobber claim true. Measured: removing a tracked file with the default mode moved it to <data_dir>/trash/c.5904e5a1.jpg and logged a trash entry naming that path, beside the purge_row entry for its row."
 enforced_at = ["core/remove_exec.cpp:execute_trash_action", "core/paths.cpp:trash_path_for"]
 binds = ["remove.trash"]
 protects = ["original-file", "attachment"]
@@ -131,26 +133,11 @@ owner = "053"
 test_gap = "The tests cover filling the trash. Nothing covers emptying it, and nothing in core/ can: trash.empty has no core/ primitive — operations.toml records its core_entry as cli/main.cpp:cmd_trash_empty — so the count, the prompt and the non-interactive refusal guarding the one irreversible step are all CLI code, unreachable by libphig and by phigd. A client that wants the operation has to rebuild the guard rather than inherit it, which is the failure mode the enforcement-belongs-in-core rule exists to stop."
 
 [[rule]]
-id = "R24"
-tier = "engine"
-concern = "recoverability"
-statement = "A restore snapshot carries the deleted row's tags, so restoring it returns the user-authored metadata the row held."
-rationale = "R04 states the guarantee; this is the half of it that is measurably absent. Tagging a file, deleting it from disk and rescanning wrote a purge_row entry whose restore_json holds the sixteen images columns — path, filename, extension, size, dates, sha256, phash, dimensions, metadata, media type, duration, gallery, blur score, effective date — and no mention of the tag. The image_tags row went with the cascade; the tag name survives in the tags table attached to nothing. Gallery is in the snapshot because it is a column on images, and tags and faces are not because they are not. taxonomy.toml calls user-metadata the one asset nothing can reconstruct, so this is the loss the snapshot exists to prevent."
-enforced_at = ["core/database.cpp:delete_paths_logged"]
-binds = ["scan.reconcile", "remove.trash", "remove.hard", "remove.db-only", "remove.orphans"]
-protects = ["user-metadata"]
-tests = ["DatabaseTest.PurgeLogsRestorableSnapshot"]
-test_kind = "conformance"
-status = "violated"
-owner = "041"
-test_gap = "The listed test pins the shape the snapshot has today: it asserts the path and the sha256 are present. Nothing asserts a tag, because no code path writes one. Plan 041 decided to make the record complete before splitting reconcile into plan and apply; this is the piece of that decision with a measurement behind it."
-
-[[rule]]
 id = "R25"
 tier = "engine"
 concern = "recoverability"
 statement = "Deleting a row captures its restore snapshot whether the activity log is enabled or not."
-rationale = "The snapshot lives in operation_entries.restore_json, so the switch that turns off the audit trail turns off the safety net with it, and nothing tells the user that. Reconcile's two branches diverge structurally rather than by a flag: the logged branch calls delete_paths_logged(to_delete, op_id) at scan_engine.cpp:587, the unlogged branch calls delete_paths(to_delete) at :611, a different function with no snapshot code in it at all. rm keeps one call path and passes op_id = 0, so delete_paths_logged builds the snapshot string and discards it. Measured: with the log disabled, tagging a file, deleting it from disk and rescanning removed the row and wrote no operation and no entry — the only rows in operations were from an earlier logged run."
+rationale = "The snapshot lives in operation_entries.restore_json, so the switch that turns off the audit trail turns off the safety net with it. Reconcile's two branches diverge structurally rather than by a flag: the logged branch calls delete_paths_logged(to_delete, op_id) at scan_engine.cpp:587, the unlogged branch calls delete_paths(to_delete) at :611, a different function with no snapshot code in it at all. rm keeps one call path and passes op_id = 0, so delete_paths_logged builds the snapshot string and discards it. Plan 022 introduced the two branches and quotes both in its own diff, so the shape is on record; what is not is the consequence, that a user who turns off the log has also turned off the only thing that could restore a tag. Measured: with the log disabled, tagging a file, deleting it from disk and rescanning removed the row and wrote no operation and no entry — the only rows in operations were from an earlier logged run."
 enforced_at = [
     "core/scan_engine.cpp:ScanEngine::run_reconcile",
     "core/database.cpp:delete_paths",
@@ -158,11 +145,11 @@ enforced_at = [
 ]
 binds = ["scan.reconcile", "remove.trash", "remove.hard", "remove.db-only", "remove.orphans"]
 protects = ["user-metadata", "db-row", "activity-log"]
-tests = ["ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged"]
+tests = ["ScanEngine.RemovesRowsForFilesThatDisappeared"]
 test_kind = "witness"
 status = "partial"
 owner = "041"
-test_gap = "The listed test is the only one that drives reconcile's unlogged branch, and it asserts a gallery value rather than the absence of a snapshot. Nothing in the suite covers a deletion made with logging off; the behaviour above came from running the binary."
+test_gap = "The unlogged branch is well covered for deletion and not at all for the snapshot's absence. ScratchCollection::options() sets log_enabled = false for every ScanEngine test in tests/test_scan_engine.cpp, and three of them delete files and rescan through delete_paths — the listed one, ScanEngine.ReconcileStillRunsAfterCancellation and ScanEngine.IgnoreMountWarningOverridesTheGuard. All three assert the rows are gone; none asserts that no operation and no entry were written, which is the clause this rule turns on and which came from running the binary."
 
 [[rule]]
 id = "R26"
@@ -184,12 +171,12 @@ id = "R27"
 tier = "engine"
 concern = "recoverability"
 statement = "An operation that did not do everything it was asked to do is recorded with a terminal status that says so."
-rationale = "cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply writes interrupted only when result.completed is false, and that is false only for cancellation — a file whose move threw increments result.errors and leaves completed true. So the same fact, some files did not make it, produces two different terminal statuses depending on which command wrote the log, and a reader cannot tell a clean copy run from one that lost half its files. Neither behaviour is written down. Plan 056 is the nearest open owner, being the plan redesigning what an operation status means, though its current scope is the ABI's live operations rather than this table."
+rationale = "cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply writes interrupted only when result.completed is false, and that is false only for cancellation — a file whose move threw increments result.errors and leaves completed true. So the same fact, some files did not make it, produces two different terminal statuses depending on which command wrote the log, and a reader cannot tell a clean copy run from one that lost half its files. The CLI compounds it: cmd_organize prints the error count and then returns 0, so a cp that failed on every file exits successfully, while cmd_rm returns 1. Plan 053 owns it, being the plan that picks up what 020 deferred and states that the activity log has no reader anywhere in core/, so it is core work before it is ABI work."
 enforced_at = ["core/remove_exec.cpp:cmd_rm", "core/organize_engine.cpp:OrganizeEngine::apply"]
 binds = ["remove.trash", "remove.hard", "remove.db-only", "remove.orphans", "organize.copy", "organize.move"]
 protects = ["activity-log"]
 tests = ["OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted"]
 test_kind = "witness"
 status = "violated"
-owner = "056"
-test_gap = "The listed test pins the cancellation case, where organize does write interrupted. Nothing covers a run with per-file errors, which is where the two commands disagree."
+owner = "053"
+test_gap = "The listed test pins the cancellation case, where organize does write interrupted. Nothing covers a run with per-file errors, which is where the two commands disagree, and nothing pins either command's exit code on that path."
