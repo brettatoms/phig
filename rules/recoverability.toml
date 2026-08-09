@@ -1,0 +1,14 @@
+[[rule]]
+id = "R04"
+tier = "engine"
+concern = "recoverability"
+statement = "Deleting a row captures a restore snapshot sufficient to rebuild that row's user-authored metadata."
+rationale = "A rescan rebuilds hash, EXIF and thumbnails. It cannot rebuild a tag someone typed, a gallery assignment, or a face label."
+enforced_at = ["core/database.cpp:delete_paths_logged"]
+binds = ["scan.reconcile", "remove.trash", "remove.hard", "remove.db-only", "remove.orphans"]
+protects = ["user-metadata", "db-row"]
+tests = ["DatabaseTest.PurgeSnapshotMarksOmittedFaces"]
+test_kind = "conformance"
+status = "partial"
+owner = "041"
+test_gap = "The test asserts the snapshot records a face count, not that the metadata round-trips. No restorer exists to round-trip against: plan 020 deferred phig undo and plan 053 records that the activity log has no reader in core/."

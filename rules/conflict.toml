@@ -1,0 +1,12 @@
+[[rule]]
+id = "R01"
+tier = "engine"
+concern = "conflict"
+statement = "A protected destination is never overwritten under any on_conflict policy; the resolver renames around it."
+rationale = "The protected set covers another image's not-yet-moved source and any real file the database does not track. Overwriting either destroys bytes phig cannot restore, so the guard outranks the policy the user asked for."
+enforced_at = ["core/paths.cpp:resolve_conflict"]
+binds = ["organize.copy", "organize.move"]
+protects = ["original-file"]
+tests = ["OrganizeEngineTest.OverwritePolicyStillRenamesAroundAnExistingFile"]
+test_kind = "witness"
+status = "holds"

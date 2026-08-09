@@ -1,0 +1,45 @@
+# The nine concern classes. These are the columns of rules/by-operation.md.
+concerns = [
+    "conflict",         # destination occupied
+    "reconcile",        # file gone, stale row, mount guard
+    "atomicity",        # transaction boundaries, reachable interrupted states
+    "recoverability",   # activity log, restore snapshot, trash
+    "metadata",         # preservation and transfer of user-authored data
+    "attachments",      # sidecars, RAW+JPEG, Live Photo MOV
+    "concurrency",      # lock-taking versus lock-free
+    "cancellation",     # where a run may stop and what it leaves
+    "authorization",    # dry-run, plan/apply, --yes, overridable decisions
+]
+
+# The six assets. These are the rows of rules/by-asset.md, ordered by how
+# irreversible the loss is.
+
+[[asset]]
+id = "user-metadata"
+rebuildable = "no"
+note = "Tags, favorites, gallery, face labels. The only asset nothing can reconstruct."
+
+[[asset]]
+id = "original-file"
+rebuildable = "backup-only"
+note = "The bytes on disk."
+
+[[asset]]
+id = "attachment"
+rebuildable = "backup-only"
+note = "Sidecar, paired JPEG, Live Photo MOV. Easier to orphan than an original."
+
+[[asset]]
+id = "db-row"
+rebuildable = "rescan"
+note = "Rebuilt by a rescan, except the user-metadata it carries."
+
+[[asset]]
+id = "activity-log"
+rebuildable = "no"
+note = "The record of what happened."
+
+[[asset]]
+id = "thumb-cache"
+rebuildable = "yes"
+note = "Present so its rules are visibly cheap, not to guard it."

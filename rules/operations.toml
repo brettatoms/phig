@@ -1,0 +1,168 @@
+# ABI symbols that mutate nothing and therefore map to no operation.
+read_only_abi = [
+    "phig_abi_version", "phig_init", "phig_shutdown", "phig_last_error",
+    "phig_string_free", "phig_image_list_free", "phig_image_metadata",
+    "phig_query_new", "phig_query_free", "phig_query_page", "phig_query_count",
+    "phig_query_add_tag", "phig_query_set_camera", "phig_query_set_date_range",
+    "phig_query_set_duration_range", "phig_query_set_extension",
+    "phig_query_set_gallery", "phig_query_set_make", "phig_query_set_media",
+    "phig_query_set_sharpness", "phig_query_set_size_range",
+    "phig_query_set_sort", "phig_thumb_lookup",
+    "phig_op_cancel", "phig_op_free", "phig_op_poll", "phig_op_status",
+    "phig_op_wait", "phig_op_error", "phig_op_error_at", "phig_op_error_count",
+    "phig_op_index_result", "phig_op_thumbs_result", "phig_op_faces_result",
+    "phig_op_organize_result", "phig_op_organize_plan_take",
+    "phig_organize_plan_free", "phig_organize_plan_count",
+    "phig_organize_plan_source_at", "phig_organize_plan_dest_at",
+    "phig_organize_plan_conflicts_at", "phig_organize_plan_resolution_at",
+    "phig_organize_plan_occupant_tracked_at",
+    "phig_organize_plan_set_resolution",
+    "phig_settings_load", "phig_settings_free", "phig_settings_get",
+    "phig_settings_get_bool", "phig_settings_get_int", "phig_settings_get_raw",
+    "phig_settings_has", "phig_settings_count", "phig_settings_key_at",
+    "phig_settings_set", "phig_settings_unset", "phig_settings_to_config",
+    # phig_settings_save writes phig's own config file (temp + rename), not
+    # any of the six assets this record set protects, so no operation covers
+    # it either. Listed here as the least-wrong bucket; see task-1-report.md.
+    "phig_settings_save",
+]
+
+# CLI top-level commands that mutate nothing.
+read_only_cli = ["search", "duplicates", "help"]
+
+# core/ headers whose declared functions must each map to an operation or be
+# listed in core_read_only below. Bounded on purpose: widening this list is a
+# deliberate act, not a side effect.
+core_headers = [
+    "core/scan_engine.h",
+    "core/organize_engine.h",
+    "core/organize_exec.h",
+    "core/remove_exec.h",
+    "core/thumbs_engine.h",
+    "core/faces_engine.h",
+    "core/relink.h",
+]
+
+core_read_only = []   # filled during Task 2 as the header scan reports names
+
+[[operation]]
+id = "scan.walk"
+core_entry = "core/scan_engine.h:ScanEngine::run_workers"
+destructive = false
+surfaces_abi = ["phig_op_index_start"]
+surfaces_cli = ["scan"]
+surfaces_http = []
+
+[[operation]]
+id = "scan.reconcile"
+core_entry = "core/scan_engine.h:ScanEngine::run_reconcile"
+destructive = true
+surfaces_abi = []            # plan 041
+surfaces_cli = ["scan"]
+surfaces_http = []
+
+[[operation]]
+id = "organize.copy"
+core_entry = "core/organize_engine.h:OrganizeEngine::apply"
+destructive = false
+surfaces_abi = ["phig_op_copy_start"]
+surfaces_cli = ["cp"]
+surfaces_http = []
+
+[[operation]]
+id = "organize.move"
+core_entry = "core/organize_engine.h:OrganizeEngine::apply"
+destructive = true
+surfaces_abi = ["phig_op_move_start"]
+surfaces_cli = ["mv"]
+surfaces_http = []
+
+[[operation]]
+id = "organize.plan"
+core_entry = "core/organize_engine.h:OrganizeEngine::plan"
+destructive = false
+surfaces_abi = ["phig_op_organize_plan_start"]
+surfaces_cli = ["cp", "mv"]
+surfaces_http = []
+
+[[operation]]
+id = "remove.trash"
+core_entry = "core/remove_exec.h:cmd_rm"
+destructive = true
+surfaces_abi = []            # plan 053
+surfaces_cli = ["rm"]
+surfaces_http = []
+
+[[operation]]
+id = "remove.hard"
+core_entry = "core/remove_exec.h:cmd_rm"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["rm"]
+surfaces_http = []
+
+[[operation]]
+id = "remove.db-only"
+core_entry = "core/remove_exec.h:cmd_rm"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["rm"]
+surfaces_http = []
+
+[[operation]]
+id = "remove.orphans"
+core_entry = "core/remove_exec.h:cmd_rm"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["rm"]
+surfaces_http = []
+
+[[operation]]
+id = "trash.empty"
+# Not core/remove_exec.h: no cmd_trash_empty exists in core/. The real
+# function lives in cli/main.cpp — trash emptying has no core/ primitive yet.
+core_entry = "cli/main.cpp:cmd_trash_empty"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["trash"]
+surfaces_http = []
+
+[[operation]]
+id = "thumbs.rebuild"
+core_entry = "core/thumbs_engine.h:ThumbsEngine::run"
+destructive = false
+surfaces_abi = ["phig_op_thumbs_start", "phig_thumb_generate"]
+surfaces_cli = ["thumbs"]
+surfaces_http = []
+
+[[operation]]
+id = "faces.rebuild"
+core_entry = "core/faces_engine.h:FacesEngine::run"
+destructive = true
+surfaces_abi = ["phig_op_faces_start"]
+surfaces_cli = ["face"]
+surfaces_http = []
+
+[[operation]]
+id = "relink.transfer"
+core_entry = "core/relink.h:relink_moved_rows"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["scan"]
+surfaces_http = []
+
+[[operation]]
+id = "relink.demote"
+core_entry = "core/relink.h:demote_jpeg_rows"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["scan"]
+surfaces_http = []
+
+[[operation]]
+id = "metadata.write"
+core_entry = "core/database.h:Database::set_tag"
+destructive = false
+surfaces_abi = ["phig_tag_add", "phig_tag_remove", "phig_favorite_set", "phig_gallery_set", "phig_gallery_clear"]
+surfaces_cli = ["tag", "gallery", "fav"]
+surfaces_http = []
