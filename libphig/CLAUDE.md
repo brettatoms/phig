@@ -1,7 +1,7 @@
 # libphig/
 
 The versioned C ABI (`libphig.so`) — the boundary for foreign callers
-(`gtk/`, and later Elixir). ABI 1.2, soname 1, 56 exported symbols. Hidden
+(`gtk/`, and later Elixir). ABI 1.3, soname 1, 69 exported symbols. Hidden
 visibility by default; the exported surface is declared explicitly by a
 linker version script (`libphig/phig.version` on Linux,
 `libphig/phig.exported_symbols` on macOS), not inferred from headers.
@@ -18,8 +18,9 @@ Root `CLAUDE.md`'s Interface discipline carries the rule; plan 053 is the
 inventory and the order of work.
 
 The ABI covers paginated queries, per-image metadata, thumbnail lookup and
-generation, settings, tag/gallery/favorite writes, and three long-running
-operations — index, thumbs, faces (plan 031).
+generation, settings, tag/gallery/favorite writes, three long-running
+operations — index, thumbs, faces (plan 031) — and organize as a plan the
+caller inspects and then applies with copy or move (plan 042).
 
 **Operations are handle-plus-poll.** `phig_op_*_start` spawns a worker and
 returns a `phig_op*`; the caller polls progress and status from whatever thread
@@ -51,7 +52,6 @@ splits reconcile into a decision and an application the caller authorizes.
 
 | Missing | Exists in `core/` as | Tracked by |
 |---|---|---|
-| Organize — cp/mv | `organize_plan.h`, `organize_exec.h` | 042 |
 | Scan's reconcile phase | `ScanEngine::run_reconcile` | 041 |
 | Remove — `rm`'s modes, `trash empty` | `remove_exec.h`'s `cmd_rm` | 053 |
 | Duplicates — exact and near groups | `duplicates.h`, `Database::get_exact_duplicates` | 053 |

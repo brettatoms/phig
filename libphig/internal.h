@@ -16,6 +16,7 @@
 #include "database.h"
 #include "faces_engine.h"
 #include "lockfile.h"
+#include "organize_engine.h"
 #include "paths.h"
 #include "phig/phig.h"
 #include "progress_queue.h"
@@ -144,8 +145,17 @@ struct phig_settings {
 // stays in use by every query the client keeps making. A separate connection
 // keeps those reads safe and lets SQLite arbitrate, which is the whole reason
 // these operations need no writer lock.
+// A caller-owned organize plan. Independent of the operation that produced it:
+// phig_op_organize_plan_take copies it out, so freeing the operation leaves this
+// intact. The const char* the accessors hand out point into the actions' own
+// std::strings, which is why they stay valid until a set_resolution rewrites a
+// destination.
+struct phig_organize_plan {
+    OrganizePlan plan;
+};
+
 struct phig_op {
-    enum class Kind { Index, Thumbs, Faces };
+    enum class Kind { Index, Thumbs, Faces, Plan, Copy, Move };
 
     explicit phig_op(Kind k) : kind(k) {
         // Reserved up front so the vector never reallocates. Growing it would
@@ -164,6 +174,7 @@ struct phig_op {
     ProgressQueue<ScanProgress> index_progress{1024};
     ProgressQueue<ThumbsProgress> thumbs_progress{1024};
     ProgressQueue<FacesProgress> faces_progress{1024};
+    ProgressQueue<OrganizeProgress> organize_progress{1024};
 
     std::thread worker;
     std::atomic<phig_op_state> state{PHIG_OP_RUNNING};
@@ -174,7 +185,13 @@ struct phig_op {
     ScanResult index_result;
     ThumbsResult thumbs_result;
     FacesResult faces_result;
+    OrganizeResult organize_result;
     std::string failure;
+
+    // Kind::Plan writes its computed plan here for phig_op_organize_plan_take.
+    // Kind::Copy/Move read their snapshot from here, taken at _start so the
+    // caller may free its own plan the moment the call returns.
+    OrganizePlan organize_plan;
 
     // Per-file failures kept for inspection after the run. Bounded by
     // PHIG_OP_MAX_RETAINED_ERRORS; the result's own error count stays exact.

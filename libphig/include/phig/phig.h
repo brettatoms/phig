@@ -47,7 +47,7 @@ extern "C" {
  * Start versioning honestly the first time something outside this repo links
  * against libphig. */
 #define PHIG_ABI_VERSION_MAJOR 1u
-#define PHIG_ABI_VERSION_MINOR 2u
+#define PHIG_ABI_VERSION_MINOR 3u
 
 /* Values are published ABI: append only, never renumber. */
 typedef enum {
@@ -420,7 +420,10 @@ typedef enum {
     PHIG_STAGE_FILE_DONE = 0,
     /* Index: the directory walk finished; `total` is the file count. */
     PHIG_STAGE_WALKED = 1,
-    /* Thumbs/faces: the selection is known; `total` is how many were selected. */
+    /* Thumbs/faces: the selection is known; `total` is how many were selected.
+       Organize: planning finished; `total` is how many items the plan holds.
+       Reused rather than adding a value, since the meaning — "the work is now
+       known, here is how much of it there is" — is the same. */
     PHIG_STAGE_SELECTED = 2,
     /* Faces: loading detector models, which is slow and happens before any file
        is processed. `total` is the instance count. */
@@ -612,6 +615,99 @@ PHIG_API const char* phig_op_error(phig_op* op);
  * first to avoid waiting for a full run. Safe with NULL. After this the handle
  * and every pointer obtained from it are invalid. */
 PHIG_API void phig_op_free(phig_op* op);
+
+/* ---- Organize: copy and move (plan 042) -------------------------------- */
+
+/* How one file's destination collision is resolved. */
+typedef enum {
+    PHIG_CONFLICT_SKIP = 0,
+    PHIG_CONFLICT_OVERWRITE = 1,
+    PHIG_CONFLICT_RENAME = 2
+} phig_conflict_resolution;
+
+typedef struct {
+    const char* destination; /* root of the organized layout */
+    const char* format;      /* e.g. "%Y/%m/%original"; NULL uses "%Y/%m/%original" */
+    const char* const* matches;
+    size_t match_count;
+    const char* const* excludes;
+    size_t exclude_count;
+    phig_conflict_resolution on_conflict; /* run-level default */
+} phig_organize_options;
+
+typedef struct {
+    uint64_t applied; /* parents moved or copied */
+    uint64_t skipped; /* conflicts left alone, or destinations occupied since planning */
+    uint64_t errors;
+    uint64_t files_written; /* including sidecars and attached JPEGs */
+    bool completed;         /* false when cancelled partway */
+} phig_organize_result;
+
+/* A plan the caller owns: what would happen, before anything happens.
+ *
+ * Independent of the operation that computed it — take it, free the operation,
+ * and the plan is still valid. Editable, so a caller can answer an individual
+ * conflict before authorizing the run. */
+typedef struct phig_organize_plan phig_organize_plan;
+
+/* Compute a plan. Writes nothing: no file is moved and no row changes. */
+PHIG_API phig_status phig_op_organize_plan_start(phig_ctx* ctx, const phig_organize_options* opts,
+                                                 phig_op** out);
+
+/* Take the plan out of a finished plan operation into a caller-owned object.
+ * The operation may be freed immediately afterwards. Returns PHIG_ERR_INVALID_ARG
+ * if the operation is not a plan operation or has not finished. */
+PHIG_API phig_status phig_op_organize_plan_take(phig_op* op, phig_organize_plan** out);
+
+/* Release a plan. Safe with NULL. Every const char* obtained from it becomes
+ * invalid. */
+PHIG_API void phig_organize_plan_free(phig_organize_plan* plan);
+
+/* Items in the plan, one per photo. Sidecars and attached JPEGs travel with
+ * their parent and are not listed separately. */
+PHIG_API size_t phig_organize_plan_count(const phig_organize_plan* plan);
+
+/* Strings stay valid until the next phig_organize_plan_set_resolution on this
+ * plan, or phig_organize_plan_free. Out-of-range i returns "". */
+PHIG_API const char* phig_organize_plan_source_at(const phig_organize_plan* plan, size_t i);
+/* The resolved destination, or "" when this item will be skipped. */
+PHIG_API const char* phig_organize_plan_dest_at(const phig_organize_plan* plan, size_t i);
+
+/* Whether this item's destination is already taken — by a file on disk, or by
+ * an earlier item in the same plan. */
+PHIG_API bool phig_organize_plan_conflicts_at(const phig_organize_plan* plan, size_t i);
+PHIG_API phig_conflict_resolution phig_organize_plan_resolution_at(const phig_organize_plan* plan,
+                                                                   size_t i);
+
+/* Whether the file occupying this item's destination is tracked by phig.
+ * Meaningless unless conflicts_at(i). False means phig cannot restore it from
+ * its own records, which is when a client should warn hardest. */
+PHIG_API bool phig_organize_plan_occupant_tracked_at(const phig_organize_plan* plan, size_t i);
+
+/* Answer one item's conflict, recomputing its destination so dest_at reflects
+ * the choice. PHIG_CONFLICT_OVERWRITE carries the caller's authority to replace
+ * a file that exists on disk, which the run-level policy does not.
+ *
+ * Returns PHIG_ERR_INVALID_ARG, changing nothing, when i is out of range, the
+ * item does not conflict, or the destination is another image's not-yet-moved
+ * source file — a tracked original phig is in the middle of relocating, which
+ * no caller intent may overwrite. */
+PHIG_API phig_status phig_organize_plan_set_resolution(phig_organize_plan* plan, size_t i,
+                                                       phig_conflict_resolution resolution);
+
+/* Execute a plan. Separate symbols rather than one flag: copy is additive to the
+ * database while move rewrites the collection's layout, and a client must not
+ * move a library by passing the wrong boolean.
+ *
+ * Both snapshot the plan at start, so the caller may free it as soon as the call
+ * returns. Each destination is re-checked at execution time: one occupied since
+ * planning is skipped rather than overwritten, unless set_resolution authorized
+ * replacing it. */
+PHIG_API phig_status phig_op_copy_start(phig_ctx* ctx, const phig_organize_plan* plan,
+                                        phig_op** out);
+PHIG_API phig_status phig_op_move_start(phig_ctx* ctx, const phig_organize_plan* plan,
+                                        phig_op** out);
+PHIG_API phig_status phig_op_organize_result(phig_op* op, phig_organize_result* out);
 
 #ifdef __cplusplus
 }

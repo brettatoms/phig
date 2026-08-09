@@ -17,9 +17,16 @@
 // transaction. On failure the copy is removed and any backup restored.
 //
 // op_id: pass the open operation id to log an entry, or 0 to skip logging.
+//
+// allow_overwrite: the caller explicitly authorized replacing an occupied
+// destination. Only then may `dest` already exist on a move — move_file refuses
+// to overwrite otherwise, which is the guard that keeps an unauthorized run from
+// destroying bytes. When set, the occupant is renamed aside first and restored if
+// anything below fails, matching what copy already does unconditionally.
+//
 // Throws std::exception on any failure (the disk state is left consistent).
 void execute_organize_action(Database& db, const std::string& source, const std::string& dest,
-                             bool is_move, int64_t op_id);
+                             bool is_move, int64_t op_id, bool allow_overwrite = false);
 
 // Move/copy every sidecar of `parent_source` to sit beside `parent_dest`,
 // deriving each sidecar's destination name from parent_dest's final name
@@ -33,5 +40,9 @@ void execute_organize_action(Database& db, const std::string& source, const std:
 // (e.g. IMG_1234.CR2 + IMG_1234.JPG) to sit beside parent_dest, renamed
 // stem-style to match (IMG_1234.JPG -> <dest-stem>.JPG, preserving the
 // JPEG's own extension/case), logged the same way as a sidecar.
-void carry_sidecars(Database& db, const std::string& parent_source, const std::string& parent_dest,
-                    bool is_move, int64_t op_id);
+//
+// Returns how many files it actually moved or copied, so a caller can count the
+// work a parent dragged along without listing the directory a second time. A
+// no-op carry (source and destination already the same path) is not counted.
+size_t carry_sidecars(Database& db, const std::string& parent_source,
+                      const std::string& parent_dest, bool is_move, int64_t op_id);

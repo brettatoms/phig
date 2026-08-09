@@ -14,7 +14,7 @@
 namespace fs = std::filesystem;
 
 void execute_organize_action(Database& db, const std::string& source, const std::string& dest,
-                             bool is_move, int64_t op_id) {
+                             bool is_move, int64_t op_id, bool allow_overwrite) {
     const bool logging = op_id > 0;
 
     // No-op: destination resolves to the source itself (e.g. re-organizing a file
@@ -24,7 +24,29 @@ void execute_organize_action(Database& db, const std::string& source, const std:
     if (source == dest) return;
 
     if (is_move) {
-        move_file(source, dest);
+        // move_file never overwrites, so an occupied destination is only
+        // reachable when the caller explicitly authorized replacing it. Get the
+        // occupant out of the way with a same-directory rename — no byte copy —
+        // so every failure path below can put it back rather than leaving the
+        // caller with neither file.
+        std::string backup;
+        if (allow_overwrite && fs::exists(dest)) {
+            backup = unique_backup_path(dest);
+            fs::rename(dest, backup);
+        }
+        auto restore_backup = [&]() {
+            if (backup.empty()) return;
+            std::error_code ec;
+            fs::rename(backup, dest, ec);
+        };
+
+        try {
+            move_file(source, dest);
+        } catch (...) {
+            restore_backup();
+            throw;
+        }
+
         // Commit the path update and the log entry together so disk and DB (incl.
         // the log) never disagree. If it fails after the file has moved, move it
         // back so the row still matches the source on disk.
@@ -45,12 +67,20 @@ void execute_organize_action(Database& db, const std::string& source, const std:
                 // Both the DB update AND the move-back failed: the file is at the
                 // destination but the DB still lists the source. Surface both so
                 // the caller can report it; a rescan reconciles.
+                restore_backup();
                 throw std::runtime_error(std::string("DB update failed and could not move ") +
                                          dest + " back to " + source + ": " + back.what() +
                                          " (file is at the destination but the database still "
                                          "lists the source; rescan to reconcile)");
             }
+            restore_backup();
             throw;  // move-back succeeded — rethrow the original DB failure
+        }
+
+        // Committed. The replaced file is now genuinely gone, as authorized.
+        if (!backup.empty()) {
+            std::error_code ec;
+            fs::remove(backup, ec);
         }
     } else {
         // Copy to disk atomically. cmd_organize protects every existing on-disk
@@ -108,9 +138,10 @@ void execute_organize_action(Database& db, const std::string& source, const std:
     }
 }
 
-void carry_sidecars(Database& db, const std::string& parent_source, const std::string& parent_dest,
-                    bool is_move, int64_t op_id) {
+size_t carry_sidecars(Database& db, const std::string& parent_source,
+                      const std::string& parent_dest, bool is_move, int64_t op_id) {
     const bool logging = op_id > 0;
+    size_t carried = 0;
     fs::path src_media(parent_source);
     fs::path dst_media(parent_dest);
     std::string src_stem = src_media.stem().string();      // IMG_1
@@ -145,6 +176,7 @@ void carry_sidecars(Database& db, const std::string& parent_source, const std::s
         } else {
             atomic_copy_file(side.string(), side_dst.string());
         }
+        carried++;
         if (logging) {
             std::string rj =
                 parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}") : "";
@@ -222,6 +254,7 @@ void carry_sidecars(Database& db, const std::string& parent_source, const std::s
                 } else {
                     atomic_copy_file(jpeg_src.string(), jpeg_dst.string());
                 }
+                carried++;
                 if (logging) {
                     std::string rj =
                         parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
@@ -232,4 +265,5 @@ void carry_sidecars(Database& db, const std::string& parent_source, const std::s
             }
         }
     }
+    return carried;
 }

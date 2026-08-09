@@ -35,6 +35,7 @@
 #include "log.h"
 #include "metadata.h"
 #include "models.h"
+#include "organize_engine.h"
 #include "organize_exec.h"
 #include "organize_plan.h"
 #include "paths.h"
@@ -601,21 +602,10 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
 
 // ---- Organize command ----
 
-struct OrganizeOptions {
-    std::string destination;
-    std::string format = "%Y/%m/%original";
-    std::vector<std::string> matches;
-    std::vector<std::string> excludes;
-    bool is_move = false;  // true for mv, false for cp
-    bool dry_run = false;
-    std::string on_conflict = "skip";  // skip, overwrite, rename
-    std::string db_path;
-    bool log_enabled = true;
-    int log_max_entries = 100000;
-    std::string argv_str;  // full invocation, for the audit trail
-};
-
-int cmd_organize(const OrganizeOptions& opts) {
+// Argv-shaped extras the engine has no opinion about: which executor to run and
+// whether to stop after planning. Everything else lives in core's
+// OrganizeOptions, which this command fills directly.
+int cmd_organize(const OrganizeOptions& opts, bool is_move, bool dry_run) {
     Database db(opts.db_path);
     db.init_schema();
 
@@ -624,148 +614,80 @@ int cmd_organize(const OrganizeOptions& opts) {
         return 1;
     }
 
-    auto images = db.get_all_images();
-    std::cout << "Found " << images.size() << " images in database\n";
+    std::cout << "Found " << db.count() << " images in database\n";
 
-    // Apply match/filter
-    bool has_selection = !opts.matches.empty() || !opts.excludes.empty();
-    if (has_selection) {
-        images.erase(std::remove_if(images.begin(), images.end(),
-                                    [&](const ImageInfo& img) {
-                                        return !passes_selection(img.path, opts.matches,
-                                                                 opts.excludes);
-                                    }),
-                     images.end());
-        std::cout << "After match/filter: " << images.size() << " images\n";
+    OrganizeEngine engine(opts, db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+
+    if (!opts.matches.empty() || !opts.excludes.empty()) {
+        std::cout << "After match/filter: " << plan.size() << " images\n";
     }
 
-    // Plan moves/copies
-    struct Action {
-        std::string source;
-        fs::path dest;
-        bool skipped = false;
-        std::string skip_reason;
-    };
-    std::vector<Action> actions;
-    std::set<std::string> claimed;  // dest paths chosen this run, to catch intra-run collisions
-
-    // All source paths in this batch. A destination equal to any OTHER image's
-    // source is a real, irreplaceable original that hasn't moved yet — never
-    // overwrite it (audit #1). A file may resolve to its own source (no-op).
-    std::set<std::string> batch_sources;
-    for (const auto& img : images) batch_sources.insert(img.path);
-
-    for (const auto& img : images) {
-        DateParts date = get_best_date(img);
-        std::string rel_path = apply_format(opts.format, img, date);
-        fs::path dest = fs::path(opts.destination) / rel_path;
-
-        // Protect: (a) another image's source file in this batch, and (b) ANY
-        // other real file on disk — tracked or not. Clobbering an untracked file
-        // is silent data loss (audit #4); clobbering a tracked file destroys a
-        // real image the DB still knows about and, with logging on, cascades its
-        // faces/tags away with nothing in the log to restore them (plan 020
-        // review). Overwriting only ever lands on a genuinely free path; existing
-        // files are renamed around, so mv/cp never destroy irreplaceable bytes.
-        const std::string& self_source = img.path;
-        auto is_protected = [&](const std::string& path) -> bool {
-            if (path == self_source) return false;
-            if (batch_sources.count(path)) return true;
-            if (fs::exists(path)) return true;
-            return false;
-        };
-
-        auto resolved = resolve_conflict(dest.string(), opts.on_conflict, claimed, is_protected);
-        Action act;
-        act.source = img.path;
-        if (resolved.empty()) {
-            act.dest = dest;
-            act.skipped = true;
-            act.skip_reason = "already exists";
-        } else {
-            act.dest = resolved;
-        }
-        actions.push_back(std::move(act));
-    }
-
-    // Summary
     size_t to_process = 0, to_skip = 0;
-    for (const auto& a : actions) {
-        if (a.skipped)
+    for (size_t i = 0; i < plan.size(); i++) {
+        if (plan.at(i).dest.empty())
             to_skip++;
         else
             to_process++;
     }
 
-    std::string verb = opts.is_move ? "Move" : "Copy";
+    std::string verb = is_move ? "Move" : "Copy";
     std::cout << "\n"
               << verb << ": " << to_process << " files"
               << ", skip: " << to_skip << " (conflict/exists)\n";
 
-    if (opts.dry_run) {
+    if (dry_run) {
         std::cout << "\n[DRY RUN]\n";
-        for (const auto& a : actions) {
-            if (a.skipped) {
-                std::cout << "  SKIP " << a.source << " → " << a.dest << " (" << a.skip_reason
-                          << ")\n";
+        for (size_t i = 0; i < plan.size(); i++) {
+            const OrganizeAction& a = plan.at(i);
+            if (a.dest.empty()) {
+                std::cout << "  SKIP " << a.source << " \u2192 " << a.intended_dest
+                          << " (already exists)\n";
             } else {
-                std::cout << "  " << verb << " " << a.source << " → " << a.dest << "\n";
+                std::cout << "  " << verb << " " << a.source << " \u2192 " << a.dest << "\n";
             }
         }
         return 0;
     }
 
-    // Execute. Handle SIGINT so Ctrl-C stops cleanly at a file boundary rather
-    // than killing the process between a move and its DB update.
-    CancelToken cancel;
-    int64_t op_id = 0;
-    const bool logging = opts.log_enabled;
-    size_t done = 0, errs = 0;
+    // Handle SIGINT so Ctrl-C stops cleanly at a file boundary rather than
+    // killing the process between a move and its DB update.
+    ProgressQueue<OrganizeProgress> progress(1024);
+    OrganizeResult result;
+    std::exception_ptr engine_error;
     {
-        // The handler covers log_begin_operation too, so a Ctrl-C there is
-        // absorbed by the token and the run finishes as "interrupted" rather
-        // than killing the process.
         ScopedInterruptHandler interrupt_guard(cancel);
-
-        // Open a log operation for this run unless logging is disabled. Entries are
-        // appended per file inside the same transaction as each DB change (plan 020).
-        if (logging) {
-            op_id =
-                db.log_begin_operation(opts.is_move ? "mv" : "cp", opts.argv_str, iso_utc_now());
-        }
-
-        for (const auto& a : actions) {
-            if (cancel.stop()) break;
-            if (a.skipped) continue;
-
+        std::thread worker([&] {
             try {
-                // Disk op + DB update + optional log entry, committed together with
-                // on-failure compensation so disk and DB never disagree (plan 020).
-                execute_organize_action(db, a.source, a.dest.string(), opts.is_move,
-                                        logging ? op_id : 0);
-                done++;
-
-                carry_sidecars(db, a.source, a.dest.string(), opts.is_move, logging ? op_id : 0);
-
-                std::cout << "\r[" << done << "/" << to_process << "] " << std::flush;
-            } catch (const std::exception& e) {
-                std::cerr << "\nError: " << a.source << " → " << a.dest << ": " << e.what() << "\n";
-                errs++;
+                result = engine.apply(plan, is_move, cancel, &progress);
+            } catch (...) {
+                engine_error = std::current_exception();
             }
-        }
-    }
+            progress.close();
+        });
 
-    if (logging) {
-        db.log_finish_operation(op_id, cancel.stop() ? "interrupted" : "completed");
-        db.log_prune(opts.log_max_entries);
+        OrganizeProgress p;
+        while (progress.pop(p)) {
+            if (p.stage != OrganizeStage::FileDone) continue;
+            if (!p.error.empty()) {
+                // Clear the progress line first, so the warning cannot be
+                // overwritten by the next print. Both happen on this thread.
+                std::cout << "\r\033[K" << std::flush;
+                log_warn(p.error);
+            }
+            std::cout << "\r[" << p.done << "/" << p.total << "] " << std::flush;
+        }
+        worker.join();
     }
+    if (engine_error) std::rethrow_exception(engine_error);
 
     std::cout << "\n\n";
-    if (cancel.stop()) std::cout << "Interrupted. Stopped at a file boundary.\n";
+    if (!result.completed) std::cout << "Interrupted. Stopped at a file boundary.\n";
     std::cout << "Done.\n"
-              << "  Done: " << done << "\n"
+              << "  Done: " << result.applied << "\n"
               << "  Skipped: " << to_skip << "\n"
-              << "  Errors: " << errs << "\n";
+              << "  Errors: " << result.errors << "\n";
 
     return 0;
 }
@@ -2087,7 +2009,11 @@ int main(int argc, char* argv[]) {
 
         OrganizeOptions opts;
         opts.destination = argv[2];
-        opts.is_move = (command == "mv");
+        opts.format = "%Y/%m/%original";
+        // The CLI's long-standing default, which differs from the engine's.
+        opts.on_conflict = ConflictResolution::Skip;
+        const bool is_move = (command == "mv");
+        bool dry_run = false;
         opts.db_path = default_db_path();
         // Seed from config; CLI flags below override.
         if (cfg.organize_format) opts.format = *cfg.organize_format;
@@ -2104,11 +2030,16 @@ int main(int argc, char* argv[]) {
             } else if (arg == "--exclude" && i + 1 < argc) {
                 opts.excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--dry-run") {
-                opts.dry_run = true;
+                dry_run = true;
             } else if (arg == "--on-conflict" && i + 1 < argc) {
-                opts.on_conflict = argv[++i];
-                if (opts.on_conflict != "skip" && opts.on_conflict != "overwrite" &&
-                    opts.on_conflict != "rename") {
+                std::string mode = argv[++i];
+                if (mode == "skip") {
+                    opts.on_conflict = ConflictResolution::Skip;
+                } else if (mode == "overwrite") {
+                    opts.on_conflict = ConflictResolution::Overwrite;
+                } else if (mode == "rename") {
+                    opts.on_conflict = ConflictResolution::Rename;
+                } else {
                     std::cerr << "Error: --on-conflict must be 'skip', 'overwrite', or 'rename'\n";
                     return 1;
                 }
@@ -2123,7 +2054,7 @@ int main(int argc, char* argv[]) {
 
         try {
             auto lock = acquire_writer_lock(no_wait);
-            return cmd_organize(opts);
+            return cmd_organize(opts, is_move, dry_run);
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
             return 1;

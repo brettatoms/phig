@@ -1,6 +1,6 @@
 ---
 name: Organize Engine & cp/mv ABI
-status: planned
+status: completed
 created: 2026-08-07
 description: >
   Extract an organize engine into `core/` matching the shape of ScanEngine,
@@ -71,6 +71,15 @@ about whether to surface a plan as a value.
 
 Adopting it also means `--dry-run` stops being a mode and becomes the plan phase
 that every caller runs anyway.
+
+**A destination occupied since planning is skipped, not re-resolved.** An earlier
+draft of this plan said apply would fall back to the run policy. That would
+re-run `resolve_conflict` at execution time and could file the photo under a name
+the caller never saw, which contradicts the point of authorizing a plan.
+Skipping keeps apply's outcome a subset of what was shown; the item lands in
+`skipped`, so a caller can re-plan and see the new conflict. An item carrying an
+explicit override is exempt, since that override *is* the authority to replace
+what is there.
 
 ### 2. Conflict resolution is per file
 
@@ -145,17 +154,48 @@ with no soname bump, so neither direction is foreclosed.
 
 ### 4. Both cp and mv get the plan phase
 
-Copy is additive to the *database*, not to the filesystem: `organize_exec.h:14-17`
-records that on copy, "if `dest` already exists it is backed up first (to a
-unique sibling) so a DB failure can restore it." So a copy can destroy a
-destination file under `overwrite`, and wants the same preview as a move. Two
-shapes for one engine would cost more than the symmetry saves.
+Not because copy destroys anything today. `cmd_organize`'s `is_protected`
+predicate (`cli/main.cpp:671-676`) returns true for any path that exists on
+disk, and `resolve_conflict` turns `overwrite` into `rename` for a protected
+destination (`paths.h:97-99`). So through the CLI, `overwrite` differs from
+`rename` only on an intra-run collision — two sources resolving to one
+destination that nothing occupies yet. `execute_organize_action`'s
+backup-and-restore is a net that predicate keeps from ever firing.
+
+Copy gets the plan phase for two other reasons. A conflict changes what copy
+does — the file lands under a name the user did not choose — and that is worth
+seeing before authorizing. And after decision 6 an explicit override makes copy
+genuinely able to destroy bytes, so the preview stops being a convenience.
+
+Two shapes for one engine would cost more than the symmetry saves.
 
 ### 5. Cancellation follows the existing transaction boundaries
 
 `execute_organize_action` commits each file's disk action and its log entry in
 one transaction, so the boundaries already exist per file. The token is polled
 between files. This matches 041's decision 5 without needing its own argument.
+
+### 6. An explicit override bypasses the on-disk guard, never the batch guard
+
+Per-file resolution does not work at all without this. A user who sees the plan,
+sees that `IMG_1234.CR2` already occupies the destination, and chooses Replace
+would have `is_protected` turn that into a rename — their choice silently
+discarded.
+
+So an item carrying an explicit override skips the `fs::exists` arm of the
+guard. That arm exists to prevent *silent* data loss (audit findings #1 and #4),
+and an override is the opposite of silent: the plan showed the conflict and the
+user answered it.
+
+The `batch_sources` arm is never bypassable. That path is another image's
+not-yet-moved source file — a tracked original about to be moved — and
+overwriting it destroys bytes phig is in the middle of relocating. No user
+intent makes that correct, so an override targeting a batch source is rejected
+rather than honored.
+
+The plan reports whether the occupying file is tracked by phig, so a client can
+warn harder when it is not. An untracked file is one phig cannot restore from
+its own records, which is exactly when a confirmation should be loudest.
 
 ## ABI shape
 
@@ -197,6 +237,11 @@ const char* phig_organize_plan_dest_at(const phig_organize_plan*, size_t i);
 bool        phig_organize_plan_conflicts_at(const phig_organize_plan*, size_t i);
 phig_conflict_resolution
             phig_organize_plan_resolution_at(const phig_organize_plan*, size_t i);
+
+/* Whether the file occupying this item's destination is tracked by phig.
+ * Meaningless unless conflicts_at(i). False means phig cannot restore it from
+ * its own records, which is when a client should warn hardest. */
+bool        phig_organize_plan_occupant_tracked_at(const phig_organize_plan*, size_t i);
 
 /* Override one item. Only meaningful where conflicts_at(i) is true; recomputes
  * that item's destination so dest_at reflects the choice. */
@@ -250,8 +295,17 @@ caller could get it wrong.
   disk.
 - An override on a non-conflicting item is rejected rather than silently
   ignored.
-- Apply re-verifies: a destination occupied between plan and apply falls back to
-  the run policy, and one that became free is simply written.
+- Without an override, `overwrite` still falls through to `rename` for a
+  destination that exists on disk. This is the regression test for today's
+  behavior, which the extraction must not change.
+- With an explicit override to `overwrite`, an existing untracked file at the
+  destination *is* replaced — decision 6's bypass actually working.
+- An override targeting another image's not-yet-moved source is rejected, and
+  that source still exists afterwards.
+- `occupant_tracked_at` is false for a file phig has no row for and true for one
+  it does.
+- Apply re-verifies: a destination occupied between plan and apply is **skipped**,
+  and one that became free is written where it was planned.
 - Sidecars and an attached JPEG travel with their parent, count in
   `files_written`, and do not move `done`/`total`.
 - Copy and move both honor per-item overrides.
@@ -261,6 +315,61 @@ caller could get it wrong.
 - A copy over an existing destination under `overwrite` restores the backup when
   the database step fails, which is `organize_exec.h`'s stated contract and is
   now reachable through the ABI.
+
+## Outcome
+
+Shipped 2026-08-09. 13 new ABI symbols (69 total, ABI 1.3, soname unchanged),
+36 new tests, 765 passing. Clean under `-DPHIG_WERROR=ON`, ASan/UBSan and TSan.
+
+`cli/`'s `cmd_organize` is now argv parsing, option filling and rendering; the
+selection, planning and execution it used to hold live in `OrganizeEngine`.
+Output is unchanged.
+
+### What the design got wrong about the code
+
+Three things, all found by reading what was being extracted rather than by a
+failing test. They are the reason plan 054 exists.
+
+1. **`--on-conflict overwrite` never replaced a file that exists on disk.**
+   `cmd_organize`'s `is_protected` covers any existing path and
+   `resolve_conflict` renames around a protected destination, so the policy
+   differed from `rename` only on an intra-run collision. Decision 4 originally
+   claimed the opposite and was corrected before implementation.
+2. **`move_file` is a second guard**, independent of the planner's. It refuses to
+   overwrite (plan 022's no-clobber rename), so an authorized override still
+   failed at the syscall. `execute_organize_action` gained `allow_overwrite`,
+   which renames the occupant aside and restores it if anything downstream
+   fails — the same dance the copy branch already did unconditionally.
+3. **Progress denominators**: counting plan entries rather than actionable ones
+   made a run with skips report progress toward a total it could never reach.
+
+### Marked completed prematurely, then reverted
+
+Worth recording because it explains why certain tests exist. The plan was marked
+`completed` with two defects outstanding, both in paths nothing exercised:
+
+- `phig_op_poll` had no case for the `Plan`, `Copy` and `Move` kinds, so polling
+  an organize operation returned `false` forever and decision 3's field mapping
+  was specified but unimplemented. Every ABI test used `phig_op_wait`, so nothing
+  touched the poll path.
+- That same missing case was a `-Wswitch` error under `-DPHIG_WERROR=ON`, which
+  is what CI builds with. Local builds default to warnings-off, and build output
+  was being filtered for `error:` only, so it was hidden twice over.
+
+Five tests this plan's own Testing section names had also not been written. Both
+defects and all five gaps are closed.
+`AbiOrganizeTest.PollReportsPlannedThenOneUpdatePerParent` exists specifically
+because its absence is what hid the switch.
+
+### Not verified locally
+
+Two CI gates this machine cannot reproduce: the **gtk job** (Linux-only; the ABI
+change is additive with the soname unchanged, so `gtk/` should link untouched,
+but that is reasoning rather than a run) and the **ubuntu `-Werror` build**
+(same config, different compiler).
+
+Real-run check: `phig cp --dry-run` listed three planned copies and created
+nothing; the real run created all three under `out/2026/08/`.
 
 ## Relationship to other plans
 
