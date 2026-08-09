@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "exif.h"
 #include "live_photo.h"
 #include "live_photo_internal.h"
 #include "temp_dir.h"
@@ -233,4 +234,114 @@ TEST(LivePhotoRealFiles, FindsTheStillBelongingToAVideo) {
 
     EXPECT_EQ(live_photo_still_for(tmp / "motion.mov").filename(), "master.heic");
     fs::remove_all(tmp);
+}
+
+// ---- review findings, covered in CI via the synthetic fixtures ----
+
+namespace {
+std::string synth_still() { return fixture("live_photo_still.jpg"); }
+std::string synth_video() { return fixture("live_photo.mov"); }
+}  // namespace
+
+// The positive path, running in CI rather than skipping. Without this, every
+// test that CI executes asserts a negative, and extract_maker_note could return
+// {} unconditionally while the suite stayed green.
+TEST(LivePhotoPairingCI, PairsTheSyntheticStillWithItsVideo) {
+    fs::path dir = make_temp_dir("lp-ci-pair");
+    fs::copy_file(synth_still(), dir / "shot.jpg");
+    fs::copy_file(synth_video(), dir / "motion.mov");
+
+    auto pairs =
+        find_live_photo_pairs({(dir / "shot.jpg").string(), (dir / "motion.mov").string()});
+    ASSERT_EQ(pairs.size(), 1u);
+    EXPECT_EQ(fs::path(pairs[0].still).filename(), "shot.jpg");
+    EXPECT_EQ(fs::path(pairs[0].video).filename(), "motion.mov");
+    fs::remove_all(dir);
+}
+
+// Ambiguity must be refused in BOTH directions. One still claiming several
+// videos is as wrong as several stills claiming one: scan would skip every such
+// video while organize carried none, stranding files phig declined to index.
+TEST(LivePhotoPairingCI, RefusesAStillThatClaimsSeveralVideos) {
+    // Two videos with DIFFERENT identifiers, both present in one still's
+    // MakerNote. Copying one video twice would not test this: both copies would
+    // share an identifier, which a separate rule already refuses, so the test
+    // would pass without the bidirectional check existing at all.
+    fs::path dir = make_temp_dir("lp-ci-many");
+    fs::copy_file(fixture("live_photo_still_two_ids.jpg"), dir / "shot.jpg");
+    fs::copy_file(synth_video(), dir / "a.mov");
+    fs::copy_file(fixture("live_photo_b.mov"), dir / "b.mov");
+
+    auto pairs = find_live_photo_pairs(
+        {(dir / "shot.jpg").string(), (dir / "a.mov").string(), (dir / "b.mov").string()});
+    EXPECT_TRUE(pairs.empty()) << "one still claiming two videos must pair nothing";
+    fs::remove_all(dir);
+}
+
+// Two videos sharing one identifier is refused by a different mechanism (the
+// still lands in the claimant list twice). Pinned separately so a future
+// cleanup of that loop cannot silently flip it to "pair both".
+TEST(LivePhotoPairingCI, RefusesTwoVideosSharingOneIdentifier) {
+    fs::path dir = make_temp_dir("lp-ci-dup");
+    fs::copy_file(synth_still(), dir / "shot.jpg");
+    fs::copy_file(synth_video(), dir / "a.mov");
+    fs::copy_file(synth_video(), dir / "b.mov");
+
+    auto pairs = find_live_photo_pairs(
+        {(dir / "shot.jpg").string(), (dir / "a.mov").string(), (dir / "b.mov").string()});
+    EXPECT_TRUE(pairs.empty());
+    fs::remove_all(dir);
+}
+
+TEST(LivePhotoPairingCI, RefusesAVideoClaimedByTwoStills) {
+    fs::path dir = make_temp_dir("lp-ci-two");
+    fs::copy_file(synth_still(), dir / "one.jpg");
+    fs::copy_file(synth_still(), dir / "two.jpg");
+    fs::copy_file(synth_video(), dir / "motion.mov");
+
+    auto pairs = find_live_photo_pairs(
+        {(dir / "one.jpg").string(), (dir / "two.jpg").string(), (dir / "motion.mov").string()});
+    EXPECT_TRUE(pairs.empty()) << "two stills claiming one video must pair nothing";
+    fs::remove_all(dir);
+}
+
+// A JPEG demoted to a RAW's attachment has no row, so pairing a video to it
+// would attach the video to something scan never indexed.
+TEST(LivePhotoPairingCI, RefusesAStillThatIsItselfARawAttachment) {
+    fs::path dir = make_temp_dir("lp-ci-raw");
+    fs::copy_file(synth_still(), dir / "IMG_9.jpg");
+    fs::copy_file("tests/data/truncated_ojpeg.cr2", dir / "IMG_9.cr2");
+    fs::copy_file(synth_video(), dir / "IMG_9.mov");
+
+    auto pairs =
+        find_live_photo_pairs({(dir / "IMG_9.jpg").string(), (dir / "IMG_9.mov").string()});
+    EXPECT_TRUE(pairs.empty()) << "a still that is itself an attachment must not be a master";
+    fs::remove_all(dir);
+}
+
+// The identifier comes from an untrusted container. Length alone is not shape:
+// 36 spaces would otherwise be accepted and could match MakerNote padding.
+TEST(LivePhotoContainment, RejectsThingsThatAreNotUuidShaped) {
+    std::vector<unsigned char> blob(64, ' ');
+    EXPECT_FALSE(exif_blob_contains_identifier(blob, std::string(36, ' ')));
+    EXPECT_FALSE(exif_blob_contains_identifier(blob, "AAAAAAAAxBBBBxCCCCxDDDDxEEEEEEEEEEEE"));
+    EXPECT_FALSE(exif_blob_contains_identifier(blob, "ZZZZZZZZ-BBBB-CCCC-DDDD-EEEEEEEEEEEE"));
+}
+
+// Bytes >= 0x80 must compare correctly: left implicit, the blob's unsigned char
+// and the needle's char promote differently on a signed-char platform.
+TEST(LivePhotoContainment, MatchesRegardlessOfHighBitBytesAround) {
+    const std::string id = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
+    std::vector<unsigned char> blob(8, 0xFF);
+    blob.insert(blob.end(), id.begin(), id.end());
+    blob.insert(blob.end(), 8, 0xFF);
+    EXPECT_TRUE(exif_blob_contains_identifier(blob, id));
+}
+
+// A negative assertion is only meaningful if the EXIF path works at all —
+// otherwise a broken reader reads as a passing negative.
+TEST(LivePhotoContainment, TheSyntheticStillActuallyHasAMakerNote) {
+    EXPECT_FALSE(extract_maker_note(synth_still()).empty())
+        << "fixture lost its MakerNote; every negative test below is now vacuous";
+    EXPECT_TRUE(extract_maker_note(fixture("orient_1.heic")).empty());
 }
