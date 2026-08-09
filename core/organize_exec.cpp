@@ -6,6 +6,7 @@
 #include <string>
 #include <system_error>
 
+#include "live_photo.h"
 #include "paths.h"
 #include "scanner.h"
 #include "sidecar.h"
@@ -149,6 +150,34 @@ void carry_sidecars(Database& db, const std::string& parent_source, const std::s
                 parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}") : "";
             db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar", side.string(),
                                      side_dst.string(), rj});
+        }
+    }
+
+    // A Live Photo's video is an attachment of its still (plan 038): scan does
+    // not index it, so it is not in find_sidecars and would otherwise be left
+    // behind when the still moves. Found by Content Identifier rather than by
+    // name — the two halves need not share a stem after an export or rename —
+    // and renamed to the destination stem so the pair stays discoverable.
+    {
+        // Metadata from the destination copy — the parent has already moved by
+        // the time this runs — but the video is still in the source directory.
+        fs::path lp_src = live_photo_video_in(dst_media, src_media.parent_path());
+        if (!lp_src.empty()) {
+            fs::path lp_dst = dst_dir / (dst_stem + lp_src.extension().string());
+            if (!(src_media.parent_path() == dst_dir && lp_src == lp_dst)) {  // skip no-op
+                if (is_move) {
+                    move_file(lp_src.string(), lp_dst.string());
+                } else {
+                    atomic_copy_file(lp_src.string(), lp_dst.string());
+                }
+                if (logging) {
+                    std::string rj =
+                        parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
+                                      : "";
+                    db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar",
+                                             lp_src.string(), lp_dst.string(), rj});
+                }
+            }
         }
     }
 

@@ -108,3 +108,36 @@ std::vector<LivePhotoPair> find_live_photo_pairs(const std::vector<std::string>&
 } catch (...) {
     return {};
 }
+
+std::filesystem::path live_photo_video_in(const std::filesystem::path& still_for_metadata,
+                                          const std::filesystem::path& search_dir) try {
+    namespace fs = std::filesystem;
+
+    // The gate: no MakerNote means not an Apple still, and nothing further is
+    // read — no directory listing, no video opened.
+    const std::vector<unsigned char> mnote = extract_maker_note(still_for_metadata.string());
+    if (mnote.empty()) return {};
+
+    fs::path found;
+    int matches = 0;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(search_dir, ec)) {
+        if (ec) return {};
+        if (!entry.is_regular_file(ec)) continue;
+        if (!is_known_video_extension(entry.path().extension().string())) continue;
+
+        const std::string id = live_photo_content_identifier(entry.path().string());
+        if (id.size() != 36) continue;
+        if (!exif_blob_contains_identifier(mnote, id)) continue;
+
+        found = entry.path();
+        if (++matches > 1) return {};  // ambiguous: carry nothing
+    }
+    return matches == 1 ? found : fs::path{};
+} catch (...) {
+    return {};
+}
+
+std::filesystem::path live_photo_video_for(const std::filesystem::path& still_path) {
+    return live_photo_video_in(still_path, still_path.parent_path());
+}

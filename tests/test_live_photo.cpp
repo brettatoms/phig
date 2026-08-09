@@ -187,3 +187,33 @@ TEST(LivePhotoRealFiles, DoesNotPairAcrossDirectories) {
     EXPECT_TRUE(pairs.empty()) << "a still in another directory must not be claimed";
     fs::remove_all(tmp);
 }
+
+// ---- finding a still's video, for organize's carry pass ----
+
+TEST(LivePhotoVideoFor, ReturnsNothingForAStillWithNoMakerNote) {
+    EXPECT_TRUE(live_photo_video_for(fixture("orient_1.heic")).empty());
+}
+
+TEST(LivePhotoVideoFor, ReturnsNothingForAMissingFile) {
+    fs::path p;
+    EXPECT_NO_THROW({ p = live_photo_video_for("/nonexistent/x.heic"); });
+    EXPECT_TRUE(p.empty());
+}
+
+TEST(LivePhotoRealFiles, FindsTheVideoBelongingToAStill) {
+    const std::string dir = samples_dir();
+    if (!fs::exists(dir + "/IMG_1112.MOV")) GTEST_SKIP() << "no exported samples at " << dir;
+
+    fs::path tmp = make_temp_dir("livefind");
+    fs::copy_file(dir + "/IMG_1112.HEIC", tmp / "shot.heic");
+    fs::copy_file(dir + "/IMG_1112.MOV", tmp / "motion.mov");
+    // An unrelated still and video in the same directory must not confuse it.
+    fs::copy_file(dir + "/IMG_2147.HEIC", tmp / "other.heic");
+    fs::copy_file("tests/data/test_red.mov", tmp / "clip.mov");
+
+    EXPECT_EQ(live_photo_video_for(tmp / "shot.heic").filename(), "motion.mov")
+        << "found by identifier, not by name";
+    EXPECT_TRUE(live_photo_video_for(tmp / "other.heic").empty())
+        << "an unrelated still must claim nothing";
+    fs::remove_all(tmp);
+}

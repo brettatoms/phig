@@ -406,3 +406,54 @@ TEST_F(OrganizeExecTest, NoAttachedJpegForNonRawParent) {
     EXPECT_EQ(sqlite3_column_int(st, 0), 1);
     sqlite3_finalize(st);
 }
+
+// ---- Live Photo carry (plan 038) ----
+//
+// A Live Photo's video is an attachment of its still, so organize must move it
+// alongside — otherwise `mv` files the still under its date and strands the
+// motion where it was. Real exported files only: no committable fixture carries
+// an Apple MakerNote, so this skips in CI.
+
+TEST(OrganizeLivePhoto, MoveCarriesTheVideoWithItsStill) {
+    const std::string samples = std::string(getenv("HOME") ?: "") + "/phig-live-samples";
+    if (!fs::exists(samples + "/IMG_1112.MOV")) GTEST_SKIP() << "no exported samples";
+
+    fs::path root = make_temp_dir("organize-live");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst" / "2025" / "10";
+    fs::create_directories(src);
+    fs::create_directories(dst);
+    fs::copy_file(samples + "/IMG_1112.HEIC", src / "shot.heic");
+    fs::copy_file(samples + "/IMG_1112.MOV", src / "motion.mov");
+
+    // carry_sidecars runs after the parent has moved, which is why it reads the
+    // still's metadata from the destination and searches the source directory.
+    fs::rename(src / "shot.heic", dst / "renamed.heic");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    carry_sidecars(db, (src / "shot.heic").string(), (dst / "renamed.heic").string(), true, 0);
+
+    EXPECT_TRUE(fs::exists(dst / "renamed.mov"))
+        << "the video must follow the still and take its new stem";
+    EXPECT_FALSE(fs::exists(src / "motion.mov")) << "a move must not leave the motion behind";
+    fs::remove_all(root);
+}
+
+TEST(OrganizeLivePhoto, LeavesAnUnrelatedVideoWhereItIs) {
+    fs::path root = make_temp_dir("organize-live-plain");
+    fs::path src = root / "src";
+    fs::path dst = root / "dst";
+    fs::create_directories(src);
+    fs::create_directories(dst);
+    fs::copy_file("tests/data/orient_1.heic", src / "photo.heic");
+    fs::copy_file("tests/data/test_red.mov", src / "clip.mov");
+    fs::rename(src / "photo.heic", dst / "photo.heic");
+
+    Database db((root / "phig.db").string());
+    db.init_schema();
+    carry_sidecars(db, (src / "photo.heic").string(), (dst / "photo.heic").string(), true, 0);
+
+    EXPECT_TRUE(fs::exists(src / "clip.mov")) << "an ordinary clip is not an attachment";
+    fs::remove_all(root);
+}

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -51,3 +52,22 @@ struct LivePhotoPair {
 // shape costs: has_sibling_raw re-listed a directory per file and made scan
 // quadratic in directory size.
 std::vector<LivePhotoPair> find_live_photo_pairs(const std::vector<std::string>& paths);
+
+// The Live Photo video belonging to `still_path`, or empty when there is none.
+//
+// Searches the still's own directory, and exits immediately when the still has
+// no MakerNote at all — which is every image not produced by an Apple device,
+// so an ordinary collection never pays for the directory listing. Returns empty
+// if more than one video matches, on the same refuse-ambiguity rule as
+// find_live_photo_pairs. Never throws.
+std::filesystem::path live_photo_video_for(const std::filesystem::path& still_path);
+
+// As above, but reads the still's identifier from one path and searches another
+// directory for its video.
+//
+// Organize needs this split: its carry pass runs after the parent has already
+// been moved, so the still's bytes are at the destination while its video is
+// still in the source directory. Reading and searching the same path there
+// would find nothing at all.
+std::filesystem::path live_photo_video_in(const std::filesystem::path& still_for_metadata,
+                                          const std::filesystem::path& search_dir);
