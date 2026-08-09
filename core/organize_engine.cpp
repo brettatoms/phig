@@ -5,6 +5,7 @@
 #include <string>
 
 #include "dates.h"
+#include "organize_exec.h"
 #include "organize_plan.h"
 #include "paths.h"
 #include "selection.h"
@@ -121,7 +122,54 @@ OrganizePlan OrganizeEngine::plan(const CancelToken& cancel,
     return out;
 }
 
-OrganizeResult OrganizeEngine::apply(const OrganizePlan&, bool, const CancelToken&,
-                                     ProgressQueue<OrganizeProgress>*) {
-    return {};
+OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
+                                     const CancelToken& cancel,
+                                     ProgressQueue<OrganizeProgress>* progress) {
+    OrganizeResult result;
+    int64_t op_id = 0;
+    if (opts_.log_enabled) {
+        op_id = db_.log_begin_operation(is_move ? "mv" : "cp", opts_.argv_str, iso_utc_now());
+    }
+
+    for (size_t i = 0; i < plan.size(); i++) {
+        if (cancel.stop()) {
+            result.completed = false;
+            break;
+        }
+        const OrganizeAction& act = plan.at(i);
+        if (act.dest.empty()) {
+            result.skipped++;
+            continue;
+        }
+
+        OrganizeProgress p;
+        p.stage = OrganizeStage::FileDone;
+        p.total = plan.size();
+        p.path = act.source;
+        try {
+            // Disk op, DB update and log entry commit together, with on-failure
+            // compensation so disk and database never disagree.
+            execute_organize_action(db_, act.source, act.dest, is_move, op_id);
+            result.applied++;
+            result.files_written++;
+            result.files_written += carry_sidecars(db_, act.source, act.dest, is_move, op_id);
+        } catch (const std::exception& e) {
+            result.errors++;
+            p.error = "Failed to organize " + act.source + ": " + e.what();
+        }
+
+        if (progress) {
+            p.done = i + 1;
+            p.files_written = result.files_written;
+            p.skipped = result.skipped;
+            p.errors = result.errors;
+            progress->push(p);
+        }
+    }
+
+    if (opts_.log_enabled) {
+        db_.log_finish_operation(op_id, result.completed ? "completed" : "interrupted");
+        db_.log_prune(opts_.log_max_entries);
+    }
+    return result;
 }

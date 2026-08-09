@@ -227,3 +227,118 @@ TEST_F(OrganizeEngineTest, SetResolutionRefusesToTargetABatchSource) {
         << "overwriting another image's un-moved source must be refused";
     EXPECT_TRUE(fs::exists(collide));
 }
+
+TEST_F(OrganizeEngineTest, ApplyMovesFilesAndUpdatesRows) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    OrganizeResult result = engine.apply(plan, /*is_move=*/true, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 1u);
+    EXPECT_EQ(result.errors, 0u);
+    EXPECT_TRUE(result.completed);
+    EXPECT_TRUE(fs::exists(dir / "out" / "2019" / "a.jpg"));
+    EXPECT_FALSE(fs::exists(dir / "src" / "a.jpg"));
+    EXPECT_GE(db.get_image_id((dir / "out" / "2019" / "a.jpg").string()), 0);
+}
+
+TEST_F(OrganizeEngineTest, ApplyCopyLeavesTheSourceInPlace) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    OrganizeResult result = engine.apply(plan, /*is_move=*/false, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 1u);
+    EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg"));
+    EXPECT_TRUE(fs::exists(dir / "out" / "2019" / "a.jpg"));
+}
+
+TEST_F(OrganizeEngineTest, ApplySkipsItemsWithNoDestination) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    fs::create_directories(dir / "out" / "2019");
+    {
+        std::ofstream f(dir / "out" / "2019" / "a.jpg");
+        f << "occupant";
+    }
+
+    OrganizeOptions o = base_opts();
+    o.on_conflict = ConflictResolution::Skip;
+    OrganizeEngine engine(o, db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    OrganizeResult result = engine.apply(plan, true, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 0u);
+    EXPECT_EQ(result.skipped, 1u);
+    EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg")) << "a skipped source stays put";
+}
+
+// Sidecars move with their parent and are counted separately, so the denominator
+// a caller draws stays the photo count.
+TEST_F(OrganizeEngineTest, SidecarsCountInFilesWrittenNotInApplied) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    {
+        std::ofstream f(dir / "src" / "a.xmp");
+        f << "sidecar";
+    }
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    OrganizeResult result = engine.apply(plan, true, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 1u) << "one photo";
+    EXPECT_EQ(result.files_written, 2u) << "the photo and its sidecar";
+    EXPECT_TRUE(fs::exists(dir / "out" / "2019" / "a.xmp"));
+}
+
+TEST_F(OrganizeEngineTest, AlreadyCancelledAppliesNothingAndReportsIncomplete) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    cancel.cancel();
+    OrganizeResult result = engine.apply(plan, true, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 0u);
+    EXPECT_FALSE(result.completed);
+    EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg"));
+}
+
+TEST_F(OrganizeEngineTest, ApplyPublishesPlannedThenOneUpdatePerFile) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    add_image(db, "b.jpg", "2019:07:04 10:00:00");
+
+    OrganizeEngine engine(base_opts(), db);
+    CancelToken cancel;
+    ProgressQueue<OrganizeProgress> q;
+    OrganizePlan plan = engine.plan(cancel, &q);
+    engine.apply(plan, true, cancel, &q);
+    q.close();
+
+    OrganizeProgress p;
+    int planned = 0, file_done = 0;
+    while (q.try_pop(p)) {
+        if (p.stage == OrganizeStage::Planned) planned++;
+        if (p.stage == OrganizeStage::FileDone) file_done++;
+    }
+    EXPECT_EQ(planned, 1);
+    EXPECT_EQ(file_done, 2);
+}

@@ -107,9 +107,10 @@ void execute_organize_action(Database& db, const std::string& source, const std:
     }
 }
 
-void carry_sidecars(Database& db, const std::string& parent_source, const std::string& parent_dest,
-                    bool is_move, int64_t op_id) {
+size_t carry_sidecars(Database& db, const std::string& parent_source,
+                      const std::string& parent_dest, bool is_move, int64_t op_id) {
     const bool logging = op_id > 0;
+    size_t carried = 0;
     fs::path src_media(parent_source);
     fs::path dst_media(parent_dest);
     std::string src_stem = src_media.stem().string();      // IMG_1
@@ -144,6 +145,7 @@ void carry_sidecars(Database& db, const std::string& parent_source, const std::s
         } else {
             atomic_copy_file(side.string(), side_dst.string());
         }
+        carried++;
         if (logging) {
             std::string rj =
                 parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}") : "";
@@ -167,6 +169,7 @@ void carry_sidecars(Database& db, const std::string& parent_source, const std::s
                 } else {
                     atomic_copy_file(jpeg_src.string(), jpeg_dst.string());
                 }
+                carried++;
                 if (logging) {
                     std::string rj =
                         parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
@@ -177,4 +180,5 @@ void carry_sidecars(Database& db, const std::string& parent_source, const std::s
             }
         }
     }
+    return carried;
 }
