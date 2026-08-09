@@ -22,6 +22,8 @@ description: >
 
 # 056 — Uniform Operation Status
 
+**Execution script:** `docs/plans/2026-08-09-056-uniform-operation-status.md`
+
 ## What is already uniform
 
 `phig_op_poll`, `phig_op_status`, `phig_op_cancel`, `phig_op_wait`,
