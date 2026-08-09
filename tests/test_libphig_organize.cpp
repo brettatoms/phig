@@ -275,3 +275,57 @@ TEST_F(AbiOrganizeTest, OverriddenOverwriteReplacesAnUntrackedOccupant) {
     phig_op_free(apply_op);
     phig_organize_plan_free(plan);
 }
+
+// The gap that hid a broken switch: every other ABI test here waits rather than
+// polls, so nothing exercised phig_op_poll for an organize operation at all.
+TEST_F(AbiOrganizeTest, PollReportsPlannedThenOneUpdatePerParent) {
+    OrganizeFixture fx(3);
+    open(fx);
+
+    phig_organize_options opts{};
+    opts.destination = fx.out_dir.c_str();
+    opts.format = "%Y/%original";
+    opts.on_conflict = PHIG_CONFLICT_RENAME;
+
+    phig_op* op = nullptr;
+    ASSERT_EQ(phig_op_organize_plan_start(ctx, &opts, &op), PHIG_OK);
+    phig_op_wait(op);
+
+    int planned = 0;
+    uint64_t planned_total = 0;
+    phig_op_progress p{};
+    while (phig_op_poll(op, &p)) {
+        if (p.stage == PHIG_STAGE_SELECTED) {
+            planned++;
+            planned_total = p.total;
+        }
+    }
+    EXPECT_EQ(planned, 1) << "planning publishes exactly one Selected update";
+    EXPECT_EQ(planned_total, 3u);
+
+    phig_organize_plan* plan = nullptr;
+    ASSERT_EQ(phig_op_organize_plan_take(op, &plan), PHIG_OK);
+    phig_op_free(op);
+
+    phig_op* apply_op = nullptr;
+    ASSERT_EQ(phig_op_copy_start(ctx, plan, &apply_op), PHIG_OK);
+    phig_op_wait(apply_op);
+
+    int file_done = 0;
+    uint64_t last_done = 0, last_total = 0, last_processed = 0;
+    while (phig_op_poll(apply_op, &p)) {
+        if (p.stage == PHIG_STAGE_FILE_DONE) {
+            file_done++;
+            last_done = p.done;
+            last_total = p.total;
+            last_processed = p.processed;
+        }
+    }
+    EXPECT_EQ(file_done, 3) << "one update per parent";
+    EXPECT_EQ(last_done, 3u);
+    EXPECT_EQ(last_total, 3u) << "total counts parents, not files";
+    EXPECT_EQ(last_processed, 3u) << "processed counts files written";
+
+    phig_op_free(apply_op);
+    phig_organize_plan_free(plan);
+}

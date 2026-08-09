@@ -248,6 +248,22 @@ bool phig_op_poll(phig_op* op, phig_op_progress* out) {
             fill(op, out, stage, p.done, p.total, 0, 0, p.errors, p.path, text);
             return true;
         }
+        case phig_op::Kind::Plan:
+        case phig_op::Kind::Copy:
+        case phig_op::Kind::Move: {
+            OrganizeProgress p;
+            if (!op->organize_progress.try_pop(p)) return false;
+            phig_op_stage stage =
+                p.stage == OrganizeStage::Planned ? PHIG_STAGE_SELECTED : PHIG_STAGE_FILE_DONE;
+            if (!p.error.empty()) op->retain_error(p.error);
+            // `done`/`total` count parents — the photos the caller selected —
+            // while `processed` carries files actually written, including the
+            // sidecars and attached JPEGs that travel with a parent (plan 042
+            // decision 3). A caller renders "412 of 1,204 photos, 1,238 files".
+            fill(op, out, stage, p.done, p.total, p.files_written, p.skipped, p.errors, p.path,
+                 p.error);
+            return true;
+        }
     }
     return false;
 }

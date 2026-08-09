@@ -420,7 +420,10 @@ typedef enum {
     PHIG_STAGE_FILE_DONE = 0,
     /* Index: the directory walk finished; `total` is the file count. */
     PHIG_STAGE_WALKED = 1,
-    /* Thumbs/faces: the selection is known; `total` is how many were selected. */
+    /* Thumbs/faces: the selection is known; `total` is how many were selected.
+       Organize: planning finished; `total` is how many items the plan holds.
+       Reused rather than adding a value, since the meaning — "the work is now
+       known, here is how much of it there is" — is the same. */
     PHIG_STAGE_SELECTED = 2,
     /* Faces: loading detector models, which is slow and happens before any file
        is processed. `total` is the instance count. */
