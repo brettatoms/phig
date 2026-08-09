@@ -126,6 +126,15 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
                                      const CancelToken& cancel,
                                      ProgressQueue<OrganizeProgress>* progress) {
     OrganizeResult result;
+
+    // Items that will actually be acted on. Skips are decided at plan time, so
+    // a caller's denominator should exclude them rather than counting to a
+    // total it can never reach.
+    size_t actionable = 0;
+    for (size_t i = 0; i < plan.size(); i++) {
+        if (!plan.at(i).dest.empty()) actionable++;
+    }
+
     int64_t op_id = 0;
     if (opts_.log_enabled) {
         op_id = db_.log_begin_operation(is_move ? "mv" : "cp", opts_.argv_str, iso_utc_now());
@@ -144,7 +153,7 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
 
         OrganizeProgress p;
         p.stage = OrganizeStage::FileDone;
-        p.total = plan.size();
+        p.total = actionable;
         p.path = act.source;
         try {
             // Disk op, DB update and log entry commit together, with on-failure
@@ -159,7 +168,7 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
         }
 
         if (progress) {
-            p.done = i + 1;
+            p.done = result.applied + result.errors;
             p.files_written = result.files_written;
             p.skipped = result.skipped;
             p.errors = result.errors;

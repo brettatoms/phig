@@ -342,3 +342,29 @@ TEST_F(OrganizeEngineTest, ApplyPublishesPlannedThenOneUpdatePerFile) {
     EXPECT_EQ(planned, 1);
     EXPECT_EQ(file_done, 2);
 }
+
+// Today `--on-conflict overwrite` never replaces a file that exists on disk:
+// is_protected covers any existing path and resolve_conflict renames around it.
+// Extraction must not quietly turn overwrite into a destructive policy.
+TEST_F(OrganizeEngineTest, OverwritePolicyStillRenamesAroundAnExistingFile) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    fs::create_directories(dir / "out" / "2019");
+    {
+        std::ofstream f(dir / "out" / "2019" / "a.jpg");
+        f << "occupant";
+    }
+
+    OrganizeOptions o = base_opts();
+    o.on_conflict = ConflictResolution::Overwrite;
+    OrganizeEngine engine(o, db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    engine.apply(plan, true, cancel, nullptr);
+
+    std::ifstream f(dir / "out" / "2019" / "a.jpg");
+    std::string content;
+    f >> content;
+    EXPECT_EQ(content, "occupant") << "run-level overwrite must not clobber an existing file";
+}
