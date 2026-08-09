@@ -25,6 +25,7 @@ tools that look for that filename resolve to something.
 | `scripts/` | Dev tooling (e.g. `clang-tidy.sh`). | — |
 | `docs/` | Cross-project specs/ledgers from when phig, phig-gtk, and phig-web were separate repos, plus execution artifacts owned by a numbered plan. Date-stamped files. | Historical record |
 | `plans/` | Numbered implementation plans (`NNN-name.md`) for the whole monorepo — the single index of what's outstanding. | Working index |
+| `rules/` | phig's data-integrity rules as TOML records: what must be true when a destination is occupied, when a row's file is gone, and what may destroy user-authored metadata. Plan 054. | Normative |
 | `MARKET.md` | Competitive analysis: the field, its recurring weaknesses, phig's differentiators. Dated, additive. | Working document |
 
 See each directory's `CLAUDE.md` for what it is, its stability contract, and
@@ -408,6 +409,52 @@ plans should not be edited unless the user explicitly asks — it's fine to
 add cross-references to other plans. Changes to completed features get a new
 plan rather than editing the original. Always write a plan and get approval
 before implementing.
+
+## Rules of record
+
+`rules/` states what must be true when phig moves, deletes or overwrites —
+conflict resolution, reconciliation, recoverability, metadata preservation,
+attachments, concurrency, cancellation, authorization. One TOML record per
+rule, each naming the statement, why it is that way, where it is enforced,
+which operations it binds, which asset it protects, and the test that pins it.
+`rules/README.md` is the field reference. Plan 054 owns the mechanism.
+
+**Read the relevant `rules/*.toml` before designing anything that moves,
+deletes or overwrites** — do not reconstruct the behaviour from call sites.
+That reconstruction is exactly what this exists to stop: designing plans 041
+and 042 turned up five cases where the code did something other than what it
+appeared to, each found by reading six files while designing something else.
+
+Four working rules:
+
+- **Changing a guard means updating its record in the same commit.** A rule
+  whose `enforced_at` no longer matches the code is worse than no rule,
+  because the next design will trust it.
+- **Enforcement belongs in `core/` or `libphig/`, never `cli/`.** A guard that
+  lives in `cli/` is unreachable by libphig, by `phigd`, and by every GUI — so
+  it is a finding to record, not a record to file. This is Interface
+  discipline above, applied to data safety.
+- **Behaviour no rule states? Write the rule.** A new guard, a new operation,
+  or a behaviour discovered while reading code each need a record. The
+  discovered-while-reading case is the important one — that is how all five
+  original findings surfaced, and none was ever reported as a bug.
+- **A rule the code violates is recorded, not deleted.** Set `status =
+  "violated"` and name an open plan as `owner`. Deleting the inconvenient rule
+  turns the record into a description of the code, which is the one thing it
+  must never become. The same applies to `test_gap` when a test is weaker than
+  the claim it pins.
+
+An **operation** in `rules/operations.toml` is a `core/` primitive that
+surfaces hang off (`surfaces_cli`, `surfaces_abi`, `surfaces_http`), not a CLI
+command — so a rule bound to an operation is inherited by every surface,
+including ones added later. A function that mutates but is internal to an
+operation goes in `core_internal`; rules anchor at it and bind the operation
+that covers it.
+
+Status: enumeration is in progress and the record set is incomplete. The
+generator that produces the by-invariant / by-operation / by-asset views and
+the CI checks that keep records honest are a later phase and do not exist yet,
+so records are currently maintained and verified by hand.
 
 ## Conventions
 
