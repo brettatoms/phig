@@ -152,3 +152,18 @@ test_kind = "subprocess"
 status = "unenforced"
 owner = "054"
 test_gap = "Nothing tests durability across a power loss, and an ordinary test process cannot: it would need the machine to stop between the commit and the checkpoint. The statement is read from the pragma and SQLite's documented WAL behaviour, not from a measurement."
+
+[[rule]]
+id = "R48"
+tier = "engine"
+concern = "atomicity"
+statement = "A copy or move counts each selected item once: an item is reported as applied or as failed, never as both."
+rationale = "The half-done state behind this is a media file that moved and an attachment that did not. OrganizeEngine::apply increments applied and files_written the moment execute_organize_action returns, then calls carry_sidecars inside the same try. A throw from the carry lands in the catch that increments errors, so an item whose photo moved, committed and logged is counted in both totals, and the error text names the parent as the thing that failed with the attachment's destination inside the message. The item is genuinely half done — R41 is what makes the carry throw rather than destroy, and R33 records that a carried file is logged outside the parent's transaction — so a caller needs to be told which half; instead applied and errors both go up and their sum exceeds the actionable count the progress ticks are denominated against. Measured with the built binary: a cp of one photo whose sidecar destination was occupied printed Done: 1, Skipped: 0, Errors: 1 with a [2/1] progress tick, exited 0, and left the destination row and the copy entry for the parent in place. The owner is provisional and matches R27's, the nearest existing record of organize under-reporting a partial failure; no plan states this one."
+enforced_at = ["core/organize_engine.cpp:OrganizeEngine::apply"]
+binds = ["organize.copy", "organize.move"]
+protects = ["attachment", "activity-log"]
+tests = []
+test_kind = "witness"
+status = "violated"
+owner = "053"
+test_gap = "Nothing drives apply with a carry that fails. The three OrganizeCarryNoClobber tests call carry_sidecars directly and assert the occupant survives, so the throw is covered and its effect on the counters is not. No test anywhere asserts a non-zero organize error count — OrganizeEngineTest and tests/test_libphig_organize.cpp both only ever assert errors == 0 — so the double count was measured by running the binary."

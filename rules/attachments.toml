@@ -1,0 +1,134 @@
+[[rule]]
+id = "R41"
+tier = "engine"
+concern = "attachments"
+statement = "A carried attachment never overwrites an occupied destination, on copy as well as on move."
+rationale = "move_file declines and throws, but atomic_copy_file ends in a rename that replaces silently. An attachment has no row, so a destroyed one leaves no restore snapshot and no error — the run reports Errors: 0. An attachment's destination is derived from its parent's rather than chosen, and the conflict planner never sees it, so there is no skip/overwrite/rename policy to consult and nothing renames it aside: refusing is the only available answer. The guard sits at all three carry sites — metadata sidecars, a Live Photo's video, a RAW's attached JPEG — because they end in the same two primitives. Measured with the built binary: a cp whose planned destination directory already held the parent's .xmp left that file's contents intact and reported the failure."
+enforced_at = [
+    "core/organize_exec.cpp:refuse_occupied_carry_destination",
+    "core/organize_exec.cpp:carry_sidecars",
+]
+binds = ["organize.copy", "organize.move"]
+protects = ["attachment"]
+tests = [
+    "OrganizeCarryNoClobber.CopyRefusesToClobberAnExistingSidecar",
+    "OrganizeCarryNoClobber.CopyRefusesToClobberAnExistingSiblingJpeg",
+    "OrganizeCarryNoClobber.StillCarriesWhenTheDestinationIsFree",
+    "OrganizeLivePhotoSafety.CopyRefusesToClobberAnExistingVideoAtTheDestination",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R42"
+tier = "engine"
+concern = "attachments"
+statement = "A metadata sidecar is never indexed as a photo of its own: the walk admits a file only when its extension is in the media allowlist, and no sidecar extension is in it."
+rationale = "A sidecar describes a photo; indexing it would give one shot two rows, double every count and let a duplicate scan pair a .xmp with the image it belongs to. The exclusion is structural rather than a check: scan_directory tests is_known_media_extension, which is the union of the image, RAW and video sets, and the eight sidecar extensions the allowlist in is_known_sidecar_extension names — xmp, pp3, dop, on1, aae, json, thm, lrv — appear in none of them. That is also why a sidecar has to be carried explicitly on mv and cp: with no row of its own, nothing else would move it."
+enforced_at = [
+    "core/scanner.cpp:scan_directory",
+    "core/scanner.cpp:is_known_media_extension",
+    "core/sidecar.cpp:is_known_sidecar_extension",
+]
+binds = ["scan.walk"]
+protects = ["db-row", "attachment"]
+tests = ["ScannerTest.SkipsUnknownExtensions"]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "The listed test pins the allowlist with .pdf, .db, .txt and .DS_Store; no test in the suite puts a real sidecar extension in front of scan_directory, so the disjointness the statement turns on is read off the two extension sets rather than asserted. One scan over a directory holding a photo and its .xmp would close it."
+
+[[rule]]
+id = "R43"
+tier = "engine"
+concern = "attachments"
+statement = "A JPEG with a same-basename RAW file beside it is not a photo of its own: the walk skips it, and a row it acquired from an earlier scan has its metadata moved to the RAW's row before that row is dropped."
+rationale = "The RAW and the JPEG are one shot, and the RAW is the one that keeps the pixels, so a second row would double the collection and split the user's tags across two things that are the same photo. The pair is decided from a path alone — sibling_raw_path lists the parent directory for a same-stem RAW, matching stem and extension case-insensitively — which is what lets the walk skip it per file without a second pass. The demotion half exists because the skip alone is not enough: a collection indexed before plan 026 already has JPEG rows whose files are still on disk, so they never appear as missing and would otherwise keep their tags forever on a row nothing shows. demote_jpeg_rows requires the RAW to be indexed before it acts, so the RAW's own row is never dropped in favour of a row that does not exist yet. Measured with the built binary: a lone indexed JPEG carrying a tag and a gallery, given a same-basename RAW and re-scanned, reported Skipped: 1 and Demoted: 1, and the tag and gallery came back on the RAW's row."
+enforced_at = [
+    "core/scan_engine.cpp:ScanEngine::run_workers",
+    "core/scanner.cpp:has_sibling_raw",
+    "core/relink.cpp:demote_jpeg_rows",
+]
+binds = ["scan.walk", "scan.reconcile", "relink.demote"]
+protects = ["db-row", "user-metadata", "attachment"]
+tests = [
+    "ScannerTest.HasSiblingRawTrueWhenRawBeside",
+    "ScannerTest.HasSiblingRawFalseWhenLoneJpeg",
+    "RelinkTest.DemotesJpegToSameBasenameRaw",
+    "RelinkTest.LoneJpegNotDemoted",
+    "RelinkTest.JpegWithRawRowMissingNotDemoted",
+]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "The demotion half is well covered and the predicate has six tests of its own. The skip is not tested at any level: nothing runs ScanEngine over a directory holding a RAW and its JPEG to assert one row comes out, which is the RAW analogue of ScanEngineLivePhoto.IndexesTheStillAndNotItsPairedVideo. It was measured by running the binary instead."
+
+[[rule]]
+id = "R44"
+tier = "engine"
+concern = "attachments"
+statement = "An attachment is carried only after its parent's own move or copy has returned and committed, so a parent that was skipped, or whose action failed, carries nothing."
+rationale = "Three kinds of file have no row and so cannot move themselves: a metadata sidecar, a RAW's same-basename JPEG, and a Live Photo's video. carry_sidecars moves all three, and it is the last statement in apply's try block, after execute_organize_action has moved the parent and committed its path update and log entry. Everything that declines to act on an item returns earlier: an item the planner resolved to no destination and an item whose destination became occupied since planning both continue before the try, and a throw from the parent's own action skips the carry entirely. That ordering is also why the carry can link its log entries to a parent id — the parent's row already names the destination by then. A dry run reaches none of this because it never calls apply, which is R21's clause, not a guard in this function."
+enforced_at = ["core/organize_engine.cpp:OrganizeEngine::apply"]
+binds = ["organize.copy", "organize.move"]
+protects = ["attachment", "original-file"]
+tests = [
+    "OrganizeEngineTest.SidecarsCountInFilesWrittenNotInApplied",
+    "OrganizeEngineTest.AttachedJpegForARawCountsInFilesWritten",
+    "OrganizeExecTest.CarryLogsSidecarEntryWithParentId",
+]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "Every listed test drives the success path: the parent moves and the attachment follows. The negative half is untested — neither OrganizeEngineTest.ApplySkipsItemsWithNoDestination nor ApplySkipsAnItemWhoseDestinationBecameOccupied puts a sidecar next to the source, so nothing asserts that a skipped parent leaves its attachment where it is."
+
+[[rule]]
+id = "R45"
+tier = "engine"
+concern = "attachments"
+statement = "A carried attachment is renamed onto the parent's destination stem and keeps its own suffix, so an attachment stays attached to a parent that was renamed around a conflict."
+rationale = "A sidecar is found by name, so a parent filed as IMG_1-1.CR2 with its sidecar still called IMG_1.xmp is an orphan the next tool will not associate with anything. Both naming styles are preserved rather than normalised: a stem-style IMG_1.xmp keeps everything after the stem, and an append-style IMG_1.CR2.xmp is rebuilt from the destination's whole filename, so it stays append-style. A RAW's attached JPEG and a Live Photo's video are renamed the same way, onto the destination stem with their own extension, which for the video is the only thing that keeps the pair discoverable — it was found by Content Identifier and need not have shared the stem to begin with."
+enforced_at = ["core/organize_exec.cpp:carry_sidecars"]
+binds = ["organize.copy", "organize.move"]
+protects = ["attachment"]
+tests = [
+    "OrganizeExecTest.CarryRenamesSidecarToMatchRenamedParent",
+    "OrganizeExecTest.CarryHandlesAppendStyleRawSidecar",
+    "OrganizeExecTest.CarryRenamesAttachedJpegToMatchRenamedRaw",
+    "OrganizeLivePhotoSafety.CarriesAnUnindexedPairedVideo",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R46"
+tier = "engine"
+concern = "attachments"
+statement = "Removing a photo removes its metadata sidecars with it and leaves every other file beside it alone, including the attached JPEG and the Live Photo video that belong to it."
+rationale = "The set removed is exactly find_sidecars' output, whose allowlist holds no media extension, so no removal can take a file that could have been a photo. That is deliberately narrower than what mv and cp carry, and the asymmetry is the point of stating it: an attachment left behind is recoverable and one deleted with its parent is not. The cost is that the leftover is a real orphan — the RAW's row and its tags are gone, and the next scan indexes the JPEG as a photo of its own with nothing on it. Measured with the built binary: removing a RAW that had both an append-style sidecar and an attached JPEG trashed the RAW and the sidecar, left the JPEG in place, and the following scan gave it a fresh row."
+enforced_at = ["core/remove_exec.cpp:remove_media_with_sidecars", "core/sidecar.cpp:find_sidecars"]
+binds = ["remove.trash", "remove.hard"]
+protects = ["attachment", "original-file"]
+tests = ["RemoveExecTest.RemoveMediaCarriesSidecarsNotSiblings"]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "The listed test covers a RAW with an append-style sidecar and a same-stem JPEG. Nothing covers a Live Photo's video, which is not same-stem in general and is excluded for the same reason — the sidecar allowlist — so that half of the statement rests on reading find_sidecars rather than on a test."
+
+[[rule]]
+id = "R47"
+tier = "engine"
+concern = "attachments"
+statement = "A Live Photo's video is carried only when its still actually changes directory and the video has no row of its own."
+rationale = "The two conditions guard different mistakes. A video need not share its still's stem, so a parent that did not move would fail a path comparison and the carry would rename the user's video, or copy it to a second untracked name, during an operation that moved nothing — the guard is therefore on whether the parent changed directory, not on the paths. The row check is the other half: pairing says this video belongs to that still, which is not the same as scan having agreed to treat it as an attachment. Scan refuses a video claimed by two stills while the carry sees one match, and on the migration path from before plan 038 every MOV still has a row; carrying an indexed file would move it out from under its own row and log the move as a sidecar entry."
+enforced_at = ["core/organize_exec.cpp:carry_sidecars"]
+binds = ["organize.copy", "organize.move"]
+protects = ["attachment", "db-row"]
+tests = [
+    "OrganizeLivePhotoSafety.DoesNotCarryAVideoThatHasItsOwnRow",
+    "OrganizeLivePhotoSafety.DoesNothingWhenTheParentDidNotMove",
+    "OrganizeLivePhotoSafety.CarriesAnUnindexedPairedVideo",
+    "OrganizeLivePhoto.LeavesAnUnrelatedVideoWhereItIs",
+]
+test_kind = "witness"
+status = "holds"
