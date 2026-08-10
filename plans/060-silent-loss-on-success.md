@@ -127,25 +127,42 @@ totals go up and their sum exceeds the count the ticks are denominated against.
 
 ## R69 — `--output` destroys the file it is pointed at
 
-`cmd_search` and `cmd_duplicates` each hand `--output`'s path to a default
-`std::ofstream::open` (`cli/main.cpp:1040` and `:584`), whose mode truncates.
-There is no `--on-conflict` for `--output`, no prompt, no backup and no
-activity-log entry, so the bytes that were there leave no record anywhere.
+`cmd_search` and `cmd_duplicates` hand `--output`'s path to a default
+`std::ofstream::open`, whose mode truncates. There is no `--on-conflict` for
+`--output`, no prompt, no backup and no activity-log entry, so the bytes that
+were there leave no record anywhere.
+
+There are four such open sites, which is what open question 6 has to be
+written against: `cli/main.cpp:584` in `cmd_duplicates`, and `:962`, `:991` and
+`:1040` in `cmd_search`'s person, face and general branches. A fix applied to
+one of them leaves the other three truncating.
 
 R69's measurement, with the built binary against a scratch two-image
-collection: a 14-byte file reading `IRREPLACEABLE` came back 167 bytes of
-search results from `phig search --output`, exit 0 with nothing on stdout, and
-272 bytes of duplicate groups from `phig duplicates --output`, exit 0. A search
-matching nothing truncates it just the same — `--ext nosuchext` left 15 bytes
-reading `Found 0 images`. `fav list --output` is the same code, since
+collection: a 14-byte file reading `IRREPLACEABLE` came back as search results
+from `phig search --output`, exit 0 with nothing on stdout, as duplicate groups
+from `phig duplicates --output`, exit 0, as a path and a `Found 1 images` line
+from `phig search --person Alice --output`, and as `Found 0 matching faces`
+from `phig search --face <image> --output`. Sizes are not quoted because they
+are not properties of the rule — every one of those outputs prints collection
+paths, so its length follows where the scratch collection lives. A search
+matching nothing truncates the file just the same — `--ext nosuchext` left 15
+bytes reading `Found 0 images`. `fav list --output` is the same code, since
 `cmd_fav`'s list branch fills a `SearchOptions` and calls `cmd_search`
-(`cli/main.cpp:1749`); measured, it left the same 15 bytes.
+(`cli/main.cpp:1749`); it reaches the `:1040` site only, and measured, it left
+the same 15 bytes.
 
-The file survives in exactly one case. `--count` prints the count and returns
-at `cli/main.cpp:1032-1035`, before the stream is opened, so `phig search
---count --output` left the 14-byte file at 14 bytes and did nothing else with
-the flag. Whether the command destroys the file therefore turns on a flag that
-has nothing to do with output.
+Two cases leave the file alone on a run that exits 0. `--count` prints the
+count and returns before any stream is opened, on all three search branches
+(`cli/main.cpp:950-952`, `:983-985` and `:1032-1035`), so `phig search --count
+--output` left the 14-byte file at 14 bytes and did nothing else with the flag,
+and `fav list --count --output` did the same. And a person search that matches
+nobody returns at `cli/main.cpp:954-957`, before the `:962` open — measured, 14
+bytes unchanged, exit 0. `cmd_duplicates` has no equivalent: with nothing to
+report it truncates all the same, `--type exact` against a collection with no
+exact duplicates leaving 85 bytes of empty summary. The remaining survivals are
+error paths that exit 1 — either command's empty-database guard, and a `--face`
+query image phig cannot decode or finds no face in. Whether the command
+destroys the file therefore turns on flags that have nothing to do with output.
 
 This is the finding whose asset is not phig's. The destroyed file is an
 arbitrary path outside the collection — no row points at it, no rescan rebuilds
@@ -158,8 +175,8 @@ The fix lands in `cli/` and is the same scoping question as open question 3.
 ## Ordering: R60 does not wait for the others
 
 R60 destroys metadata no rescan can rebuild and needs a design decision. R27 and
-R48 are counter and status arithmetic in one file each. R69 is one decision and
-one `if`. Held as one plan because they share a shape, but the shape is the
+R48 are counter and status arithmetic in one file each. R69 is one decision
+applied at four sites. Held as one plan because they share a shape, but the
 reason to write them down together, not a reason to ship them together.
 
 So: R60 first and on its own. R27, R48 and R69 second, and if R60's design is
@@ -214,8 +231,8 @@ on how R60 is answered, and R60 depends on none of them.
    ordinary use. A flag (`--force`, or `--on-conflict` reused) keeps that
    working and costs a shipped command a new one. Appending is not a candidate:
    the formats are whole documents, and a JSON array concatenated onto another
-   is not JSON. Whichever way it goes, `--count` should stop accepting a flag it
-   ignores.
+   is not JSON. Whichever way it goes, it has to reach all four open sites, and
+   `--count` should stop accepting a flag it ignores.
 
 ## Relationship to other plans
 

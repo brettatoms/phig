@@ -1332,7 +1332,8 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
     //   name      reads a face id and writes it two statements later, but
     //             faces.id is AUTOINCREMENT (schema v8), so the id it read
     //             either still names the face it matched or names nothing.
-    //   identify  re-checks the embedding it compared on write.
+    //   identify  writes on that same id and under person_id IS NULL, so it
+    //             refuses a face another labeler named first.
     //   rebuild   reads each image id inside the transaction that writes its
     //             faces, so a row deleted underneath it skips one file.
     Database db(db_path);
