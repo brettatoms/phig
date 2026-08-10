@@ -25,6 +25,7 @@ tools that look for that filename resolve to something.
 | `scripts/` | Dev tooling (e.g. `clang-tidy.sh`). | — |
 | `docs/` | Cross-project specs/ledgers from when phig, phig-gtk, and phig-web were separate repos, plus execution artifacts owned by a numbered plan. Date-stamped files. | Historical record |
 | `plans/` | Numbered implementation plans (`NNN-name.md`) for the whole monorepo — the single index of what's outstanding. | Working index |
+| `rules/` | phig's data-integrity rules as TOML records: what must be true when a destination is occupied, when a row's file is gone, and what may destroy user-authored metadata. Plan 054. | Normative |
 | `MARKET.md` | Competitive analysis: the field, its recurring weaknesses, phig's differentiators. Dated, additive. | Working document |
 
 See each directory's `CLAUDE.md` for what it is, its stability contract, and
@@ -233,30 +234,60 @@ surface (`unistd.h`) and has not been audited for portability.
 
 ## CLI command reference
 
+Derived from `cli/main.cpp`, which parses 52 distinct flags. Check it against
+the source rather than trusting this block:
+`grep -oE '"--[a-z0-9-]+"' cli/main.cpp | tr -d '"' | sort -u`.
+
 ```bash
+# Global — recognized anywhere in the argv, before the command parsers see it
+phig [--config <path>] [--no-wait] <command> ...
+phig --version | --help
+
 # Scan a directory into the database
-phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--db <path>]
+phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--parallel N] [--db <path>]
 
 # Generate thumbnails
-phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--size N] [--parallel N] [--db <path>]
-phig thumbs clean [--db <path>]
+phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--parallel N] [--db <path>]
+phig thumbs clean [--dry-run] [--db <path>]
 
 # Find duplicate images
-phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--exclude <glob>] [--media image|video|all] [--fav] [--db <path>]
 
 # Copy files into YYYY/MM structure
-phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
 
 # Move files into YYYY/MM structure
-phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
 
 # Search the collection
-phig search [--count] [--db <path>] ...
+phig search [--ext <ext>] [--after <date>] [--before <date>] [--camera <s>] [--make <s>] [--min-size <n>] [--max-size <n>] [--media image|video|all] [--min-duration <d>] [--max-duration <d>] [--similar <image>] [--similar-hash <hex>] [--threshold 0-64] [--face <image>] [--face-threshold <f>] [--person <name>] [--tag <name>] [--gallery <name>] [--fav] [--blurry] [--min-sharpness <n>] [--max-sharpness <n>] [--match <glob>] [--exclude <glob>] [--limit N] [--count] [--porcelain] [--print0] [--format text|csv|json] [--output <path>] [--db <path>]
 
 # Remove images from the database and/or disk
-phig rm [--match <glob>] [--exclude <glob>] [--hard|--db-only|--orphans] [--dry-run] [--yes] [--db <path>]
+phig rm [--match <glob>] [--exclude <glob>] [--hard|--db-only|--orphans] [--ignore-mount-warning] [--dry-run] [--yes] [--db <path>]
 phig trash empty [--yes]
+
+# Tags, galleries, favorites
+phig tag add|remove <tag> [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig tag list [--db <path>]
+phig gallery set <name> [--no-overwrite] [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig gallery clear [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig gallery list [--db <path>]
+phig fav add|remove [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig fav list [--count] [--limit N] [--porcelain] [--print0] [--format text|csv|json] [--output <path>] [--db <path>]
+
+# Faces
+phig face name <image> <name> [--db <path>]
+phig face identify <name> [--db <path>]
+phig face rebuild [--match <glob>] [--exclude <glob>] [--parallel N] [--db <path>]
+phig face list [--db <path>]
+
+# Download the face detection/recognition models
+phig models download
 ```
+
+`--path <dir>` narrows by directory prefix on `tag`, `gallery` and `fav` only.
+`duplicates`, `cp` and `mv` reject it — measured, `Unknown option: --path` and
+exit 1 — even though `--path` reads as a natural fit for all three.
 
 Paths follow XDG conventions (all resolved in `core/paths.cpp`): database at
 `~/.local/share/phig/phig.db`, models at `~/.cache/phig/models`, thumbnails
@@ -311,8 +342,11 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   keyed by (SHA256, size). Deduplicates naturally, and sizes are independent:
   generating 768px never replaces or invalidates 512px, so a client can ask for
   what it needs without a cache-wide regeneration. 512 is the default that
-  `scan --thumbs` and `thumbs rebuild` write; `thumbs rebuild --size N` fills
-  another, and libphig generates one on demand when a lookup misses.
+  `scan --thumbs` and `thumbs rebuild` write, and libphig generates another size
+  on demand when a lookup misses. `ThumbsOptions::size` (`core/thumbs_engine.h:18`)
+  takes any size, but no CLI flag reaches it: `--size` is advertised by the help
+  text (`cli/main.cpp:129`) and has no parser branch, so `thumbs rebuild --size
+  768` prints `Unknown option: --size` and exits 1. Plan 043 owns wiring it.
 - **Video support** — scans video files (MP4/MOV/MKV/AVI/WebM etc.),
   extracts keyframe phash via OpenCV VideoCapture, metadata via
   libavformat. Videos stored with `media_type = 'video'`,
@@ -357,8 +391,9 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   on `<db>.lock` (`core/lockfile.cpp`) so whole operations serialize; reads
   never take it. Per-machine only. The `face` subcommands are the exception
   — they run lock-free, matching libphig's faces operation, and defend
-  themselves instead: `faces.id` is AUTOINCREMENT so a face id never names a
-  different face, `identify` re-checks the embedding it compared, and
+  themselves instead: `faces.id` is AUTOINCREMENT so a deleted id is never
+  reissued and a face deleted mid-run matches nothing, `identify` writes under
+  `person_id IS NULL` so it refuses a face another labeler named first, and
   `rebuild` reads each image id inside the transaction that writes its
   faces. A lock only excludes other lock-takers, so it was never protection
   against an ABI caller anyway.
@@ -408,6 +443,55 @@ plans should not be edited unless the user explicitly asks — it's fine to
 add cross-references to other plans. Changes to completed features get a new
 plan rather than editing the original. Always write a plan and get approval
 before implementing.
+
+## Rules of record
+
+`rules/` states what must be true when phig moves, deletes or overwrites —
+conflict resolution, reconciliation, atomicity, recoverability, metadata
+preservation, attachments, concurrency, cancellation, authorization. One TOML
+record per rule, each naming the statement, why it is that way, where it is
+enforced, which operations it binds, which asset it protects, and the test that
+pins it. `rules/README.md` is the field reference. Plan 054 owns the mechanism.
+
+**Read the relevant `rules/*.toml` before designing anything that moves,
+deletes or overwrites** — do not reconstruct the behaviour from call sites.
+That reconstruction is exactly what this exists to stop: designing plans 041
+and 042 turned up five cases where the code did something other than what it
+appeared to, each found by reading six files while designing something else.
+
+Four working rules:
+
+- **Changing a guard means updating its record in the same commit.** A rule
+  whose `enforced_at` no longer matches the code is worse than no rule,
+  because the next design will trust it.
+- **Enforcement belongs in `core/` or `libphig/`, never `cli/`.** A guard that
+  lives in `cli/` is unreachable by libphig, by `phigd`, and by every GUI — so
+  it is a finding to record, not a record to file. This is Interface
+  discipline above, applied to data safety.
+- **Behaviour no rule states? Write the rule.** A new guard, a new operation,
+  or a behaviour discovered while reading code each need a record. The
+  discovered-while-reading case is the important one — that is how all five
+  original findings surfaced, and none was ever reported as a bug.
+- **A rule the code violates is recorded, not deleted.** Set `status =
+  "violated"` and name an open plan as `owner`. Deleting the inconvenient rule
+  turns the record into a description of the code, which is the one thing it
+  must never become. The same applies to `test_gap` when a test is weaker than
+  the claim it pins.
+
+An **operation** in `rules/operations.toml` is a `core/` primitive that
+surfaces hang off (`surfaces_cli`, `surfaces_abi`, `surfaces_http`), not a CLI
+command — so a rule bound to an operation is inherited by every surface,
+including ones added later. A function that mutates but is internal to an
+operation goes in `core_internal`; rules anchor at it and bind the operation
+that covers it.
+
+Status: the enumeration phase is complete — 67 rules across the nine concerns,
+reported in `docs/plans/2026-08-09-054-enumeration-report.md`. The set is still
+incomplete on CLI flags: 054's phase 3 writes rules for the mutation-capable
+ones and records the read-only ones as `n/a`. The generator that produces the
+by-invariant / by-operation / by-asset views and the CI checks that keep records
+honest are phase 2 and do not exist yet, so records are maintained and verified
+by hand.
 
 ## Conventions
 

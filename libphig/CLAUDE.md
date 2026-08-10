@@ -36,12 +36,15 @@ contending with a CLI command that does hold the lock.
 
 **A lock-free operation is not excluded by the CLI's lock**, which is the
 consequence that bites: `phig face rebuild` and the faces operation do the same
-delete-and-reinsert of face rows, and `faces.id` is reused (plan 045), so a
-read-then-write elsewhere can land on a face it never read. `identify_person`
-handles this itself — its write matches on the embedding it compared, not the
-row id — but `phig face name` still relies on the lock and is therefore only
-safe against other lock-takers. Any new read-then-write on `faces.id` must
-assume an ABI operation is running beside it.
+delete-and-reinsert of face rows, so a read-then-write elsewhere can find the
+face it read gone before it writes. `faces.id` is AUTOINCREMENT as of schema v8
+(plan 045), so a deleted id is never issued again and such a write matches no
+row rather than landing on whichever face replaced it. The `face` subcommands
+take no lock at all and rely on that: `identify_person` adds `person_id IS
+NULL`, a compare-and-set that refuses a face another labeler named first, and
+`phig face name` reports that nothing was written when its row is gone. Any new
+read-then-write on `faces.id` must assume an ABI operation is running beside
+it, and must report the rows it changed rather than the statements it issued.
 
 **Index is the additive half of scan only.** It runs
 `ScanEngine::run_workers`, never `run_reconcile`, so rows for deleted or moved
@@ -97,8 +100,13 @@ defensible. Unresolved, and out of scope for plan 031.
   exception into an error code plus a message. `PHIG_TRY` expands to a null
   check on `ctx`, so it needs a context it can check; the ctx-less entry
   points (`phig_init`, the `records.cpp` free functions, and all of
-  `settings.cpp`) can't use it and instead wrap their body in a plain
-  `try`/`catch (...)`.
+  `settings.cpp`) can't use it and wrap their body in a plain
+  `try`/`catch (...)` instead. Three do not, and all three only free memory:
+  `phig_image_list_free` (`records.cpp:59-62`), `phig_string_free`
+  (`records.cpp:64`) and `phig_settings_free` (`settings.cpp:56`) are a bare
+  `delete`/`delete[]` with no handler. Every destructor they reach is a
+  standard container's, which is `noexcept`, so there is nothing for a handler
+  to catch — but a free function that grows a body needs one.
 - **`phig_last_error` is thread-local.** Read it on the thread whose call
   just failed — reading it from another thread, or after another call on
   the same thread has run, gets you the wrong (or no) message.

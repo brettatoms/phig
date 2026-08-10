@@ -66,14 +66,15 @@ struct IdentifyResult {
 // duration. Phase 2 commits the matches inside a single BEGIN IMMEDIATE, so the
 // labels land together rather than as one implicit transaction per face.
 //
-// Nothing serializes the gap between the phases, so phase 2 does not trust the
-// face ids phase 1 read. faces.id is INTEGER PRIMARY KEY without AUTOINCREMENT,
-// so SQLite reuses a deleted rowid: a concurrent rebuild that deletes and
-// reinserts a candidate in the gap can put a *different* face on an id phase 1
-// read. `set_face_person_if_unchanged` therefore matches on the embedding that
-// was compared, not the row number, so such a write updates zero rows — which is
-// why `labeled` counts changed rows rather than statements issued. A caller
-// needs no lock for this to be correct. Plan 045 removes the rowid reuse itself.
+// Nothing serializes the gap between the phases, so phase 2 re-checks each row
+// it writes through `set_face_person_if_unchanged` instead of trusting what
+// phase 1 read. faces.id is AUTOINCREMENT as of schema v8, so a candidate that
+// a concurrent rebuild deleted in the gap takes its id out of circulation for
+// good: the write matches no row, rather than landing on whichever face
+// replaced it. A candidate another labeler named in the gap keeps that name.
+// Either way the write updates zero rows, which is why `labeled` counts changed
+// rows rather than statements issued. A caller needs no lock for this to be
+// correct.
 //
 // SCALE: phase 1 materializes every unlabeled embedding (128 floats each) in
 // memory. That is the wrong shape for a collection with millions of faces; plan

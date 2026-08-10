@@ -1,0 +1,118 @@
+[[rule]]
+id = "R35"
+tier = "engine"
+concern = "metadata"
+statement = "A re-scan of an already-indexed path updates that row in place rather than replacing it, so the row keeps its id and the tags, favorite and gallery attached to it."
+rationale = "INSERT OR REPLACE deletes the row before inserting the new one, and with foreign_keys=ON that cascades image_tags and faces away and hands the file a new id, so every re-scan would silently strip the one thing a re-scan cannot rebuild. ON CONFLICT(path) DO UPDATE keeps the id and rewrites only the derived columns — hash, phash, dimensions, metadata blob, effective date — and gallery is not in the SET list at all, so a re-scan cannot clear it. The favorite flag needs no clause of its own because it is a row in image_tags like any other tag. Plan 022 finding #1 made this change. Measured with the built binary: tagging a file, favoriting it, setting its gallery and then re-scanning with --force left the tag, the favorite, the gallery and the row id exactly as they were."
+enforced_at = ["core/database.cpp:Database::insert"]
+binds = ["scan.walk"]
+protects = ["user-metadata", "db-row"]
+tests = [
+    "DatabaseTest.ReinsertPreservesRowIdAndTags",
+    "DatabaseTest.ReinsertPreservesGallery",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R36"
+tier = "engine"
+concern = "metadata"
+statement = "A re-scan clears a row's face data when the file's sha256 differs from the one recorded, or none was recorded, and keeps it — boxes, embeddings and person labels — when the two match."
+rationale = "A face box and its embedding describe pixels, so once the bytes change they describe pixels that no longer exist and repositioning them is not possible; dropping them is the only honest option and a later `face rebuild` or a `--force faces` scan replaces them. The other half matters more: a person label is user-authored and nothing can reconstruct it, so an unchanged file must not lose one to an ordinary re-scan, and `--force hash` alone must not either — the test is the hash, not the flag. run_workers depends on that: it re-adds this run's detections only when db_.has_faces is false, so a row that kept its faces does not also collect a duplicate set."
+enforced_at = [
+    "core/database.cpp:Database::insert",
+    "core/database.cpp:delete_faces_for_image",
+    "core/scan_engine.cpp:ScanEngine::run_workers",
+]
+binds = ["scan.walk"]
+protects = ["user-metadata"]
+tests = [
+    "DatabaseTest.ReinsertSameContentKeepsFaces",
+    "DatabaseTest.ReinsertChangedContentClearsFacesAndVecFaces",
+]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "Both tests call Database::insert directly and assert on the faces and vec_faces tables. Neither carries a person label, so the clause that matters most — an unchanged file keeps the name someone typed — is inferred from the label living on the same row rather than asserted, and nothing drives the pair through ScanEngine, where the has_faces guard against a duplicate second set lives."
+
+[[rule]]
+id = "R37"
+tier = "engine"
+concern = "metadata"
+statement = "A metadata transfer unions the source's tags onto the target, fills the target's gallery only when it has none, and moves the source's faces onto it only when the target has none; the source's tags and gallery are left in place."
+rationale = "The three fields fail differently, so they are resolved differently. Tags are a set and a union loses nothing, and the favorite flag rides along because it is a tag. A gallery is a single value, so one of the two has to win, and the target's is the later statement of intent — the user assigned it to the row that still has a file. Faces are the same choice with a sharper edge: detections already on the target came from the pixels that are still there, so stale boxes must not displace them, and the count is checked in C++ rather than as a NOT EXISTS in the UPDATE, which would see the rows it had just moved and stop after one. Faces are also the one field that leaves the source changed. The clause is UPDATE faces SET image_id = ?, a move rather than a copy, so a transfer that fires strips the source row of its faces — DatabaseTest.TransferUserMetadataMovesTagsGalleryFaces asserts exactly that. Each caller commits its own transfer alone, and the source row is deleted afterwards in a separate transaction that run_reconcile opens once every pass has finished, so a source row stripped of its faces and not yet deleted is a state the database really passes through and an interrupted run can leave standing; R38 is the ordering and R30 is the rule that owns what an interruption in that window leaves behind. The window costs no label: the faces sit on the row the pass designates as the survivor, and the next scan finishes the deletion. Measured by forcing the window by hand — moving a labelled face to the target and leaving the source row in place — then re-scanning, which removed the source row and left the face and the name alice on the target. The statement names what is left in place because a caller that transferred between two rows it meant to keep would find the source stripped, and no other rule would tell it."
+enforced_at = ["core/database.cpp:transfer_user_metadata"]
+binds = ["scan.reconcile", "relink.transfer", "relink.demote", "relink.demote_live_photo"]
+protects = ["user-metadata"]
+tests = [
+    "DatabaseTest.TransferUserMetadataMovesTagsGalleryFaces",
+    "DatabaseTest.TransferUserMetadataTargetGalleryAndFacesWin",
+    "RelinkTest.SingleCandidateTransfersMetadata",
+    "RelinkTest.DemotesJpegToSameBasenameRaw",
+]
+test_kind = "conformance"
+status = "holds"
+
+[[rule]]
+id = "R38"
+tier = "engine"
+concern = "metadata"
+statement = "Reconcile runs every transfer pass to completion before it deletes anything: the relink pass and both demote passes finish, and only then is the collected list of paths deleted."
+rationale = "The transfer reads the row it is about to lose, so the order is not a preference — a delete first would take the tags with it and leave nothing to move. This rule is the ordering only; which rows actually get a transfer is R16's, and the answer is not all of them — a stale row with no relink candidate, or with two, is deleted with its metadata rather than transferred. Both branches of run_reconcile have the same shape and neither interleaves: relink_moved_rows, then demote_jpeg_rows, then demote_live_photo_rows, then one delete_paths_logged (or delete_paths) over removed_paths plus every demoted path. That also means the demoted rows are not deleted by the pass that emptied them; they join the same list, which is what keeps the deletion in one transaction. Measured with the built binary: dropping a same-basename RAW beside an indexed, tagged JPEG and re-scanning moved the tag and the gallery onto the RAW row and wrote a relink entry and a purge_row entry in that order, under one scan operation."
+enforced_at = [
+    "core/scan_engine.cpp:ScanEngine::run_reconcile",
+    "core/relink.cpp:relink_moved_rows",
+    "core/relink.cpp:demote_jpeg_rows",
+    "core/relink.cpp:demote_live_photo_rows",
+]
+binds = ["scan.reconcile", "relink.transfer", "relink.demote", "relink.demote_live_photo"]
+protects = ["user-metadata", "db-row"]
+tests = [
+    "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget",
+    "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged",
+]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "The two listed tests drive run_reconcile end to end and show the metadata survives on the target, which is the ordering's effect. Neither asserts the deletion happened after the transfer rather than merely alongside it, and no test covers a Live Photo demotion inside run_reconcile at all — the two that exercise demote_live_photo_rows call it directly."
+
+[[rule]]
+id = "R39"
+tier = "engine"
+concern = "metadata"
+statement = "When a moved row and a demoted JPEG both transfer into the same surviving row, the moved row's gallery is the one that lands, because relink runs before demote and a gallery transfer fills only an empty target."
+rationale = "The case is ordinary: a RAW moves on disk and a JPEG sits beside its new location, so relink_moved_rows and demote_jpeg_rows both target the RAW's row. Every other field is order-independent — tags union, and faces move only into a row with none — so the whole of the ordering's visible effect is which gallery survives. The order is the one that keeps the user's own relocation authoritative: the moved row is the same photo the user filed, while the demoted JPEG is an attachment being folded in. Nothing in the code declares the dependency, so it is pinned by tests at both levels and stated here; the counts are identical either way, which is what makes it easy to invert by accident."
+enforced_at = [
+    "core/scan_engine.cpp:ScanEngine::run_reconcile",
+    "core/relink.cpp:relink_moved_rows",
+    "core/relink.cpp:demote_jpeg_rows",
+    "core/database.cpp:transfer_user_metadata",
+]
+binds = ["scan.reconcile", "relink.transfer", "relink.demote"]
+protects = ["user-metadata"]
+tests = [
+    "RelinkTest.RelinkRunsBeforeDemoteOnSharedTarget",
+    "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget",
+    "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R40"
+tier = "engine"
+concern = "metadata"
+statement = "Dropping a row because a move or a copy has taken its path writes a restore snapshot for it, so the tags and gallery that row carried can still be named afterwards."
+rationale = "Both organize branches drop a row that already names the destination: update_path_in_txn deletes it so repointing the source does not hit UNIQUE(path), and insert_copy replaces it. The deletion cascades image_tags and takes the gallery column with the row, and delete_faces_for_image clears the faces first because the FK cascade cannot reach vec_faces. Nothing is recorded — no purge_row entry, no restore_json, and the move or copy entry that is written names only the source and the destination. Plan 022 finding #8 ruled the deletion itself correct on the grounds that the old row described a dead file, and added the vec_faces cleanup; it did not consider the snapshot, and it predates plan 023, which established that phig transfers a stale row's metadata rather than dropping it. R04 states the snapshot rule for the other deleting paths and binds scan.reconcile and the four removal modes, so these two are the gap in its coverage. Measured with the built binary, no override and the default --on-conflict skip: a tracked file at the destination whose file had been deleted left a stale row carrying the tag 'precious' and the gallery 'wedding'; a subsequent mv of another file to that path reported Done: 1, Skipped: 0, Errors: 0 and exit 0, and the row, its tag association and its gallery were gone with only a move entry in the log. The same setup under cp replaced the row the same way."
+enforced_at = ["core/database.cpp:update_path_in_txn", "core/database.cpp:insert_copy"]
+binds = ["organize.copy", "organize.move"]
+protects = ["user-metadata", "db-row", "activity-log"]
+tests = [
+    "DatabaseTest.UpdatePathOntoStaleDestClearsItsFaces",
+    "DatabaseTest.InsertCopyOntoStaleDestClearsItsFaces",
+]
+test_kind = "witness"
+status = "violated"
+owner = "041"
+test_gap = "Both listed tests pin today's contrary behaviour — the occupant row and its faces go — which is what plan 022 asked for. Nothing tests the statement, because no code path implements it, and neither test puts a tag or a gallery on the row it destroys, so the loss those two carry is only visible by running the binary. UpdatePathOntoStaleDestClearsItsFaces is also one of the three DatabaseTest cases plan 046 records as failing on Linux, so on that platform this rule's only witness is InsertCopyOntoStaleDestClearsItsFaces. Plan 041's decision 6 now names update_path_in_txn and insert_copy explicitly and its Testing section specifies the two tests this rule needs — a tracked destination carrying a tag and a gallery, moved or copied onto under the default --on-conflict skip, produces a purge_row entry naming both — but neither test is written yet, so the gap is that the work is undone, not that 041's scope excludes it."

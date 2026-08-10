@@ -1,6 +1,6 @@
 ---
 name: Remove Command (phig rm, replaces purge)
-status: planned
+status: completed
 created: 2026-07-12
 description: >
   A `phig rm` command that removes selected images, with modes: trash

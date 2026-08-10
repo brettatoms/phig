@@ -1,0 +1,134 @@
+[[rule]]
+id = "R04"
+tier = "engine"
+concern = "recoverability"
+statement = "Deleting a row captures a restore snapshot sufficient to rebuild that row's user-authored metadata."
+rationale = "A rescan rebuilds hash, EXIF and thumbnails. It cannot rebuild a tag someone typed, a gallery assignment, or a face label. Partial rather than violated because exactly one of the three survives: gallery is a column on images and is in the snapshot's sixteen, while tags live in image_tags and faces in faces/vec_faces and both cascade away uncaptured. Measured: tagging a file, deleting it from disk and rescanning wrote a purge_row entry whose restore_json holds only those sixteen columns — the tag name appears nowhere in it, the image_tags row is gone, and the name survives in the tags table attached to nothing. Plan 041 decision 6 owns closing this and its acceptance criteria already require the tag names in restore_json."
+enforced_at = ["core/database.cpp:delete_paths_logged"]
+binds = ["scan.reconcile", "remove.trash", "remove.hard", "remove.db-only", "remove.orphans"]
+protects = ["user-metadata", "db-row"]
+tests = ["DatabaseTest.PurgeSnapshotMarksOmittedFaces", "DatabaseTest.PurgeLogsRestorableSnapshot"]
+test_kind = "conformance"
+status = "partial"
+owner = "041"
+test_gap = "The tests pin the shape the snapshot has today: one asserts a face count is recorded, the other that the path and sha256 are present. Neither asserts a tag, because no code path writes one, and neither round-trips the metadata. There is no restorer to round-trip against: plan 020 deferred phig undo and plan 053 records that the activity log has no reader in core/. PurgeSnapshotMarksOmittedFaces is also one of the three DatabaseTest cases plan 046 records as failing on Linux, so on that platform this rule's only other witness is PurgeLogsRestorableSnapshot."
+
+[[rule]]
+id = "R18"
+tier = "engine"
+concern = "recoverability"
+statement = "A log entry describing a database change is inserted inside the same transaction as that change, so the log never records a change that did not commit."
+rationale = "The log is the only account of what an operation did, and an account that disagrees with the database is worse than none, because a future undo would restore against a state that never existed. Every writer has the same shape: open a transaction, make the change, add the entry, commit — so a rollback takes the entry with it. delete_paths_logged widens the idea to a batch, with one BEGIN IMMEDIATE covering every row it deletes and every purge_row entry it writes."
+enforced_at = [
+    "core/organize_exec.cpp:execute_organize_action",
+    "core/relink.cpp:relink_moved_rows",
+    "core/relink.cpp:demote_jpeg_rows",
+    "core/relink.cpp:demote_live_photo_rows",
+    "core/database.cpp:delete_paths_logged",
+]
+binds = [
+    "organize.copy", "organize.move", "scan.reconcile", "relink.transfer",
+    "relink.demote", "relink.demote_live_photo", "remove.trash", "remove.hard",
+    "remove.db-only", "remove.orphans",
+]
+protects = ["activity-log", "db-row"]
+tests = [
+    "OrganizeExecTest.LogsEntryWhenOpIdProvided",
+    "RelinkTest.LogsRelinkEntryUnderOperation",
+    "DatabaseTest.PurgeLogsRestorableSnapshot",
+    "OrganizeExecTest.NoOpSelfMoveDoesNothingAndLogsNothing",
+]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "Every listed test drives the success path and checks the entry is there. Nothing drives the rollback half — a database write that throws after the entry was added, leaving neither behind. OrganizeExecTest.CopyRestoresPriorFileOnDbFailureOverwrite comes closest and passes op_id = 0, so there is no entry for it to look for."
+
+[[rule]]
+id = "R19"
+tier = "engine"
+concern = "recoverability"
+statement = "No entry in the activity log is ever updated or deleted on its own; the only removal is log_prune, which drops whole operations oldest-first and always keeps the newest."
+rationale = "A trail that can be edited in place records what someone wanted to have happened. The only statements against operation_entries are one INSERT in log_add_entry and the cascade from log_prune's DELETE FROM operations WHERE id <= ?, so an entry can only leave with the operation it belongs to; the cascade depends on PRAGMA foreign_keys=ON, set on every open. Keeping the newest operation even when it alone exceeds the cap is what stops a run pruning away its own record."
+enforced_at = ["core/database.cpp:log_add_entry", "core/database.cpp:log_prune"]
+binds = [
+    "organize.copy", "organize.move", "scan.reconcile", "relink.transfer",
+    "relink.demote", "relink.demote_live_photo", "remove.trash", "remove.hard",
+    "remove.db-only", "remove.orphans",
+]
+protects = ["activity-log"]
+tests = [
+    "DatabaseTest.LogPruneDropsOldestWholeOperations",
+    "DatabaseTest.LogPruneAlwaysKeepsNewestOperation",
+    "DatabaseTest.LogPruneUnlimitedIsNoOp",
+    "DatabaseTest.LogOperationRoundTrip",
+]
+test_kind = "conformance"
+status = "holds"
+
+[[rule]]
+id = "R23"
+tier = "engine"
+concern = "recoverability"
+statement = "The default removal mode moves a file into phig's trash directory under a generated name, retrying with a fresh one if that name is taken, so the removal is reversible from disk and never destroys what is already in the trash."
+rationale = "Trash is what lets rm be the ordinary removal command: the row goes, the bytes stay. The trash name is the file's stem plus eight random hex characters, generated rather than searched for, so there is no window between choosing a name and taking it. Uniqueness is not asserted: move_file refuses to clobber and throws errc::file_exists, and execute_trash_action loops back for a fresh name — that retry, not the randomness, is what makes the no-clobber claim true. Measured: removing a tracked file with the default mode moved it to <data_dir>/trash/c.5904e5a1.jpg and logged a trash entry naming that path, beside the purge_row entry for its row."
+enforced_at = ["core/remove_exec.cpp:execute_trash_action", "core/paths.cpp:trash_path_for"]
+binds = ["remove.trash"]
+protects = ["original-file", "attachment"]
+tests = [
+    "RemoveExecTest.TrashMovesFileAndLogs",
+    "RemoveExecTest.TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs",
+    "RemoveExecTest.TrashManySameNameFilesAllSurviveDistinctly",
+]
+test_kind = "witness"
+status = "holds"
+owner = "053"
+test_gap = "The tests cover filling the trash and its no-clobber retry under collision. Nothing asserts that a tracked file's trash entry is accompanied by the purge_row entry for its row — the pairing this rule's rationale measured by running the binary is not pinned by any test."
+
+[[rule]]
+id = "R25"
+tier = "engine"
+concern = "recoverability"
+statement = "Deleting a row captures its restore snapshot whether the activity log is enabled or not."
+rationale = "The snapshot lives in operation_entries.restore_json, so the switch that turns off the audit trail turns off the safety net with it. Reconcile's two branches diverge structurally rather than by a flag: the logged branch calls delete_paths_logged(to_delete, op_id) at scan_engine.cpp:587, the unlogged branch calls delete_paths(to_delete) at :611, a different function with no snapshot code in it at all. rm keeps one call path and passes op_id = 0, so delete_paths_logged builds the snapshot string and discards it. Plan 022 introduced the two branches and quotes both in its own diff, so the shape is on record; what is not is the consequence, that a user who turns off the log has also turned off the only thing that could restore a tag. Measured: with the log disabled, tagging a file, deleting it from disk and rescanning removed the row and wrote no operation and no entry — the only rows in operations were from an earlier logged run."
+enforced_at = [
+    "core/scan_engine.cpp:ScanEngine::run_reconcile",
+    "core/database.cpp:delete_paths",
+    "core/database.cpp:delete_paths_logged",
+]
+binds = ["scan.reconcile", "remove.trash", "remove.hard", "remove.db-only", "remove.orphans"]
+protects = ["user-metadata", "db-row", "activity-log"]
+tests = ["ScanEngine.RemovesRowsForFilesThatDisappeared"]
+test_kind = "witness"
+status = "partial"
+owner = "041"
+test_gap = "The unlogged branch is well covered for deletion and not at all for the snapshot's absence. ScratchCollection::options() sets log_enabled = false for every ScanEngine test in tests/test_scan_engine.cpp, and three of them delete files and rescan through delete_paths — the listed one, ScanEngine.ReconcileStillRunsAfterCancellation and ScanEngine.IgnoreMountWarningOverridesTheGuard. All three assert the rows are gone; none asserts that no operation and no entry were written, which is the clause this rule turns on and which came from running the binary."
+
+[[rule]]
+id = "R26"
+tier = "engine"
+concern = "recoverability"
+statement = "delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns."
+rationale = "Plan 041's guard inventory names this as the third of three guards on the delete path, so that once reconcile is split into a plan and an apply, a plan entry that has gone stale deletes nothing rather than something else. The guard is correct; nothing pins it yet — one call with an unknown path would. Filed as holds rather than unenforced, per the holds-plus-test_gap-plus-open-owner shape for a rule the code satisfies but no test fully pins, which R49, R53, R54 and R64 also use; unenforced stays reserved for a rule nothing could pin even in principle, which this is not. The skip is silent a second way: both callers discard the returned count. cmd_rm prints rows_to_delete.size() at remove_exec.cpp:198 and run_reconcile sets removed_count = removed_paths.size() at scan_engine.cpp:588, so a skipped path is still reported as removed."
+enforced_at = ["core/database.cpp:delete_paths_logged"]
+binds = ["scan.reconcile", "remove.trash", "remove.hard", "remove.db-only", "remove.orphans"]
+protects = ["db-row", "activity-log"]
+tests = []
+test_kind = "conformance"
+status = "holds"
+owner = "054"
+test_gap = "Nothing calls delete_paths_logged with a path that has no row, so neither the skip nor the returned count is pinned. Both callers build their list from rows they have just read, so today the branch is reachable only when another writer removes one in between; plan 041's plan/apply split is what makes it reachable in ordinary use, which is why the guard is there."
+
+[[rule]]
+id = "R27"
+tier = "engine"
+concern = "recoverability"
+statement = "An operation that did not do everything it was asked to do is recorded with a terminal status that says so."
+rationale = "cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply writes interrupted only when result.completed is false, and that is false only for cancellation — a file whose move threw increments result.errors and leaves completed true. So the same fact, some files did not make it, produces two different terminal statuses depending on which command wrote the log, and a reader cannot tell a clean copy run from one that lost half its files. The CLI compounds it: cmd_organize prints the error count and then returns 0, so a cp that failed on every file exits successfully, while cmd_rm returns 1. Plan 060 owns it: the shared shape across R27, R48 and R60 is an operation that finishes, reports success and exits 0 while something that matters is wrong, and here that something is the terminal status itself. Plan 053 is about what a client can reach through the ABI, not about what an operation destroys or how it counts, so it cannot close this."
+enforced_at = ["core/remove_exec.cpp:cmd_rm", "core/organize_engine.cpp:OrganizeEngine::apply"]
+binds = ["remove.trash", "remove.hard", "remove.db-only", "remove.orphans", "organize.copy", "organize.move"]
+protects = ["activity-log"]
+tests = ["OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted"]
+test_kind = "witness"
+status = "violated"
+owner = "060"
+test_gap = "The listed test pins the cancellation case, where organize does write interrupted. Nothing covers a run with per-file errors, which is where the two commands disagree, and nothing pins either command's exit code on that path."
