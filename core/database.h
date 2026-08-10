@@ -224,11 +224,18 @@ class Database {
     // otherwise, having written nothing.
     //
     // For a caller that read a face id, released its read, and comes back to
-    // write. `faces.id` is INTEGER PRIMARY KEY without AUTOINCREMENT, so SQLite
-    // hands a deleted rowid to the next insert and a bare `WHERE id = ?` can
-    // land on a face the caller never saw. The embedding is the thing that was
-    // compared, so matching on it is what makes the write refer to the same
-    // face rather than the same row number.
+    // write. Two clauses carry that. `faces.id` is AUTOINCREMENT as of schema
+    // v8, so a deleted id is never issued again and a face deleted in the gap
+    // fails `id = ?` and updates nothing. `person_id IS NULL` makes this a
+    // compare-and-set against another labeler, which matters because the faces
+    // paths run lock-free and two of them can reach the same candidate.
+    //
+    // `embedding = ?` is belt-and-braces. With ids never reused and no
+    // statement that rewrites an embedding in place, it cannot change the
+    // outcome of any write phig currently produces. It is kept because it
+    // states the contract the caller wants — the write refers to the face that
+    // was compared, not to a row number — and would catch an in-place
+    // embedding rewrite if one were added.
     bool set_face_person_if_unchanged(int64_t face_id, int64_t person_id,
                                       const std::array<float, 128>& embedding);
     int64_t find_closest_face(const std::array<float, 128>& embedding, float threshold);

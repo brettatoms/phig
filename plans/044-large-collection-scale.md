@@ -109,9 +109,10 @@ O(candidates × references) with an early break on first match. At 2M candidates
 and 50 references that is up to 100M distance computations over 128 floats each.
 `vec_faces` has KNN search and `search_faces` already uses it; identify does not.
 
-This one also costs more than CPU: `face identify` holds phig's process-wide
-writer lock for its whole run (plan 031, `core/faces_engine.h`), so every other
-mutating command waits on a comparison phase that scales with the collection.
+The cost falls on the command itself, not on the rest of the machine: `face
+identify` takes no writer lock (`cmd_face`, `cli/main.cpp`), so a comparison
+phase that scales with the collection delays no other mutating command. That
+makes this a throughput problem for identify, not a contention one.
 
 ### 5. `get_all_images` carries a metadata blob none of its callers read
 
