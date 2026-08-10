@@ -353,5 +353,112 @@ class OwnerTest(unittest.TestCase):
             self.assertEqual(rules.check_owners(model), [])
 
 
+# Shapes taken from build/test-results.xml: gtest writes status="run" for a
+# test that ran and status="notrun" with a <skipped/> child for GTEST_SKIP.
+GTEST_XML = """<?xml version="1.0"?>
+<testsuites tests="3" failures="1">
+  <testsuite name="OrganizeEngineTest" tests="1">
+    <testcase name="OverwritePolicyStillRenamesAroundAnExistingFile" status="run"/>
+  </testsuite>
+  <testsuite name="DatabaseTest" tests="1">
+    <testcase name="PurgeSnapshotMarksOmittedFaces" status="run">
+      <failure message="SQL logic error"/>
+    </testcase>
+  </testsuite>
+  <testsuite name="MoveFileTest" tests="1">
+    <testcase name="CrossDeviceRefusesToOverwriteExistingDest" status="notrun"
+              result="skipped">
+      <skipped message="temp dir is on one filesystem"/>
+    </testcase>
+  </testsuite>
+</testsuites>
+"""
+
+PASSING = '"OrganizeEngineTest.OverwritePolicyStillRenamesAroundAnExistingFile"'
+
+
+class TestAnchorTest(unittest.TestCase):
+    def results(self, root):
+        path = root / "results.xml"
+        path.write_text(GTEST_XML)
+        return rules.load_test_results(path)
+
+    def build(self, root, rule_text):
+        write(root, "taxonomy.toml", MINIMAL_TAXONOMY)
+        write(root, "operations.toml", MINIMAL_OPS)
+        write(root, "conflict.toml", rule_text)
+        return rules.load(root)
+
+    def test_results_are_parsed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            res = self.results(pathlib.Path(tmp))
+            self.assertEqual(
+                res["OrganizeEngineTest.OverwritePolicyStillRenamesAroundAnExistingFile"],
+                "passed")
+            self.assertEqual(res["DatabaseTest.PurgeSnapshotMarksOmittedFaces"], "failed")
+            self.assertEqual(
+                res["MoveFileTest.CrossDeviceRefusesToOverwriteExistingDest"], "skipped")
+
+    def test_holds_rule_with_passing_test_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, GOOD_RULE)
+            self.assertEqual(rules.check_tests(model, self.results(root)), [])
+
+    def test_holds_rule_with_failing_test_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            text = GOOD_RULE.replace(PASSING, '"DatabaseTest.PurgeSnapshotMarksOmittedFaces"')
+            problems = rules.check_tests(self.build(root, text), self.results(root))
+            self.assertTrue(any("failed" in p for p in problems))
+
+    def test_a_cited_test_missing_from_the_run_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            text = GOOD_RULE.replace(PASSING, '"OrganizeEngineTest.RenamedAwayLastWeek"')
+            problems = rules.check_tests(self.build(root, text), self.results(root))
+            self.assertTrue(any("RenamedAwayLastWeek" in p for p in problems))
+
+    def test_a_skipped_test_is_neither_a_pass_nor_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            text = GOOD_RULE.replace(
+                PASSING, '"MoveFileTest.CrossDeviceRefusesToOverwriteExistingDest"')
+            self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
+
+    def test_holds_rule_with_no_test_and_no_gap_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, GOOD_RULE.replace(f"tests = [{PASSING}]", "tests = []"))
+            problems = rules.check_tests(model, self.results(root))
+            self.assertTrue(any("R01" in p and "no test" in p for p in problems))
+
+    def test_holds_rule_with_no_test_but_a_gap_and_owner_is_clean(self):
+        # R26's shape: the code satisfies the rule, nothing pins it, 054 owns it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            text = (GOOD_RULE.replace(f"tests = [{PASSING}]", "tests = []")
+                    + '\ntest_gap = "nothing calls it with an unknown path"\nowner = "054"\n')
+            self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
+
+    def test_violated_rule_with_no_test_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            text = (GOOD_RULE
+                    .replace('status = "holds"', 'status = "violated"\nowner = "041"')
+                    .replace(f"tests = [{PASSING}]", "tests = []"))
+            self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
+
+    def test_violated_rule_pinning_contrary_behaviour_may_fail(self):
+        # R08's shape: its one test asserts what the code does today, not what
+        # the rule says, so its outcome is not check 2's business.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            text = (GOOD_RULE
+                    .replace('status = "holds"', 'status = "violated"\nowner = "059"')
+                    .replace(PASSING, '"DatabaseTest.PurgeSnapshotMarksOmittedFaces"'))
+            self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

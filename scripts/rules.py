@@ -7,6 +7,7 @@ import pathlib
 import re
 import sys
 import tomllib
+import xml.etree.ElementTree as ET
 
 STATUSES = {"holds", "partial", "violated", "unenforced"}
 # sanitizer has no members in the shipped set — 54 witness, 10 conformance,
@@ -267,6 +268,53 @@ def check_owners(model):
     return problems
 
 
+def load_test_results(xml_path):
+    """Map 'Suite.Name' to 'passed', 'failed' or 'skipped', from gtest XML."""
+    results = {}
+    for suite in ET.parse(xml_path).getroot().iter("testsuite"):
+        for case in suite.iter("testcase"):
+            name = f"{suite.get('name')}.{case.get('name')}"
+            if case.get("status") == "notrun" or case.get("result") == "skipped" \
+                    or case.find("skipped") is not None:
+                results[name] = "skipped"
+            elif case.find("failure") is not None or case.find("error") is not None:
+                results[name] = "failed"
+            else:
+                results[name] = "passed"
+    return results
+
+
+def check_tests(model, results):
+    """Check 2: a 'holds' rule's tests exist and pass.
+
+    Three deliberate limits, each settled from a measurement — see this task's
+    preamble. A skipped test is neither a pass nor a failure. A violated or
+    partial rule's tests are checked for existence only, because R08's and
+    R40's pin the contrary behaviour on purpose. And a 'holds' rule may name no
+    test at all when it carries a test_gap and an owner, which is what
+    rules/README.md defines that shape to mean.
+    """
+    problems = []
+    for rule in model.rules:
+        rid = rule.get("id", "<no id>")
+        names = rule.get("tests", [])
+
+        for name in names:
+            if name not in results:
+                problems.append(f"{rid}: test '{name}' is in no test run — "
+                                f"renamed, deleted, or never written")
+
+        if rule.get("status") != "holds":
+            continue
+        if not names and not (rule.get("test_gap") and rule.get("owner")):
+            problems.append(f"{rid}: status 'holds' but no test named, and no "
+                            f"test_gap with an owner saying why")
+        for name in names:
+            if results.get(name) == "failed":
+                problems.append(f"{rid}: test '{name}' failed")
+    return problems
+
+
 CHECKS = [check_schema, check_sources, check_owners]
 
 
@@ -274,10 +322,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="run every check")
     parser.add_argument("--root", default=pathlib.Path(__file__).resolve().parent.parent)
+    parser.add_argument("--test-results", dest="test_results",
+                        help="gtest XML from --gtest_output=xml:PATH")
     args = parser.parse_args(argv)
 
     model = load(pathlib.Path(args.root))
     problems = [p for check in CHECKS for p in check(model)]
+    if args.test_results:
+        problems += check_tests(model, load_test_results(args.test_results))
     for problem in problems:
         print(f"rules: {problem}", file=sys.stderr)
     if problems:
