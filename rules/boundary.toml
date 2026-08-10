@@ -1,0 +1,116 @@
+# tier = "boundary" rules: they live at an interface rather than inside a core/
+# primitive, so they carry binds_surface instead of binds. Grouped by tier
+# rather than by concern, which is why this file holds several concerns.
+
+[[rule]]
+id = "R62"
+tier = "boundary"
+concern = "atomicity"
+statement = "No C++ exception crosses an ABI entry point."
+rationale = "Where a phig_ctx* is in scope the body is wrapped in PHIG_TRY/PHIG_CATCH, which converts an exception into a status plus a thread-local message: LockBusy to PHIG_ERR_BUSY, any other std::exception to PHIG_ERR_DB, anything else to PHIG_ERR_INTERNAL. PHIG_TRY expands to a null check on ctx, so the ctx-less entry points cannot use it and wrap their bodies in a plain try/catch(...) instead — phig_init does, and so does each of settings.cpp's thirteen. The hole is the entry points that return something other than phig_status. Scripted over phig.h's 69 PHIG_API declarations, 37 have no handler of their own. Most are trivially non-throwing accessors, or delegate to a wrapped helper — phig_op_copy_start and phig_op_move_start both call start_apply, which uses PHIG_TRY. But phig_query_add_tag push_backs a std::string, the ten phig_query_set_* functions assign one, and phig_op_poll copies the path and error strings, so each can throw std::bad_alloc into a C caller with no way to catch it. No plan states this."
+enforced_at = [
+    "libphig/internal.h:PHIG_TRY",
+    "libphig/internal.h:PHIG_CATCH",
+    "libphig/context.cpp:phig_init",
+]
+binds_surface = ["abi"]
+protects = ["db-row"]
+tests = [
+    "AbiOperations.FailedOperationReportsItsMessageAndRefusesAResult",
+    "AbiMutate.EachThreadSeesOnlyItsOwnError",
+    "Abi.InitFailsOnUnopenableDatabase",
+]
+test_kind = "witness"
+status = "partial"
+owner = "053"
+test_gap = "The listed tests show a thrown exception arriving as a status and a message on the wrapped paths. Nothing exercises an unwrapped entry point under allocation failure, which is the only way to reach the hole, and nothing enumerates the entry points to check each has a handler — the count of 37 came from a script run once while writing this record, not from a gate."
+
+[[rule]]
+id = "R63"
+tier = "boundary"
+concern = "concurrency"
+statement = "phig_last_error returns the calling thread's own last message, and only until that thread's next ABI call."
+rationale = "The storage is a function-local static thread_local std::string; PHIG_TRY clears it on entry and PHIG_CATCH sets it, so a later success on that thread wipes the message and a failure on another thread never appears in it. That is what lets a client drive one phig_ctx from several threads and still attribute an error to the call that produced it, which the handle-plus-poll operation model makes routine. The ctx argument is checked for null and otherwise ignored: the message is per-thread, not per-context, so two contexts used on one thread share the slot."
+enforced_at = [
+    "libphig/context.cpp:phig_thread_last_error",
+    "libphig/context.cpp:phig_last_error",
+    "libphig/internal.h:PHIG_TRY",
+]
+binds_surface = ["abi"]
+protects = []
+tests = ["AbiMutate.EachThreadSeesOnlyItsOwnError", "Abi.LastErrorOnNullCtxReturnsEmptyString"]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R64"
+tier = "boundary"
+concern = "atomicity"
+statement = "Adding a symbol bumps PHIG_ABI_VERSION_MINOR and the CMake VERSION, and never SOVERSION."
+rationale = "SOVERSION is the major alone, so an additive, backward-compatible change keeps the soname and existing callers need no rebuild; only an incompatible change bumps SOVERSION and MAJOR. The two numbers are hand-maintained in two files and agree today — phig.h has MAJOR 1 and MINOR 3, libphig/CMakeLists.txt has VERSION 1.3.0 and SOVERSION 1, with a comment there saying it must track the header. Nothing checks the agreement: phig_abi_version() packs the two header macros together, so a test comparing it to the header cannot see that either has drifted from the CMake value, and CI has no ABI step. Adding a symbol needs no edit to the export lists, which match on the phig_ prefix rather than on a list of names, so the version bump is the only manual step and therefore the only one that can be forgotten."
+enforced_at = [
+    "libphig/include/phig/phig.h:PHIG_ABI_VERSION_MINOR",
+    "libphig/CMakeLists.txt:SOVERSION",
+]
+binds_surface = ["abi"]
+protects = []
+tests = ["Abi.VersionMajorMatchesHeader"]
+test_kind = "conformance"
+status = "unenforced"
+owner = "054"
+test_gap = "The listed test checks that phig_abi_version()'s high half equals PHIG_ABI_VERSION_MAJOR, a property of one expression that would still pass with the CMake VERSION and SOVERSION set to anything at all. Nothing compares the header against libphig/CMakeLists.txt, and nothing counts exported symbols against the minor, so both halves of this rule rest on whoever remembers."
+
+[[rule]]
+id = "R65"
+tier = "boundary"
+concern = "atomicity"
+statement = "phig_op_progress gains no field: a new counter means a new struct and a new poll symbol."
+rationale = "The struct is caller-allocated and filled by phig_op_poll, with no size and no version member, so a client built against an older header would have a newer libphig.so write past the end of its buffer — corruption the client cannot detect, not an error it can check for. phig_op_progress2 with phig_op_poll2 is the additive answer and keeps the soname. Adding a size member to the existing struct is the cleaner fix and is free only while nothing outside the repo links libphig (plan 040); that window shuts the moment a client ships against it. The neighbouring enums do have the provision the struct lacks — phig_op_stage is append-only and never renumbered, and tests/test_libphig_c_compile.c pins every phig_status, phig_op_state and phig_op_stage value with a negative-width bitfield so a renumber fails the build. The struct has no equivalent pin: nothing asserts its size or its field order."
+enforced_at = ["libphig/include/phig/phig.h:phig_op_progress"]
+binds_surface = ["abi"]
+protects = []
+tests = []
+test_kind = "conformance"
+status = "unenforced"
+owner = "054"
+test_gap = "A sizeof pin in tests/test_libphig_c_compile.c would catch a field added to this struct the same way the existing bitfield pins catch a renumbered enum, and none is written. Until one is, the rule is prose in libphig/CLAUDE.md and nothing more."
+
+[[rule]]
+id = "R66"
+tier = "boundary"
+concern = "authorization"
+statement = "A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run."
+rationale = "No ABI entry point takes a confirmation callback and none can: no callback may run on an engine thread under the handle-plus-poll model, and a callback has no meaning over the wire protocol plan 052 designs, where nothing can call back into a browser mid-request. cmd_rm's ConfirmFn is a cli/ affordance for a command with no plan phase, not a model to copy. Organize is the worked example and carries all three properties the shape is meant to bring: the plan is a caller-owned value that phig_op_organize_plan_take copies out and the caller frees, so it outlives the operation that computed it and start_apply snapshots it again on the way in; apply re-verifies every decision at execution time, so a stale plan cannot cause an action the re-check would not independently justify; and which decisions are overridable is a property of the decision type rather than of the mechanism (R59). The gap is faces: phig_op_faces_start is destructive — operations.toml marks faces.rebuild so, and R60 measures what it destroys — and it has no plan phase, so the one ABI operation that deletes user-authored metadata is the one with no authorization step. Remove and reconcile are not counterexamples: neither is reachable through the ABI yet, which 053 and 041 own."
+enforced_at = [
+    "libphig/organize.cpp:phig_op_organize_plan_take",
+    "libphig/organize.cpp:start_apply",
+    "core/organize_engine.cpp:OrganizeEngine::apply",
+]
+binds_surface = ["abi"]
+protects = ["original-file", "user-metadata", "db-row"]
+tests = [
+    "AbiOrganizeTest.PlanStaysUsableAfterTheOperationIsFreed",
+    "AbiOrganizeTest.PlanMayBeFreedImmediatelyAfterApplyStarts",
+    "AbiOrganizeTest.MoveAppliesThePlanAndTheSourceIsGone",
+    "AbiOrganizeTest.OverriddenOverwriteReplacesAnUntrackedOccupant",
+]
+test_kind = "conformance"
+status = "partial"
+owner = "053"
+test_gap = "Every listed test is organize. Nothing asserts the negative — that no entry point takes a callback — and nothing covers faces, whose missing plan phase is why this is partial rather than holds."
+
+[[rule]]
+id = "R67"
+tier = "boundary"
+concern = "cancellation"
+statement = "phig_op_free joins the operation's worker rather than detaching it, so no engine thread outlives the handle or the Database it writes through."
+rationale = "The worker holds raw pointers to the phig_op and to the per-operation Database the handle owns, so returning while it still runs would leave it writing through freed memory — a use-after-free onto a live SQLite connection, which is the shape of corruption a client can neither see nor recover from. Joining makes phig_op_free block for as long as the item in flight takes; a caller that does not want to wait calls phig_op_cancel first, and cancellation lands between items (R57), so the wait is bounded by one item rather than by the run. phig_op_wait is the same join without the free."
+enforced_at = ["libphig/operations.cpp:phig_op_free", "libphig/operations.cpp:phig_op_wait"]
+binds_surface = ["abi"]
+protects = ["db-row"]
+tests = [
+    "AbiOperations.FreeWhileRunningWaitsForTheWorker",
+    "AbiOperations.CancelIsIdempotentAndSafeAfterCompletion",
+]
+test_kind = "witness"
+status = "holds"

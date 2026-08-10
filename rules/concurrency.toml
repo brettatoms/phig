@@ -10,3 +10,146 @@ protects = ["user-metadata"]
 tests = ["IdentifyTest.ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch"]
 test_kind = "sanitizer"
 status = "holds"
+
+[[rule]]
+id = "R49"
+tier = "engine"
+concern = "concurrency"
+statement = "The advisory writer lock excludes only processes that construct one on the same file: no read takes it, and it never excludes a writer that takes none."
+rationale = "WriterLock is an flock(2) on a sidecar file, held for the object's lifetime and released by the kernel on process death, so there are no stale locks to clear. Advisory is the whole shape of the guarantee — every promise it makes is a promise about lock-takers, which is why the face subcommands and libphig's operations can run beside it by design rather than by accident. core/ defines the class and constructs one nowhere; the ten call sites are branches of cli/main.cpp, and libphig constructs one only around its five metadata writes. Measured with the built binary while a separate process held the flock on ~/.local/share/phig/phig.db.lock: search --count, duplicates, face list and tag list all completed normally, and so did a mutating 'phig face rebuild', while thumbs rebuild, rm and tag add were refused under --no-wait with 'Another phig operation is running'."
+enforced_at = ["core/lockfile.cpp:WriterLock"]
+binds = [
+    "scan.walk", "scan.reconcile", "organize.plan", "organize.copy", "organize.move",
+    "remove.trash", "remove.hard", "remove.db-only", "remove.orphans", "trash.empty",
+    "thumbs.rebuild", "metadata.write", "relink.transfer", "relink.demote",
+    "relink.demote_live_photo",
+]
+protects = ["db-row", "original-file"]
+tests = [
+    "LockfileTest.AcquiresAndReleases",
+    "LockfileTest.NoWaitThrowsWhenHeldByAnotherFd",
+    "LockfileTest.WaitBlocksThenAcquiresAfterRelease",
+]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "The three tests drive WriterLock directly, with a raw flock on a second descriptor standing in for the other process. Nothing pins which commands take it: the call sites are in cli/main.cpp, outside this anchor and outside every test, so 'no read takes it' was measured by running the binary rather than asserted anywhere."
+
+[[rule]]
+id = "R50"
+tier = "engine"
+concern = "concurrency"
+statement = "A mutating command's advisory lock is taken on the lock file belonging to the database that command is about to write."
+rationale = "It is not. lock_path() takes no argument and returns default_db_path() + '.lock', and cli/main.cpp's acquire_writer_lock calls it after --db has already been parsed, so every CLI command locks the default collection's sidecar whatever database it was given — while libphig locks ctx->db_path + '.lock'. Measured with the built binary, both directions: 'phig --no-wait tag add' against a scratch database succeeded while a separate process held the flock on that database's own .lock file, and the same command was refused with 'Another phig operation is running' while that process instead held ~/.local/share/phig/phig.db.lock. So the CLI serializes commands that share no database, and fails to exclude an ABI caller on the database it was actually given. Plan 029 contains both halves and they disagree with each other: its acceptance criteria say the lock is per-machine and per-DB, and its implementation step defines lock_path() as default_db_path() + '.lock'. 029 is completed and cannot own the fix; the owner below is the nearest open plan, not one that states this."
+enforced_at = [
+    "core/paths.cpp:lock_path",
+    "core/lockfile.cpp:WriterLock",
+    "libphig/mutate.cpp:phig_acquire_write_lock",
+]
+binds = [
+    "scan.walk", "scan.reconcile", "organize.plan", "organize.copy", "organize.move",
+    "remove.trash", "remove.hard", "remove.db-only", "remove.orphans", "trash.empty",
+    "thumbs.rebuild", "metadata.write", "relink.transfer", "relink.demote",
+    "relink.demote_live_photo",
+]
+protects = ["db-row", "user-metadata"]
+tests = []
+test_kind = "subprocess"
+status = "violated"
+owner = "053"
+test_gap = "Nothing tests which file a command locks. LockfileTest is handed a path, and the choice of path is made in cli/main.cpp, which no test drives. Both directions above were measured by running the binary."
+
+[[rule]]
+id = "R51"
+tier = "engine"
+concern = "concurrency"
+statement = "A face id names the same face for as long as that face exists: faces.id is AUTOINCREMENT, so a deleted id is never handed to a later insert."
+rationale = "A plain INTEGER PRIMARY KEY is the rowid and is assigned max(rowid)+1, so deleting the highest face gives its id to the next insert — and a full face rebuild deletes and reinserts at the tail of this table for the whole collection, which makes that the steady state rather than a corner case. AUTOINCREMENT costs one sqlite_sequence row and buys the property the three lock-free face paths lean on. Schema v8 both creates the table that way and migrates an existing one by copying rows into faces_new with their ids preserved, deliberately leaving vec_faces untouched because it is keyed on faces.id and is a vec0 virtual table the copy cannot reach. Two comments in core/ still describe the pre-v8 world and are now wrong: core/faces_engine.h and core/database.h each say faces.id is 'INTEGER PRIMARY KEY without AUTOINCREMENT' and explain the surrounding defences as compensating for reuse that no longer happens. cli/main.cpp's cmd_face comment has the current version."
+enforced_at = ["core/database.cpp:init_schema"]
+binds = ["faces.rebuild", "faces.identify"]
+protects = ["user-metadata"]
+tests = [
+    "IdentifyTest.RowidsAreNotReusedAfterADelete",
+    "FacesMigrationV8.PreservesIdsLabelsAndVectorsAndStopsReuse",
+    "IdentifyTest.NameDoesNotLabelAFaceItDidNotMatchWhenARebuildRecyclesIds",
+]
+test_kind = "conformance"
+status = "holds"
+
+[[rule]]
+id = "R52"
+tier = "engine"
+concern = "concurrency"
+statement = "A face rebuild reads an image's id inside the same transaction that writes that image's faces, so an image deleted while the worker waits for the write lock costs one skipped file rather than the whole run."
+rationale = "The gap between reading an id and opening the write transaction is two statements wide, and BEGIN IMMEDIATE waits on the 30-second busy timeout, so a concurrent rm holding the write lock holds that window open for as long as it likes. An insert against a deleted image_id violates the foreign key and throws, and parallel_for_each stops every worker on the first exception, so the cost of losing the race outside the transaction is the entire rebuild. Reading the id inside it means the write lock is already held and what was read cannot be deleted underneath it; a row that went before the transaction opened yields image_id < 0, a rollback and one recorded skip."
+enforced_at = ["core/faces_engine.cpp:FacesEngine::run"]
+binds = ["faces.rebuild"]
+protects = ["db-row", "user-metadata"]
+tests = ["FacesEngineRun.ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun"]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "The single witness calls models_or_skip() and skips wherever the YuNet and SFace models are absent, which includes CI — .github/workflows/ci.yml downloads no models — so the gate that guards this branch has no evidence for it. It passed locally against models in ~/.cache/phig/models."
+
+[[rule]]
+id = "R53"
+tier = "engine"
+concern = "concurrency"
+statement = "The busy timeout is set before the connection issues its first statement, so a process opening a collection concurrently with another waits rather than failing."
+rationale = "PRAGMA journal_mode=WAL takes an exclusive lock to rewrite the file header, so the very first statement on a fresh connection is itself contendable. Setting sqlite3_busy_timeout after it leaves that one statement with no busy handler, which is what made DatabaseConcurrency.ConcurrentMigrationIsSafe flake at roughly one run in ten until 73d1e1a. The ordering is the whole rule: the same two calls in the other order compile, pass most runs, and fail under load."
+enforced_at = ["core/database.cpp:Database::Database"]
+binds = [
+    "scan.walk", "scan.reconcile", "organize.plan", "organize.copy", "organize.move",
+    "remove.trash", "remove.hard", "remove.db-only", "remove.orphans",
+    "thumbs.rebuild", "faces.rebuild", "faces.identify", "metadata.write",
+    "relink.transfer", "relink.demote", "relink.demote_live_photo",
+]
+protects = ["db-row"]
+tests = ["DatabaseConcurrency.ConcurrentMigrationIsSafe"]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "The listed test races concurrent first-runs and would catch a regression only statistically — it is the test that flaked at about 10% when the ordering was wrong, so one green run is weak evidence. Nothing asserts the ordering itself."
+
+[[rule]]
+id = "R54"
+tier = "engine"
+concern = "concurrency"
+statement = "The connection is opened SQLITE_OPEN_FULLMUTEX explicitly, so one shared connection called from several threads is serialized by SQLite rather than by how the system SQLite was compiled."
+rationale = "libphig's header promises that a phig_ctx may be called concurrently from several threads, and a ctx holds one Database. A system SQLite compiled THREADSAFE=1 (serialized) mutexes every connection and the promise holds for free; one compiled THREADSAFE=2 (multi-thread) defaults to NOMUTEX, where sharing a connection is undefined and crashes rather than blocks. Asking for the flag means the ABI's promise does not depend on the packager's choice."
+enforced_at = ["core/database.cpp:Database::Database"]
+binds = ["metadata.write"]
+protects = ["db-row", "user-metadata"]
+tests = [
+    "AbiMutate.ConcurrentFailuresOnSharedCtxDoNotCorrupt",
+    "AbiMutate.ConcurrentReadsOnSharedCtxReturnConsistentResults",
+]
+test_kind = "witness"
+status = "holds"
+owner = "054"
+test_gap = "Both tests would also pass with the flag removed on a THREADSAFE=1 build, because such a build mutexes the connection anyway. The flag earns its keep only on a THREADSAFE=2 build, which no CI job provides, so nothing here distinguishes the guarantee from the default it happens to match."
+
+[[rule]]
+id = "R55"
+tier = "engine"
+concern = "concurrency"
+statement = "libphig's metadata writes take the writer lock without waiting and report PHIG_ERR_BUSY when it is held, and its long-running operations take no lock at all."
+rationale = "A GUI must not freeze behind a CLI job, so a contended lock is reported as an error the caller can surface rather than as a block — phig_acquire_write_lock passes no_wait = true, and PHIG_CATCH's LockBusy arm is the only path to PHIG_ERR_BUSY. The operations take none for a different reason: index's write set is unknowable before the walk, thumbs writes only the filesystem cache, and faces commits per image, so SQLite's own serialization is enough and small metadata writes stay serviceable for an operation's whole duration. A lock-holding operation would turn every tag write into PHIG_ERR_BUSY for the length of the run, which is the outcome this trade exists to avoid."
+enforced_at = [
+    "libphig/mutate.cpp:phig_acquire_write_lock",
+    "libphig/internal.h:PHIG_CATCH",
+    "libphig/operations.cpp:phig_op_index_start",
+]
+binds = [
+    "metadata.write", "scan.walk", "thumbs.rebuild", "faces.rebuild",
+    "organize.plan", "organize.copy", "organize.move",
+]
+protects = ["db-row", "user-metadata"]
+tests = [
+    "AbiMutate.WriteFailsWhileAnotherProcessHoldsTheWriterLock",
+    "AbiMutate.WriteSucceedsAfterTheLockIsReleased",
+    "AbiOperations.MetadataWritesStayServicedWhileAnOperationRuns",
+    "AbiOperations.TwoDatabaseWritingOperationsRunConcurrentlyWithoutDeadlock",
+]
+test_kind = "witness"
+status = "holds"
