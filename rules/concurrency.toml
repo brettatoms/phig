@@ -2,14 +2,22 @@
 id = "R07"
 tier = "engine"
 concern = "concurrency"
-statement = "A read-then-write on a face row re-verifies the embedding it compared rather than trusting the row id it read."
-rationale = "The face subcommands and libphig's faces operation both run lock-free, so a lock excludes only other lock-takers. identify_person matches on the embedding it compared, which is what makes it safe beside a concurrent rebuild."
-enforced_at = ["core/faces_engine.cpp:identify_person"]
+statement = "A read-then-write on a face row labels only the face it compared: an id whose face was deleted in the gap is out of circulation and matches nothing, and `person_id IS NULL` refuses a face another labeler named first."
+rationale = "The face subcommands and libphig's faces operation both run lock-free, so a lock excludes only other lock-takers and identify's phase-2 write has to defend itself. The predicate is `UPDATE faces SET person_id = ? WHERE id = ? AND person_id IS NULL AND embedding = ?`, and `id = ?` is what carries the deletion case: schema v8 made faces.id AUTOINCREMENT (R51), so a candidate a concurrent rebuild deleted in the phase-1-to-phase-2 gap takes its id out of circulation, and the write matches no row rather than landing on whichever face replaced it. Reproduced against the system libsqlite3 3.51.0 phig links: three candidates read as ids 21, 22 and 23 were deleted, their replacements were issued 24, 25 and 26, and the three writes labeled zero rows — with the embedding clause and without it. `person_id IS NULL` is the clause still doing live work: it makes this a compare-and-set against another labeler, which matters because two lock-free paths can reach the same candidate, and deleting it is the one edit to this predicate that fails IdentifyTest.AnUnchangedFaceIsStillLabeled. `embedding = ?` is belt-and-braces against a state phig cannot reach — R71. A losing write updates zero rows rather than throwing, which is why `labeled` counts changed rows and not statements issued."
+enforced_at = [
+    "core/faces_engine.cpp:identify_person",
+    "core/database.cpp:set_face_person_if_unchanged",
+]
 binds = ["faces.identify"]
 protects = ["user-metadata"]
-tests = ["IdentifyTest.ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch"]
-test_kind = "sanitizer"
+tests = [
+    "IdentifyTest.ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch",
+    "IdentifyTest.AnUnchangedFaceIsStillLabeled",
+]
+test_kind = "witness"
 status = "holds"
+owner = "054"
+test_gap = "ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch is the only test that opens the phase-1-to-phase-2 window with another writer in it, and it passes on id retirement alone: measured in a scratch copy with `AND embedding = ?` deleted from set_face_person_if_unchanged, it stays green and the suite's only failure is AFaceWhoseEmbeddingChangedIsNotLabeled, so it does not discriminate between the clauses of the predicate it is cited for. AnUnchangedFaceIsStillLabeled does pin `person_id IS NULL` — deleting that clause fails it — but single-threaded, two calls in one thread with no gap and no second writer. Nothing pins two labelers racing for the same candidate."
 
 [[rule]]
 id = "R49"
@@ -153,3 +161,21 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
+
+[[rule]]
+id = "R71"
+tier = "engine"
+concern = "concurrency"
+statement = "A face row's embedding is written only by the insert that creates the row, so identify's `embedding = ?` clause refuses no write that `id = ?` and `person_id IS NULL` have not already refused."
+rationale = "Across core/, libphig/ and cli/ three statements update the faces table — `UPDATE faces SET image_id = ? WHERE image_id = ?` and the two that set person_id — and none of them writes embedding. The column is written by insert_face and by the v8 migration's `INSERT INTO faces_new (...) SELECT ... FROM faces`, both of which create rows rather than rewrite them. Re-detection is delete-and-reinsert — FacesEngine::run calls delete_faces_for_image then insert_face — which is also what keeps vec_faces in step, since it is keyed on faces.id, holds its own copy of the embedding, and is written only by those two functions. So the state this clause excludes, a row that keeps its id, stays unlabeled and carries a different embedding, is one phig cannot produce. The clause is kept deliberately: set_face_person_if_unchanged's header states it as the contract the caller wants, that the write refers to the face that was compared rather than to a row number, and as something that would catch an in-place embedding rewrite if one were added. Its cost is that phase 1 carries all 128 floats of every match into phase 2 to feed it, about 520 bytes per match where the id needs 8. Plan 044's work item 4 moves identify_person onto vec_faces KNN, which is where the choice lands: a KNN or paged phase 1 has to decide whether phase 2 still receives each matched embedding or only its id, and it cannot keep this clause without keeping the carry. 044 calls the transaction behaviour orthogonal to paging the read path, but that is about plan 031's phase split, not about this predicate's operands."
+enforced_at = [
+    "core/database.cpp:set_face_person_if_unchanged",
+    "core/database.cpp:insert_face",
+]
+binds = ["faces.identify"]
+protects = ["user-metadata"]
+tests = ["IdentifyTest.AFaceWhoseEmbeddingChangedIsNotLabeled"]
+test_kind = "witness"
+status = "holds"
+owner = "044"
+test_gap = "That test is the clause's only cover, and it writes the changed embedding by hand through a raw sqlite3 UPDATE because no concurrent path produces one — the test says so itself. Measured in a scratch copy with `AND embedding = ?` deleted: 806 tests ran and it was the only failure. So nothing covers this clause against a state phig can reach, and nothing can until some path rewrites an embedding in place."

@@ -114,6 +114,25 @@ identify` takes no writer lock (`cmd_face`, `cli/main.cpp`), so a comparison
 phase that scales with the collection delays no other mutating command. That
 makes this a throughput problem for identify, not a contention one.
 
+Phase 2's write predicate decides how much of phase 1 has to be kept (R71,
+`rules/concurrency.toml`). `set_face_person_if_unchanged` matches on `id = ? AND
+person_id IS NULL AND embedding = ?`, so `identify_person` holds whole
+`FaceEmbeddingRow`s for its matches rather than ids — ~520 bytes each against 8.
+That third clause is redundant against every write phig currently makes:
+`grep -rn "UPDATE faces" core/ libphig/ cli/` returns three statements, setting
+only `image_id` and `person_id`, so no row can keep its id, stay unlabeled and
+come to hold a different embedding. Measured in a scratch copy with the clause
+deleted: 806 tests ran and the only failure was
+`IdentifyTest.AFaceWhoseEmbeddingChangedIsNotLabeled`, which writes the changed
+embedding by hand because no concurrent path produces one.
+`IdentifyTest.ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch` stayed green —
+what protects that case is id retirement, `faces.id` being AUTOINCREMENT since
+schema v8 (R51). Either way this is a behaviour change and belongs with the KNN
+work rather than ahead of it: keeping the clause means a paged phase 1 still
+carries every matched embedding into phase 2, and dropping it means matches are
+ids and the guard is `id = ? AND person_id IS NULL`, which is what holds the
+invariant today.
+
 ### 5. `get_all_images` carries a metadata blob none of its callers read
 
 `core/database.cpp:1195` selects `metadata` for every row. Of the callers,
@@ -188,7 +207,8 @@ constraints bind the work above:
 3. Sibling-RAW directory cache (finding 1) — biggest measured win, needs the
    data-safety tests.
 4. `auto_label_face` and `identify_person` onto `vec_faces` KNN (findings 2, 4),
-   with the equivalence test.
+   with the equivalence test, and the decision on whether phase 2 still receives
+   each matched embedding (R71).
 5. `search_page` column trim (finding 7).
 6. Stream or page the engines (findings 5, 6) — needs the snapshot decision
    above resolved first.
