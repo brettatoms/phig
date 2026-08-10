@@ -446,11 +446,11 @@ before implementing.
 ## Rules of record
 
 `rules/` states what must be true when phig moves, deletes or overwrites —
-conflict resolution, reconciliation, recoverability, metadata preservation,
-attachments, concurrency, cancellation, authorization. One TOML record per
-rule, each naming the statement, why it is that way, where it is enforced,
-which operations it binds, which asset it protects, and the test that pins it.
-`rules/README.md` is the field reference. Plan 054 owns the mechanism.
+conflict resolution, reconciliation, atomicity, recoverability, metadata
+preservation, attachments, concurrency, cancellation, authorization. One TOML
+record per rule, each naming the statement, why it is that way, where it is
+enforced, which operations it binds, which asset it protects, and the test that
+pins it. `rules/README.md` is the field reference. Plan 054 owns the mechanism.
 
 **Read the relevant `rules/*.toml` before designing anything that moves,
 deletes or overwrites** — do not reconstruct the behaviour from call sites.
@@ -484,10 +484,13 @@ including ones added later. A function that mutates but is internal to an
 operation goes in `core_internal`; rules anchor at it and bind the operation
 that covers it.
 
-Status: enumeration is in progress and the record set is incomplete. The
-generator that produces the by-invariant / by-operation / by-asset views and
-the CI checks that keep records honest are a later phase and do not exist yet,
-so records are currently maintained and verified by hand.
+Status: the enumeration phase is complete — 67 rules across the nine concerns,
+reported in `docs/plans/2026-08-09-054-enumeration-report.md`. The set is still
+incomplete on CLI flags: 054's phase 3 writes rules for the mutation-capable
+ones and records the read-only ones as `n/a`. The generator that produces the
+by-invariant / by-operation / by-asset views and the CI checks that keep records
+honest are phase 2 and do not exist yet, so records are maintained and verified
+by hand.
 
 ## Conventions
 

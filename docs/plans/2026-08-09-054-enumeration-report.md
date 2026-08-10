@@ -60,11 +60,14 @@ Supporting figures, from a second script over the same files:
 | distinct `enforced_at` anchors | 64, across 22 files |
 | rules with exactly one anchor | 29 |
 | `operations.toml` | 17 operations, 6 `core_internal`, 40 `core_read_only`, 57 `read_only_abi` |
-| assets protected | db-row 37, user-metadata 30, original-file 23, activity-log 18, attachment 12, client-process 3, thumb-cache 1 |
+| assets protected | db-row 37, user-metadata 30, original-file 23, activity-log 18, attachment 12, client-process 4, thumb-cache 1 |
 | rules with `protects = []` | 0 |
 
 `protects = []` is empty because of decision 6: `client-process` was added as a
-seventh asset and R63, R64 and R65 moved onto it.
+seventh asset and R63, R64 and R65 moved onto it. R62 joined them in the final
+review pass — its enumerated hole is an exception leaving a C entry point, which
+is a client-process harm, and it was the only rule naming that harm without
+claiming the asset.
 
 All 133 cited tests were run as one filter against the worktree build:
 
@@ -253,9 +256,10 @@ All three were re-verified for this revision.
    `Unknown option: --size` and exits 1. Plan 040 shipped the size-partitioned
    cache and the engine parameter and never wired the CLI. The help text is the
    part that matters: a user is told the flag exists by the binary itself.
-   Removed from `CLAUDE.md` on this branch and scheduled to plan 043
-   (decision 10); the help text is `cli/` behaviour and was deliberately left
-   alone here.
+   Removed from `CLAUDE.md`'s CLI reference block on this branch and scheduled
+   to plan 043 (decision 10). It still appears in the Thumbnails design bullet,
+   which now records the defect rather than advertising the flag. The help text
+   is `cli/` behaviour and was deliberately left alone here.
 
 2. **`--path` is rejected by `duplicates`, `cp` and `mv`**, all three of which
    documented it. It parses only in `cmd_tag`, `cmd_gallery` and `cmd_fav`.
@@ -561,16 +565,18 @@ alone and the delete happens later in a separate transaction that
 `run_reconcile` opens once. That contradicts R38 two rules away, and plan 054's
 own founding finding 5. It took a second review round to catch.
 
-**Eight known-imprecise fields were deliberately left in the shipped set**,
+**Seven known-imprecise fields were deliberately left in the shipped set**,
 each recorded as a deferred minor: R05 and R09's diluted `enforced_at` (one
 anchors a path helper that does not do the rename-aside, one anchors a
 declaration); R08's `protects = ["original-file"]` reading backwards, since
-honouring R08 is what would destroy original files; R01 not binding
-`organize.plan` while R03 and R08 do, from the same anchor; R34's `tests = []`
+honouring R08 is what would destroy original files; R34's `tests = []`
 missing a partial witness; R25 filed `partial` though on the unlogged branch its
-invariant does not hold at all; R48's ownership commentary living in `rationale`
-where R40 and R27 put theirs in `test_gap`; and R62's explanatory comment being
-imprecise about `phig_op_copy_start`.
+invariant does not hold at all; R48's and R27's ownership commentary living in
+`rationale` where R40 puts its in `test_gap`; and R62's explanatory comment
+being imprecise about `phig_op_copy_start`. An eighth — R01 not binding
+`organize.plan` while R03 and R08 do, from the same anchor — was fixed in the
+final review pass rather than deferred: `OrganizeEngine::plan` calls
+`resolve_conflict`, so the binding was simply missing.
 
 **Ongoing cost, measured.** Re-measured at this commit against the current
 64-anchor set. Since the monorepo migration created `core/` on 2026-08-05 there
@@ -894,7 +900,9 @@ in `libphig/CMakeLists.txt` (today `1.3.0` and `1`), failing when the three
 disagree. That is a two-file text comparison, it is strictly stronger than the
 record, and it belongs in the lint job decision 2 authorizes. **The demotion
 should land with that check, not before it** — otherwise the property goes from
-weakly recorded to unrecorded.
+weakly recorded to unrecorded. Plan 054's Phase 2 owns writing it, which costs
+nothing structurally: 054 is already R64's `owner` and is already building that
+lint job.
 
 ### R65 — `phig_op_progress` gains no field. **Keep.**
 
@@ -925,10 +933,15 @@ housekeeping rather than data integrity, and both have a cheaper replacement
 that actually runs — an existing CI test for R63, and a two-file version
 comparison for R64 that has to be written before the demotion lands.
 
-That leaves **65 maintained rules**. The ten that survive did so on their own
-arguments, and three distinct ones recur: a property that has already regressed
-once (R53), a property no test in this project can catch (R54, R34), and a
-property a plan in flight is currently obeying (R65, R26, R51, R19).
+That leaves **66 maintained rules today and 65 once R64's replacement lands**.
+R63's demotion is unconditional — its replacement tests already run in CI — so
+it drops now. R64 stays in the set until the header-versus-CMake comparison
+exists in the lint job; section 9 left which plan writes it undetermined, and it
+is now assigned to 054's Phase 2, where the lint job is already being built.
+The ten that survive did so on their own arguments, and three distinct ones
+recur: a property that has already regressed once (R53), a property no test in
+this project can catch (R54, R34), and a property a plan in flight is currently
+obeying (R65, R26, R51, R19).
 
 ---
 
@@ -986,8 +999,8 @@ resolved three of them.
    took the alternative: open the plan rather than add the state. `unowned` is
    deliberately not added, and should be reconsidered only if a second
    enumeration produces findings no plan wants. Three rules still carry
-   ownership meta-commentary in free-text fields from before the move — R40 and
-   R27 in `test_gap`, R48 in `rationale`.
+   ownership meta-commentary in free-text fields from before the move — R40 in
+   `test_gap`, R27 and R48 in `rationale`.
 
 2. **There was no status for "the code is right, nothing pins it".** `holds`
    demands a passing test; `partial` and `violated` assert the code is wrong;
@@ -1048,7 +1061,9 @@ resolved three of them.
   lines. It is a rate, not a projection.
 - **Whether the R64 replacement check is worth its own plan.** Section 7
   recommends demoting R64 only once a header-versus-CMake version comparison
-  exists in the lint job. Which plan writes that step was not decided here.
+  exists in the lint job. Resolved after this report was first written: it goes
+  to 054's Phase 2, which builds that lint job anyway, and 054 is already R64's
+  `owner`. Until it lands R64 stays in the set.
 
 ---
 

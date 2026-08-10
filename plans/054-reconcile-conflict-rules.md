@@ -1,17 +1,17 @@
 ---
 name: Rules of Record
-status: planned
+status: in-progress
 created: 2026-08-09
 description: >
   Turn phig's unwritten conflict, reconciliation and data-integrity rules into a
   machine-checked record set. Rules live once as TOML under `rules/`; a stdlib
   Python script generates three views (by invariant, by operation, by asset) and
-  runs ten checks in CI, so drift between the record and the code fails a build
-  rather than waiting to be noticed. An operation is a `core/` primitive with
-  cli/abi/http surfaces hanging off it, so a rule binds the operation and every
-  surface inherits it. Widened 2026-08-09 from its original conflict-and-reconcile
-  scope, because its own five findings span four concern classes rather than two.
-  The `--on-conflict overwrite` decision splits to 059.
+  runs five decay checks in CI, so drift between the record and the code fails a
+  build rather than waiting to be noticed. An operation is a `core/` primitive
+  with cli/abi/http surfaces hanging off it, so a rule binds the operation and
+  every surface inherits it. Widened 2026-08-09 from its original
+  conflict-and-reconcile scope, because its own five findings span four concern
+  classes rather than two. The `--on-conflict overwrite` decision splits to 059.
 ---
 
 # 054 — Rules of Record
@@ -54,11 +54,11 @@ documents are generated.
    Hand-written, the only source of truth.
 2. **Three generated views** — `rules/by-invariant.md`, `by-operation.md`,
    `by-asset.md`. Build artifacts nobody edits. `by-operation.md` is the matrix.
-3. **Ten checks** in the CI lint job, covering: enforcement sites exist and live
-   in `core/` or `libphig/`; rules claiming to hold are pinned by passing tests;
-   recorded debt names an open owning plan; every ABI symbol and CLI command is
-   classified; every asset is guarded; conformance instantiations match `binds`;
-   generated views are current.
+3. **Five decay checks** in the CI lint job, covering: enforcement sites exist
+   and resolve; rules claiming to hold are pinned by passing tests; recorded debt
+   names an open owning plan; every ABI symbol and CLI command is classified;
+   generated views are current. Cut from ten by decision 2 — see the phasing
+   below for what was dropped, relaxed and deferred, and why.
 4. **A test per rule**, with the record stating what kind of evidence backs it —
    `witness`, `conformance`, `subprocess` or `sanitizer`.
 
@@ -88,20 +88,54 @@ much known data-safety debt exists, and who owns each item, becomes a number.
 
 ## Phasing, and the decision point
 
-- **Phase 1 — enumerate, no tooling.** Hand-write the record set from plans 020,
-  022, 023, 025, 026, 029, 031, 032, 041, 042, 045 and this one, from the seven
-  source files holding the guards, and from the header comments that already
-  state rules — `core/paths.h:95-99` states the conflict rule almost verbatim.
-  Reports N rules, M violated, K operations, how many already have a passing
-  test, and the conformance adapter count.
-- **Decision point.** The ~40 rule estimate comes from reading plan prose,
-  not from an enumeration. If N comes back near 20, phase 2 is rescoped or
-  dropped with nothing wasted. Matrix completeness (check 5) is decided here
-  too, against the measured `n/a` cell count.
-- **Phase 2** — `scripts/rules.py`: three views, ten checks, wired into the lint
-  job. TOML with `tomllib`, Python 3 stdlib only, no new CI package.
-- **Phase 3** — the missing tests. Its task list is written after phase 1,
-  because which rules lack a test is what the enumeration discovers.
+- **Phase 1 — enumerate, no tooling. Done.** Hand-wrote the record set from
+  plans 020, 022, 023, 025, 026, 029, 031, 032, 041, 042, 045 and this one, from
+  the seven source files holding the guards, and from the header comments that
+  already state rules — `core/paths.h:95-99` states the conflict rule almost
+  verbatim. Shipped: 67 rules across the nine concerns in `rules/*.toml`, 17
+  operations, the `rules/README.md` field reference, a Rules-of-record section in
+  the root `CLAUDE.md`, and the report at
+  `docs/plans/2026-08-09-054-enumeration-report.md`. Of the 67, 51 hold, 6 are
+  `partial`, 8 `violated` and 2 `unenforced`; 40 carry a `test_gap`.
+- **Decision point — passed at N = 67. Phase 2 reduced, not dropped.** The
+  stated threshold was "if N comes back near 20, phase 2 is rescoped or dropped".
+  N is 67 against a ~40 estimate, so the material is there. What cut phase 2's
+  scope is a different measurement in the same report: the ten checks would have
+  caught almost nothing during phase 1 itself — every serious record defect was
+  caught by a human reading the SQL or the header — but none of the decay they
+  exist to catch happens in five supervised days. Ten decisions were taken on the
+  report; they are recorded verbatim in its section 10, and the phases below are
+  what they leave.
+- **Phase 2** — `scripts/rules.py`: view generation plus five decay detectors,
+  wired into the lint job. TOML with `tomllib`, Python 3 stdlib only, no new CI
+  package. The five: anchors resolve; `holds` names tests that exist and pass;
+  recorded debt names an open owning plan; every ABI symbol and CLI command is
+  classified; generated views are current. Three amendments came with them.
+  Check 8 (every anchor under `core/` or `libphig/`) is relaxed rather than
+  dropped — a non-`core/` anchor is legal only on a `violated` rule, which is
+  what R68's `cli/main.cpp` guard forced; when 053 moves that code the check
+  tightens on its own. Check 5 (the operation × concern matrix) is generated and
+  read, not gated: 67 of 153 cells would need an explicit waiver and five
+  operations account for 32 of them structurally, so the waivers would be ritual.
+  Check 6 (conformance instantiations match `binds`) is deferred until
+  `test_kind`'s two definitions are reconciled in `rules/README.md`, because
+  gating on an ambiguity enforces the ambiguity. Phase 2 also writes **R64's
+  replacement**: a lint step comparing `PHIG_ABI_VERSION_MAJOR` and
+  `PHIG_ABI_VERSION_MINOR` in `libphig/include/phig/phig.h` against `VERSION` and
+  `SOVERSION` in `libphig/CMakeLists.txt`, failing when the three disagree. R64
+  leaves the record set when that step lands and not before — 054 is already its
+  `owner`, and demoting first would take the property from weakly recorded to
+  unrecorded.
+- **Phase 3 — the missing tests, and flag coverage.** Its test task list is
+  written after phase 1, because which rules lack a test is what the enumeration
+  discovers: 40 records carry a `test_gap` and 25 of those name 054. The second
+  workstream, added by decision 9, is flag coverage — write a rule for every
+  mutation-capable CLI flag that has none, and record every read-only flag as an
+  explicit `n/a` rather than omitting it. The mutation-capable split must be read
+  off `cli/main.cpp`, which parses 52 flags; two mechanical attempts have already
+  miscounted it, because `scan`, `cp`/`mv`, `rm` and `trash` parse inline in
+  `main()` and a brace-matching classifier calls their flags read-only. No
+  mutation-capable count is to be stated until it has been read from the file.
 
 ## Open questions, all resolved
 
@@ -132,6 +166,8 @@ act, which is the mitigation, and it is weaker than the claim implies.
 - **046** owns the three `DatabaseTest` failures on Linux, which are the `owner`
   for any rule pinned to them.
 - **053** exposes `rm` through the ABI and will add `surfaces_abi` entries to
-  operations that have none.
+  operations that have none. It also owns moving R68's guard out of `cli/`.
+- **060** was opened out of phase 1, to own the three `violated` rules whose
+  recorded owner could not close them — R27, R48 and R60.
 - **052** faces the same rules over the wire; `surfaces_http` exists for it.
 - **059** owns the `--on-conflict overwrite` decision split out of here.

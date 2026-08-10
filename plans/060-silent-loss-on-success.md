@@ -19,15 +19,16 @@ description: >
 
 # 060 — Silent Loss on a Successful Run
 
-Plan 054's enumeration produced three findings that nobody owns. Each was
+Plan 054's enumeration produced three findings that nobody owned. Each was
 measured against the built binary, each is recorded as `status = "violated"` in
-`rules/`, and each names 053 as its owner — provisionally in R60 and R48, which
-say so, and by transfer in R27, which the enumeration moved 056 → 053. None of
-those can close it: 053 is about what a client can reach through the ABI, not
+`rules/`, and each named 053 as its owner — provisionally in R60 and R48, which
+said so, and by transfer in R27, which the enumeration moved 056 → 053. None of
+those could close it: 053 is about what a client can reach through the ABI, not
 about what an operation destroys or how it counts. This plan is the home.
 
-Adopting it means re-pointing `owner` on R60 (`rules/authorization.toml`), R27
-(`rules/recoverability.toml`) and R48 (`rules/atomicity.toml`) at 060.
+All three records were re-pointed at 060 when it opened: R60
+(`rules/authorization.toml`), R27 (`rules/recoverability.toml`) and R48
+(`rules/atomicity.toml`) each read `owner = "060"`.
 
 ## What unifies them
 
@@ -177,10 +178,13 @@ how R60 is answered, and nothing in R60 depends on either of them.
   R60 in `rules/authorization.toml`, R27 in `rules/recoverability.toml`, R48 in
   `rules/atomicity.toml`. Each is `violated` with a `test_gap`; none of the
   three is pinned by a test that asserts the statement.
-- **Plan 053** (libphig feature parity) is the owner all three records name
-  today, and is the plan that picks up 020's deferred activity-log reader. It
-  stays the owner of *reaching* faces and the log through the ABI; it is not the
-  owner of what a rebuild destroys.
+- **Plan 053** (libphig feature parity) was the owner all three records named
+  before this plan opened, and is the plan that picks up 020's deferred
+  activity-log reader. It stays the owner of *reaching* faces and the log
+  through the ABI; it is not the owner of what a rebuild destroys. R66 stays on
+  053 for the same reason: it is `partial` for two causes — faces having no plan
+  phase, which this plan closes, and remove not being exposed through the ABI at
+  all, which it does not.
 - **Plan 042** (organize engine, completed) is where R27 and R48 both live, and
   its plan/apply shape is R60's model.
 - **Plan 043** (CLI primitive split) owns `cli/`, including `face rebuild`'s

@@ -7,7 +7,7 @@ id = "R62"
 tier = "boundary"
 concern = "atomicity"
 statement = "No C++ exception crosses an ABI entry point."
-rationale = "Where a phig_ctx* is in scope the body is wrapped in PHIG_TRY/PHIG_CATCH, which converts an exception into a status plus a thread-local message: LockBusy to PHIG_ERR_BUSY, any other std::exception to PHIG_ERR_DB, anything else to PHIG_ERR_INTERNAL. PHIG_TRY expands to a null check on ctx, so the ctx-less entry points cannot use it and wrap their bodies in a plain try/catch(...) instead — phig_init does, and so does each of settings.cpp's thirteen. The hole is the entry points that return something other than phig_status. Scripted over phig.h's 69 PHIG_API declarations, 39 have no handler of their own. Most are trivially non-throwing accessors, or delegate to a wrapped helper — phig_op_copy_start and phig_op_move_start both call start_apply, which uses PHIG_TRY. But phig_query_add_tag push_backs a std::string, the ten phig_query_set_* functions assign one, and phig_op_poll copies the path and error strings, so each can throw std::bad_alloc into a C caller with no way to catch it. No plan states this."
+rationale = "Where a phig_ctx* is in scope the body is wrapped in PHIG_TRY/PHIG_CATCH, which converts an exception into a status plus a thread-local message: LockBusy to PHIG_ERR_BUSY, any other std::exception to PHIG_ERR_DB, anything else to PHIG_ERR_INTERNAL. PHIG_TRY expands to a null check on ctx, so the ctx-less entry points cannot use it and wrap their bodies in a plain try/catch(...) instead — phig_init does, and so do twelve of settings.cpp's thirteen. The exception is phig_settings_free, a bare { delete s; } with no handler, counted below among the 39. The hole is the entry points that return something other than phig_status. Scripted over phig.h's 69 PHIG_API declarations, 39 have no handler of their own. Most are trivially non-throwing accessors, or delegate to a wrapped helper — phig_op_copy_start and phig_op_move_start both call start_apply, which uses PHIG_TRY. But phig_query_add_tag push_backs a std::string, the ten phig_query_set_* functions assign one, and phig_op_poll copies the path and error strings, so each can throw std::bad_alloc into a C caller with no way to catch it. No plan states this."
 enforced_at = [
     "libphig/internal.h:PHIG_TRY",
     "libphig/internal.h:PHIG_CATCH",
@@ -17,9 +17,9 @@ binds_surface = ["abi"]
 # db-row comes from the general statement, not from the enumerated hole: an
 # exception escaping a wrapped mutation would abort a caller mid-write, while
 # every entry point in the 39 is a parameter, accessor or free path that
-# touches no row. The 39 endanger the client process, which taxonomy.toml has
-# no asset for — the same gap R63, R64 and R65 answer with an empty list.
-protects = ["db-row"]
+# touches no row. client-process is what the enumerated hole endangers: an
+# exception leaving a C entry point ends the caller's process outright.
+protects = ["db-row", "client-process"]
 tests = [
     "AbiOperations.FailedOperationReportsItsMessageAndRefusesAResult",
     "AbiMutate.EachThreadSeesOnlyItsOwnError",
