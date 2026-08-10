@@ -19,11 +19,14 @@ only through `libphig`'s C ABI and may include no `core/` header. This plan
 makes it a peer of `libphig` over `core/` instead — the standing root
 `CLAUDE.md` already grants `cli/`, and plan 052 claims for `phigd`.
 
-The boundary decision is settled, and so is how far the C++ conversion goes —
-`thumb-loader.c` and `main.c` convert, `gallery-model.c` stays C, for the
-reasons in Language and structure below. What remains open is the build
-topology and who owns libphig's schedule afterwards; those are the open
-questions at the end.
+Settled: the boundary itself, how far the C++ conversion goes
+(`thumb-loader.c` and `main.c` convert, `gallery-model.c` stays C), the build
+topology (`gtk/` joins the root build behind an off-by-default option), what
+gtk's tests link (a fake seam, not the engine), and what happens to libphig
+(nothing, until the macOS and Windows clients need a symbol). One question
+remains, and it decides what the client's Remove screen is rather than only
+how a file is worded: whether the two ABI rules in `rules/boundary.toml` bind
+the new surface.
 
 ## Why
 
@@ -162,6 +165,17 @@ over 29,925 rows, extrapolating to ~3.7 GB at 1M), and libphig's paged read
 surface was preventing that class of mistake by construction. The seam keeps
 the paging discipline without keeping the ABI.
 
+**The seam is what gtk's tests substitute.** They test gtk's own behaviour —
+page LRU eviction, one placeholder object per position, cancel-on-unbind, the
+texture byte budget — so they link a fake implementation of the seam rather
+than `phig-core`, and need no collection at all. That fixes what they do today:
+both binaries read a collection path from `PHIG_TEST_DB` and are marked
+`SKIP_RETURN_CODE 77`, so on a machine with no collection all 13 tests skip
+rather than run, and `test_cache_respects_byte_budget` needs six real
+thumbnails to exercise a byte counter. The interface earns its second
+implementation here — the fake is the reason it exists, not a speculative
+abstraction.
+
 **`cv::Mat` stays inside that seam.** `gtk/CLAUDE.md`'s rule was written
 against a process boundary decode would cross; measurement (0 crashes in 12,684
 probes) already argues in-process decode is defensible, so the rule narrows
@@ -188,21 +202,41 @@ disturb.
 
 ## Build integration
 
-`phig-core` is `STATIC` and is not installed — only `phig_abi`, its headers and
-`phig.pc` are (`libphig/CMakeLists.txt:50-51`), and `phig-core`'s `PUBLIC`
-include directories pull in OpenCV, libexif, LibRaw and libavformat. Installing
-it for an out-of-tree consumer means exporting a static target plus a
-`phig-coreConfig.cmake` and having gtk repeat every transitive link dependency.
+`gtk/` joins the root build as `add_subdirectory(gtk)` inside
+`option(PHIG_BUILD_GTK OFF)`, so it is neither built nor configured unless
+asked — a plain `cmake -B build && cmake --build build` never touches it and
+needs no gtk4 or libadwaita. With the option on, `cmake --build build --target
+phig-gtk` builds `phig-core` and `phig-gtk` and nothing else, so the gtk-only
+loop survives. gtk keeps its own `CMakeLists.txt`, targets, warning flags and
+two test binaries; the change there is `pkg_check_modules(PHIG REQUIRED phig)`
+becoming a link against `phig-core`.
 
-So `gtk/` joins the root build as `add_subdirectory(gtk)`, guarded by an option
-(default off, or on only when `gtk4`/`libadwaita-1` are found) because the root
-build runs on macOS in CI and `gtk/` is the Linux client. gtk keeps its own
-`CMakeLists.txt` and its two test binaries; it stops calling
-`pkg_check_modules(phig)` and links `phig-core` instead.
+Two costs against the standalone build it replaces. `CMAKE_BUILD_TYPE` comes
+from the parent, where `gtk/CMakeLists.txt:6-8` currently defaults itself to
+Release independently — defensible, but a behaviour change. And one build
+directory serves both, so removing it removes gtk's too.
+
+**Keeping `gtk/` fully out-of-tree was rejected on its cost, not its merits.**
+The independence is real and is exactly what the libphig boundary was buying:
+one versioned `.so`, one include directory, one `phig.pc`. `phig-core` is not
+that. Making `find_package(phig-core)` work from outside the tree needs
+`core/CMakeLists.txt:45-55` rewritten, because
+`target_include_directories(phig-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} …
+${CMAKE_BINARY_DIR})` holds absolute paths and `install(EXPORT)` refuses
+source-directory paths; both `phig-core` and the `phig-vendor` it links
+`PUBLIC` in the export set; an install rule for core's headers, none of which
+are installed today (the root build installs exactly one file, `phig.pc`, at
+`CMakeLists.txt:110`); and a `phig-coreConfig.cmake` calling `find_dependency`
+for OpenCV, libexif, LibRaw, FFmpeg's four libraries, SQLite and spdlog, since
+a static library's link dependencies are resolved again by its consumer. That
+last file is ongoing cost: a new native dependency in `core/` that is not added
+to it breaks gtk's link. And it buys build-system independence only — gtk
+recompiles when a `core/` header changes either way, which is what linking a
+static engine means.
 
 CI's gtk job loses its install step — build libphig, install to a prefix, point
 `PKG_CONFIG_PATH` at it (`ci.yml:188-198`) — and becomes a configure of the
-root build with the gtk option on.
+root build with `-DPHIG_BUILD_GTK=ON`.
 
 ## Rule coverage
 
@@ -233,9 +267,13 @@ rule record is 054's machinery and a separate decision.
 
 ## Consequences for libphig and 053
 
-libphig stops having a shipping consumer until the macOS client exists. That is
-the real cost of this plan and it should be stated rather than absorbed: an ABI
-with no caller is infrastructure whose gaps nobody finds. Two things follow.
+libphig stops having a shipping consumer until the macOS client exists. It is
+left as it is: nothing about a monorepo needs a maintainer assigned to a
+directory, so it stays at ABI 1.3 with its 22 tests green in CI, and it is
+updated when the macOS and Windows clients need a symbol — which is when 049
+builds the Swift interop layer against it. The cost of that position is real
+and is that an ABI with no caller is infrastructure whose gaps nobody finds.
+Two things follow.
 
 **053's driver changes.** Its ordering is currently justified by 047's screens
 reached through the ABI. That argument moves to 049/050, which need a C ABI
@@ -276,22 +314,13 @@ M0 reading phig only through libphig stays as the record of what shipped.
 
 ## Open questions
 
-1. **Does `gtk/` keep its own build root?** `add_subdirectory(gtk)` from the
-   root is the cheap route, but `gtk/CLAUDE.md` currently documents a
-   standalone `cmake -B build` from inside `gtk/`, and that is a faster
-   feedback loop for client work than reconfiguring the engine. A standalone
-   build that links `phig-core` needs the target exported, which is the cost
-   the previous section describes.
-2. **Do gtk's two test binaries link `phig-core`?** They currently link
-   libphig via pkg-config and skip (exit 77) when the collection is absent.
-   Linking a static engine into two more binaries is cheap in build time and
-   makes the tests able to build a real database instead of skipping — which
-   is a change in what they cover, not just how they link.
-3. **Who maintains libphig in the interim?** It has 69 exported symbols, 22 ABI
-   tests and no caller after this lands. Options: keep it green in CI and let
-   049 drive it forward, or state that it is frozen at 1.3 until the macOS
-   client needs a symbol. The second is honest but makes 053 a plan nobody is
-   executing.
+1. **Do R66 and R62 bind the new surface, or is `gtk/` exempt?** Rule coverage
+   above states the obligation and argues that exemption is hard to defend for
+   the client that has a Remove dialog in 047, but the decision is not taken.
+   It has to be, because it is the difference between the GTK client being
+   allowed to call `cmd_rm` with a `ConfirmFn` and being required to build a
+   plan/apply pair for removal — a difference in what the client's Remove
+   screen is, not only in what a TOML file says.
 
 ## Cross-references
 
