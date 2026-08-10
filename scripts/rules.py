@@ -268,31 +268,70 @@ def check_owners(model):
     return problems
 
 
+class TestResultsError(Exception):
+    """The gtest XML at a given path is not a usable test run.
+
+    Raised instead of returning an empty dict, so a broken artifact — a wrong
+    path, a build that produced no binary, an interrupted run — is reported as
+    itself, distinctly from a citation that genuinely does not resolve. Fed to
+    check_tests as an empty dict, either failure mode looks identical to every
+    cited test having been renamed or deleted: measured, a well-formed but
+    empty `<testsuites/>` against the real record produces 166 "is in no test
+    run" reports, one per citation, none of them a real decay.
+    """
+
+
 def load_test_results(xml_path):
-    """Map 'Suite.Name' to 'passed', 'failed' or 'skipped', from gtest XML."""
+    """Map 'Suite.Name' to 'passed', 'failed', 'skipped' or 'disabled', from
+    gtest XML.
+
+    GTEST_SKIP() writes status="run" result="skipped" with a <skipped> child.
+    A DISABLED_-prefixed test writes status="notrun" result="suppressed" with
+    no <skipped> child, and never runs at all — measured against a probe
+    binary built with the repo's gtest 1.17.0. The two are bucketed
+    separately: a skip is a property of the machine and can start passing
+    without any code change (a model file appearing, a second filesystem
+    becoming available), but DISABLED_ is a permanent code-level decision, so
+    a rule's witness sitting there gives that rule zero evidence forever, not
+    just on this run.
+    """
+    try:
+        root = ET.parse(xml_path).getroot()
+    except ET.ParseError as exc:
+        raise TestResultsError(f"'{xml_path}' is not valid gtest XML: {exc}") from exc
+
     results = {}
-    for suite in ET.parse(xml_path).getroot().iter("testsuite"):
+    for suite in root.iter("testsuite"):
         for case in suite.iter("testcase"):
             name = f"{suite.get('name')}.{case.get('name')}"
-            if case.get("status") == "notrun" or case.get("result") == "skipped" \
-                    or case.find("skipped") is not None:
+            if case.get("status") == "notrun":
+                results[name] = "disabled"
+            elif case.get("result") == "skipped" or case.find("skipped") is not None:
                 results[name] = "skipped"
             elif case.find("failure") is not None or case.find("error") is not None:
                 results[name] = "failed"
             else:
                 results[name] = "passed"
+
+    if not results:
+        raise TestResultsError(
+            f"'{xml_path}' names no test case — the run that produced it "
+            f"likely failed before writing results")
     return results
 
 
 def check_tests(model, results):
     """Check 2: a 'holds' rule's tests exist and pass.
 
-    Three deliberate limits, each settled from a measurement — see this task's
-    preamble. A skipped test is neither a pass nor a failure. A violated or
-    partial rule's tests are checked for existence only, because R08's and
-    R40's pin the contrary behaviour on purpose. And a 'holds' rule may name no
-    test at all when it carries a test_gap and an owner, which is what
-    rules/README.md defines that shape to mean.
+    Four deliberate limits, each settled from a measurement — see this task's
+    preamble. A skipped test is neither a pass nor a failure. A DISABLED_ test
+    is reported for a 'holds' rule, because unlike a skip it can never turn
+    into evidence without a code change, and a rule quietly held up by one
+    would mean 'holds' forever with nothing behind it. A violated or partial
+    rule's tests are checked for existence only, because R08's and R40's pin
+    the contrary behaviour on purpose. And a 'holds' rule may name no test at
+    all when it carries a test_gap and an owner, which is what rules/README.md
+    defines that shape to mean.
     """
     problems = []
     for rule in model.rules:
@@ -312,6 +351,9 @@ def check_tests(model, results):
         for name in names:
             if results.get(name) == "failed":
                 problems.append(f"{rid}: test '{name}' failed")
+            elif results.get(name) == "disabled":
+                problems.append(f"{rid}: test '{name}' is DISABLED_ — it never "
+                                f"runs, so it cannot pin a holds rule")
     return problems
 
 
@@ -329,7 +371,10 @@ def main(argv=None):
     model = load(pathlib.Path(args.root))
     problems = [p for check in CHECKS for p in check(model)]
     if args.test_results:
-        problems += check_tests(model, load_test_results(args.test_results))
+        try:
+            problems += check_tests(model, load_test_results(args.test_results))
+        except TestResultsError as exc:
+            problems.append(str(exc))
     for problem in problems:
         print(f"rules: {problem}", file=sys.stderr)
     if problems:

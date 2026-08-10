@@ -353,12 +353,16 @@ class OwnerTest(unittest.TestCase):
             self.assertEqual(rules.check_owners(model), [])
 
 
-# Shapes taken from build/test-results.xml: gtest writes status="run" for a
-# test that ran and status="notrun" with a <skipped/> child for GTEST_SKIP.
+# Shapes taken from a probe binary built against the repo's gtest 1.17.0, and
+# confirmed against build/test-results.xml. GTEST_SKIP() writes status="run"
+# result="skipped" with a <skipped> child. A DISABLED_-prefixed test writes
+# status="notrun" result="suppressed" with no <skipped> child at all, and
+# never runs — status="notrun" belongs to DISABLED_, never to GTEST_SKIP.
 GTEST_XML = """<?xml version="1.0"?>
-<testsuites tests="3" failures="1">
-  <testsuite name="OrganizeEngineTest" tests="1">
+<testsuites tests="4" failures="1" disabled="1">
+  <testsuite name="OrganizeEngineTest" tests="2">
     <testcase name="OverwritePolicyStillRenamesAroundAnExistingFile" status="run"/>
+    <testcase name="DISABLED_RenamesTheLegacyWay" status="notrun" result="suppressed"/>
   </testsuite>
   <testsuite name="DatabaseTest" tests="1">
     <testcase name="PurgeSnapshotMarksOmittedFaces" status="run">
@@ -366,7 +370,7 @@ GTEST_XML = """<?xml version="1.0"?>
     </testcase>
   </testsuite>
   <testsuite name="MoveFileTest" tests="1">
-    <testcase name="CrossDeviceRefusesToOverwriteExistingDest" status="notrun"
+    <testcase name="CrossDeviceRefusesToOverwriteExistingDest" status="run"
               result="skipped">
       <skipped message="temp dir is on one filesystem"/>
     </testcase>
@@ -374,7 +378,13 @@ GTEST_XML = """<?xml version="1.0"?>
 </testsuites>
 """
 
+EMPTY_GTEST_XML = """<?xml version="1.0"?>
+<testsuites tests="0" failures="0">
+</testsuites>
+"""
+
 PASSING = '"OrganizeEngineTest.OverwritePolicyStillRenamesAroundAnExistingFile"'
+DISABLED = '"OrganizeEngineTest.DISABLED_RenamesTheLegacyWay"'
 
 
 class TestAnchorTest(unittest.TestCase):
@@ -398,6 +408,23 @@ class TestAnchorTest(unittest.TestCase):
             self.assertEqual(res["DatabaseTest.PurgeSnapshotMarksOmittedFaces"], "failed")
             self.assertEqual(
                 res["MoveFileTest.CrossDeviceRefusesToOverwriteExistingDest"], "skipped")
+            self.assertEqual(res["OrganizeEngineTest.DISABLED_RenamesTheLegacyWay"], "disabled")
+
+    def test_empty_results_file_is_reported_distinctly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            path = root / "empty.xml"
+            path.write_text(EMPTY_GTEST_XML)
+            with self.assertRaises(rules.TestResultsError):
+                rules.load_test_results(path)
+
+    def test_malformed_results_file_is_reported_distinctly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            path = root / "bad.xml"
+            path.write_text("this is not xml at all")
+            with self.assertRaises(rules.TestResultsError):
+                rules.load_test_results(path)
 
     def test_holds_rule_with_passing_test_is_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -424,6 +451,27 @@ class TestAnchorTest(unittest.TestCase):
             root = pathlib.Path(tmp)
             text = GOOD_RULE.replace(
                 PASSING, '"MoveFileTest.CrossDeviceRefusesToOverwriteExistingDest"')
+            self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
+
+    def test_holds_rule_citing_a_disabled_test_is_reported(self):
+        # A skip is a property of the machine; DISABLED_ is a permanent
+        # code-level decision, so unlike a skip it must count against a
+        # holds rule's only witness.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            text = GOOD_RULE.replace(PASSING, DISABLED)
+            problems = rules.check_tests(self.build(root, text), self.results(root))
+            self.assertTrue(any("DISABLED_" in p for p in problems))
+
+    def test_violated_rule_citing_a_disabled_test_is_clean(self):
+        # Existence-only: the test still exists in the binary, and outcome —
+        # including never running at all — is not check 2's business for a
+        # rule that isn't claiming to hold.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            text = (GOOD_RULE
+                    .replace('status = "holds"', 'status = "violated"\nowner = "041"')
+                    .replace(PASSING, DISABLED))
             self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
 
     def test_holds_rule_with_no_test_and_no_gap_is_reported(self):
