@@ -565,7 +565,7 @@ alone and the delete happens later in a separate transaction that
 `run_reconcile` opens once. That contradicts R38 two rules away, and plan 054's
 own founding finding 5. It took a second review round to catch.
 
-**Seven known-imprecise fields were deliberately left in the shipped set**,
+**Eight known-imprecise fields were deliberately left in the shipped set**,
 each recorded as a deferred minor: R05 and R09's diluted `enforced_at` (one
 anchors a path helper that does not do the rename-aside, one anchors a
 declaration); R08's `protects = ["original-file"]` reading backwards, since
@@ -573,10 +573,10 @@ honouring R08 is what would destroy original files; R34's `tests = []`
 missing a partial witness; R25 filed `partial` though on the unlogged branch its
 invariant does not hold at all; R48's and R27's ownership commentary living in
 `rationale` where R40 puts its in `test_gap`; and R62's explanatory comment
-being imprecise about `phig_op_copy_start`. An eighth — R01 not binding
-`organize.plan` while R03 and R08 do, from the same anchor — was fixed in the
-final review pass rather than deferred: `OrganizeEngine::plan` calls
-`resolve_conflict`, so the binding was simply missing.
+being imprecise about `phig_op_copy_start`. One more was not deferred: R01 not
+binding `organize.plan` while R03 and R08 do, from the same anchor, was fixed in
+the final review pass — `OrganizeEngine::plan` calls `resolve_conflict`, so the
+binding was simply missing.
 
 **Ongoing cost, measured.** Re-measured at this commit against the current
 64-anchor set. Since the monorepo migration created `core/` on 2026-08-05 there
