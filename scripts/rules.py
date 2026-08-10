@@ -145,14 +145,43 @@ def _check_classification(model):
 
 ENFORCEMENT_ROOTS = ("core/", "libphig/")
 
+# Comments and string/char literals, in an order where a string wins over a
+# line comment even when the string contains "//" (e.g. a URL): re.sub tries
+# alternatives left to right at each position, so the string alternative
+# claims an opening quote before the "//" inside it is ever considered as a
+# comment start. Matched spans are replaced with a space, not deleted, so a
+# stripped span can't accidentally splice two identifiers into one.
+_NOISE = re.compile(
+    r"/\*.*?\*/"
+    r'|//[^\n]*'
+    r'|"(?:\\.|[^"\\])*"'
+    r"|'(?:\\.|[^'\\])*'",
+    re.DOTALL,
+)
+
+
+def _strip_noise(text):
+    """Blank out C++ comments and string/char literals.
+
+    A symbol named only in prose or a string must not satisfy an anchor —
+    ScanEngine::run stripped to run matches the comment "run's detections"
+    otherwise, exactly as if run still existed. This only knows C++ syntax;
+    a file like libphig/CMakeLists.txt that uses '#' comments passes through
+    unchanged, which is fine because its anchors are never hidden by '#'.
+    """
+    return _NOISE.sub(" ", text)
+
 
 def _resolves(text, symbol):
     """True when `symbol` is declared or defined in `text`.
 
     Tries the qualified form first, then the bare member name. Both are matched
     on a word boundary: a substring test lets ScanEngine::run resolve against
-    run_workers, so the anchor survives the symbol being deleted.
+    run_workers, so the anchor survives the symbol being deleted. Comments and
+    string/char literals are blanked out first, so mentioning a symbol in
+    prose cannot resolve it.
     """
+    text = _strip_noise(text)
     for candidate in (symbol, symbol.split("::")[-1]):
         if re.search(r"\b" + re.escape(candidate) + r"\b", text):
             return True

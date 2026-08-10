@@ -263,6 +263,26 @@ class SourceAnchorTest(unittest.TestCase):
             problems = rules.check_sources(rules.load(root))
             self.assertTrue(any("organize.move" in p and "teleport" in p for p in problems))
 
+    def test_symbol_mentioned_only_in_a_comment_does_not_resolve(self):
+        # Reproduces R56's real hazard: ScanEngine::run was renamed, and the
+        # only remaining trace of "run" is a comment's "run's detections" —
+        # a bare-word match must not treat that as the symbol still existing.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.core(root, "scan_engine.cpp",
+                      "// run's detections would duplicate them. insert() cleared\n"
+                      "void ScanEngine::run_all() {}\n")
+            model = self.build(root, '["core/scan_engine.cpp:ScanEngine::run"]')
+            self.assertTrue(any("ScanEngine::run" in p for p in rules.check_sources(model)))
+
+    def test_symbol_mentioned_only_in_a_string_literal_does_not_resolve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.core(root, "paths.cpp",
+                      'const char *msg = "resolve_conflict failed";\n')
+            model = self.build(root, '["core/paths.cpp:resolve_conflict"]')
+            self.assertTrue(any("resolve_conflict" in p for p in rules.check_sources(model)))
+
 
 if __name__ == "__main__":
     unittest.main()
