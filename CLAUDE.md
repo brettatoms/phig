@@ -234,30 +234,60 @@ surface (`unistd.h`) and has not been audited for portability.
 
 ## CLI command reference
 
+Derived from `cli/main.cpp`, which parses 52 distinct flags. Check it against
+the source rather than trusting this block:
+`grep -oE '"--[a-z0-9-]+"' cli/main.cpp | tr -d '"' | sort -u`.
+
 ```bash
+# Global — recognized anywhere in the argv, before the command parsers see it
+phig [--config <path>] [--no-wait] <command> ...
+phig --version | --help
+
 # Scan a directory into the database
-phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--db <path>]
+phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--parallel N] [--db <path>]
 
 # Generate thumbnails
-phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--size N] [--parallel N] [--db <path>]
-phig thumbs clean [--db <path>]
+phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--parallel N] [--db <path>]
+phig thumbs clean [--dry-run] [--db <path>]
 
 # Find duplicate images
-phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--exclude <glob>] [--media image|video|all] [--fav] [--db <path>]
 
 # Copy files into YYYY/MM structure
-phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
 
 # Move files into YYYY/MM structure
-phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
 
 # Search the collection
-phig search [--count] [--db <path>] ...
+phig search [--ext <ext>] [--after <date>] [--before <date>] [--camera <s>] [--make <s>] [--min-size <n>] [--max-size <n>] [--media image|video|all] [--min-duration <d>] [--max-duration <d>] [--similar <image>] [--similar-hash <hex>] [--threshold 0-64] [--face <image>] [--face-threshold <f>] [--person <name>] [--tag <name>] [--gallery <name>] [--fav] [--blurry] [--min-sharpness <n>] [--max-sharpness <n>] [--match <glob>] [--exclude <glob>] [--limit N] [--count] [--porcelain] [--print0] [--format text|csv|json] [--output <path>] [--db <path>]
 
 # Remove images from the database and/or disk
-phig rm [--match <glob>] [--exclude <glob>] [--hard|--db-only|--orphans] [--dry-run] [--yes] [--db <path>]
+phig rm [--match <glob>] [--exclude <glob>] [--hard|--db-only|--orphans] [--ignore-mount-warning] [--dry-run] [--yes] [--db <path>]
 phig trash empty [--yes]
+
+# Tags, galleries, favorites
+phig tag add|remove <tag> [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig tag list [--db <path>]
+phig gallery set <name> [--no-overwrite] [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig gallery clear [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig gallery list [--db <path>]
+phig fav add|remove [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig fav list [--count] [--limit N] [--porcelain] [--print0] [--format text|csv|json] [--output <path>] [--db <path>]
+
+# Faces
+phig face name <image> <name> [--db <path>]
+phig face identify <name> [--db <path>]
+phig face rebuild [--match <glob>] [--exclude <glob>] [--parallel N] [--db <path>]
+phig face list [--db <path>]
+
+# Download the face detection/recognition models
+phig models download
 ```
+
+`--path <dir>` narrows by directory prefix on `tag`, `gallery` and `fav` only.
+`duplicates`, `cp` and `mv` reject it — measured, `Unknown option: --path` and
+exit 1 — even though `--path` reads as a natural fit for all three.
 
 Paths follow XDG conventions (all resolved in `core/paths.cpp`): database at
 `~/.local/share/phig/phig.db`, models at `~/.cache/phig/models`, thumbnails
@@ -312,8 +342,11 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   keyed by (SHA256, size). Deduplicates naturally, and sizes are independent:
   generating 768px never replaces or invalidates 512px, so a client can ask for
   what it needs without a cache-wide regeneration. 512 is the default that
-  `scan --thumbs` and `thumbs rebuild` write; `thumbs rebuild --size N` fills
-  another, and libphig generates one on demand when a lookup misses.
+  `scan --thumbs` and `thumbs rebuild` write, and libphig generates another size
+  on demand when a lookup misses. `ThumbsOptions::size` (`core/thumbs_engine.h:18`)
+  takes any size, but no CLI flag reaches it: `--size` is advertised by the help
+  text (`cli/main.cpp:129`) and has no parser branch, so `thumbs rebuild --size
+  768` prints `Unknown option: --size` and exits 1. Plan 043 owns wiring it.
 - **Video support** — scans video files (MP4/MOV/MKV/AVI/WebM etc.),
   extracts keyframe phash via OpenCV VideoCapture, metadata via
   libavformat. Videos stored with `media_type = 'video'`,

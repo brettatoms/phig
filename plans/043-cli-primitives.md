@@ -42,6 +42,21 @@ than defaulting.
 
 ## Also in scope
 
+- **`thumbs rebuild --size N` does not exist.** Measured: `phig thumbs rebuild
+  --size 768` prints `Unknown option: --size` and exits 1. It was documented in
+  root `CLAUDE.md` until that reference was corrected, is still advertised by
+  phig's own help text (`cli/main.cpp:129`), and is
+  supported by the engine — `ThumbsOptions::size` is a real field
+  (`core/thumbs_engine.h:18`) that `ThumbsEngine` honours — but `cmd_thumbs`'s
+  `rebuild` branch parses only `--match`, `--exclude`, `--force`, `--parallel`
+  and `--db`. Plan 040 shipped the size-partitioned cache and the engine
+  parameter and never wired the CLI to it: its decision 3 says "`phig thumbs
+  rebuild --size N` populates a size upfront", and its Deferred note names only
+  `thumbs clean --size N`, so this was not a recorded deferral — it is a gap the
+  plan believed it had closed. The one surface a user has for filling a second
+  size is the one that cannot. A parser branch, not a design question; it lands
+  here because it is `cli/` argv parsing and the flag belongs to one of the
+  three primitives.
 - Whether `cli/` moves onto plan 042's organize engine once it exists, replacing
   the inline orchestration at `cli/main.cpp:720-744`.
 - Whether scan gains `--dry-run` from plan 041's reconcile plan phase.

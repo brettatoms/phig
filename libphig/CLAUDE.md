@@ -97,8 +97,13 @@ defensible. Unresolved, and out of scope for plan 031.
   exception into an error code plus a message. `PHIG_TRY` expands to a null
   check on `ctx`, so it needs a context it can check; the ctx-less entry
   points (`phig_init`, the `records.cpp` free functions, and all of
-  `settings.cpp`) can't use it and instead wrap their body in a plain
-  `try`/`catch (...)`.
+  `settings.cpp`) can't use it and wrap their body in a plain
+  `try`/`catch (...)` instead. Three do not, and all three only free memory:
+  `phig_image_list_free` (`records.cpp:59-62`), `phig_string_free`
+  (`records.cpp:64`) and `phig_settings_free` (`settings.cpp:56`) are a bare
+  `delete`/`delete[]` with no handler. Every destructor they reach is a
+  standard container's, which is `noexcept`, so there is nothing for a handler
+  to catch — but a free function that grows a body needs one.
 - **`phig_last_error` is thread-local.** Read it on the thread whose call
   just failed — reading it from another thread, or after another call on
   the same thread has run, gets you the wrong (or no) message.

@@ -185,7 +185,7 @@ safe to cancel. Chunking the delete transaction to make it interruptible was
 rejected: it would trade the delete phase's atomicity for interruptibility of
 the fast half.
 
-### 6. The restore snapshot captures tags; faces need a size decision
+### 6. Every path that drops a row writes a restore snapshot
 
 `delete_paths_logged` snapshots 16 columns of the `images` row into
 `restore_json` (`database.cpp:977-1015`): path, filename, extension, file_size,
@@ -216,6 +216,39 @@ plan 044 measured that at ~3.8 KB/row — under a default `log_max_entries` of
 100,000. Estimated, not measured. Implementation measures the real distribution
 against the collection and either captures embeddings or falls back to labels
 plus bounding boxes, recording which and why.
+
+**Organize drops rows through two other functions, and neither records
+anything.** `delete_paths_logged` is not the only path that destroys a row.
+When a move or a copy lands on a path some row already names,
+`Database::update_path_in_txn` (`database.cpp:831-876`) deletes that row with a
+plain `DELETE FROM images WHERE path = ?` so repointing the source does not hit
+`UNIQUE(path)`, and `Database::insert_copy` (`database.cpp:630-663`) replaces it
+with `INSERT OR REPLACE`. Both clear the occupant's faces first through
+`delete_faces_for_image`, because the FK cascade cannot reach `vec_faces`; the
+`image_tags` rows cascade and the gallery goes with the column. Neither calls
+`delete_paths_logged`, so there is no `purge_row` entry and no `restore_json`.
+The only log entry `execute_organize_action` writes is the `move` or `copy` for
+the file that arrived (`organize_exec.cpp:57` and `:102`), which names the
+source and the destination and says nothing about what it displaced.
+
+This is reachable from the CLI with the default `--on-conflict skip` and no
+override. `rules/metadata.toml`'s R40 measured it against the built binary: a
+stale row carrying the tag `precious` and the gallery `wedding`, a `mv` of
+another file onto its path, `Done: 1 Skipped: 0 Errors: 0` and exit 0, with the
+row, the tag association and the gallery gone. `cp` replaced the row the same
+way. R40 is `status = "violated"` with this plan as `owner`, and its `test_gap`
+names the reason this decision is worded as it is: 041's acceptance criteria
+were written against `delete_paths_logged`, which neither of those two paths
+calls, so closing 041 as written would leave the loss open.
+
+So the decision is the general one — every path that drops a row writes the same
+snapshot — and the two organize paths are in scope here rather than deferred.
+Each writes a `purge_row` entry inside the transaction `execute_organize_action`
+has already opened for the move or copy and its log entry, so disk, row and log
+stay in step. They cannot call `delete_paths_logged` as it stands: it opens its
+own `BEGIN IMMEDIATE` (`database.cpp:971`) and both callers are already inside a
+transaction, so the snapshot-and-log body has to come out as a function that
+assumes an open transaction, the way `update_path_in_txn` already does.
 
 Restoring is not in scope. There is no reader for the activity log anywhere in
 `core/` and no undo command — plan 020 deferred it and plan 027 shipped the log
@@ -331,7 +364,7 @@ Real-behavior tests, per the repo convention for data-safety changes.
   assumed insert-or-ignore shaped; this test is what establishes it, since a
   cancelled relink is re-planned and re-applied on the next scan.
 
-Decision 6 adds three more:
+Decision 6 adds five more:
 
 - A deleted row's tags appear in its `restore_json`, with the tag names intact.
 - A deleted row's faces are recorded in whichever shape the size measurement
@@ -339,6 +372,18 @@ Decision 6 adds three more:
 - `phig rm` produces the same complete snapshot, since it shares
   `delete_paths_logged`. This is the regression test for fixing one caller and
   not the other.
+- **`mv` onto an occupied path snapshots the row it displaces.** A tracked
+  destination whose row carries a tag and a gallery, moved onto with the default
+  `--on-conflict skip` and no override, leaves a `purge_row` entry whose
+  `restore_json` names both, alongside the `move` entry for the file that
+  arrived. Today there is no entry for the displaced row at all.
+- **`cp` onto an occupied path does the same**, through `insert_copy` rather
+  than `update_path_in_txn`. Both branches need their own test: they are
+  separate functions with separate SQL, and the two existing tests
+  (`DatabaseTest.UpdatePathOntoStaleDestClearsItsFaces` and
+  `DatabaseTest.InsertCopyOntoStaleDestClearsItsFaces`) put neither a tag nor a
+  gallery on the row they destroy, so they will keep passing while the loss
+  stays reachable.
 
 ## Open — progress reporting
 
@@ -383,7 +428,10 @@ skips reported progress toward a total it could never reach.
 - **Plan 042** (organize engine) inherits the convention above: a plan is a
   caller-owned value; apply consumes it at start and re-verifies at execution.
   Its own open question about whether to surface a plan is answered by adopting
-  this shape.
+  this shape. Decision 6 also reaches into the two row-dropping functions
+  organize goes through; both predate 042 and it did not change them, so the
+  work is in `core/database.cpp` and `core/organize_exec.cpp`, not in 042's
+  plan file.
 - **Plan 043** (CLI primitive split) — consumes the plan phase as scan
   `--dry-run`.
 - **Plan 052** (phigd) — a plan is a document over the wire, which is the same
