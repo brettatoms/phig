@@ -232,16 +232,25 @@ TEST_F(IdentifyTest, AnUnchangedFaceIsStillLabeled) {
 
 TEST_F(IdentifyTest, ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch) {
     // End to end, with the interleave that matters actually happening: another
-    // writer replaces faces — recycling their rowids — after identify has read
-    // them as candidates and before it writes. Nothing serializes that window,
-    // so the invariant has to hold on its own: every face labeled Alice is near
-    // Alice. Phase 2 keyed on ids alone would label whatever landed on them.
+    // writer deletes faces identify has already read as candidates and inserts
+    // replacements far from Alice, after phase 1 and before phase 2. Nothing
+    // serializes that window, so the invariant has to hold on its own: every
+    // face labeled Alice is near Alice.
     //
-    // Three things make the interleave reachable rather than theoretical:
-    // the replaced faces hold the HIGHEST rowids (SQLite hands out
-    // max(rowid)+1, so deleting below the maximum frees nothing); the
-    // comparison is big enough to be a wide window; and the replacement happens
-    // once and stays, so a wrong label cannot be erased before it is checked.
+    // What holds it is id retirement. faces.id is AUTOINCREMENT, so the
+    // replacements get fresh ids and the ids phase 1 read never come back;
+    // phase 2's `WHERE id = ?` matches nothing, and a row that does not exist
+    // cannot match whatever else the predicate asks. So this case pins id
+    // retirement, not the whole guard — it would pass with the embedding clause
+    // removed. That clause's only cover is
+    // `AFaceWhoseEmbeddingChangedIsNotLabeled`, which writes the changed
+    // embedding by hand because no concurrent path produces one.
+    //
+    // Two things keep the window wide enough to be reachable rather than
+    // theoretical: the comparison is big, and the replacement happens once and
+    // stays, so a wrong label could not be erased before it is checked. That
+    // the replaced faces hold the highest ids is incidental — retirement does
+    // not depend on where in the table they sat.
     int64_t alice = db->get_or_create_person("Alice");
     for (int i = 0; i < 40; i++) {
         int64_t ref =
