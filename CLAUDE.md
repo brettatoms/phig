@@ -391,8 +391,9 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   on `<db>.lock` (`core/lockfile.cpp`) so whole operations serialize; reads
   never take it. Per-machine only. The `face` subcommands are the exception
   — they run lock-free, matching libphig's faces operation, and defend
-  themselves instead: `faces.id` is AUTOINCREMENT so a face id never names a
-  different face, `identify` re-checks the embedding it compared, and
+  themselves instead: `faces.id` is AUTOINCREMENT so a deleted id is never
+  reissued and a face deleted mid-run matches nothing, `identify` writes under
+  `person_id IS NULL` so it refuses a face another labeler named first, and
   `rebuild` reads each image id inside the transaction that writes its
   faces. A lock only excludes other lock-takers, so it was never protection
   against an ABI caller anyway.
