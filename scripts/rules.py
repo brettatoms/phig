@@ -363,7 +363,84 @@ def check_tests(model, results):
     return problems
 
 
-CHECKS = [check_schema, check_sources, check_owners]
+ABI_HEADER = "libphig/include/phig/phig.h"
+ABI_CMAKE = "libphig/CMakeLists.txt"
+CLI_MAIN = "cli/main.cpp"
+ABI_SYMBOL = re.compile(r"\b(phig_[a-z0-9_]+)\s*\(")
+# [a-z] first, so `command == "--help"` and `command == "-h"` — the same branch
+# as `help` — are not read as top-level commands needing classification.
+CLI_COMMAND = re.compile(r'command == "([a-z][a-z0-9-]*)"')
+
+
+def check_coverage(model):
+    """Check 4: every phig_* symbol in phig.h and every CLI command is claimed
+    by an operation's surfaces or is on an explicit allowlist."""
+    problems = []
+
+    claimed_abi = {s for o in model.operations for s in o.get("surfaces_abi", [])}
+    allowed_abi = set(model.config.get("read_only_abi", []))
+    header = model.root / ABI_HEADER
+    if header.is_file():
+        for symbol in sorted(set(ABI_SYMBOL.findall(header.read_text()))):
+            if symbol not in claimed_abi and symbol not in allowed_abi:
+                problems.append(
+                    f"ABI symbol '{symbol}' is claimed by no operation and is not in "
+                    f"read_only_abi — classify it in rules/operations.toml")
+
+    claimed_cli = {c for o in model.operations for c in o.get("surfaces_cli", [])}
+    allowed_cli = set(model.config.get("read_only_cli", []))
+    main = model.root / CLI_MAIN
+    if main.is_file():
+        for command in sorted(set(CLI_COMMAND.findall(main.read_text()))):
+            if command not in claimed_cli and command not in allowed_cli:
+                problems.append(
+                    f"CLI command '{command}' is claimed by no operation and is not in "
+                    f"read_only_cli — classify it in rules/operations.toml")
+
+    return problems
+
+
+VERSION_MACRO = re.compile(r"#define\s+PHIG_ABI_VERSION_(MAJOR|MINOR)\s+(\d+)")
+CMAKE_VERSION = re.compile(r"^\s*VERSION\s+(\d+)\.(\d+)\.(\d+)\s*$", re.M)
+CMAKE_SOVERSION = re.compile(r"^\s*SOVERSION\s+(\d+)\s*$", re.M)
+
+
+def check_abi_version(model):
+    """R64's replacement: the header's MAJOR/MINOR, the CMake VERSION and
+    SOVERSION are hand-maintained in two files and nothing compared them.
+
+    R64 says a symbol bump moves MINOR and VERSION and never SOVERSION. Its own
+    test only checks that phig_abi_version()'s high half equals the header
+    macro, which passes with the CMake values set to anything at all. This is
+    strictly stronger, and it is why R64 can leave the record set.
+    """
+    header = model.root / ABI_HEADER
+    cmake = model.root / ABI_CMAKE
+    if not header.is_file() or not cmake.is_file():
+        return [f"cannot compare ABI versions: {ABI_HEADER} or {ABI_CMAKE} is missing"]
+
+    macros = {k: int(v) for k, v in VERSION_MACRO.findall(header.read_text())}
+    text = cmake.read_text()
+    version = CMAKE_VERSION.search(text)
+    soversion = CMAKE_SOVERSION.search(text)
+    if len(macros) != 2 or not version or not soversion:
+        return [f"cannot compare ABI versions: expected MAJOR and MINOR in "
+                f"{ABI_HEADER} and VERSION and SOVERSION in {ABI_CMAKE}"]
+
+    problems = []
+    major, minor = macros["MAJOR"], macros["MINOR"]
+    if (int(version.group(1)), int(version.group(2))) != (major, minor):
+        problems.append(
+            f"{ABI_CMAKE} VERSION is {version.group(0).strip()} but {ABI_HEADER} "
+            f"says MAJOR {major}, MINOR {minor} — a symbol bump moves both")
+    if int(soversion.group(1)) != major:
+        problems.append(
+            f"{ABI_CMAKE} SOVERSION is {soversion.group(1)} but the ABI major is "
+            f"{major} — SOVERSION is the major alone and moves only on a break")
+    return problems
+
+
+CHECKS = [check_schema, check_sources, check_owners, check_coverage, check_abi_version]
 
 
 def main(argv=None):

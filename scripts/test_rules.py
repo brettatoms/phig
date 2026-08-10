@@ -519,5 +519,99 @@ class TestAnchorTest(unittest.TestCase):
             self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
 
 
+PHIG_H = """
+#define PHIG_ABI_VERSION_MAJOR 1u
+#define PHIG_ABI_VERSION_MINOR 3u
+PHIG_API int phig_init(const char* db);
+PHIG_API int phig_tag_add(phig_ctx* c, int64_t id, const char* tag);
+PHIG_API int phig_op_move_start(phig_ctx* c, phig_op** out);
+"""
+
+# The three shapes cli/main.cpp actually dispatches on: a plain command, a
+# command sharing a branch with another, and the help flags.
+MAIN_CPP = """
+    if (command == "--help" || command == "-h" || command == "help") { usage(); }
+    else if (command == "cp" || command == "mv") { return cmd_organize(argc, argv); }
+    else if (command == "search") { return cmd_search(argc, argv); }
+"""
+
+CMAKELISTS = """
+set_target_properties(phig PROPERTIES
+    VERSION 1.3.0
+    SOVERSION 1
+)
+"""
+
+
+class CoverageTest(unittest.TestCase):
+    def build(self, root, ops_text, cmake=CMAKELISTS):
+        write(root, "taxonomy.toml", MINIMAL_TAXONOMY)
+        write(root, "operations.toml", ops_text)
+        write(root, "conflict.toml", GOOD_RULE)
+        (root / "libphig" / "include" / "phig").mkdir(parents=True)
+        (root / "libphig" / "include" / "phig" / "phig.h").write_text(PHIG_H)
+        (root / "libphig" / "CMakeLists.txt").write_text(cmake)
+        (root / "cli").mkdir()
+        (root / "cli" / "main.cpp").write_text(MAIN_CPP)
+        return rules.load(root)
+
+    def classified(self, extra_abi="", extra_cli=""):
+        ops = MINIMAL_OPS.replace(
+            'read_only_abi = []',
+            'read_only_abi = ["phig_init", "phig_tag_add"' + extra_abi + ']')
+        ops = ops.replace('surfaces_abi = []', 'surfaces_abi = ["phig_op_move_start"]')
+        return ops.replace('read_only_cli = []',
+                           'read_only_cli = ["search", "help"' + extra_cli + ']')
+
+    def test_unclassified_abi_symbol_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ops = MINIMAL_OPS.replace('read_only_abi = []',
+                                      'read_only_abi = ["phig_init"]')
+            ops = ops.replace('surfaces_abi = []',
+                              'surfaces_abi = ["phig_op_move_start"]')
+            problems = rules.check_coverage(self.build(pathlib.Path(tmp), ops))
+            self.assertTrue(any("phig_tag_add" in p for p in problems))
+
+    def test_unclassified_cli_command_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ops = self.classified().replace('"search", "help"', '"help"')
+            problems = rules.check_coverage(self.build(pathlib.Path(tmp), ops))
+            self.assertTrue(any("search" in p for p in problems))
+
+    def test_a_command_sharing_a_branch_is_claimed_separately(self):
+        # cp and mv dispatch from one branch; the operations table claims mv
+        # only, so cp must still be reported.
+        with tempfile.TemporaryDirectory() as tmp:
+            problems = rules.check_coverage(self.build(pathlib.Path(tmp), self.classified()))
+            self.assertTrue(any("'cp'" in p for p in problems))
+
+    def test_help_flags_are_not_read_as_commands(self):
+        # command == "--help" and command == "-h" are the same branch as help;
+        # a flag is not a top-level command and must not need classifying.
+        with tempfile.TemporaryDirectory() as tmp:
+            ops = self.classified(extra_cli=', "cp"')
+            problems = rules.check_coverage(self.build(pathlib.Path(tmp), ops))
+            self.assertEqual(problems, [])
+
+    def test_abi_version_agreement_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self.build(pathlib.Path(tmp), self.classified(extra_cli=', "cp"'))
+            self.assertEqual(rules.check_abi_version(model), [])
+
+    def test_a_minor_bump_without_the_cmake_version_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.build(root, self.classified(extra_cli=', "cp"'))
+            header = root / "libphig" / "include" / "phig" / "phig.h"
+            header.write_text(PHIG_H.replace("MINOR 3u", "MINOR 4u"))
+            self.assertTrue(any("1.3.0" in p for p in rules.check_abi_version(rules.load(root))))
+
+    def test_a_soversion_that_is_not_the_major_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self.build(pathlib.Path(tmp), self.classified(extra_cli=', "cp"'),
+                               cmake=CMAKELISTS.replace("SOVERSION 1", "SOVERSION 2"))
+            self.assertTrue(any("SOVERSION" in p for p in rules.check_abi_version(model)))
+
+
 if __name__ == "__main__":
     unittest.main()
