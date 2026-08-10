@@ -233,6 +233,13 @@ concurrency and lifetime, and those are the tests to write first.
   has always had, because it reads its face id from `find_closest_face` and has
   no stored embedding to match on. `name` therefore remains exposed to a
   concurrent ABI faces operation. Removing the reuse itself is 045's job.
+  045 shipped: schema v8 made `faces.id` AUTOINCREMENT, so a deleted id is
+  never reissued and the embedding match is no longer what makes the write
+  safe. A face deleted in the gap now matches nothing on its id alone, and
+  `person_id IS NULL` refuses one another labeler named first. Measured while
+  writing rules R07 and R71, which record the mechanism as it stands: deleting
+  `AND embedding = ?` from the predicate fails one test and leaves the
+  concurrent-rebuild test green.
 - **Pixel decoding.** Still absent from the ABI. `gtk/CLAUDE.md` anticipates
   decode moving out-of-process; measurement (0 crashes in 12,684 probes) argues
   in-process is defensible. That contradiction deserves its own plan.
