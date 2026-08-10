@@ -47,8 +47,8 @@ status = "holds"
 id = "R30"
 tier = "engine"
 concern = "atomicity"
-statement = "Reconcile's relink and demote passes commit one row at a time and its deletes commit as a single transaction, so an interruption between them leaves the transferred metadata on both rows and every stale row still present."
-rationale = "The two halves have different failure costs. A transfer is additive — transfer_user_metadata unions tags onto the target, fills an empty gallery, repoints faces only when the target has none, and removes nothing from the source — so a per-row commit that stops halfway leaves duplicated metadata, which the next scan re-derives and then deletes. The deletes are the destructive half and go in one transaction, so a stopped run has dropped every stale row or none of them. The ordering between the passes is load-bearing and is pinned: relink runs before demote, so a shared target takes the moved row's gallery rather than the demoted JPEG's."
+statement = "Reconcile's relink and demote passes commit one row at a time and its deletes commit as a single transaction, so an interruption between them leaves the copied fields on both rows — tags always, gallery when the target had none — the transferred faces on the target alone, and every stale row still present."
+rationale = "The two halves have different failure costs. A transfer copies two of its three fields and moves the third: transfer_user_metadata unions tags onto the target and fills an empty gallery, leaving both in place on the source, while its faces clause is UPDATE faces SET image_id = ?, a move that strips the source row when it fires (R37). So a per-row commit that stops halfway leaves the copied fields duplicated and the faces on the target only, and neither state costs a label — the next scan re-derives the duplication and then deletes the stale row, and the moved faces already sit on the row that pass designated as the survivor. The deletes are the destructive half and go in one transaction, so a stopped run has dropped every stale row or none of them. The ordering between the passes is load-bearing and is pinned: relink runs before demote, so a shared target takes the moved row's gallery rather than the demoted JPEG's."
 enforced_at = [
     "core/scan_engine.cpp:ScanEngine::run_reconcile",
     "core/relink.cpp:relink_moved_rows",
@@ -65,7 +65,7 @@ tests = [
 test_kind = "witness"
 status = "holds"
 owner = "054"
-test_gap = "The listed tests pin the ordering, not the boundaries. No test interrupts reconcile between the transfer passes and the delete, so the interrupted state in the statement is read off the transaction boundaries rather than observed, and the next scan's cleanup of that state is untested too."
+test_gap = "The listed tests pin the ordering, not the boundaries. No test interrupts reconcile between the transfer passes and the delete, so the interrupted state in the statement is read off the transaction boundaries rather than observed by a test — R37 records the faces half being forced by hand and re-scanned to the same end state as an uninterrupted control — and the next scan's cleanup of that state is untested."
 
 [[rule]]
 id = "R31"

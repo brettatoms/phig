@@ -7,13 +7,18 @@ id = "R62"
 tier = "boundary"
 concern = "atomicity"
 statement = "No C++ exception crosses an ABI entry point."
-rationale = "Where a phig_ctx* is in scope the body is wrapped in PHIG_TRY/PHIG_CATCH, which converts an exception into a status plus a thread-local message: LockBusy to PHIG_ERR_BUSY, any other std::exception to PHIG_ERR_DB, anything else to PHIG_ERR_INTERNAL. PHIG_TRY expands to a null check on ctx, so the ctx-less entry points cannot use it and wrap their bodies in a plain try/catch(...) instead — phig_init does, and so does each of settings.cpp's thirteen. The hole is the entry points that return something other than phig_status. Scripted over phig.h's 69 PHIG_API declarations, 37 have no handler of their own. Most are trivially non-throwing accessors, or delegate to a wrapped helper — phig_op_copy_start and phig_op_move_start both call start_apply, which uses PHIG_TRY. But phig_query_add_tag push_backs a std::string, the ten phig_query_set_* functions assign one, and phig_op_poll copies the path and error strings, so each can throw std::bad_alloc into a C caller with no way to catch it. No plan states this."
+rationale = "Where a phig_ctx* is in scope the body is wrapped in PHIG_TRY/PHIG_CATCH, which converts an exception into a status plus a thread-local message: LockBusy to PHIG_ERR_BUSY, any other std::exception to PHIG_ERR_DB, anything else to PHIG_ERR_INTERNAL. PHIG_TRY expands to a null check on ctx, so the ctx-less entry points cannot use it and wrap their bodies in a plain try/catch(...) instead — phig_init does, and so does each of settings.cpp's thirteen. The hole is the entry points that return something other than phig_status. Scripted over phig.h's 69 PHIG_API declarations, 39 have no handler of their own. Most are trivially non-throwing accessors, or delegate to a wrapped helper — phig_op_copy_start and phig_op_move_start both call start_apply, which uses PHIG_TRY. But phig_query_add_tag push_backs a std::string, the ten phig_query_set_* functions assign one, and phig_op_poll copies the path and error strings, so each can throw std::bad_alloc into a C caller with no way to catch it. No plan states this."
 enforced_at = [
     "libphig/internal.h:PHIG_TRY",
     "libphig/internal.h:PHIG_CATCH",
     "libphig/context.cpp:phig_init",
 ]
 binds_surface = ["abi"]
+# db-row comes from the general statement, not from the enumerated hole: an
+# exception escaping a wrapped mutation would abort a caller mid-write, while
+# every entry point in the 39 is a parameter, accessor or free path that
+# touches no row. The 39 endanger the client process, which taxonomy.toml has
+# no asset for — the same gap R63, R64 and R65 answer with an empty list.
 protects = ["db-row"]
 tests = [
     "AbiOperations.FailedOperationReportsItsMessageAndRefusesAResult",
@@ -23,7 +28,7 @@ tests = [
 test_kind = "witness"
 status = "partial"
 owner = "053"
-test_gap = "The listed tests show a thrown exception arriving as a status and a message on the wrapped paths. Nothing exercises an unwrapped entry point under allocation failure, which is the only way to reach the hole, and nothing enumerates the entry points to check each has a handler — the count of 37 came from a script run once while writing this record, not from a gate."
+test_gap = "The listed tests show a thrown exception arriving as a status and a message on the wrapped paths. Nothing exercises an unwrapped entry point under allocation failure, which is the only way to reach the hole, and nothing enumerates the entry points to check each has a handler — the count of 39 came from a script run while writing this record, not from a gate."
 
 [[rule]]
 id = "R63"
@@ -56,9 +61,9 @@ binds_surface = ["abi"]
 protects = []
 tests = ["Abi.VersionMajorMatchesHeader"]
 test_kind = "conformance"
-status = "unenforced"
+status = "holds"
 owner = "054"
-test_gap = "The listed test checks that phig_abi_version()'s high half equals PHIG_ABI_VERSION_MAJOR, a property of one expression that would still pass with the CMake VERSION and SOVERSION set to anything at all. Nothing compares the header against libphig/CMakeLists.txt, and nothing counts exported symbols against the minor, so both halves of this rule rest on whoever remembers."
+test_gap = "The listed test checks that phig_abi_version()'s high half equals PHIG_ABI_VERSION_MAJOR, a property of one expression that would still pass with the CMake VERSION and SOVERSION set to anything at all. Nothing compares the header against libphig/CMakeLists.txt, and nothing counts exported symbols against the minor, so both halves of this rule rest on whoever remembers. Filed as holds rather than unenforced because the code satisfies the rule today and one test pins a piece of it, which is what R49, R53 and R54 do in the same position; R65 is the clean unenforced next door, with no test and nothing that could be written short of a new pin."
 
 [[rule]]
 id = "R65"
