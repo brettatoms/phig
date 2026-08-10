@@ -1774,7 +1774,8 @@ bool Database::set_face_person(int64_t face_id, int64_t person_id) {
 bool Database::set_face_person_if_unchanged(int64_t face_id, int64_t person_id,
                                             const std::array<float, 128>& embedding) {
     // `person_id IS NULL` makes this a compare-and-set against another labeler;
-    // `embedding = ?` makes it one against rowid reuse. See the header.
+    // `id = ?` drops a face deleted since the caller read it. See the header for
+    // why `embedding = ?` is belt-and-braces rather than a third guard.
     const char* sql =
         "UPDATE faces SET person_id = ? WHERE id = ? AND person_id IS NULL AND embedding = ?";
     sqlite3_stmt* stmt;
