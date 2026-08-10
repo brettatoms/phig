@@ -19,8 +19,10 @@ only through `libphig`'s C ABI and may include no `core/` header. This plan
 makes it a peer of `libphig` over `core/` instead — the standing root
 `CLAUDE.md` already grants `cli/`, and plan 052 claims for `phigd`.
 
-The boundary decision is settled. What remains open is how far the C++
-conversion goes and who owns libphig's schedule afterwards; those are the open
+The boundary decision is settled, and so is how far the C++ conversion goes —
+`thumb-loader.c` and `main.c` convert, `gallery-model.c` stays C, for the
+reasons in Language and structure below. What remains open is the build
+topology and who owns libphig's schedule afterwards; those are the open
 questions at the end.
 
 ## Why
@@ -89,18 +91,57 @@ costing:
 ## Language and structure
 
 **Mixed C/C++ target, not a big-bang port.** `gtk/CMakeLists.txt:2` becomes
-`LANGUAGES C CXX`. `gallery-model.c` stays C, where `G_DEFINE_TYPE_WITH_CODE`
-and the `GListModel` interface implementation are native. New core-facing code
-is C++. The remaining widget code converts opportunistically or not at all —
-2,639 lines total including tests, so neither choice is expensive.
+`LANGUAGES C CXX`. The split is not a compromise between two styles: it falls
+on whether GTK requires the thing in a file to be a GObject, which is always
+answerable and so survives contact with new files.
+
+**`gallery-model.c` stays C permanently.** Both its GObjects are mandatory.
+`PhigImageRow` must be one because `GListModel::get_item` returns a `GObject*`
+and GTK's list-item manager keys recycled widgets by item pointer identity — a
+single shared object makes it pick a widget for the wrong position (glib#3030,
+recorded at `gallery-model.c:132-143`). `PhigGalleryModel` must be one because
+it implements `GListModel` and emits `page-fetch-failed`.
+
+C++ inside those structs is worse, not neutral: **GObject instance memory is
+not C++-constructed.** `g_object_new` allocates and zeroes, then calls `_init`,
+so a `std::string` member is not a constructed `std::string`. Turning
+`PhigImageRow`'s three `char*` fields into `std::string` means placement-new in
+`phig_image_row_init` and explicit destructor calls in `_finalize` — more
+ceremony than the three `g_free` calls at `gallery-model.c:44-46`, and a
+footgun for whoever adds a fourth field. The two hand-rolled LRU scans
+(`gallery-model.c:199-216` and `:230-245`) are near-identical and do want
+factoring out, but that is a shared helper in C, not a language argument.
+
+**`thumb-loader.c` and `main.c` convert.** `ThumbLoader` is a GObject and
+nothing in GTK requires it to be — it is a GObject so idle sources can hold
+refcounts on it (`thumb_loader_post_result`, `thumb-loader.c:225-229`), which
+is `shared_ptr`/`weak_ptr` spelled in C. Dropping it removes
+`G_DECLARE_FINAL_TYPE`, `G_DEFINE_FINAL_TYPE`, `class_init`, `init`, `dispose`,
+`finalize` and every `PHIG_THUMB_LOADER()` cast: about 30 lines carrying no
+logic. The larger gain is ownership moving from comments into types —
+`cache_insert`'s "takes ownership of the reference passed in, returns a new ref"
+contract becomes a by-value `GRef` parameter and return type, its two unlock
+paths become one `lock_guard`, and the aliasing where `entry->key` *is* the hash
+table's key (freed by the value destructor, because the table is created with a
+NULL key-destroy at `thumb-loader.c:398-399`) disappears into
+`unordered_map<std::string, Entry>`. `ThumbRequest`'s three-way ownership
+between queue, worker and idle source is a `unique_ptr` moved through, which is
+what 41 lines of comment across `thumb-loader.c:11-22`, `:172-176`, `:200-216`
+and `:218-224` currently explain.
+
+`main.c` has no `G_DEFINE` at all — one `PhigApp` plain struct, free functions,
+12 `g_signal_connect` handlers. It is already composition, so converting is
+cheap and structural nothing: RAII replaces four manual `*_free` functions, and
+`std::sort` replaces `qsort` with `phig_measure_cmp_us`.
 
 **No inheritance is required in code phig writes.** GTK4's list and grid views
 are composition-based: `GtkSignalListItemFactory` supplies bind and unbind
 callbacks, which is why `on_factory_unbind` is a function rather than an
-override, and layout goes through `gtk_widget_set_layout_manager`. The
-`GListModel` in `gallery-model.c` is the only GObject subclass in the client
-and it stays in C. gtkmm remains rejected, and its inheritance-first design
-(subclassing `Gtk::Window`) is a second reason beyond the one already recorded.
+override, and layout goes through `gtk_widget_set_layout_manager`. Using GTK at
+all means using GObject's own hierarchy through casts (`GTK_WIDGET(x)`), which
+is unavoidable and opaque — phig never writes a hierarchy. gtkmm remains
+rejected, and its inheritance-first design (subclassing `Gtk::Window`) is a
+second reason beyond the one already recorded.
 
 The C++ this buys is value-semantic:
 
@@ -126,6 +167,24 @@ against a process boundary decode would cross; measurement (0 crashes in 12,684
 probes) already argues in-process decode is defensible, so the rule narrows
 rather than disappears — a `cv::Mat` may exist in a bridge translation unit and
 must be a `GdkTexture` before any widget sees it.
+
+**The `thumb-loader` conversion carries one bug fix.**
+`thumb_loader_evict_locked` pops from the LRU head while over budget, and the
+just-inserted entry is at the tail, so it is evicted only when it is the last
+one standing — which happens when a single texture exceeds the whole budget.
+`thumb-loader.c:155` then calls `g_object_ref(entry->texture)` on an entry the
+hash table's `GDestroyNotify` has already freed. Reachable from the shipped
+binary: `PHIG_THUMB_CACHE_BYTES` is an env override (`main.c:840`) and
+`env_override_uint` accepts any positive value. The case is untested by design
+— `test_cache_respects_byte_budget` sizes its budget for about three entries
+and says in a comment that a single-entry budget "never exercises LRU
+*ordering*" — so a test for it is part of the fix.
+
+The fix is to take the caller's reference before evicting, and it is not
+something the conversion produces for free: the same structure in C++ has the
+same defect. It rides along because the file is being rewritten anyway, and
+because phig has no released client whose behaviour a change here could
+disturb.
 
 ## Build integration
 
@@ -217,25 +276,18 @@ M0 reading phig only through libphig stays as the record of what shipped.
 
 ## Open questions
 
-1. **How much of `gtk/` becomes C++?** The minimum is the core-facing seam
-   plus whatever calls it. Converting `main.c` (974 lines) buys RAII for the
-   widget state that currently tracks lifetimes by hand; converting
-   `thumb-loader.c` (479 lines) buys it for the worker threads, which is where
-   manual lifetime management is riskiest. `gallery-model.c` stays C either way.
-   Recommend the seam first, then `thumb-loader`, then `main` — each a separate
-   commit that keeps the tests green.
-2. **Does `gtk/` keep its own build root?** `add_subdirectory(gtk)` from the
+1. **Does `gtk/` keep its own build root?** `add_subdirectory(gtk)` from the
    root is the cheap route, but `gtk/CLAUDE.md` currently documents a
    standalone `cmake -B build` from inside `gtk/`, and that is a faster
    feedback loop for client work than reconfiguring the engine. A standalone
    build that links `phig-core` needs the target exported, which is the cost
    the previous section describes.
-3. **Do gtk's two test binaries link `phig-core`?** They currently link
+2. **Do gtk's two test binaries link `phig-core`?** They currently link
    libphig via pkg-config and skip (exit 77) when the collection is absent.
    Linking a static engine into two more binaries is cheap in build time and
    makes the tests able to build a real database instead of skipping — which
    is a change in what they cover, not just how they link.
-4. **Who maintains libphig in the interim?** It has 69 exported symbols, 22 ABI
+3. **Who maintains libphig in the interim?** It has 69 exported symbols, 22 ABI
    tests and no caller after this lands. Options: keep it green in CI and let
    049 drive it forward, or state that it is frozen at 1.3 until the macOS
    client needs a symbol. The second is honest but makes 053 a plan nobody is
