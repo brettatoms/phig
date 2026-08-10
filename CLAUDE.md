@@ -433,10 +433,17 @@ checkboxes — write it to `docs/plans/` as an artifact and open or update the
 numbered plan that owns it.
 
 Status is one of: `designing` (open questions remain), `planned` (designed,
-not started), `in-progress` (started; the index row says what's left),
+not started), `in-progress` (started; the plan file says what's left),
 `completed` (shipped, including pieces explicitly deferred to a later plan),
 `deferred` (deliberately not now), `superseded` (replaced — the row and the
 file's frontmatter both name the replacement).
+
+**An index row is one sentence.** It says what the plan is, in enough words
+to decide whether to open it — 15 to 30, the length of the 001-005 rows. It
+carries no status, no progress, no measurements and no design reasoning: all
+of that lives in the plan file, which is the only place it can be kept
+current. A row that restates the plan makes the index unscannable, which is
+the one thing it exists to be.
 
 New cross-project or monorepo-wide design docs go in `docs/`. Completed
 plans should not be edited unless the user explicitly asks — it's fine to
