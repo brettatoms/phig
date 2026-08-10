@@ -284,5 +284,74 @@ class SourceAnchorTest(unittest.TestCase):
             self.assertTrue(any("resolve_conflict" in p for p in rules.check_sources(model)))
 
 
+INDEX = """# Plan Index
+
+| # | Name | Status | File | Description |
+|---|------|--------|------|-------------|
+| 041 | Scan Reconcile | planned | [041-x.md](041-x.md) | words |
+| 042 | Organize Engine | completed | [042-x.md](042-x.md) | words |
+| 046 | Vec Faces | designing | [046-x.md](046-x.md) | words |
+| 054 | Rules of Record | in-progress | [054-x.md](054-x.md) | words |
+"""
+
+
+def violated(owner):
+    """GOOD_RULE with its status replaced, not appended.
+
+    Appending `status = ...` would put a second `status` key in the same
+    [[rule]] table, which TOML forbids — tomllib raises TOMLDecodeError and the
+    test errors instead of asserting anything.
+    """
+    return GOOD_RULE.replace('status = "holds"',
+                             f'status = "violated"\nowner = "{owner}"')
+
+
+class OwnerTest(unittest.TestCase):
+    def build(self, root, rule_text):
+        write(root, "taxonomy.toml", MINIMAL_TAXONOMY)
+        write(root, "operations.toml", MINIMAL_OPS)
+        write(root, "conflict.toml", rule_text)
+        (root / "plans").mkdir(exist_ok=True)
+        (root / "plans" / "000-INDEX.md").write_text(INDEX)
+        return rules.load(root)
+
+    def test_index_is_parsed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "plans").mkdir()
+            (root / "plans" / "000-INDEX.md").write_text(INDEX)
+            self.assertEqual(rules.plan_statuses(root)["042"], "completed")
+
+    def test_owner_that_is_completed_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self.build(pathlib.Path(tmp), violated("042"))
+            problems = rules.check_owners(model)
+            self.assertTrue(any("042" in p and "completed" in p for p in problems))
+
+    def test_owner_that_is_open_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self.build(pathlib.Path(tmp), violated("041"))
+            self.assertEqual(rules.check_owners(model), [])
+
+    def test_owner_not_in_index_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self.build(pathlib.Path(tmp), violated("099"))
+            self.assertTrue(any("099" in p for p in rules.check_owners(model)))
+
+    def test_test_gap_owner_is_checked_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # test_gap is a new key, so appending is safe here.
+            model = self.build(pathlib.Path(tmp),
+                               GOOD_RULE + '\ntest_gap = "weak"\nowner = "042"\n')
+            self.assertTrue(any("042" in p for p in rules.check_owners(model)))
+
+    def test_in_progress_is_an_open_owner(self):
+        # 054 owns 26 of its own test gaps and is in-progress, not planned.
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self.build(pathlib.Path(tmp),
+                               GOOD_RULE + '\ntest_gap = "weak"\nowner = "054"\n')
+            self.assertEqual(rules.check_owners(model), [])
+
+
 if __name__ == "__main__":
     unittest.main()

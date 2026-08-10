@@ -230,7 +230,44 @@ def check_sources(model):
     return problems
 
 
-CHECKS = [check_schema, check_sources]
+OPEN_PLAN_STATUSES = {"designing", "planned", "in-progress"}
+INDEX_ROW = re.compile(r"^\|\s*(\d{3})\s*\|[^|]*\|\s*([a-z-]+)\s*\|")
+
+
+def plan_statuses(root):
+    """Map plan number to status, read from plans/000-INDEX.md."""
+    index = pathlib.Path(root) / "plans" / "000-INDEX.md"
+    statuses = {}
+    for line in index.read_text().splitlines():
+        match = INDEX_ROW.match(line)
+        if match:
+            statuses[match.group(1)] = match.group(2)
+    return statuses
+
+
+def check_owners(model):
+    """Check 3: a violated or partial rule names an open plan, and so does any
+    test_gap (which is what the design numbered check 10)."""
+    problems = []
+    statuses = plan_statuses(model.root)
+    for rule in model.rules:
+        owner = rule.get("owner")
+        if not owner:
+            continue
+        rid = rule.get("id", "<no id>")
+        why = ("status " + rule.get("status", "?")
+               if rule.get("status") in NEEDS_OWNER else "test_gap")
+        status = statuses.get(owner)
+        if status is None:
+            problems.append(f"{rid}: owner '{owner}' ({why}) is not in plans/000-INDEX.md")
+        elif status not in OPEN_PLAN_STATUSES:
+            problems.append(
+                f"{rid}: owner '{owner}' ({why}) is '{status}', not an open plan — "
+                f"either the debt is paid and the rule should change, or it needs a new owner")
+    return problems
+
+
+CHECKS = [check_schema, check_sources, check_owners]
 
 
 def main(argv=None):
