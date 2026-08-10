@@ -42,7 +42,7 @@ enforced_at = [
     "libphig/internal.h:PHIG_TRY",
 ]
 binds_surface = ["abi"]
-protects = []
+protects = ["client-process"]
 tests = ["AbiMutate.EachThreadSeesOnlyItsOwnError", "Abi.LastErrorOnNullCtxReturnsEmptyString"]
 test_kind = "witness"
 status = "holds"
@@ -58,7 +58,7 @@ enforced_at = [
     "libphig/CMakeLists.txt:SOVERSION",
 ]
 binds_surface = ["abi"]
-protects = []
+protects = ["client-process"]
 tests = ["Abi.VersionMajorMatchesHeader"]
 test_kind = "conformance"
 status = "holds"
@@ -73,7 +73,7 @@ statement = "phig_op_progress gains no field: a new counter means a new struct a
 rationale = "The struct is caller-allocated and filled by phig_op_poll, with no size and no version member, so a client built against an older header would have a newer libphig.so write past the end of its buffer — corruption the client cannot detect, not an error it can check for. phig_op_progress2 with phig_op_poll2 is the additive answer and keeps the soname. Adding a size member to the existing struct is the cleaner fix and is free only while nothing outside the repo links libphig (plan 040); that window shuts the moment a client ships against it. The neighbouring enums do have the provision the struct lacks — phig_op_stage is append-only and never renumbered, and tests/test_libphig_c_compile.c pins every phig_status, phig_op_state and phig_op_stage value with a negative-width bitfield so a renumber fails the build. The struct has no equivalent pin: nothing asserts its size or its field order."
 enforced_at = ["libphig/include/phig/phig.h:phig_op_progress"]
 binds_surface = ["abi"]
-protects = []
+protects = ["client-process"]
 tests = []
 test_kind = "conformance"
 status = "unenforced"

@@ -48,7 +48,12 @@ files are generated from these records, not hand-maintained.
   - `sanitizer` — the rule's evidence depends on a sanitizer run (ASan,
     UBSan, TSan) catching a violation that a normal run would not surface.
 - `status` (required) — one of `holds` | `partial` | `violated` |
-  `unenforced`.
+  `unenforced`. `holds` with a `test_gap` and an open `owner` is the standard
+  shape for a rule the code satisfies but no test fully pins — R26, R49, R53,
+  R54 and R64 all take this shape, and it is preferred over `unenforced`
+  whenever the code is right and only the test is weak. `unenforced` narrows
+  to mean only "nothing can pin this today" — true of R34 and R65, where no
+  test exists and none could be written short of new machinery.
 - `owner` — a plan number (from `plans/`) responsible for closing the gap.
   Required whenever `status` is `partial` or `violated`, and required
   whenever `test_gap` is present, even if `status` is `holds`.
@@ -65,6 +70,17 @@ missing behavior: 054's phase 3 is the pass that writes the tests this record
 set discovers are absent. A gap owned by 054 therefore means "no test pins
 this yet", and a gap owned by any other plan means that plan has to change the
 code before the rule can hold.
+
+## Anchors outside `core/` and `libphig/`
+
+`enforced_at` normally resolves under `core/` or `libphig/`, per the
+enforcement-belongs-in-core rule in the root `CLAUDE.md`. An anchor outside
+both is legal on exactly one shape of rule: `status = "violated"`, where the
+anchor's location is itself the defect and `owner` names the plan moving the
+code into `core/` or `libphig/`. R68 is the example — its guard lives at
+`cli/main.cpp:cmd_trash_empty` because no `core/` primitive for `trash.empty`
+exists yet, and plan 053 owns creating one. When the code moves, the anchor
+updates to name the new location and `status` becomes `holds`.
 
 ## core_headers classification
 

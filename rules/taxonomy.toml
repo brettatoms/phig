@@ -11,13 +11,15 @@ concerns = [
     "authorization",    # dry-run, plan/apply, --yes, overridable decisions
 ]
 
-# The six assets. These are the rows of rules/by-asset.md, ordered by how
-# irreversible the loss is.
+# The seven assets. These are the rows of rules/by-asset.md, ordered by how
+# bad the loss is to the collection. client-process sits last because it
+# isn't collection data at all — the harm is to a caller's process, not to
+# the photos.
 
 [[asset]]
 id = "user-metadata"
 rebuildable = "no"
-note = "Tags, favorites, gallery, face labels. The only asset nothing can reconstruct."
+note = "Tags, favorites, gallery, face labels. The only collection asset nothing can reconstruct."
 
 [[asset]]
 id = "original-file"
@@ -43,3 +45,8 @@ note = "The record of what happened."
 id = "thumb-cache"
 rebuildable = "yes"
 note = "Present so its rules are visibly cheap, not to guard it."
+
+[[asset]]
+id = "client-process"
+rebuildable = "no"
+note = "A foreign caller's address space and its ability to keep running against this library. phig can corrupt it (a struct that grew under an older header), mislead it (an error read on the wrong thread), or lock it out (a soname change). None is repairable from phig's side."
