@@ -163,5 +163,106 @@ class SchemaTest(unittest.TestCase):
         self.assertTrue(any("mv" in p for p in problems))
 
 
+class SourceAnchorTest(unittest.TestCase):
+    def core(self, root, name, text):
+        """Append, so the operation's own core_entry header can coexist with
+        whatever a test writes into the same file."""
+        (root / "core").mkdir(exist_ok=True)
+        with (root / "core" / name).open("a") as handle:
+            handle.write(text)
+
+    def fixture(self, root, rule_text):
+        # check_sources also resolves every operation's core_entry, so the
+        # fixture has to declare MINIMAL_OPS's OrganizeEngine::apply.
+        self.core(root, "organize_engine.h",
+                  "class OrganizeEngine {\n  OrganizeResult apply();\n};\n")
+        write(root, "taxonomy.toml", MINIMAL_TAXONOMY)
+        write(root, "operations.toml", MINIMAL_OPS)
+        write(root, "conflict.toml", rule_text)
+        return rules.load(root)
+
+    def build(self, root, enforced_at):
+        return self.fixture(
+            root, GOOD_RULE.replace('["core/paths.cpp:resolve_conflict"]', enforced_at))
+
+    def test_missing_file_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, '["core/nope.cpp:resolve_conflict"]')
+            self.assertTrue(any("core/nope.cpp" in p for p in rules.check_sources(model)))
+
+    def test_missing_symbol_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.core(root, "paths.cpp", "int unrelated() { return 0; }\n")
+            model = self.build(root, '["core/paths.cpp:resolve_conflict"]')
+            self.assertTrue(any("resolve_conflict" in p for p in rules.check_sources(model)))
+
+    def test_enforcement_in_cli_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "cli").mkdir()
+            (root / "cli" / "main.cpp").write_text("void cmd_organize() {}\n")
+            model = self.build(root, '["cli/main.cpp:cmd_organize"]')
+            problems = rules.check_sources(model)
+            self.assertTrue(any("cli/" in p and "core/" in p for p in problems))
+
+    def test_enforcement_in_cli_is_allowed_when_violated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "cli").mkdir()
+            (root / "cli" / "main.cpp").write_text("void cmd_organize() {}\n")
+            model = self.fixture(
+                root,
+                GOOD_RULE
+                .replace('["core/paths.cpp:resolve_conflict"]',
+                         '["cli/main.cpp:cmd_organize"]')
+                .replace('status = "holds"', 'status = "violated"\nowner = "043"'))
+            self.assertEqual(rules.check_sources(model), [])
+
+    def test_valid_anchor_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.core(root, "paths.cpp", "std::string resolve_conflict() {}\n")
+            model = self.build(root, '["core/paths.cpp:resolve_conflict"]')
+            self.assertEqual(rules.check_sources(model), [])
+
+    def test_qualifier_is_stripped_when_the_member_is_declared_bare(self):
+        # R09's shape: the anchor names OrganizePlan::set_resolution, the header
+        # declares set_resolution inside the class body.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(
+                root, '["core/organize_engine.h:OrganizePlan::set_resolution"]')
+            self.core(root, "organize_engine.h",
+                      "class OrganizePlan {\n  void set_resolution(int i);\n};\n")
+            self.assertEqual(rules.check_sources(model), [])
+
+    def test_a_symbol_does_not_resolve_through_a_longer_name(self):
+        # ScanEngine::run must not resolve against run_workers/run_reconcile.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.core(root, "scan_engine.cpp",
+                      "void ScanEngine::run_workers() {}\n"
+                      "void ScanEngine::run_reconcile() {}\n")
+            model = self.build(root, '["core/scan_engine.cpp:ScanEngine::run"]')
+            self.assertTrue(any("ScanEngine::run" in p for p in rules.check_sources(model)))
+
+    def test_an_operation_core_entry_is_checked_too(self):
+        # An engine method renamed without its operations.toml row following it
+        # is the same decay as an orphaned enforced_at.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.core(root, "paths.cpp", "std::string resolve_conflict() {}\n")
+            self.core(root, "organize_engine.h",
+                      "class OrganizeEngine {\n  OrganizeResult apply();\n};\n")
+            write(root, "taxonomy.toml", MINIMAL_TAXONOMY)
+            write(root, "operations.toml",
+                  MINIMAL_OPS.replace("OrganizeEngine::apply", "OrganizeEngine::teleport"))
+            write(root, "conflict.toml", GOOD_RULE)
+            problems = rules.check_sources(rules.load(root))
+            self.assertTrue(any("organize.move" in p and "teleport" in p for p in problems))
+
+
 if __name__ == "__main__":
     unittest.main()

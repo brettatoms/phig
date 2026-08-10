@@ -143,7 +143,65 @@ def _check_classification(model):
     return problems
 
 
-CHECKS = [check_schema]
+ENFORCEMENT_ROOTS = ("core/", "libphig/")
+
+
+def _resolves(text, symbol):
+    """True when `symbol` is declared or defined in `text`.
+
+    Tries the qualified form first, then the bare member name. Both are matched
+    on a word boundary: a substring test lets ScanEngine::run resolve against
+    run_workers, so the anchor survives the symbol being deleted.
+    """
+    for candidate in (symbol, symbol.split("::")[-1]):
+        if re.search(r"\b" + re.escape(candidate) + r"\b", text):
+            return True
+    return False
+
+
+def check_sources(model):
+    """Check 1: every enforced_at, and every operation's core_entry, names a
+    real file and a symbol found in it. Check 8, folded in: enforcement lives
+    in core/ or libphig/ unless the rule is violated, in which case the
+    location itself is what the rule records."""
+    problems = []
+    for rule in model.rules:
+        rid = rule.get("id", "<no id>")
+        misplacement_is_the_defect = rule.get("status") == "violated"
+        for site in rule.get("enforced_at", []):
+            if ":" not in site:
+                problems.append(f"{rid}: enforced_at '{site}' is not 'path:symbol'")
+                continue
+            rel, symbol = site.split(":", 1)
+            if not rel.startswith(ENFORCEMENT_ROOTS) and not misplacement_is_the_defect:
+                problems.append(
+                    f"{rid}: enforced_at '{rel}' is outside core/ and libphig/ — "
+                    f"a rule enforced there is unreachable by a client, so it is "
+                    f"status = \"violated\" with an owner, not status = \"holds\"")
+                continue
+            path = model.root / rel
+            if not path.is_file():
+                problems.append(f"{rid}: enforced_at file '{rel}' does not exist")
+            elif not _resolves(path.read_text(errors="replace"), symbol):
+                problems.append(f"{rid}: symbol '{symbol}' not found in '{rel}'")
+
+    for operation in model.operations:
+        oid = operation.get("id", "<no id>")
+        entry = operation.get("core_entry", "")
+        if ":" not in entry:
+            problems.append(f"operation '{oid}': core_entry '{entry}' is not 'path:symbol'")
+            continue
+        rel, symbol = entry.split(":", 1)
+        path = model.root / rel
+        if not path.is_file():
+            problems.append(f"operation '{oid}': core_entry file '{rel}' does not exist")
+        elif not _resolves(path.read_text(errors="replace"), symbol):
+            problems.append(f"operation '{oid}': core_entry symbol '{symbol}' "
+                            f"not found in '{rel}'")
+    return problems
+
+
+CHECKS = [check_schema, check_sources]
 
 
 def main(argv=None):
