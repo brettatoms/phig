@@ -1,6 +1,6 @@
 ---
 name: GTK Links core/ Directly
-status: designing
+status: planned
 created: 2026-08-10
 description: >
   Make `gtk/` a peer of `libphig` over `core/` rather than a client of it, the
@@ -22,11 +22,11 @@ makes it a peer of `libphig` over `core/` instead — the standing root
 Settled: the boundary itself, how far the C++ conversion goes
 (`thumb-loader.c` and `main.c` convert, `gallery-model.c` stays C), the build
 topology (`gtk/` joins the root build behind an off-by-default option), what
-gtk's tests link (a fake seam, not the engine), and what happens to libphig
-(nothing, until the macOS and Windows clients need a symbol). One question
-remains, and it decides what the client's Remove screen is rather than only
-how a file is worded: whether the two ABI rules in `rules/boundary.toml` bind
-the new surface.
+gtk's tests link (a fake seam, not the engine), what happens to libphig
+(nothing, until the macOS and Windows clients need a symbol), and how plan
+054's rules reach the client (through the 62 that bind a `core/` operation,
+not through a new surface value). What is left is dependencies rather than
+questions — see the end.
 
 ## Why
 
@@ -240,30 +240,41 @@ root build with `-DPHIG_BUILD_GTK=ON`.
 
 ## Rule coverage
 
-Plan 054 records phig's data-integrity rules as TOML, and every rule carries a
-`binds_surface`. In `rules/boundary.toml` the only values are `abi` and `cli`.
-A `gtk/` that links `core/` is a third surface, and it inherits neither list.
-Two rules make that concrete:
+**`gtk/` does not become a new `binds_surface` value.** 62 of plan 054's 70
+rules bind a `core/` operation and 8 bind a surface, which is 054's design
+working as intended: a rule binds the operation and every surface inherits it.
+A client that consumes `core/` primitives therefore inherits those 62 by
+construction, exactly as `cli/` does, and gaining a surface value would add
+nothing it does not already carry.
 
-- **R66** — "A destructive ABI operation is authorized by a plan the caller
-  inspects and then applies with a second call, never by a callback the engine
-  invokes mid-run." Its rationale names `cmd_rm`'s `ConfirmFn` as "a `cli/`
-  affordance for a command with no plan phase, not a model to copy." Linking
-  `core/` puts that `ConfirmFn` within reach of the GTK client, and no rule
-  says it may not use it. Either R66's `binds_surface` grows to cover the new
-  surface, or this plan states why gtk is exempt — and the second is hard to
-  argue for the client that has a Remove dialog in 047.
-- **R62** — "No C++ exception crosses an ABI entry point," held by
-  `PHIG_TRY`/`PHIG_CATCH` around every entry point where a `phig_ctx*` is in
-  scope. Linking `core/` removes that wrapper. GTK enters phig's handlers
-  through GLib's C frames, so an exception leaving a signal handler unwinds
-  through code with no unwind guarantee — the same discipline R62 imposes at
-  the ABI, needed at the GTK callback boundary instead. Nothing states it
-  today because no surface needed it.
+Seven of the eight surface rules exist *because* there is a C ABI, and have no
+meaning for an in-tree C++ caller: R62 and R63 are C-to-C++ translation
+mechanics (exception conversion, thread-local error storage), R64 and R65 are
+ABI versioning and struct layout, R67 is the `phig_op` lifecycle, and R69 and
+R70 bind `cli`.
 
-Both rules are `owner = "053"`, which they keep whether or not 053 still has a
-GTK driver. This plan owns describing the obligation; writing or amending a
-rule record is 054's machinery and a separate decision.
+**R66 is the one whose substance transfers, and it is an operation property
+rather than a surface one.** "A destructive operation is authorized by a plan
+the caller inspects and then applies with a second call, never by a callback the
+engine invokes mid-run" is a statement about what removal *is*, not about how a
+caller reaches it. `remove.trash`, `remove.hard`, `remove.db-only` and
+`remove.orphans` are already core operations (`rules/operations.toml:177-208`),
+and none has a plan phase anywhere in `core/`:
+`cmd_rm(const RemoveOptions&, const ConfirmFn& confirm = nullptr)`
+(`core/remove_exec.h:66`) is the CLI's stand-in for the plan core does not have.
+
+That gap is already owned without this plan touching it. R66 binds `abi`, and
+053 owns reaching remove through the ABI, so 053 must expose it as plan/apply,
+which means `core/` has to grow one. The GTK client then uses it because it is
+the only authorized removal path there is. This plan records the dependency and
+claims none of the work.
+
+What `gtk/` needs instead is client discipline, which belongs in
+`gtk/CLAUDE.md` rather than in the record set: do not reach for `cmd_rm`'s
+`ConfirmFn`, and do not let an exception unwind out of a GLib signal handler,
+since GTK enters phig's handlers through C frames with no unwind guarantee.
+Neither protects the collection — they protect the client's own correctness —
+which is why neither is a data-integrity rule.
 
 ## Consequences for libphig and 053
 
@@ -303,7 +314,9 @@ The decision contradicts four documents, and this plan owns fixing them:
   reachable.
 - **`gtk/CLAUDE.md`** — the "may only include `<phig/phig.h>`, never link
   `phig-core`" rule inverts; the `cv::Mat` rule narrows to the seam; the paging
-  discipline is added.
+  discipline is added; and the two client-discipline rules from Rule coverage
+  above go in — no `cmd_rm` `ConfirmFn`, no exception unwinding out of a signal
+  handler.
 - **`libphig/CLAUDE.md`** — "the boundary for foreign callers (`gtk/`, and
   later Elixir)" is no longer accurate about either.
 - **047** — its dependency list cites 041, 042 and 043 for the GTK client;
@@ -312,15 +325,14 @@ The decision contradicts four documents, and this plan owns fixing them:
 Per the repo's convention, completed plans are not edited: 035's description of
 M0 reading phig only through libphig stays as the record of what shipped.
 
-## Open questions
+## Dependencies
 
-1. **Do R66 and R62 bind the new surface, or is `gtk/` exempt?** Rule coverage
-   above states the obligation and argues that exemption is hard to defend for
-   the client that has a Remove dialog in 047, but the decision is not taken.
-   It has to be, because it is the difference between the GTK client being
-   allowed to call `cmd_rm` with a `ConfirmFn` and being required to build a
-   plan/apply pair for removal — a difference in what the client's Remove
-   screen is, not only in what a TOML file says.
+- **041** — reconcile plan/apply, for a scan dialog that removes stale rows.
+  Core-side work with no substitute.
+- **053** — a removal plan/apply pair in `core/`, which R66 already requires of
+  the ABI, for the Remove screen.
+- **A GTK M1 plan** — this plan opens the boundary and does not schedule the
+  screens behind it.
 
 ## Cross-references
 
