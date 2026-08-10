@@ -119,3 +119,48 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
+
+[[rule]]
+id = "R69"
+tier = "boundary"
+concern = "conflict"
+statement = "Writing a command's results to the path named by --output does not destroy what is already at that path."
+rationale = "It does. cmd_search and cmd_duplicates each hand the path to a default std::ofstream::open (cli/main.cpp:1040 and :584), whose mode truncates, and there is no --on-conflict for --output, no prompt, no backup and no activity-log entry, so the destroyed bytes leave no record anywhere. Measured against a scratch two-image collection with the built binary: a 14-byte file reading IRREPLACEABLE came back 167 bytes of search results from 'phig search --output', exit 0 with nothing on stdout, and 272 bytes of duplicate groups from 'phig duplicates --output', exit 0. A search that matches nothing truncates it the same way — '--ext nosuchext' left 15 bytes reading 'Found 0 images'. 'fav list --output' is the same code, since cmd_fav's list branch fills a SearchOptions and calls cmd_search (cli/main.cpp:1749); measured, it left the same 15 bytes. The file survives in one case only: --count prints the count and returns at cli/main.cpp:1032-1035 before the stream is opened, so 'phig search --count --output' left the 14-byte file at 14 bytes and did nothing else with the flag. Whether a command destroys the file at --output therefore turns on a flag that has nothing to do with output. Every other write phig makes refuses an occupied destination — the resolver renames around a protected one (R01), move_file refuses at the syscall (R02), and a carried attachment refuses outright (R41) — so this is the one write path with no resolution at all. Anchored at cli/main.cpp deliberately: no core/ primitive renders a result to a file, so both the write and any guard on it exist only in the CLI and no other surface could inherit a fix; libphig returns records and leaves the writing to its caller. Plan 060 owns it. The shape is 060's thesis exactly — the run finishes, reports success, exits 0, and something that mattered is gone with no signal and no record — and what has to be decided is whether a successful run may destroy silently, which is a data-safety question rather than the parser question 043 handles. The fix lands in cli/, so it carries the same scoping question 060's open question 3 already raises for cmd_organize's exit code."
+enforced_at = ["cli/main.cpp:cmd_search", "cli/main.cpp:cmd_duplicates"]
+binds_surface = ["cli"]
+# The bytes destroyed are on disk and irreplaceable, which is what
+# original-file names, but they sit outside the collection: no row points at
+# them, no rescan rebuilds them, and phig was given the path only as somewhere
+# to write. Recorded under original-file rather than an eighth asset so the
+# by-asset row a reader consults for 'what can destroy a file' holds every rule
+# that can; the strain is that every other rule in that row means tracked media.
+protects = ["original-file"]
+tests = []
+test_kind = "subprocess"
+status = "violated"
+owner = "060"
+test_gap = "Nothing tests --output at all: no test in tests/ passes the flag, and none calls cmd_search or cmd_duplicates, which are cli/ functions no fixture drives. Every fact above was measured by running the built binary. Only a subprocess test could pin it, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes."
+
+[[rule]]
+id = "R70"
+tier = "boundary"
+concern = "authorization"
+statement = "A command that only reads a collection neither creates its database nor migrates its schema."
+rationale = "Every cli/ command that opens a collection opens it read-write. All twelve Database constructions in cli/main.cpp pass one argument, so all twelve take the default read_only = false, and cmd_search and cmd_duplicates then call init_schema on their first two lines (cli/main.cpp:855-856 and :500-501). The read-write constructor creates the parent directory and opens with SQLITE_OPEN_CREATE (core/database.cpp:214-231); init_schema applies the forward-only migration (core/database.cpp:298). The flag exists and works — libphig's phig_init passes it from the context mode and skips init_schema for a read-only context (libphig/context.cpp:31-45) — and cli/main.cpp never names it: read_only appears there zero times. Measured with the built binary: 'phig search --count' against a path holding no database left a 122880-byte file there whose meta table reads schema_version 8, then exited 1 with 'Database is empty.'; 'phig duplicates' against another such path did the same. Against copies of a two-image collection with meta.schema_version set back to 7, 'phig search --count' printed 2 and left the value at 8, and 'phig duplicates' left it at 8 as well. Under an empty XDG_DATA_HOME, 'phig help' and 'phig --help' created nothing, while 'phig search --count' with no --db created the database at the default path. Two consequences follow. A read migrates a collection forward irreversibly, and init_schema refuses a database newer than the build (core/database.cpp:301-305), so running search on one machine can make the collection unopenable by an older phig on another. And a mistyped --db leaves a stray empty collection behind instead of reporting that there is nothing there. R20 records the removal-shaped corner of this and R21 the organize-dry-run corner; both are scoped to a dry run, and this is the general fact. operations.toml's read_only_cli holds search, duplicates and help, and only help mutates nothing. Plan 043 owns it: the fix is a cli/ change — pass read_only on the commands that only read, and decide what they do with a database older than the build, which libphig answers with PHIG_ERR_SCHEMA — and 043 is the open plan that owns cli/, the same routing 060's open question 3 uses for cmd_organize's exit code. 054 cannot own it, because an owner of 054 means only that no test pins the rule."
+enforced_at = [
+    "core/database.cpp:init_schema",
+    "libphig/context.cpp:phig_init",
+    "cli/main.cpp:cmd_search",
+    "cli/main.cpp:cmd_duplicates",
+]
+binds_surface = ["cli"]
+# db-row is the whole exposure: the migration rewrites the tables rows live in
+# and moves the file past what an older build will open, and a created database
+# is a collection of rows that did not exist. Nothing here deletes a file or a
+# log entry, so original-file and activity-log stay off.
+protects = ["db-row"]
+tests = []
+test_kind = "subprocess"
+status = "violated"
+owner = "043"
+test_gap = "No test drives cmd_search or cmd_duplicates, so neither the creation nor the migration is pinned on the commands this rule is about; both were measured by running the binary. Nothing in tests/ asserts that a read leaves no file behind on either surface — Abi.InitFailsOnUnopenableDatabase is the nearest and only shows that a read-only context fails on a path inside a directory that does not exist."

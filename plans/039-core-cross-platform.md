@@ -50,6 +50,36 @@ The POSIX surface, by file:
 | `core/metadata.cpp` | **Dead includes** — includes `<fcntl.h>`/`<unistd.h>`, uses neither | Delete the includes |
 | `tests/temp_dir.h` | `<unistd.h>` for `getpid()` | Mechanical, but blocks the whole suite |
 
+### `lock_path()` ignores `--db` (R50)
+
+Not a portability finding, but it lives in the two files this plan rewrites, so
+it is recorded here rather than left to be rediscovered by whoever opens them.
+`core/paths.cpp:55` is `std::string lock_path() { return default_db_path() +
+".lock"; }` — it takes no argument. `cli/main.cpp:89-98`'s
+`acquire_writer_lock` calls it after `--db` has already been parsed, so every
+CLI command takes the advisory writer lock on the *default* collection's
+sidecar whatever database it was told to write, while `libphig/mutate.cpp:14`
+locks `ctx->db_path + ".lock"`. Measured with the built binary under an empty
+`XDG_DATA_HOME`: `phig tag add mytag --match ... --db <scratch>.db` tagged two
+images, created `$XDG_DATA_HOME/phig/phig.db.lock` and never created
+`<scratch>.db.lock`. So the CLI serializes commands that share no database, and
+fails to exclude an ABI caller on the database it was actually given.
+
+Plan 029 shipped the lock and contains both halves of the contradiction — its
+acceptance criteria say per-machine *and* per-DB, its implementation step
+defines `lock_path()` as `default_db_path() + ".lock"` — and it is `completed`,
+so it cannot own the fix. This plan owns the `core/` half: `lock_path()` gains
+the database path as an argument, which is a change to the same signature phase
+2b is already splitting per platform, and `WriterLock` is what phase 2a
+rewrites.
+
+**This plan closes the `core/` half only.** `cli/` is out of scope below, and
+the call site that has to pass the parsed `--db` path through is
+`acquire_writer_lock` in `cli/main.cpp`. Until that follow-up lands, a widened
+`lock_path()` changes nothing a CLI user can observe. R50 in
+`rules/concurrency.toml` records the whole rule, names this plan as `owner`,
+and says the same thing in its `test_gap`.
+
 Confirmed non-issues, so they don't reappear as questions later: threading is
 only `std::thread`/`std::mutex`/`hardware_concurrency()`; `core/dates.cpp:97`
 already does a portable `file_clock`→`system_clock` conversion with a comment
@@ -258,6 +288,9 @@ anyone consuming `libphig.dll` from MSVC-built code. This decides how much of
   there, which matters for a handler that flips a cancel flag), and `\033[K`
   ANSI escapes at five sites needing virtual-terminal mode on older consoles.
   `gtk/` is a separate question entirely.
+- **`acquire_writer_lock`'s call site** — the other half of the R50 defect
+  above. Widening `lock_path()` here is necessary and not sufficient; passing
+  the parsed `--db` path into it is `cli/` work and needs a follow-up.
 - **Packaging, signing, notarization, installers.** Plan 018 deferred
   packaging definitions; this plan does not pick them up.
 - **CI matrix expansion to `windows-latest`.** The natural follow-on, but it

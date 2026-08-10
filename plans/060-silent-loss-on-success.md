@@ -3,18 +3,19 @@ name: Silent Loss on a Successful Run
 status: designing
 created: 2026-08-10
 description: >
-  Three measured defects that share one shape: the operation finishes, reports
+  Four measured defects that share one shape: the operation finishes, reports
   success, exits 0, and something that mattered is gone or wrongly counted.
   `phig face rebuild` destroys person labels with no prompt and no warning, and
   is reachable through the ABI as `phig_op_faces_start` with no plan phase to
   authorize it. `cp` and `mv` write `completed` to the activity log for a run in
   which every file failed, where `rm` writes `interrupted` for the same fact. A
   failed attachment carry counts one item in both `applied` and `errors`,
-  producing `Done: 1 / Errors: 1` against a `[2/1]` progress tick. Filed out of
-  plan 054's enumeration, where all three are `violated` rules whose recorded
-  owner cannot close them. R60 is the one that destroys data a rescan cannot
-  rebuild; the other two are near-mechanical, and the plan is ordered so they
-  cannot gate it.
+  producing `Done: 1 / Errors: 1` against a `[2/1]` progress tick. And
+  `--output` truncates whatever file it names, on `search` and on `duplicates`,
+  with no prompt and no log entry. Filed out of plan 054's enumeration, where
+  all four are `violated` rules whose recorded owner cannot close them. R60 is
+  the one that destroys data a rescan cannot rebuild; the other three are
+  near-mechanical, and the plan is ordered so they cannot gate it.
 ---
 
 # 060 — Silent Loss on a Successful Run
@@ -30,6 +31,11 @@ All three records were re-pointed at 060 when it opened: R60
 (`rules/authorization.toml`), R27 (`rules/recoverability.toml`) and R48
 (`rules/atomicity.toml`) each read `owner = "060"`.
 
+A fourth arrived on 2026-08-10 from the same enumeration's unowned residue, and
+was written against this plan rather than transferred to it: R69
+(`rules/boundary.toml`) records that `--output` truncates whatever file it
+names.
+
 ## What unifies them
 
 An operation runs to completion, reports success and exits 0, and the user is
@@ -40,10 +46,11 @@ That is a narrower claim than "these are bugs". Each has a working guard
 somewhere else in phig that it does not have: `rm` asks before it destroys and
 writes `interrupted` when it fails partway (R22, R27); organize publishes a plan
 the caller inspects and applies (R61, R66); reconcile transfers a stale row's
-metadata onto a surviving row before deleting it (R38). The three findings below
-are where that discipline is absent, and in each case its absence is invisible
-from the outside — the exit code, the summary line and the activity log all say
-the run went fine.
+metadata onto a surviving row before deleting it (R38); and an occupied
+destination is refused at three separate points on the organize path (R01, R02,
+R41). The four findings below are where that discipline is absent, and in each
+case its absence is invisible from the outside — the exit code, the summary line
+and the activity log all say the run went fine.
 
 ## R60 — `face rebuild` destroys person labels
 
@@ -118,16 +125,46 @@ destroy the occupant, and R33 records that a carried file is logged outside the
 parent's transaction — so the caller needs to be told which half. Instead both
 totals go up and their sum exceeds the count the ticks are denominated against.
 
-## Ordering: R60 does not wait for the other two
+## R69 — `--output` destroys the file it is pointed at
+
+`cmd_search` and `cmd_duplicates` each hand `--output`'s path to a default
+`std::ofstream::open` (`cli/main.cpp:1040` and `:584`), whose mode truncates.
+There is no `--on-conflict` for `--output`, no prompt, no backup and no
+activity-log entry, so the bytes that were there leave no record anywhere.
+
+R69's measurement, with the built binary against a scratch two-image
+collection: a 14-byte file reading `IRREPLACEABLE` came back 167 bytes of
+search results from `phig search --output`, exit 0 with nothing on stdout, and
+272 bytes of duplicate groups from `phig duplicates --output`, exit 0. A search
+matching nothing truncates it just the same — `--ext nosuchext` left 15 bytes
+reading `Found 0 images`. `fav list --output` is the same code, since
+`cmd_fav`'s list branch fills a `SearchOptions` and calls `cmd_search`
+(`cli/main.cpp:1749`); measured, it left the same 15 bytes.
+
+The file survives in exactly one case. `--count` prints the count and returns
+at `cli/main.cpp:1032-1035`, before the stream is opened, so `phig search
+--count --output` left the 14-byte file at 14 bytes and did nothing else with
+the flag. Whether the command destroys the file therefore turns on a flag that
+has nothing to do with output.
+
+This is the finding whose asset is not phig's. The destroyed file is an
+arbitrary path outside the collection — no row points at it, no rescan rebuilds
+it, and phig was given the path only as somewhere to write. R69 records it under
+`original-file` and says so, because what is lost is the same kind of thing;
+that is the one place this plan's shape strains the taxonomy.
+
+The fix lands in `cli/` and is the same scoping question as open question 3.
+
+## Ordering: R60 does not wait for the others
 
 R60 destroys metadata no rescan can rebuild and needs a design decision. R27 and
-R48 are counter and status arithmetic in one file each. Held as one plan because
-they share a shape, but the shape is the reason to write them down together, not
-a reason to ship them together.
+R48 are counter and status arithmetic in one file each. R69 is one decision and
+one `if`. Held as one plan because they share a shape, but the shape is the
+reason to write them down together, not a reason to ship them together.
 
-So: R60 first and on its own. R27 and R48 second, and if R60's design is still
-open they go ahead of it rather than behind it. Nothing in R27 or R48 depends on
-how R60 is answered, and nothing in R60 depends on either of them.
+So: R60 first and on its own. R27, R48 and R69 second, and if R60's design is
+still open they go ahead of it rather than behind it. None of the three depends
+on how R60 is answered, and R60 depends on none of them.
 
 ## Open
 
@@ -171,13 +208,21 @@ how R60 is answered, and nothing in R60 depends on either of them.
    facts sharing one word. Widening the status vocabulary touches every writer
    and the reader that does not exist yet, so it may be right to keep it binary
    and let the entry count carry the detail.
+6. **What `--output` does when the path is occupied.** Refusing unless a flag
+   says otherwise matches what organize does three times over (R01, R02, R41),
+   and it breaks `phig search --output results.txt` run twice, which is the
+   ordinary use. A flag (`--force`, or `--on-conflict` reused) keeps that
+   working and costs a shipped command a new one. Appending is not a candidate:
+   the formats are whole documents, and a JSON array concatenated onto another
+   is not JSON. Whichever way it goes, `--count` should stop accepting a flag it
+   ignores.
 
 ## Relationship to other plans
 
-- **Plan 054** (rules of record) surfaced all three and holds the evidence:
+- **Plan 054** (rules of record) surfaced all four and holds the evidence:
   R60 in `rules/authorization.toml`, R27 in `rules/recoverability.toml`, R48 in
-  `rules/atomicity.toml`. Each is `violated` with a `test_gap`; none of the
-  three is pinned by a test that asserts the statement.
+  `rules/atomicity.toml`, R69 in `rules/boundary.toml`. Each is `violated` with
+  a `test_gap`; none of the four is pinned by a test that asserts the statement.
 - **Plan 053** (libphig feature parity) was the owner all three records named
   before this plan opened, and is the plan that picks up 020's deferred
   activity-log reader. It stays the owner of *reaching* faces and the log
@@ -188,7 +233,10 @@ how R60 is answered, and nothing in R60 depends on either of them.
 - **Plan 042** (organize engine, completed) is where R27 and R48 both live, and
   its plan/apply shape is R60's model.
 - **Plan 043** (CLI primitive split) owns `cli/`, including `face rebuild`'s
-  flag surface and `cmd_organize`'s exit code — open question 3.
+  flag surface, `cmd_organize`'s exit code (open question 3) and `--output`'s
+  parser branches (open question 6). It also owns R70, the neighbouring fact
+  that every CLI command opens the collection read-write and migrates it — same
+  file, different shape: nothing is lost there, so it is not this plan's.
 - **Plan 045** (faces.id rowid reuse, completed) is why a face id cannot carry a
   label across a rebuild, which constrains open question 2.
 - **Plan 056** (uniform operation status) is adjacent and distinct: it is about
