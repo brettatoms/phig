@@ -426,6 +426,17 @@ class TestAnchorTest(unittest.TestCase):
             with self.assertRaises(rules.TestResultsError):
                 rules.load_test_results(path)
 
+    def test_nonexistent_results_path_is_reported_distinctly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "does-not-exist.xml"
+            with self.assertRaises(rules.TestResultsError):
+                rules.load_test_results(path)
+
+    def test_directory_as_results_path_is_reported_distinctly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(rules.TestResultsError):
+                rules.load_test_results(pathlib.Path(tmp))
+
     def test_holds_rule_with_passing_test_is_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

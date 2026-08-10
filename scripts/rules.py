@@ -297,6 +297,12 @@ def load_test_results(xml_path):
     """
     try:
         root = ET.parse(xml_path).getroot()
+    except OSError as exc:
+        # ET.parse opens the path itself, so a wrong path, a directory, or a
+        # permissions problem raises here — a different hierarchy from
+        # ET.ParseError, and one that ET.parse does not itself distinguish
+        # from a parse failure in its own message.
+        raise TestResultsError(f"'{xml_path}' could not be read: {exc}") from exc
     except ET.ParseError as exc:
         raise TestResultsError(f"'{xml_path}' is not valid gtest XML: {exc}") from exc
 
