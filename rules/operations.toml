@@ -33,7 +33,13 @@ read_only_abi = [
 # schema (R70), and --output truncates whatever file it names (R69). They stay
 # on this list because the list's job is to account for every top-level command,
 # and neither is an operation — no core/ primitive backs either one.
-read_only_cli = ["search", "duplicates", "help"]
+#
+# models mutates too — it writes the YuNet and SFace files into the models
+# cache under the writer lock — but touches none of the seven assets in
+# taxonomy.toml, so no operation covers it either. Same position as
+# phig_settings_save above. Face-model download is listed as missing from the
+# ABI in libphig/CLAUDE.md, owned by 053.
+read_only_cli = ["search", "duplicates", "help", "models"]
 
 # core/ headers whose declared functions must each map to an operation or be
 # listed in core_read_only below. Bounded on purpose: widening this list is a

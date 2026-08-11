@@ -1,6 +1,6 @@
 ---
 name: Concurrency Safety Fixes
-status: planned
+status: completed
 created: 2026-07-12
 description: >
   Close four concurrency correctness defects (temp-file counter data race,

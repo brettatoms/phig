@@ -54,10 +54,10 @@ documents are generated.
    Hand-written, the only source of truth.
 2. **Three generated views** — `rules/by-invariant.md`, `by-operation.md`,
    `by-asset.md`. Build artifacts nobody edits. `by-operation.md` is the matrix.
-3. **Five decay checks** in the CI lint job, covering: enforcement sites exist
-   and resolve; rules claiming to hold are pinned by passing tests; recorded debt
-   names an open owning plan; every ABI symbol and CLI command is classified;
-   generated views are current. Cut from ten by decision 2 — see the phasing
+3. **Five decay checks** in the CI build-and-test job, covering: enforcement
+   sites exist and resolve; rules claiming to hold are pinned by passing tests;
+   recorded debt names an open owning plan; every ABI symbol and CLI command is
+   classified; generated views are current. Cut from ten by decision 2 — see the phasing
    below for what was dropped, relaxed and deferred, and why.
 4. **A test per rule**, with the record stating what kind of evidence backs it —
    `witness`, `conformance`, `subprocess` or `sanitizer`.
@@ -107,8 +107,9 @@ much known data-safety debt exists, and who owns each item, becomes a number.
   report; they are recorded verbatim in its section 10, and the phases below are
   what they leave.
 - **Phase 2** — `scripts/rules.py`: view generation plus five decay detectors,
-  wired into the lint job. TOML with `tomllib`, Python 3 stdlib only, no new CI
-  package. The five: anchors resolve; `holds` names tests that exist and pass;
+  wired into the build-and-test job's ubuntu leg, which is where the gtest XML
+  check 2 reads already exists. TOML with `tomllib`, Python 3 stdlib only, no
+  new CI package. The five: anchors resolve; `holds` names tests that exist and pass;
   recorded debt names an open owning plan; every ABI symbol and CLI command is
   classified; generated views are current. Three amendments came with them.
   Check 8 (every anchor under `core/` or `libphig/`) is relaxed rather than
@@ -120,15 +121,26 @@ much known data-safety debt exists, and who owns each item, becomes a number.
   Check 6 (conformance instantiations match `binds`) is deferred until
   `test_kind`'s two definitions are reconciled in `rules/README.md`, because
   gating on an ambiguity enforces the ambiguity. Phase 2 also writes **R64's
-  replacement**: a lint step comparing `PHIG_ABI_VERSION_MAJOR` and
+  replacement**: a check comparing `PHIG_ABI_VERSION_MAJOR` and
   `PHIG_ABI_VERSION_MINOR` in `libphig/include/phig/phig.h` against `VERSION` and
-  `SOVERSION` in `libphig/CMakeLists.txt`, failing when the three disagree. R64
-  leaves the record set when that step lands and not before — 054 is already its
-  `owner`, and demoting first would take the property from weakly recorded to
-  unrecorded.
+  `SOVERSION` in `libphig/CMakeLists.txt`, failing when the three disagree.
+  That check landed and **R64 stayed**, against this plan's own expectation
+  that it would leave the set. The expectation rested on the check being
+  "strictly stronger than the record", which is true of R64's test and false of
+  its statement: the check compares the three numbers to each other, and
+  nothing anywhere counts exported symbols against the minor. Adding
+  `phig_foo()` to the header and bumping nothing does trip check 4 — measured —
+  but it stops the author once and sends them somewhere else, to classify the
+  symbol in `rules/operations.toml`. Do that and every check passes with
+  `MINOR` still 3 and `VERSION` still 1.3.0; no path through CI asks for the
+  bump. Demoting on that basis would have taken the unenforced half from weakly
+  recorded to unrecorded — the outcome the conditional demotion existed to
+  avoid. R64's prose was corrected instead: `holds`, owner 054, with the
+  narrowed gap named.
 - **Phase 3 — the missing tests, and flag coverage.** Its test task list is
   written after phase 1, because which rules lack a test is what the enumeration
-  discovers: 40 records carry a `test_gap` and 25 of those name 054. The second
+  discovers — the `test_gap` records are that list, and `rules/by-invariant.md`
+  renders each one under its rule with the owning plan. The second
   workstream, added by decision 9, is flag coverage — write a rule for every
   mutation-capable CLI flag that has none, and record every read-only flag as an
   explicit `n/a` rather than omitting it. The mutation-capable split must be read
