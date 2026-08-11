@@ -30,5 +30,8 @@ operation's `surfaces_cli` entry in `rules/operations.toml` — the command a
 A rule whose `enforced_at` names `cli/main.cpp` is therefore a guard in the
 wrong place, not a record of how `cli/` is meant to work: it is recorded with
 `status = "violated"` and the plan that will move the guard into `core/` as its
-`owner`. CI accepts a `cli/` anchor on that shape of rule alone. Three are in
-that position today — R68 (owner 053), R69 (060) and R70 (043).
+`owner`. CI accepts a `cli/` anchor on that shape of rule alone. R68 is the
+worked example — its `trash empty` guard has no `core/` primitive to live in
+yet, and 053 owns creating one. For which rules are in that position now, grep
+`rules/*.toml` for `cli/`; the answer changes as guards move, and nothing here
+would notice.

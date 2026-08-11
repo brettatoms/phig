@@ -153,11 +153,19 @@ collection:
     against the absolute path, so a leading `^` matches nothing and silently
     suppresses every finding in phig's own headers — which is what it did,
     hiding 16 of them, until commit `b89d6e8`'s follow-up.
+- **Rules record:** the build-and-test job's **ubuntu leg** runs
+  `scripts/rules.py`'s own unit tests, then `python3 scripts/rules.py --check
+  --emit --test-results <gtest xml>`, then `git diff --exit-code rules/`. That
+  is five decay checks over `rules/*.toml` plus an ABI-version comparison, and
+  a requirement that the three generated `rules/by-*.md` views match what was
+  committed — regenerate them, never edit them. Deliberately not in the lint
+  job: check 2 reads a gtest XML, which needs the compiled test binary that
+  `lint` has no reason to build. See "Rules of record" below.
 - **CI:** `.github/workflows/ci.yml` runs four jobs — build + test on
-  ubuntu-latest and macos-latest (with `-DPHIG_WERROR=ON`), ASan+UBSan and
-  TSan (see Sanitizers above), a gtk job that installs libphig and then
-  builds and tests `gtk/` against it through pkg-config, and the lint gate.
-  GitHub Actions are pinned to full commit SHAs.
+  ubuntu-latest and macos-latest (with `-DPHIG_WERROR=ON`, and the rules gate
+  above on ubuntu only), ASan+UBSan and TSan (see Sanitizers above), a gtk job
+  that installs libphig and then builds and tests `gtk/` against it through
+  pkg-config, and the lint gate. GitHub Actions are pinned to full commit SHAs.
 
 ## Tech stack
 

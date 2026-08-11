@@ -529,7 +529,11 @@ CHECKS = [check_schema, check_sources, check_owners, check_coverage, check_abi_v
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="run every check")
+    # Accepted but not consulted: the checks always run, because emitting views
+    # from a record that failed them would publish the failure as documentation.
+    # The flag stays so a check-only invocation can say what it is doing.
+    parser.add_argument("--check", action="store_true",
+                        help="no-op; the checks always run, with or without this")
     parser.add_argument("--root", default=pathlib.Path(__file__).resolve().parent.parent)
     parser.add_argument("--test-results", dest="test_results",
                         help="gtest XML from --gtest_output=xml:PATH")

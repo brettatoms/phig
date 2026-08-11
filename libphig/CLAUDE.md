@@ -152,19 +152,26 @@ The ABI rules in the section above are recorded in `rules/boundary.toml`. That
 is a pointer, not a claim that the two lists match — they do not, in both
 directions. The export-list bullet has no rule; R67 (`phig_op_free` joins the
 operation's worker rather than detaching it) is a record with no bullet; and
-two of the file's eight records bind `cli` rather than `abi`. Read the TOML for
-the record and this file for the practice, and change both together: CI
-resolves every `enforced_at` anchor against the source. It also compares the
-header's `PHIG_ABI_VERSION_MAJOR`/`MINOR` against `CMakeLists.txt`'s `VERSION`
-and `SOVERSION`, so the symbol-bump bullet above is now checked rather than
-left to whoever remembers it.
+some of the file's records bind `cli` rather than `abi`, because a boundary
+rule is filed by tier and not by surface. Read the TOML for the record and this
+file for the practice, and change both together — CI resolves every
+`enforced_at` anchor against the source.
+
+**The symbol-bump bullet above is half checked, and the unchecked half is the
+one that bites.** CI compares the header's `PHIG_ABI_VERSION_MAJOR`/`MINOR`
+against `CMakeLists.txt`'s `VERSION` and `SOVERSION` and fails when the three
+disagree, so the two files cannot drift apart. Nothing counts exported symbols
+against the minor: adding a `phig_foo()` and touching neither file leaves every
+comparison agreeing, because the export lists match on the `phig_` prefix and
+need no edit. Bump `MINOR` and `VERSION` yourself — R64 is the record of that
+obligation, and it is still open.
 
 An operation in `rules/operations.toml` with an empty `surfaces_abi` is an ABI
-gap the record set can name — ten of the seventeen operations are in that state.
-It is not another spelling of "What is missing" above, which is the wider
-hand-maintained inventory plan 053 owns: most of that table's rows are
-capabilities rather than operations, and the three `relink.*` operations appear
-in it nowhere.
+gap the record set can name, and a sizeable fraction of the operations are in
+that state — read the file for which. It is not another spelling of "What is
+missing" above, which is the wider hand-maintained inventory plan 053 owns:
+most of that table's rows are capabilities rather than operations, and the
+three `relink.*` operations appear in it nowhere.
 
 ## Not covered by CI lint
 

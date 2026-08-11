@@ -123,10 +123,17 @@ much known data-safety debt exists, and who owns each item, becomes a number.
   gating on an ambiguity enforces the ambiguity. Phase 2 also writes **R64's
   replacement**: a check comparing `PHIG_ABI_VERSION_MAJOR` and
   `PHIG_ABI_VERSION_MINOR` in `libphig/include/phig/phig.h` against `VERSION` and
-  `SOVERSION` in `libphig/CMakeLists.txt`, failing when the three disagree. R64
-  leaves the record set when that step lands and not before — 054 is already its
-  `owner`, and demoting first would take the property from weakly recorded to
-  unrecorded.
+  `SOVERSION` in `libphig/CMakeLists.txt`, failing when the three disagree.
+  That check landed and **R64 stayed**, against this plan's own expectation
+  that it would leave the set. The expectation rested on the check being
+  "strictly stronger than the record", which is true of R64's test and false of
+  its statement: the check compares the three numbers to each other, and
+  nothing anywhere counts exported symbols against the minor, so a commit
+  adding `phig_foo()` and touching neither file passes every check there is.
+  Demoting on that basis would have taken the unenforced half from weakly
+  recorded to unrecorded — the outcome the conditional demotion existed to
+  avoid. R64's prose was corrected instead: `holds`, owner 054, with the
+  narrowed gap named.
 - **Phase 3 — the missing tests, and flag coverage.** Its test task list is
   written after phase 1, because which rules lack a test is what the enumeration
   discovers: 40 records carry a `test_gap` and 25 of those name 054. The second
