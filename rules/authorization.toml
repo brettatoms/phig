@@ -82,7 +82,7 @@ protects = ["user-metadata"]
 tests = []
 test_kind = "subprocess"
 status = "violated"
-test_gap = "FacesEngineRun.RerunReplacesRatherThanAccumulatesFaceRows covers the delete-and-reinsert and asserts nothing about labels, and every FacesEngineRun case skips wherever the face models are absent, which includes CI — .github/workflows/ci.yml downloads none. The loss was measured by running the binary; no test asserts it either way."
+test_gap = "FacesEngineRun.RerunReplacesRatherThanAccumulatesFaceRows covers the delete-and-reinsert and asserts nothing about labels, and every FacesEngineRun case skips wherever the face models are absent — the ubuntu CI leg installs them, a bare machine has none. The loss was measured by running the binary; no test asserts it either way."
 
 [[rule]]
 id = "R61"

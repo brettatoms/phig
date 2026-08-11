@@ -65,4 +65,4 @@ tests = [
 ]
 test_kind = "witness"
 status = "partial"
-test_gap = "The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls models_or_skip() and skips without face models, including in CI, while its empty-selection sibling needs none and is listed instead."
+test_gap = "The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls models_or_skip() and skips without face models, which the ubuntu CI leg installs and a bare machine need not, while its empty-selection sibling needs none and is listed instead."
