@@ -254,34 +254,63 @@ def plan_statuses(root):
     return statuses
 
 
-CLOSES_RULES_FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
-CLOSES_RULES_FIELD = re.compile(r"^closes_rules:\s*\[([^\]]*)\]", re.M)
+CLOSES_RULES_LINE = re.compile(r"^closes_rules:[ \t]*(.*)$", re.M)
+CLOSES_RULES_LIST = re.compile(r"^\[([^\]]*)\]$")
 PLAN_FILENAME = re.compile(r"^(\d{3})-")
 
 
-def plan_closures(root):
-    """Map plan number to the rule ids its frontmatter claims to close.
+def _scan_closes_rules(root):
+    """One pass over plans/NNN-*.md, splitting each plan's closes_rules line
+    into a well-formed claim or a malformed one. See plan_closures and
+    plan_closure_malformed, which each return one half of this.
 
-    Read from plans/NNN-*.md with `re`, the same idiom plan_statuses uses on
-    plans/000-INDEX.md — closes_rules is a flat, flow-style TOML list of bare
-    ids and does not warrant a YAML dependency. Most plans have no
-    closes_rules key and are absent from the returned dict.
+    Matched against the raw file text, not a bounded '---'-delimited
+    frontmatter block: a missing closing '---', or a stray one earlier in the
+    block, would otherwise make the key unreachable and this scan would never
+    even see it to call it malformed. Read from plans/NNN-*.md with `re`, the
+    same idiom plan_statuses uses on plans/000-INDEX.md — closes_rules is a
+    flat, flow-style TOML list of bare ids and does not warrant a YAML
+    dependency. Safe only because closes_rules names no other thing in a
+    plan's prose — checked against the real corpus, every occurrence sits on
+    the frontmatter line Task 15 wrote, never in a plan's body.
     """
     closures = {}
+    malformed = {}
     for path in sorted((pathlib.Path(root) / "plans").glob("*.md")):
+        if path.name == "000-INDEX.md":
+            continue
         number = PLAN_FILENAME.match(path.name)
         if not number:
             continue
-        frontmatter = CLOSES_RULES_FRONTMATTER.match(path.read_text())
-        if not frontmatter:
-            continue
-        found = CLOSES_RULES_FIELD.search(frontmatter.group(1))
+        found = CLOSES_RULES_LINE.search(path.read_text())
         if not found:
             continue
-        ids = [i.strip() for i in found.group(1).split(",") if i.strip()]
+        value = found.group(1).strip()
+        listed = CLOSES_RULES_LIST.match(value)
+        if not listed:
+            malformed[number.group(1)] = value
+            continue
+        ids = [piece.strip().strip("'\"")
+               for piece in listed.group(1).split(",") if piece.strip()]
         if ids:
             closures[number.group(1)] = ids
-    return closures
+    return closures, malformed
+
+
+def plan_closures(root):
+    """Map plan number to the rule ids its frontmatter claims to close. Most
+    plans have no closes_rules key and are absent from the returned dict."""
+    return _scan_closes_rules(root)[0]
+
+
+def plan_closure_malformed(root):
+    """Map plan number to the raw closes_rules value, for a plan whose
+    closes_rules key exists but is not a bracketed list of ids — a block
+    sequence, a bare scalar. A malformed claim must not read as no claim:
+    check_closures' orphan sweep already catches a rule with no other
+    claimant, but a rule with a second, well-formed, open claimant stays out
+    of orphan status while the malformed claim beside it goes unnoticed."""
+    return _scan_closes_rules(root)[1]
 
 
 def check_owners(model):
@@ -309,20 +338,31 @@ def check_owners(model):
 def check_closures(model):
     """The two checks that read closes_rules, alongside check_owners above.
 
-    1. A plan cannot be 'completed' while closes_rules still names a rule
-       that is 'violated' or 'partial' — the stronger half, since it gates
-       real work rather than a live pointer.
+    1. A plan cannot be closed (completed, superseded, deferred — anything
+       not in OPEN_PLAN_STATUSES) while closes_rules still names a rule that
+       is 'violated' or 'partial' — the stronger half, since it gates real
+       work rather than a live pointer.
     2. Every 'violated' or 'partial' rule is claimed by some open plan's
        closes_rules — the orphaned-debt guarantee check_owners already gives,
        stated from the side that can act on it.
 
     Also reports a closes_rules id that names no rule in the record at all —
-    a plan claiming a retired rule should say so rather than pass.
+    a plan claiming a retired rule should say so rather than pass — a plan
+    number absent from plans/000-INDEX.md entirely, and a closes_rules key
+    present but not a bracketed list (see plan_closure_malformed): that last
+    one is reported unconditionally, not folded into check 2's sweep, because
+    a second well-formed claimant on the same rule would otherwise keep it
+    out of orphan status while the malformed claim beside it goes unnoticed.
     """
     problems = []
     statuses = plan_statuses(model.root)
     closures = plan_closures(model.root)
     rules_by_id = {rule["id"]: rule for rule in model.rules if "id" in rule}
+
+    for plan, value in plan_closure_malformed(model.root).items():
+        problems.append(
+            f"plan '{plan}': closes_rules is present but not a bracketed list of ids "
+            f"— '{value}'")
 
     claimed_by_open_plan = set()
     for plan, ids in closures.items():
@@ -334,10 +374,15 @@ def check_closures(model):
                     f"plan '{plan}': closes_rules claims '{rid}', which is not a rule "
                     f"id in the record")
                 continue
-            if plan_status == "completed" and rule.get("status") in NEEDS_OWNER:
+            if plan_status is None:
                 problems.append(
-                    f"{rid}: plan '{plan}' closes_rules claims it, but the plan is "
-                    f"completed and {rid} is still '{rule.get('status')}'")
+                    f"plan '{plan}': closes_rules claims {rid}, but '{plan}' is not "
+                    f"in plans/000-INDEX.md")
+            elif plan_status not in OPEN_PLAN_STATUSES and rule.get("status") in NEEDS_OWNER:
+                problems.append(
+                    f"{rid}: plan '{plan}' is '{plan_status}', not an open plan, but "
+                    f"its closes_rules still claims {rid}, which is still "
+                    f"'{rule.get('status')}'")
             if plan_status in OPEN_PLAN_STATUSES:
                 claimed_by_open_plan.add(rid)
 

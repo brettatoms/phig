@@ -357,20 +357,26 @@ CLOSURES_INDEX = """# Plan Index
 
 | # | Name | Status | File | Description |
 |---|------|--------|------|-------------|
+| 006 | Superseded Thing | superseded | [006-x.md](006-x.md) | words |
+| 028 | Deferred Thing | deferred | [028-x.md](028-x.md) | words |
 | 039 | Cross-Platform | designing | [039-x.md](039-x.md) | words |
 | 041 | Scan Reconcile | planned | [041-x.md](041-x.md) | words |
 | 042 | Organize Engine | completed | [042-x.md](042-x.md) | words |
 """
 
 
-def plan_file(root, filename, closes_rules=None):
+def plan_file(root, filename, closes_rules=None, raw_frontmatter=None):
     """Write a plan file with frontmatter, optionally carrying closes_rules
-    in Task 15's uniform flow-style list."""
+    in Task 15's uniform flow-style list, or a caller-supplied full file body
+    (raw_frontmatter) for a malformed or structurally broken shape."""
     (root / "plans").mkdir(exist_ok=True)
-    text = "---\nname: Test\nstatus: whatever\ncreated: 2026-08-09\n"
-    if closes_rules is not None:
-        text += f"closes_rules: [{closes_rules}]\n"
-    text += "description: >\n  words\n---\n\n# words\n"
+    if raw_frontmatter is not None:
+        text = raw_frontmatter
+    else:
+        text = "---\nname: Test\nstatus: whatever\ncreated: 2026-08-09\n"
+        if closes_rules is not None:
+            text += f"closes_rules: [{closes_rules}]\n"
+        text += "description: >\n  words\n---\n\n# words\n"
     (root / "plans" / filename).write_text(text)
 
 
@@ -400,6 +406,74 @@ class PlanClosuresTest(unittest.TestCase):
             (root / "plans").mkdir()
             (root / "plans" / "000-INDEX.md").write_text(CLOSURES_INDEX)
             self.assertEqual(rules.plan_closures(root), {})
+
+    def test_quoted_ids_have_their_quotes_stripped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "039-x.md", raw_frontmatter=(
+                '---\nname: Test\nstatus: designing\ncreated: 2026-08-06\n'
+                'closes_rules: ["R50"]\n'
+                'description: >\n  words\n---\n\n# words\n'))
+            self.assertEqual(rules.plan_closures(root)["039"], ["R50"])
+
+
+class MalformedClosuresTest(unittest.TestCase):
+    """The four shapes a review of Task 16 found indistinguishable from no
+    claim at all: a block sequence, a bare scalar, frontmatter missing its
+    closing '---', and a stray unindented '---' before the key. The last two
+    turn out not to be malformed under the raw-line scan — they still parse —
+    so only the first two land in plan_closure_malformed; both are asserted
+    here so a regression in either direction is caught."""
+
+    def test_block_sequence_is_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "041-x.md", raw_frontmatter=(
+                "---\nname: Test\nstatus: planned\ncreated: 2026-08-07\n"
+                "closes_rules:\n  - R04\n  - R25\n"
+                "description: >\n  words\n---\n\n# words\n"))
+            self.assertEqual(rules.plan_closures(root), {})
+            self.assertIn("041", rules.plan_closure_malformed(root))
+
+    def test_bare_scalar_is_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "041-x.md", raw_frontmatter=(
+                "---\nname: Test\nstatus: planned\ncreated: 2026-08-07\n"
+                "closes_rules: R04\n"
+                "description: >\n  words\n---\n\n# words\n"))
+            self.assertEqual(rules.plan_closures(root), {})
+            self.assertEqual(rules.plan_closure_malformed(root)["041"], "R04")
+
+    def test_missing_closing_delimiter_still_parses(self):
+        # No closing '---' anywhere in the file. The key is still findable by
+        # a raw scan, so this recovers rather than landing in either dict.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "039-x.md", raw_frontmatter=(
+                "---\nname: Test\nstatus: designing\ncreated: 2026-08-06\n"
+                "closes_rules: [R50]\n"
+                "description: >\n  words\n"))
+            self.assertEqual(rules.plan_closures(root)["039"], ["R50"])
+            self.assertEqual(rules.plan_closure_malformed(root), {})
+
+    def test_stray_delimiter_before_the_key_still_parses(self):
+        # An extra unindented '---' between the open and the key would make a
+        # bounded frontmatter extraction stop too early; a raw scan does not
+        # depend on that boundary at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "039-x.md", raw_frontmatter=(
+                "---\nname: Test\n---\ncloses_rules: [R50]\n"
+                "description: >\n  words\n---\n\n# words\n"))
+            self.assertEqual(rules.plan_closures(root)["039"], ["R50"])
+            self.assertEqual(rules.plan_closure_malformed(root), {})
+
+    def test_well_formed_key_is_not_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "041-x.md", closes_rules="R04")
+            self.assertEqual(rules.plan_closure_malformed(root), {})
 
 
 class ClosuresTest(unittest.TestCase):
@@ -452,6 +526,86 @@ class ClosuresTest(unittest.TestCase):
             model = self.build(root, GOOD_RULE, {})
             plan_file(root, "041-x.md")
             self.assertEqual(rules.check_closures(model), [])
+
+    def test_superseded_plan_claiming_a_violated_rule_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, violated("041"), {"006": "R01"})
+            problems = rules.check_closures(model)
+            self.assertTrue(
+                any("R01" in p and "006" in p and "superseded" in p for p in problems))
+
+    def test_deferred_plan_claiming_a_violated_rule_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, violated("041"), {"028": "R01"})
+            problems = rules.check_closures(model)
+            self.assertTrue(
+                any("R01" in p and "028" in p and "deferred" in p for p in problems))
+
+    def test_claiming_plan_absent_from_the_index_is_reported_distinctly(self):
+        # Distinct from "claimed by no open plan" — this plan does not exist
+        # in plans/000-INDEX.md at all, the same gap check_owners already
+        # names for its own 'owner' field.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, GOOD_RULE, {"099": "R01"})
+            problems = rules.check_closures(model)
+            self.assertTrue(
+                any("099" in p and "not in plans/000-INDEX.md" in p for p in problems))
+
+    def test_malformed_claim_is_reported_even_with_a_second_well_formed_claimant(self):
+        # The danger case a review of Task 16 traced: check 2's sweep alone
+        # would stay silent here, because 041's well-formed, open claim keeps
+        # R01 out of orphan status. The malformed claim beside it must still
+        # surface on its own.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, violated("041"), {"041": "R01"})
+            plan_file(root, "039-x.md", raw_frontmatter=(
+                "---\nname: Test\nstatus: designing\ncreated: 2026-08-06\n"
+                "closes_rules: R01\n"
+                "description: >\n  words\n---\n\n# words\n"))
+            problems = rules.check_closures(model)
+            self.assertTrue(
+                any("039" in p and "not a bracketed list" in p for p in problems))
+            self.assertFalse(any("claimed by no open plan" in p for p in problems))
+
+    def test_malformed_claim_alone_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, GOOD_RULE, {})
+            plan_file(root, "041-x.md", raw_frontmatter=(
+                "---\nname: Test\nstatus: planned\ncreated: 2026-08-07\n"
+                "closes_rules: R01\n"
+                "description: >\n  words\n---\n\n# words\n"))
+            problems = rules.check_closures(model)
+            self.assertTrue(
+                any("041" in p and "not a bracketed list" in p for p in problems))
+
+    def test_quoted_id_is_recognized_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, violated("041"), {})
+            plan_file(root, "041-x.md", raw_frontmatter=(
+                '---\nname: Test\nstatus: planned\ncreated: 2026-08-07\n'
+                'closes_rules: ["R01"]\n'
+                'description: >\n  words\n---\n\n# words\n'))
+            self.assertEqual(rules.check_closures(model), [])
+
+    def test_dropping_closes_rules_orphans_a_rule_while_check_owners_stays_silent(self):
+        """The property that justifies retiring check_owners in Task 17: a
+        rule's owner field can still name a live, open plan while no plan's
+        closes_rules claims it. check_owners cannot see that gap — it never
+        reads closes_rules — check_closures can. Pinned here so Task 17
+        cannot remove check_owners out from under an unverified assumption.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, violated("041"), {})
+            self.assertEqual(rules.check_owners(model), [])
+            problems = rules.check_closures(model)
+            self.assertTrue(any("R01" in p for p in problems))
 
 
 # Shapes taken from a probe binary built against the repo's gtest 1.17.0, and
