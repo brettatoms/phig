@@ -254,6 +254,36 @@ def plan_statuses(root):
     return statuses
 
 
+CLOSES_RULES_FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+CLOSES_RULES_FIELD = re.compile(r"^closes_rules:\s*\[([^\]]*)\]", re.M)
+PLAN_FILENAME = re.compile(r"^(\d{3})-")
+
+
+def plan_closures(root):
+    """Map plan number to the rule ids its frontmatter claims to close.
+
+    Read from plans/NNN-*.md with `re`, the same idiom plan_statuses uses on
+    plans/000-INDEX.md — closes_rules is a flat, flow-style TOML list of bare
+    ids and does not warrant a YAML dependency. Most plans have no
+    closes_rules key and are absent from the returned dict.
+    """
+    closures = {}
+    for path in sorted((pathlib.Path(root) / "plans").glob("*.md")):
+        number = PLAN_FILENAME.match(path.name)
+        if not number:
+            continue
+        frontmatter = CLOSES_RULES_FRONTMATTER.match(path.read_text())
+        if not frontmatter:
+            continue
+        found = CLOSES_RULES_FIELD.search(frontmatter.group(1))
+        if not found:
+            continue
+        ids = [i.strip() for i in found.group(1).split(",") if i.strip()]
+        if ids:
+            closures[number.group(1)] = ids
+    return closures
+
+
 def check_owners(model):
     """Check 3: a violated or partial rule names an open plan, and so does any
     test_gap (which is what the design numbered check 10)."""
@@ -273,6 +303,52 @@ def check_owners(model):
             problems.append(
                 f"{rid}: owner '{owner}' ({why}) is '{status}', not an open plan — "
                 f"either the debt is paid and the rule should change, or it needs a new owner")
+    return problems
+
+
+def check_closures(model):
+    """The two checks that read closes_rules, alongside check_owners above.
+
+    1. A plan cannot be 'completed' while closes_rules still names a rule
+       that is 'violated' or 'partial' — the stronger half, since it gates
+       real work rather than a live pointer.
+    2. Every 'violated' or 'partial' rule is claimed by some open plan's
+       closes_rules — the orphaned-debt guarantee check_owners already gives,
+       stated from the side that can act on it.
+
+    Also reports a closes_rules id that names no rule in the record at all —
+    a plan claiming a retired rule should say so rather than pass.
+    """
+    problems = []
+    statuses = plan_statuses(model.root)
+    closures = plan_closures(model.root)
+    rules_by_id = {rule["id"]: rule for rule in model.rules if "id" in rule}
+
+    claimed_by_open_plan = set()
+    for plan, ids in closures.items():
+        plan_status = statuses.get(plan)
+        for rid in ids:
+            rule = rules_by_id.get(rid)
+            if rule is None:
+                problems.append(
+                    f"plan '{plan}': closes_rules claims '{rid}', which is not a rule "
+                    f"id in the record")
+                continue
+            if plan_status == "completed" and rule.get("status") in NEEDS_OWNER:
+                problems.append(
+                    f"{rid}: plan '{plan}' closes_rules claims it, but the plan is "
+                    f"completed and {rid} is still '{rule.get('status')}'")
+            if plan_status in OPEN_PLAN_STATUSES:
+                claimed_by_open_plan.add(rid)
+
+    for rule in model.rules:
+        if rule.get("status") not in NEEDS_OWNER:
+            continue
+        rid = rule.get("id", "<no id>")
+        if rid not in claimed_by_open_plan:
+            problems.append(
+                f"{rid}: status '{rule.get('status')}' is claimed by no open plan's "
+                f"closes_rules")
     return problems
 
 
@@ -535,7 +611,8 @@ def render(model):
     }
 
 
-CHECKS = [check_schema, check_sources, check_owners, check_coverage, check_abi_version]
+CHECKS = [check_schema, check_sources, check_owners, check_coverage, check_abi_version,
+          check_closures]
 
 
 def main(argv=None):

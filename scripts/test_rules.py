@@ -353,6 +353,107 @@ class OwnerTest(unittest.TestCase):
             self.assertEqual(rules.check_owners(model), [])
 
 
+CLOSURES_INDEX = """# Plan Index
+
+| # | Name | Status | File | Description |
+|---|------|--------|------|-------------|
+| 039 | Cross-Platform | designing | [039-x.md](039-x.md) | words |
+| 041 | Scan Reconcile | planned | [041-x.md](041-x.md) | words |
+| 042 | Organize Engine | completed | [042-x.md](042-x.md) | words |
+"""
+
+
+def plan_file(root, filename, closes_rules=None):
+    """Write a plan file with frontmatter, optionally carrying closes_rules
+    in Task 15's uniform flow-style list."""
+    (root / "plans").mkdir(exist_ok=True)
+    text = "---\nname: Test\nstatus: whatever\ncreated: 2026-08-09\n"
+    if closes_rules is not None:
+        text += f"closes_rules: [{closes_rules}]\n"
+    text += "description: >\n  words\n---\n\n# words\n"
+    (root / "plans" / filename).write_text(text)
+
+
+class PlanClosuresTest(unittest.TestCase):
+    def test_flow_list_is_parsed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "041-x.md", closes_rules="R04, R25, R40, R59")
+            self.assertEqual(
+                rules.plan_closures(root)["041"], ["R04", "R25", "R40", "R59"])
+
+    def test_single_id_is_still_a_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "039-x.md", closes_rules="R50")
+            self.assertEqual(rules.plan_closures(root)["039"], ["R50"])
+
+    def test_plan_with_no_closes_rules_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "041-x.md")
+            self.assertEqual(rules.plan_closures(root), {})
+
+    def test_index_file_itself_is_not_read_as_a_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "plans").mkdir()
+            (root / "plans" / "000-INDEX.md").write_text(CLOSURES_INDEX)
+            self.assertEqual(rules.plan_closures(root), {})
+
+
+class ClosuresTest(unittest.TestCase):
+    def build(self, root, rule_text, plans_closures, index=CLOSURES_INDEX):
+        write(root, "taxonomy.toml", MINIMAL_TAXONOMY)
+        write(root, "operations.toml", MINIMAL_OPS)
+        write(root, "conflict.toml", rule_text)
+        (root / "plans").mkdir(exist_ok=True)
+        (root / "plans" / "000-INDEX.md").write_text(index)
+        for number, closes in plans_closures.items():
+            plan_file(root, f"{number}-x.md", closes_rules=closes)
+        return rules.load(root)
+
+    def test_completed_plan_claiming_a_violated_rule_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, violated("041"), {"042": "R01"})
+            problems = rules.check_closures(model)
+            self.assertTrue(any("R01" in p and "042" in p for p in problems))
+
+    def test_completed_plan_with_only_holds_rules_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, GOOD_RULE, {"042": "R01"})
+            self.assertEqual(rules.check_closures(model), [])
+
+    def test_violated_rule_claimed_by_nobody_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, violated("041"), {})
+            problems = rules.check_closures(model)
+            self.assertTrue(any("R01" in p for p in problems))
+
+    def test_violated_rule_claimed_by_an_open_plan_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, violated("041"), {"041": "R01"})
+            self.assertEqual(rules.check_closures(model), [])
+
+    def test_claim_naming_a_nonexistent_rule_id_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, GOOD_RULE, {"041": "R99"})
+            problems = rules.check_closures(model)
+            self.assertTrue(any("R99" in p for p in problems))
+
+    def test_plan_with_no_closes_rules_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = self.build(root, GOOD_RULE, {})
+            plan_file(root, "041-x.md")
+            self.assertEqual(rules.check_closures(model), [])
+
+
 # Shapes taken from a probe binary built against the repo's gtest 1.17.0, and
 # confirmed against build/test-results.xml. GTEST_SKIP() writes status="run"
 # result="skipped" with a <skipped> child. A DISABLED_-prefixed test writes
