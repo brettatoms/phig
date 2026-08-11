@@ -2,6 +2,7 @@
 name: Cross-Platform core/ and libphig/
 status: designing
 created: 2026-08-06
+closes_rules: [R50]
 description: >
   Make `core/` and `libphig/` build and behave correctly on macOS and Windows.
   `libphig/` has no POSIX includes — the work is entirely in `core/` (6 files,

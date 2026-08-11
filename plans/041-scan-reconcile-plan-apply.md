@@ -2,6 +2,7 @@
 name: Scan Reconcile Plan/Apply
 status: planned
 created: 2026-08-07
+closes_rules: [R04, R25, R40, R59]
 description: >
   Split scan's destructive reconcile phase into a decision that writes nothing
   and an application the caller authorizes, so a GUI can show "12 files are gone

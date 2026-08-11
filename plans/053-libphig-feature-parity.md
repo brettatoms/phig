@@ -2,6 +2,7 @@
 name: libphig Feature Parity
 status: designing
 created: 2026-08-08
+closes_rules: [R61, R62, R66, R68]
 description: >
   The gap between what phig can do and what a client can reach. `libphig`
   covers paged queries, per-image metadata, thumbnails, settings,

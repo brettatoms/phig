@@ -2,6 +2,7 @@
 name: --on-conflict overwrite
 status: designing
 created: 2026-08-09
+closes_rules: [R08]
 description: >
   `--on-conflict` has three values and two behaviors: a user who types
   `overwrite` silently gets `rename`. `is_protected` returns true for any
