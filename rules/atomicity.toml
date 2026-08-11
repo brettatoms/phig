@@ -1,0 +1,164 @@
+[[rule]]
+id = "R28"
+tier = "engine"
+concern = "atomicity"
+statement = "Every write transaction opens with BEGIN IMMEDIATE, so a transaction that reads and then writes cannot fail with SQLITE_BUSY_SNAPSHOT."
+rationale = "SQLite in WAL mode pins a read snapshot at the first read of a deferred transaction; if another connection commits before this one writes, the upgrade fails with SQLITE_BUSY_SNAPSHOT, which the busy handler does not retry — so the 30-second busy_timeout does not help and the write simply fails. Taking the write lock at BEGIN turns that failure into a wait. Every read-then-write path in the engine has this shape: delete_paths_logged reads a row to snapshot it before deleting it, log_prune scans operations before deleting them, and init_schema reads the version before writing it."
+enforced_at = [
+    "core/database.cpp:begin_transaction",
+    "core/database.cpp:delete_paths_logged",
+    "core/database.cpp:log_prune",
+    "core/database.cpp:insert_batch",
+    "core/database.cpp:init_schema",
+]
+binds = [
+    "scan.walk", "scan.reconcile", "organize.copy", "organize.move",
+    "remove.trash", "remove.hard", "remove.db-only", "remove.orphans",
+    "relink.transfer", "relink.demote", "relink.demote_live_photo",
+    "metadata.write", "faces.rebuild", "faces.identify",
+]
+protects = ["db-row", "user-metadata", "activity-log"]
+tests = [
+    "DatabaseConcurrency.BeginTransactionTakesWriteLockImmediately",
+    "DatabaseConcurrency.DeferredBeginCanBusySnapshotOnReadThenWrite",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R29"
+tier = "engine"
+concern = "atomicity"
+statement = "Each schema migration takes the write lock before it reads the version and re-reads the version inside that transaction, so a step another process already applied is skipped rather than re-run."
+rationale = "The migrations are not idempotent — ALTER TABLE ADD COLUMN fails the second time — so two first runs starting together would otherwise both apply the same step and one would die. Re-reading inside the IMMEDIATE transaction means the loser sees the winner's version and moves on. The two schema-creation paths have the same shape for the same reason: each creates every table and sets the version in one transaction, so a crash partway cannot leave a versionless partial schema that the next run misreads as pre-migration."
+enforced_at = ["core/database.cpp:init_schema"]
+binds = [
+    "scan.walk", "scan.reconcile", "organize.plan", "organize.copy", "organize.move",
+    "remove.trash", "remove.hard", "remove.db-only", "remove.orphans",
+    "thumbs.rebuild", "faces.rebuild", "faces.identify",
+    "relink.transfer", "relink.demote", "relink.demote_live_photo", "metadata.write",
+]
+protects = ["db-row", "user-metadata", "activity-log"]
+tests = ["DatabaseConcurrency.ConcurrentMigrationIsSafe"]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R30"
+tier = "engine"
+concern = "atomicity"
+statement = "Reconcile's relink and demote passes commit one row at a time and its deletes commit as a single transaction, so an interruption between them leaves the copied fields on both rows — tags always, gallery when the target had none — the transferred faces on the target alone, and every stale row still present."
+rationale = "The two halves have different failure costs. A transfer copies two of its three fields and moves the third: transfer_user_metadata unions tags onto the target and fills an empty gallery, leaving both in place on the source, while its faces clause is UPDATE faces SET image_id = ?, a move that strips the source row when it fires (R37). So a per-row commit that stops halfway leaves the copied fields duplicated and the faces on the target only, and neither state costs a label — the next scan re-derives the duplication and then deletes the stale row, and the moved faces already sit on the row that pass designated as the survivor. The deletes are the destructive half and go in one transaction, so a stopped run has dropped every stale row or none of them. The ordering between the passes is load-bearing and is pinned: relink runs before demote, so a shared target takes the moved row's gallery rather than the demoted JPEG's."
+enforced_at = [
+    "core/scan_engine.cpp:ScanEngine::run_reconcile",
+    "core/relink.cpp:relink_moved_rows",
+    "core/relink.cpp:demote_jpeg_rows",
+    "core/relink.cpp:demote_live_photo_rows",
+    "core/database.cpp:delete_paths_logged",
+]
+binds = ["scan.reconcile", "relink.transfer", "relink.demote", "relink.demote_live_photo"]
+protects = ["user-metadata", "db-row"]
+tests = [
+    "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget",
+    "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "The listed tests pin the ordering, not the boundaries. No test interrupts reconcile between the transfer passes and the delete, so the interrupted state in the statement is read off the transaction boundaries rather than observed by a test — R37 records the faces half being forced by hand and re-scanned to the same end state as an uninterrupted control — and the next scan's cleanup of that state is untested."
+
+[[rule]]
+id = "R31"
+tier = "engine"
+concern = "atomicity"
+statement = "log_begin_operation commits its operation row on its own before the first entry, so an interrupted run leaves an operation behind — marked interrupted by rm and by reconcile when the failure is an exception, and left in_progress when the process dies."
+rationale = "Opening the operation outside the work's transaction is what makes the row survive a rollback: delete_paths_logged rolls back its own transaction on failure and the operation row stays, so the run is not invisible. The cost is that the terminal status is a second write. Only two of the three callers close the loop: cmd_rm and run_reconcile catch, mark the operation interrupted on a best-effort basis and rethrow, while OrganizeEngine::apply has no such wrapper at all — it catches per file and still writes completed, which is R27's finding. A process that dies instead — a signal, a crash, the machine going away — leaves in_progress under every caller; plan 020 recorded that when it wrote log_finish_operation, noting the state is harmless for its own slice and meaningful for the deferred viewer that still does not exist."
+enforced_at = [
+    "core/database.cpp:log_begin_operation",
+    "core/scan_engine.cpp:ScanEngine::run_reconcile",
+    "core/remove_exec.cpp:cmd_rm",
+    "core/organize_engine.cpp:OrganizeEngine::apply",
+]
+binds = [
+    "scan.reconcile", "organize.copy", "organize.move",
+    "remove.trash", "remove.hard", "remove.db-only", "remove.orphans",
+]
+protects = ["activity-log"]
+tests = ["OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted"]
+test_kind = "witness"
+status = "holds"
+test_gap = "The listed test covers a cancelled run, which reaches log_finish_operation through the normal return rather than through a catch. Nothing drives the exception path in run_reconcile or cmd_rm, and nothing covers a killed process, which is the case that leaves in_progress forever."
+
+[[rule]]
+id = "R32"
+tier = "engine"
+concern = "atomicity"
+statement = "OrganizeEngine::apply moves or copies one media file, then commits that file's path update and log entry in a single transaction and compensates if it fails, before starting the next — so a run that stops partway leaves every media file before the stop point moved and recorded and every one after it untouched."
+rationale = "A rename cannot go inside a SQL transaction, so the disk action happens first and outside: move_file runs, then begin_transaction covers only update_path_in_txn and log_add_entry. What makes the pair behave as a unit is compensation rather than a shared transaction — a database failure moves the file back, and a failed move-back is thrown with both paths named rather than swallowed, because the file then sits somewhere no row names. The unit is the media file alone: carry_sidecars runs after execute_organize_action has returned and its transaction has committed, so an attachment moved for that file is outside this boundary and is R33's window, not this rule's."
+enforced_at = [
+    "core/organize_engine.cpp:OrganizeEngine::apply",
+    "core/organize_exec.cpp:execute_organize_action",
+]
+binds = ["organize.copy", "organize.move"]
+protects = ["original-file", "db-row", "activity-log"]
+tests = [
+    "OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted",
+    "OrganizeExecTest.MoveRestoresPriorFileOnDbFailureWhenOverwriteAllowed",
+    "OrganizeExecTest.CopyRestoresPriorFileOnDbFailureOverwrite",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R33"
+tier = "engine"
+concern = "atomicity"
+statement = "A change that touches only the disk — trashing a file, hard-deleting it, carrying a sidecar or an attached JPEG — is written to disk first and logged afterwards in its own autocommit, so an interruption between the two leaves the change done and unrecorded."
+rationale = "A rename and a SQLite commit cannot be one transaction, so one of them goes first, and these paths put the disk action first. Nothing compensates for the gap: execute_organize_action moves a file back when its database write fails, and execute_trash_action and carry_sidecars have no equivalent — if log_add_entry throws, the file stays where it was put and the log does not mention it. For trash that means a file sitting in the trash directory under a random-hex name with nothing recording where it came from, which is the one case where the name alone does not say."
+enforced_at = [
+    "core/remove_exec.cpp:execute_trash_action",
+    "core/remove_exec.cpp:execute_hard_delete_action",
+    "core/organize_exec.cpp:carry_sidecars",
+]
+binds = ["remove.trash", "remove.hard", "organize.copy", "organize.move"]
+protects = ["attachment", "original-file", "activity-log"]
+tests = [
+    "RemoveExecTest.TrashMovesFileAndLogs",
+    "RemoveExecTest.HardDeleteRemovesAndLogs",
+    "OrganizeExecTest.CarryLogsSidecarEntryWithParentId",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "The listed tests show the entry is written after a successful disk action. None covers the window itself, which needs a failure injected between the two calls, and none covers the absent compensation."
+
+[[rule]]
+id = "R34"
+tier = "engine"
+concern = "atomicity"
+statement = "A committed transaction survives a process crash but not necessarily an operating-system crash or a power loss: the connection runs WAL with synchronous=NORMAL, which does not fsync the write-ahead log at every commit."
+rationale = "This is the durability the pragma buys and the cost it accepts, and no plan states either. The consequence is bounded rather than arbitrary: move_file and atomic_copy_file fsync the file and its parent directory before the rename, so the bytes are on disk even when the row naming them is not, and the state a power loss can leave — the file at the destination, the row still naming the source — is the one execute_organize_action's compensation already handles and a rescan reconciles. Recorded because a reader who sees BEGIN IMMEDIATE everywhere will otherwise assume commits are durable against everything."
+enforced_at = ["core/database.cpp:Database::Database"]
+binds = [
+    "scan.walk", "scan.reconcile", "organize.copy", "organize.move",
+    "remove.trash", "remove.hard", "remove.db-only", "remove.orphans",
+    "relink.transfer", "relink.demote", "relink.demote_live_photo",
+    "metadata.write", "faces.rebuild", "faces.identify",
+]
+protects = ["db-row", "user-metadata", "activity-log"]
+tests = []
+test_kind = "subprocess"
+status = "unenforced"
+test_gap = "Nothing tests durability across a power loss, and an ordinary test process cannot: it would need the machine to stop between the commit and the checkpoint. The statement is read from the pragma and SQLite's documented WAL behaviour, not from a measurement."
+
+[[rule]]
+id = "R48"
+tier = "engine"
+concern = "atomicity"
+statement = "A copy or move counts each selected item once: an item is reported as applied or as failed, never as both."
+rationale = "The half-done state behind this is a media file that moved and an attachment that did not. OrganizeEngine::apply increments applied and files_written the moment execute_organize_action returns, then calls carry_sidecars inside the same try. A throw from the carry lands in the catch that increments errors, so an item whose photo moved, committed and logged is counted in both totals, and the error text names the parent as the thing that failed with the attachment's destination inside the message. The item is genuinely half done — R41 is what makes the carry throw rather than destroy, and R33 records that a carried file is logged outside the parent's transaction — so a caller needs to be told which half; instead applied and errors both go up and their sum exceeds the actionable count the progress ticks are denominated against. Measured with the built binary: a cp of one photo whose sidecar destination was occupied printed Done: 1, Skipped: 0, Errors: 1 with a [2/1] progress tick, exited 0, and left the destination row and the copy entry for the parent in place. Plan 060 owns it, the same shape as R27 and R60: an operation that finishes, reports success and exits 0 while its own counters are wrong about what happened."
+enforced_at = ["core/organize_engine.cpp:OrganizeEngine::apply"]
+binds = ["organize.copy", "organize.move"]
+protects = ["attachment", "activity-log"]
+tests = []
+test_kind = "witness"
+status = "violated"
+test_gap = "Nothing drives apply with a carry that fails. The three OrganizeCarryNoClobber tests call carry_sidecars directly and assert the occupant survives, so the throw is covered and its effect on the counters is not. No test anywhere asserts a non-zero organize error count — OrganizeEngineTest and tests/test_libphig_organize.cpp both only ever assert errors == 0 — so the double count was measured by running the binary."

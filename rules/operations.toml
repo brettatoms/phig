@@ -1,0 +1,287 @@
+# ABI symbols that map to no operation in this record set.
+read_only_abi = [
+    "phig_abi_version", "phig_init", "phig_shutdown", "phig_last_error",
+    "phig_string_free", "phig_image_list_free", "phig_image_metadata",
+    "phig_query_new", "phig_query_free", "phig_query_page", "phig_query_count",
+    "phig_query_add_tag", "phig_query_set_camera", "phig_query_set_date_range",
+    "phig_query_set_duration_range", "phig_query_set_extension",
+    "phig_query_set_gallery", "phig_query_set_make", "phig_query_set_media",
+    "phig_query_set_sharpness", "phig_query_set_size_range",
+    "phig_query_set_sort", "phig_thumb_lookup",
+    "phig_op_cancel", "phig_op_free", "phig_op_poll", "phig_op_status",
+    "phig_op_wait", "phig_op_error", "phig_op_error_at", "phig_op_error_count",
+    "phig_op_index_result", "phig_op_thumbs_result", "phig_op_faces_result",
+    "phig_op_organize_result", "phig_op_organize_plan_take",
+    "phig_organize_plan_free", "phig_organize_plan_count",
+    "phig_organize_plan_source_at", "phig_organize_plan_dest_at",
+    "phig_organize_plan_conflicts_at", "phig_organize_plan_resolution_at",
+    "phig_organize_plan_occupant_tracked_at",
+    "phig_organize_plan_set_resolution",
+    "phig_settings_load", "phig_settings_free", "phig_settings_get",
+    "phig_settings_get_bool", "phig_settings_get_int", "phig_settings_get_raw",
+    "phig_settings_has", "phig_settings_count", "phig_settings_key_at",
+    "phig_settings_set", "phig_settings_unset", "phig_settings_to_config",
+    # phig_settings_save does mutate — it writes phig's own config file
+    # (temp + rename) — but touches none of the six assets in taxonomy.toml,
+    # so no operation covers it either. See task-1-report.md.
+    "phig_settings_save",
+]
+
+# CLI top-level commands that map to no operation in this record set. Only help
+# mutates nothing. The other two mutate twice over, and both facts are recorded
+# rather than fixed here: they open the collection read-write and migrate its
+# schema (R70), and --output truncates whatever file it names (R69). They stay
+# on this list because the list's job is to account for every top-level command,
+# and neither is an operation — no core/ primitive backs either one.
+#
+# models mutates too — it writes the YuNet and SFace files into the models
+# cache under the writer lock — but touches none of the seven assets in
+# taxonomy.toml, so no operation covers it either. Same position as
+# phig_settings_save above. Face-model download is listed as missing from the
+# ABI in libphig/CLAUDE.md, owned by 053.
+read_only_cli = ["search", "duplicates", "help", "models"]
+
+# core/ headers whose declared functions must each map to an operation or be
+# listed in core_read_only below. Bounded on purpose: widening this list is a
+# deliberate act, not a side effect.
+core_headers = [
+    "core/scan_engine.h",
+    "core/organize_engine.h",
+    "core/organize_exec.h",
+    "core/remove_exec.h",
+    "core/thumbs_engine.h",
+    "core/faces_engine.h",
+    "core/relink.h",
+]
+
+# core/ declarations that mutate real data but are the inside of an
+# operation already below, with no caller outside core/. A rule that lives
+# in such a function anchors its enforced_at there and binds the operation
+# that covers it — R01 is the worked example: enforced_at =
+# core/paths.cpp:resolve_conflict, binds organize.copy and organize.move,
+# and resolve_conflict is not an operation. Do not promote one of these to
+# an operation to get it classified: an operation carries
+# surfaces_abi/surfaces_cli, and the generated missing-coverage table
+# treats an empty surfaces_abi as a capability libphig lacks, so an
+# internal executor listed as an operation manufactures a false gap, and a
+# rule bound to it drains the cell of the user-facing operation a reader
+# would actually consult. Found by Task 2's header scan; see
+# task-2-report.md for how each entry was found and reasoned about.
+core_internal = [
+    "execute_organize_action",     # organize.copy/organize.move's per-file
+                                    # disk action; called only from
+                                    # OrganizeEngine::apply
+    "carry_sidecars",              # organize.copy/organize.move's sidecar
+                                    # and attached-JPEG carry; called only
+                                    # from OrganizeEngine::apply. Refuses an
+                                    # occupied destination
+                                    # (refuse_occupied_carry_destination)
+                                    # rather than overwriting it — unlike
+                                    # move, it is not destructive
+    "execute_trash_action",        # remove.trash's per-file action; called
+                                    # only from remove_media_with_sidecars,
+                                    # itself called only from cmd_rm
+    "execute_hard_delete_action",  # remove.hard's per-file action; same
+                                    # call chain as execute_trash_action
+    "remove_media_with_sidecars",  # dispatches to the two actions above;
+                                    # called only from cmd_rm
+                                    # (remove.trash/remove.hard)
+    "ScanEngine::run",             # composition of scan.walk +
+                                    # scan.reconcile with zero production
+                                    # callers — cli/main.cpp and libphig/
+                                    # both call the split phases instead;
+                                    # exercised only by tests
+]
+
+# core/ declarations found by Task 2's header scan that map to no operation.
+# Two shapes: (a) real declared functions/methods that mutate nothing
+# taxonomy.toml tracks, and (b) words the scan's regex misreads as a call —
+# an English word before a parenthetical remark, a type name inside a
+# template argument, or a function named in a comment but declared outside
+# these seven headers. Grouped by header, in the order the scan reports them.
+core_read_only = [
+    # core/scan_engine.h
+    "any",                  # ForceOptions::any() — reads its own three bools, no I/O
+    "set_all",               # ForceOptions::set_all() — sets its own three bools; the
+                             # struct is a caller-built value object, not a tracked asset
+    "process_file",          # pure per-file hash/exif/phash compute; writes nothing —
+                             # scan.walk's run_workers is what persists the result
+    "detector_for_worker",   # pure index-to-instance lookup, no mutation
+    "separately", "done", "models", "all", "metadata", "drop", "engine",
+    "build_options",         # prose: a word before a parenthetical remark, or (for
+                             # build_options) a hypothetical name inside a code comment
+
+    # core/organize_engine.h
+    "resolve_conflict",      # named in a comment; declared in core/paths.cpp, outside
+                             # the seven headers — pure path resolution, R01's anchor
+    "size", "at",            # OrganizePlan::size()/at() — read-only accessors
+    "set_resolution",        # OrganizePlan::set_resolution() — mutates only the
+                             # caller-owned, not-yet-applied plan object; mirrors
+                             # phig_organize_plan_set_resolution in read_only_abi above
+
+    # core/organize_exec.h
+    "file", "first", "failure", "match", "carry",  # prose
+    "get_image_id",          # named in a comment; declared in core/database.h, a DB read
+
+    # core/remove_exec.h
+    "lifecycle", "mount", "action", "on", "bool", "success", "required",  # prose
+    "trash_dir", "trash_path_for",  # named in comments; declared in core/paths.cpp,
+                             # both pure path-string computation, no mutation
+    "find_sidecars",         # named in a comment; declared in core/sidecar.h, a
+                             # directory listing, no mutation
+
+    # core/thumbs_engine.h
+    "thumb_needs_generating",  # pure predicate over an in-memory ImageInfo, no mutation
+
+    # core/faces_engine.h
+    "embedding",              # prose
+
+    # core/relink.h
+    "link", "nothing", "cleanup", "disk", "row", "alone",  # prose
+]
+
+[[operation]]
+id = "scan.walk"
+core_entry = "core/scan_engine.h:ScanEngine::run_workers"
+destructive = false
+surfaces_abi = ["phig_op_index_start"]
+surfaces_cli = ["scan"]
+surfaces_http = []
+
+[[operation]]
+id = "scan.reconcile"
+core_entry = "core/scan_engine.h:ScanEngine::run_reconcile"
+destructive = true
+surfaces_abi = []            # plan 041
+surfaces_cli = ["scan"]
+surfaces_http = []
+
+[[operation]]
+id = "organize.copy"
+core_entry = "core/organize_engine.h:OrganizeEngine::apply"
+destructive = false
+surfaces_abi = ["phig_op_copy_start"]
+surfaces_cli = ["cp"]
+surfaces_http = []
+
+[[operation]]
+id = "organize.move"
+core_entry = "core/organize_engine.h:OrganizeEngine::apply"
+destructive = true
+surfaces_abi = ["phig_op_move_start"]
+surfaces_cli = ["mv"]
+surfaces_http = []
+
+[[operation]]
+id = "organize.plan"
+core_entry = "core/organize_engine.h:OrganizeEngine::plan"
+destructive = false
+surfaces_abi = ["phig_op_organize_plan_start"]
+surfaces_cli = ["cp", "mv"]
+surfaces_http = []
+
+[[operation]]
+id = "remove.trash"
+core_entry = "core/remove_exec.h:cmd_rm"
+destructive = true
+surfaces_abi = []            # plan 053
+surfaces_cli = ["rm"]
+surfaces_http = []
+
+[[operation]]
+id = "remove.hard"
+core_entry = "core/remove_exec.h:cmd_rm"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["rm"]
+surfaces_http = []
+
+[[operation]]
+id = "remove.db-only"
+core_entry = "core/remove_exec.h:cmd_rm"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["rm"]
+surfaces_http = []
+
+[[operation]]
+id = "remove.orphans"
+core_entry = "core/remove_exec.h:cmd_rm"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["rm"]
+surfaces_http = []
+
+[[operation]]
+id = "trash.empty"
+# Not core/remove_exec.h: no cmd_trash_empty exists in core/. The real
+# function lives in cli/main.cpp — trash emptying has no core/ primitive yet.
+core_entry = "cli/main.cpp:cmd_trash_empty"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["trash"]
+surfaces_http = []
+
+[[operation]]
+id = "thumbs.rebuild"
+core_entry = "core/thumbs_engine.h:ThumbsEngine::run"
+destructive = false
+surfaces_abi = ["phig_op_thumbs_start", "phig_thumb_generate"]
+surfaces_cli = ["thumbs"]
+surfaces_http = []
+
+[[operation]]
+id = "faces.rebuild"
+core_entry = "core/faces_engine.h:FacesEngine::run"
+destructive = true
+surfaces_abi = ["phig_op_faces_start"]
+surfaces_cli = ["face"]
+surfaces_http = []
+
+[[operation]]
+id = "relink.transfer"
+core_entry = "core/relink.h:relink_moved_rows"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["scan"]
+surfaces_http = []
+
+[[operation]]
+id = "relink.demote"
+core_entry = "core/relink.h:demote_jpeg_rows"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["scan"]
+surfaces_http = []
+
+[[operation]]
+id = "metadata.write"
+core_entry = "core/database.h:Database::set_tag"
+destructive = false
+surfaces_abi = ["phig_tag_add", "phig_tag_remove", "phig_favorite_set", "phig_gallery_set", "phig_gallery_clear"]
+surfaces_cli = ["tag", "gallery", "fav"]
+surfaces_http = []
+
+# Operations below were found by Task 2's header scan: each is a genuinely
+# mutating declaration in one of the seven core_headers that Task 1's
+# 15 operations did not cover, and each is a distinct, externally reachable
+# thing a person can do — not the inside of an operation already above.
+# See core_internal above for the declarations that were not, and
+# task-2-report.md for how every declaration in this file was found and
+# reasoned about.
+
+[[operation]]
+id = "faces.identify"
+core_entry = "core/faces_engine.h:identify_person"
+destructive = false
+surfaces_abi = []            # no phig_*identify* symbol exists in libphig/include/phig/phig.h
+surfaces_cli = ["face"]
+surfaces_http = []
+
+[[operation]]
+id = "relink.demote_live_photo"
+core_entry = "core/relink.h:demote_live_photo_rows"
+destructive = true
+surfaces_abi = []
+surfaces_cli = ["scan"]
+surfaces_http = []

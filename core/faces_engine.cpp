@@ -35,9 +35,11 @@ IdentifyResult identify_person(Database& db, const std::string& person, float th
     std::vector<Database::FaceEmbeddingRow> candidates = db.get_unlabeled_face_embeddings();
     result.candidates = candidates.size();
 
-    // The whole matched row, not just its id: phase 2 writes against the
-    // embedding it compared, so the id alone is not enough to identify the face
-    // again.
+    // The whole matched row, not just its id: phase 2 hands the embedding it
+    // compared to `set_face_person_if_unchanged`, whose predicate takes it as
+    // an operand. The id alone would identify the face — faces.id is
+    // AUTOINCREMENT and never reissued — so the embedding is carried to feed
+    // that guard's belt-and-braces clause, not because the id is ambiguous.
     std::vector<Database::FaceEmbeddingRow> matches;
     for (const auto& c : candidates) {
         for (const auto& ref : refs) {
@@ -49,10 +51,10 @@ IdentifyResult identify_person(Database& db, const std::string& person, float th
     }
     if (matches.empty()) return result;
 
-    // Phase 2: one transaction for every label. Each write re-checks that the
-    // row is still the face phase 1 compared, so a face deleted — or deleted and
-    // replaced on the same rowid — updates zero rows instead of taking a label
-    // it never earned.
+    // Phase 2: one transaction for every label. Each write re-checks the row
+    // before taking it, so a candidate deleted in the gap — or named by another
+    // labeler in it — updates zero rows instead of taking a label it never
+    // earned. That is why `labeled` counts changed rows, not calls made.
     size_t labeled = 0;
     db.begin_transaction();
     try {

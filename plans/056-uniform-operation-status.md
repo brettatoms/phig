@@ -2,6 +2,7 @@
 name: Uniform Operation Status
 status: planned
 created: 2026-08-09
+closes_rules: [R58]
 description: >
   A client can only learn an operation's progress by draining its event queue.
   `phig_op_status` returns the state enum and no counts; the typed results are

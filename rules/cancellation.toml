@@ -1,0 +1,68 @@
+[[rule]]
+id = "R56"
+tier = "engine"
+concern = "cancellation"
+statement = "Reconcile is not cancellable: run_reconcile takes no CancelToken, so a scan interrupted during its worker phase still relinks, demotes and deletes."
+rationale = "The phase mutates user-authored metadata inside one logged operation, and abandoning it halfway would leave the operation row stuck in_progress and the transfer passes half-applied — so it reads no token at all rather than reading one and ignoring it. That is why ScanEngine::run() is split: run_workers is cancellable, run_reconcile is not, and the split exists at exactly the boundary where a caller has to stop mapping a signal onto the token. cli/main.cpp destroys its ScopedInterruptHandler before calling run_reconcile so a Ctrl-C arriving during reconcile takes the default action instead of being silently swallowed. libphig never calls run_reconcile: the index operation is the additive half only."
+enforced_at = [
+    "core/scan_engine.cpp:ScanEngine::run_reconcile",
+    "core/scan_engine.cpp:ScanEngine::run",
+]
+binds = ["scan.reconcile", "relink.transfer", "relink.demote", "relink.demote_live_photo"]
+protects = ["user-metadata", "db-row", "activity-log"]
+tests = ["ScanEngine.ReconcileStillRunsAfterCancellation"]
+test_kind = "witness"
+status = "holds"
+test_gap = "The witness cancels before the worker phase and then checks reconcile still removed both stale rows. Nothing covers the handler swap in cli/main.cpp — the mechanism that makes a real Ctrl-C land where the split intends — because no test drives cmd_scan, and nothing covers a signal arriving while reconcile is running."
+
+[[rule]]
+id = "R57"
+tier = "engine"
+concern = "cancellation"
+statement = "Cancellation is polled only between whole items, so a run stopped by it leaves every item either fully done or untouched, and whatever committed before the stop stays committed."
+rationale = "parallel_for_each checks the token at the top of its work loop, before it claims the next index, so a worker never abandons an item it has started; scan, thumbs and faces inherit that by going through it. OrganizeEngine::apply has the same shape written by hand — the check is the first statement of its per-item loop, ahead of the destination re-check, execute_organize_action and carry_sidecars — so a cancellation cannot separate a media file from the attachment carried with it, even though a per-file error can (R48). Nothing is rolled back: rows and thumbnails already written stay, and the result reports completed = false, which is the only thing that distinguishes a stopped run from a finished one. The claim is about cancellation alone and is deliberately narrower than 'an item is never half done' — R33 records the disk-then-log window that no token controls."
+enforced_at = [
+    "core/parallel.cpp:parallel_for_each",
+    "core/organize_engine.cpp:OrganizeEngine::apply",
+]
+binds = [
+    "scan.walk", "thumbs.rebuild", "faces.rebuild", "organize.plan",
+    "organize.copy", "organize.move",
+]
+protects = ["db-row", "original-file", "thumb-cache"]
+tests = [
+    "Parallel.ReturnsFalseWhenCancelledMidRun",
+    "ScanEngine.CancellationLeavesTheDatabaseConsistent",
+    "AbiOperations.CancelMidRunKeepsTheWorkAlreadyDone",
+    "OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R58"
+tier = "engine"
+concern = "cancellation"
+statement = "A run whose token is already cancelled does no work and reports itself incomplete."
+rationale = "The four cancellable engines answer this differently. ThumbsEngine and FacesEngine each guard the empty-selection path on purpose — thumbs with 'images.empty() ? !cancel.stop() : parallel_for_each(...)' and faces with a token check placed ahead of its empty-selection return — because parallel_for_each returns true unconditionally for a zero-length range and would otherwise report an already-cancelled run over nothing as completed. ScanEngine and OrganizeEngine have no such guard: run_workers assigns result.completed only inside 'if (!files.empty())' and apply only inside its per-item loop, so a cancelled scan of a directory holding no media files, and a cancelled apply of an empty plan, both return completed = true. Through the ABI that is the difference between PHIG_OP_DONE and PHIG_OP_CANCELLED, since both spawn wrappers derive the terminal state from that flag. Read from the code and corroborated by the test asymmetry — thumbs and faces each have an empty-selection case, scan and organize have none — not measured, because nothing outside the engines can produce an already-cancelled run over an empty selection on demand. The claim is provisional: 056 is the open plan that owns what an operation reports about its own status, and it does not name this."
+enforced_at = [
+    "core/thumbs_engine.cpp:ThumbsEngine::run",
+    "core/faces_engine.cpp:FacesEngine::run",
+    "core/scan_engine.cpp:ScanEngine::run_workers",
+    "core/organize_engine.cpp:OrganizeEngine::apply",
+    "core/parallel.cpp:parallel_for_each",
+]
+binds = ["scan.walk", "thumbs.rebuild", "faces.rebuild", "organize.copy", "organize.move"]
+protects = ["db-row", "activity-log"]
+tests = [
+    "Parallel.ReturnsFalseWhenAlreadyCancelled",
+    "ThumbsEngineRun.AlreadyCancelledGeneratesNothingAndReportsIncomplete",
+    "ThumbsEngineRun.AlreadyCancelledOverAnEmptySelectionReportsIncomplete",
+    "FacesEngineRun.AlreadyCancelledOverAnEmptySelectionReportsIncomplete",
+    "ScanEngine.AnAlreadyCancelledTokenProcessesNothing",
+    "OrganizeEngineTest.AlreadyCancelledAppliesNothingAndReportsIncomplete",
+    "AbiOperations.CancelBeforeAnyWorkReportsCancelledAndIncomplete",
+]
+test_kind = "witness"
+status = "partial"
+test_gap = "The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls models_or_skip() and skips without face models, including in CI, while its empty-selection sibling needs none and is listed instead."

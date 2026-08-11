@@ -1,0 +1,117 @@
+[[rule]]
+id = "R12"
+tier = "engine"
+concern = "reconcile"
+statement = "A tracked path is deletable only when its file is gone and its parent directory still exists; a missing parent and a failed existence check are reported apart from it and kept."
+rationale = "A missing file alone does not say what happened. A missing parent directory usually means an unmounted or unreachable subtree rather than a deletion, and an existence check that errors says nothing at all. The three cases warrant different treatment, so the classifier returns them separately and leaves the judgement to the caller instead of collapsing them into one filtered list."
+enforced_at = ["core/paths.cpp:paths_safe_to_delete"]
+binds = ["scan.reconcile", "remove.orphans"]
+protects = ["user-metadata", "db-row"]
+tests = [
+    "SafeToDeleteTest.PresentFilesAreNotDeletable",
+    "SafeToDeleteTest.GenuinelyMissingFileWithPresentParentIsDeletable",
+    "SafeToDeleteTest.MissingFileUnderAbsentParentIsKept",
+    "SafeToDeleteTest.PartialUnmountKeepsUnmountedSubtreeDeletesRealMissing",
+    "SafeToDeleteTest.UnreadableParentIsCheckFailedNotParentMissing",
+]
+test_kind = "conformance"
+status = "holds"
+
+[[rule]]
+id = "R13"
+tier = "engine"
+concern = "reconcile"
+statement = "A path whose existence could not be determined is never deleted, under any flag."
+rationale = "An EACCES or EIO on the existence check is an unknown state, not a heuristic judgement about whether a drive is mounted. --ignore-mount-warning answers the mount question and has nothing to say about an unreadable path, so neither caller folds check_failed into what it deletes."
+enforced_at = ["core/scan_engine.cpp:ScanEngine::run_reconcile", "core/remove_exec.cpp:cmd_rm"]
+binds = ["scan.reconcile", "remove.orphans"]
+protects = ["user-metadata", "db-row"]
+tests = [
+    "RemoveExecTest.RmOrphansNeverRemovesUnreadablePathsEvenWithIgnoreMountWarning",
+    "SafeToDeleteTest.UnreadableParentIsCheckFailedNotParentMissing",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "Only rm's half is driven end to end. No test runs scan's reconcile over an unreadable path, with or without the flag, so scan's refusal to delete a check_failed row rests on reading run_reconcile rather than on a test."
+
+[[rule]]
+id = "R14"
+tier = "engine"
+concern = "reconcile"
+statement = "--ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted."
+rationale = "One flag with two meanings is how a user learns a destructive command's behavior by accident. Plan 032 widened scan's existing flag rather than adding a second name to rm, so both callers fold parent_missing into the deletable set and neither overrides anything else."
+enforced_at = ["core/scan_engine.cpp:ScanEngine::run_reconcile", "core/remove_exec.cpp:cmd_rm"]
+binds = ["scan.reconcile", "remove.orphans"]
+protects = ["user-metadata", "db-row"]
+tests = [
+    "RemoveExecTest.RmOrphansSkipsRowsWhoseParentIsMissingByDefault",
+    "RemoveExecTest.RmOrphansRemovesMissingParentRowsWithIgnoreMountWarning",
+    "RemoveExecTest.RmOrphansNeverRemovesPresentFilesEvenWithIgnoreMountWarning",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "Every listed test drives rm. ScanEngine.IgnoreMountWarningOverridesTheGuard exercises scan's coarse all-rows-missing warning, whose parent directories still exist, so no test covers scan's reconcile deleting a missing-parent row — which is the behaviour plan 032 changed for existing users of the flag."
+
+[[rule]]
+id = "R15"
+tier = "engine"
+concern = "reconcile"
+statement = "Scan skips its whole destructive phase when every tracked row under the scanned directory classifies as deletable."
+rationale = "An unmounted drive is indistinguishable from a deleted collection at the point reconcile runs, and losing a whole subtree's tags and faces to a forgotten mount is worse than leaving stale rows behind. The guard compares the deletable set against every row under the prefix, so it fires only when the two are the same size. A run that also has rows in parent_missing or check_failed does not trip it, and its deletable rows are deleted: those other rows are held by the per-row classifier of R12, not by this guard. The guard is coarse on purpose, and it names the flag that overrides it."
+enforced_at = ["core/scan_engine.cpp:ScanEngine::run_reconcile"]
+binds = ["scan.reconcile"]
+protects = ["user-metadata", "db-row"]
+tests = [
+    "ScanEngine.MountLossGuardKeepsRowsWhenEveryFileVanishes",
+    "ScanEngine.IgnoreMountWarningOverridesTheGuard",
+    "ScanEngine.RemovesRowsForFilesThatDisappeared",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "The listed tests cover all rows deletable (the guard fires), the flag override, and some files still present (it does not). None drives run_reconcile with a mixed set — some rows deletable, others parent_missing — which is the case where every tracked file is gone, the guard still does not fire, and the deletable rows are deleted."
+
+[[rule]]
+id = "R16"
+tier = "engine"
+concern = "reconcile"
+statement = "A stale row's user metadata transfers only when exactly one other tracked file with the same sha256 exists on disk; with none or several it transfers nowhere and the row is still deleted."
+rationale = "With two identical-content files on disk phig cannot tell which one the user moved, and guessing would attach the tags to the wrong photo. The cost of refusing is real and is recorded rather than hidden: the row is deleted either way, and the restore snapshot captures neither tags nor faces, so ambiguity destroys them. Choosing a target is a feature nobody has designed, not an override of this rule."
+enforced_at = ["core/relink.cpp:relink_moved_rows"]
+binds = ["relink.transfer", "scan.reconcile"]
+protects = ["user-metadata"]
+tests = [
+    "RelinkTest.SingleCandidateTransfersMetadata",
+    "RelinkTest.AmbiguousCandidatesSkipped",
+    "RelinkTest.NoCandidateDoesNothing",
+    "RelinkTest.CandidateMissingOnDiskSkipped",
+    "RelinkTest.MissingCandidateFileDoesNotCountTowardAmbiguity",
+]
+test_kind = "witness"
+status = "holds"
+
+[[rule]]
+id = "R17"
+tier = "engine"
+concern = "reconcile"
+statement = "The has_sibling_raw and Live Photo peeks over indexed paths only decide whether to open a logged operation; the demote passes decide again, authoritatively, inside it."
+rationale = "A peek is a read-only disk check made outside any transaction and from a path alone, so its answer can be stale before the work starts. demote_jpeg_rows re-derives the sibling RAW and requires it to be indexed, and demote_live_photo_rows re-runs pairing over the whole indexed set; both transfer metadata inside the transaction that commits the change. A false positive from a peek therefore costs an empty operation row rather than a wrong demotion."
+enforced_at = [
+    "core/scan_engine.cpp:ScanEngine::run_reconcile",
+    "core/relink.cpp:demote_jpeg_rows",
+    "core/relink.cpp:demote_live_photo_rows",
+]
+binds = ["scan.reconcile", "relink.demote", "relink.demote_live_photo"]
+protects = ["user-metadata", "db-row"]
+tests = [
+    "RelinkTest.DemotesJpegToSameBasenameRaw",
+    "RelinkTest.LoneJpegNotDemoted",
+    "RelinkTest.JpegWithRawRowMissingNotDemoted",
+    "RelinkTest.DeletedJpegWithIndexedRawNotDemoted",
+    "LivePhotoDemotion.MovesTheVideoRowsMetadataToItsStillAndDropsTheRow",
+    "LivePhotoDemotion.LeavesAnOrdinaryVideoRowAlone",
+    "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget",
+    "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "Only the authoritative half is pinned. The six demote tests call demote_jpeg_rows and demote_live_photo_rows directly, and the two run_reconcile tests both have a non-empty removed_paths, so the block is entered whatever the peek answers. No test covers the case the peek exists for: removed_paths empty and the only work demotable."

@@ -1,13 +1,40 @@
 name: CI
 
+# paths-ignore keeps prose-only pushes off the runners: plans/ and docs/ cannot
+# affect a build, and neither can a top-level *.md. rules/ is deliberately
+# absent — its TOML records and generated views are gated by the build-and-test
+# job, so a change there has to run. GitHub's workflow parser rejects YAML
+# anchors, which is why the list appears twice.
 on:
   push:
     branches: [master]
+    paths-ignore:
+      - 'plans/**'
+      - 'docs/**'
+      - '*.md'
   pull_request:
+    paths-ignore:
+      - 'plans/**'
+      - 'docs/**'
+      - '*.md'
 
-# Cancel superseded runs on the same ref.
+  # The macOS leg and both sanitizer jobs run on this schedule rather than on
+  # every push, because cadence is the only thing that moves the bill: at the
+  # 10x macOS multiplier that one job is 40 of a full run's 71 billable minutes,
+  # so a nightly macOS run would cost what running it per-push already costs.
+  # Weekly, Mondays 09:00 UTC.
+  schedule:
+    - cron: '0 9 * * 1'
+
+  # The same full run, on demand, on any branch — how to clear a portability or
+  # sanitizer gate before merging instead of waiting for Monday.
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref. event_name is in the key so the
+# scheduled run and a push to master land in different groups: they share a ref,
+# and without it a Monday cron would cancel an in-flight push.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 # Least privilege: CI only needs to read the repo.
@@ -19,9 +46,18 @@ jobs:
     name: build & test (${{ matrix.os }})
     strategy:
       fail-fast: false
+      # The macOS leg joins only on the scheduled and manual runs — see the
+      # schedule comment in `on:` above. An expression rather than a second job,
+      # so both legs keep one name and one set of steps.
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: >-
+          ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+          && fromJSON('["ubuntu-latest", "macos-latest"]')
+          || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 400M
     steps:
       # Pinned to a full commit SHA (supply-chain hardening); comment tracks the tag.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -31,26 +67,75 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config \
+            build-essential ccache cmake pkg-config \
             libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
             libgtest-dev libspdlog-dev libraw-dev libheif-dev libheif-plugin-libde265 libjxl-dev
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install cmake pkg-config opencv sqlite libexif ffmpeg googletest spdlog libraw libheif jpeg-xl
+        run: brew install ccache cmake pkg-config opencv sqlite libexif ffmpeg googletest spdlog libraw libheif jpeg-xl
+
+      # Compiling the same unchanged sources on every push is what makes the
+      # build step the longest one in the job, so the object cache carries across
+      # runs. github.sha in the key makes each run save a fresh entry and
+      # restore-keys picks up the newest previous one; Actions cache storage is
+      # free and evicted LRU, so a growing set of entries costs nothing.
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-test-${{ matrix.os }}-${{ github.sha }}
+          restore-keys: ccache-test-${{ matrix.os }}-
 
       - name: Configure
-        run: cmake -B build -DPHIG_WERROR=ON
+        run: |
+          cmake -B build -DPHIG_WERROR=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build build --parallel
+
+      # The hit rate is the only evidence that the cache above is doing anything.
+      - name: ccache statistics
+        run: ccache --show-stats
 
       # Runs both phig-tests and phig-perf-tests: gtest_discover_tests
       # registers each target's cases into the same ctest run, so this one
       # invocation gates on the perf suite too, not just the fast default one.
       - name: Test
+        id: test
         run: ctest --test-dir build --output-on-failure --parallel
+
+      # Ubuntu only, on both steps below: the rule record describes the repo,
+      # not a platform, so running it on the macOS leg as well doubles the work
+      # for no extra coverage.
+      #
+      # Both also run after a failing suite, which is what the explicit
+      # condition buys — a bare `if:` carries an implicit success(), and a red
+      # Test step would then skip the step that says which rule the failing test
+      # was pinning. The Test step above is what gates on the suite, so tolerating
+      # its failure here hides nothing.
+      - name: Rules record — unit tests
+        if: ${{ runner.os == 'Linux' && (success() || steps.test.outcome == 'failure') }}
+        run: python3 -m unittest discover -s scripts -t scripts -p 'test_*.py'
+
+      # ctest registers one ctest test per gtest case (gtest_discover_tests), so
+      # it produces no single gtest XML — hence invoking the binary directly for
+      # one. Its exit code is dropped for the reason above; a run that dies
+      # before writing results is still reported, because rules.py rejects an
+      # unreadable or empty XML rather than reading it as every cited test
+      # having been deleted.
+      - name: Rules record — check and regenerate
+        if: ${{ runner.os == 'Linux' && (success() || steps.test.outcome == 'failure') }}
+        run: |
+          ./build/phig-tests --gtest_output=xml:build/test-results.xml || true
+          python3 scripts/rules.py --check --emit --test-results build/test-results.xml
+          git diff --exit-code rules/ || {
+            echo "::error::rules/by-*.md are generated from rules/*.toml. Run 'python3 scripts/rules.py --emit' and commit the result — do not edit the views by hand."
+            exit 1
+          }
 
   # Sanitizers. Two configurations because ASan and TSan cannot be combined.
   #
@@ -75,6 +160,11 @@ jobs:
   #            phig-perf-tests is wasted work.
   sanitizers:
     name: sanitizers (${{ matrix.san }})
+    # Scheduled and manual runs only — see the schedule comment in `on:` above.
+    # Deliberately without ccache, unlike the test and gtk jobs: at a weekly
+    # cadence the cache is a week stale by the time it is read, so the restore
+    # would be paid against a miss.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -172,6 +262,9 @@ jobs:
   gtk:
     name: build & test (gtk)
     runs-on: ubuntu-latest
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 400M
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -179,22 +272,38 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config \
+            build-essential ccache cmake pkg-config \
             libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
             libgtest-dev libspdlog-dev libraw-dev libheif-dev libheif-plugin-libde265 libjxl-dev \
             libgtk-4-dev libadwaita-1-dev
 
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-gtk-${{ github.sha }}
+          restore-keys: ccache-gtk-
+
+      # Only the two targets `cmake --install` needs. phig-tests and
+      # phig-perf-tests are half the build and belong to the ubuntu test job —
+      # measured on 12 cores, 35s for everything against 18s for these two. The
+      # phig CLI is here because install(TARGETS phig) fails without it, not
+      # because gtk/ has any use for it.
       - name: Build and install libphig
         run: |
-          cmake -B build -DPHIG_WERROR=ON
-          cmake --build build --parallel
+          cmake -B build -DPHIG_WERROR=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel --target phig_abi phig
           cmake --install build --prefix "$PWD/prefix"
+          ccache --show-stats
 
       - name: Build gtk client
         run: |
           PKG_CONFIG_PATH="$PWD/prefix/lib/pkgconfig" \
-            cmake -S gtk -B gtk/build
+            cmake -S gtk -B gtk/build \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build gtk/build --parallel
 
       - name: Test gtk client

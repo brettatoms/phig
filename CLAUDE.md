@@ -25,6 +25,7 @@ tools that look for that filename resolve to something.
 | `scripts/` | Dev tooling (e.g. `clang-tidy.sh`). | — |
 | `docs/` | Cross-project specs/ledgers from when phig, phig-gtk, and phig-web were separate repos, plus execution artifacts owned by a numbered plan. Date-stamped files. | Historical record |
 | `plans/` | Numbered implementation plans (`NNN-name.md`) for the whole monorepo — the single index of what's outstanding. | Working index |
+| `rules/` | phig's data-integrity rules as TOML records: what must be true when a destination is occupied, when a row's file is gone, and what may destroy user-authored metadata. Plus three views generated from them by `scripts/rules.py`, which CI also runs as a decay check. Plan 054. | Normative |
 | `MARKET.md` | Competitive analysis: the field, its recurring weaknesses, phig's differentiators. Dated, additive. | Working document |
 
 See each directory's `CLAUDE.md` for what it is, its stability contract, and
@@ -74,9 +75,10 @@ inside `gtk/`) and 13 tests across two binaries — see `gtk/CLAUDE.md`.
 
 ### Sanitizers
 
-CI runs ASan+UBSan and TSan as two ubuntu jobs on every push, configured
-through `CMAKE_CXX_FLAGS` (there is no `PHIG_SANITIZE` option). To reproduce
-one locally:
+CI runs ASan+UBSan and TSan as two ubuntu jobs, configured through
+`CMAKE_CXX_FLAGS` (there is no `PHIG_SANITIZE` option). They run on the weekly
+schedule and on `workflow_dispatch`, not on every push — see "CI" below. To
+reproduce one locally:
 
 ```bash
 cmake -B build-san -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -152,11 +154,34 @@ collection:
     against the absolute path, so a leading `^` matches nothing and silently
     suppresses every finding in phig's own headers — which is what it did,
     hiding 16 of them, until commit `b89d6e8`'s follow-up.
+- **Rules record:** the build-and-test job's **ubuntu leg** runs
+  `scripts/rules.py`'s own unit tests, then `python3 scripts/rules.py --check
+  --emit --test-results <gtest xml>`, then `git diff --exit-code rules/`. That
+  is five decay checks over `rules/*.toml` — schema, anchors, tests, surface
+  classification, plan closures — plus an ABI-version comparison, and a
+  requirement that the three generated `rules/by-*.md` views match what was
+  committed — regenerate them, never edit them. Deliberately not in the lint
+  job: check 2 reads a gtest XML, which needs the compiled test binary that
+  `lint` has no reason to build. See "Rules of record" below.
 - **CI:** `.github/workflows/ci.yml` runs four jobs — build + test on
-  ubuntu-latest and macos-latest (with `-DPHIG_WERROR=ON`), ASan+UBSan and
-  TSan (see Sanitizers above), a gtk job that installs libphig and then
-  builds and tests `gtk/` against it through pkg-config, and the lint gate.
-  GitHub Actions are pinned to full commit SHAs.
+  ubuntu-latest and macos-latest (with `-DPHIG_WERROR=ON`, and the rules gate
+  above on ubuntu only), ASan+UBSan and TSan (see Sanitizers above), a gtk job
+  that installs libphig and then builds and tests `gtk/` against it through
+  pkg-config, and the lint gate. GitHub Actions are pinned to full commit SHAs.
+- **Not every job runs on every push.** A push or PR gets the ubuntu test leg,
+  gtk and lint — 15 billable minutes. The macOS leg and both sanitizer jobs are
+  weekly (Mondays 09:00 UTC) plus `workflow_dispatch`, which runs the full set
+  on any branch: `gh workflow run CI --ref <branch>`. macOS runners bill at 10x,
+  so that one job was 40 of a full run's 71 minutes and 64% of a month's spend.
+  A change to platform code, or anything you want a sanitizer verdict on before
+  merging, needs the manual run — a green PR has not been near macOS or TSan.
+- **Prose-only pushes do not run CI at all.** `paths-ignore` covers `plans/`,
+  `docs/` and top-level `*.md`. `rules/` is deliberately not in that list: the
+  ubuntu leg gates its records and generated views.
+- **Builds use ccache** on the test and gtk jobs, cached across runs by
+  `actions/cache`. Each build job prints `ccache --show-stats`, which is where
+  to look if a build step is slower than expected. The sanitizer jobs are
+  deliberately excluded: at a weekly cadence their cache is always stale.
 
 ## Tech stack
 
@@ -233,30 +258,60 @@ surface (`unistd.h`) and has not been audited for portability.
 
 ## CLI command reference
 
+Derived from `cli/main.cpp`, which parses 52 distinct flags. Check it against
+the source rather than trusting this block:
+`grep -oE '"--[a-z0-9-]+"' cli/main.cpp | tr -d '"' | sort -u`.
+
 ```bash
+# Global — recognized anywhere in the argv, before the command parsers see it
+phig [--config <path>] [--no-wait] <command> ...
+phig --version | --help
+
 # Scan a directory into the database
-phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--db <path>]
+phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--parallel N] [--db <path>]
 
 # Generate thumbnails
-phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--size N] [--parallel N] [--db <path>]
-phig thumbs clean [--db <path>]
+phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--parallel N] [--db <path>]
+phig thumbs clean [--dry-run] [--db <path>]
 
 # Find duplicate images
-phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--exclude <glob>] [--media image|video|all] [--fav] [--db <path>]
 
 # Copy files into YYYY/MM structure
-phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
 
 # Move files into YYYY/MM structure
-phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--path <dir>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
 
 # Search the collection
-phig search [--count] [--db <path>] ...
+phig search [--ext <ext>] [--after <date>] [--before <date>] [--camera <s>] [--make <s>] [--min-size <n>] [--max-size <n>] [--media image|video|all] [--min-duration <d>] [--max-duration <d>] [--similar <image>] [--similar-hash <hex>] [--threshold 0-64] [--face <image>] [--face-threshold <f>] [--person <name>] [--tag <name>] [--gallery <name>] [--fav] [--blurry] [--min-sharpness <n>] [--max-sharpness <n>] [--match <glob>] [--exclude <glob>] [--limit N] [--count] [--porcelain] [--print0] [--format text|csv|json] [--output <path>] [--db <path>]
 
 # Remove images from the database and/or disk
-phig rm [--match <glob>] [--exclude <glob>] [--hard|--db-only|--orphans] [--dry-run] [--yes] [--db <path>]
+phig rm [--match <glob>] [--exclude <glob>] [--hard|--db-only|--orphans] [--ignore-mount-warning] [--dry-run] [--yes] [--db <path>]
 phig trash empty [--yes]
+
+# Tags, galleries, favorites
+phig tag add|remove <tag> [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig tag list [--db <path>]
+phig gallery set <name> [--no-overwrite] [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig gallery clear [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig gallery list [--db <path>]
+phig fav add|remove [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
+phig fav list [--count] [--limit N] [--porcelain] [--print0] [--format text|csv|json] [--output <path>] [--db <path>]
+
+# Faces
+phig face name <image> <name> [--db <path>]
+phig face identify <name> [--db <path>]
+phig face rebuild [--match <glob>] [--exclude <glob>] [--parallel N] [--db <path>]
+phig face list [--db <path>]
+
+# Download the face detection/recognition models
+phig models download
 ```
+
+`--path <dir>` narrows by directory prefix on `tag`, `gallery` and `fav` only.
+`duplicates`, `cp` and `mv` reject it — measured, `Unknown option: --path` and
+exit 1 — even though `--path` reads as a natural fit for all three.
 
 Paths follow XDG conventions (all resolved in `core/paths.cpp`): database at
 `~/.local/share/phig/phig.db`, models at `~/.cache/phig/models`, thumbnails
@@ -311,8 +366,11 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   keyed by (SHA256, size). Deduplicates naturally, and sizes are independent:
   generating 768px never replaces or invalidates 512px, so a client can ask for
   what it needs without a cache-wide regeneration. 512 is the default that
-  `scan --thumbs` and `thumbs rebuild` write; `thumbs rebuild --size N` fills
-  another, and libphig generates one on demand when a lookup misses.
+  `scan --thumbs` and `thumbs rebuild` write, and libphig generates another size
+  on demand when a lookup misses. `ThumbsOptions::size` (`core/thumbs_engine.h:18`)
+  takes any size, but no CLI flag reaches it: `--size` is advertised by the help
+  text (`cli/main.cpp:129`) and has no parser branch, so `thumbs rebuild --size
+  768` prints `Unknown option: --size` and exits 1. Plan 043 owns wiring it.
 - **Video support** — scans video files (MP4/MOV/MKV/AVI/WebM etc.),
   extracts keyframe phash via OpenCV VideoCapture, metadata via
   libavformat. Videos stored with `media_type = 'video'`,
@@ -357,8 +415,9 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   on `<db>.lock` (`core/lockfile.cpp`) so whole operations serialize; reads
   never take it. Per-machine only. The `face` subcommands are the exception
   — they run lock-free, matching libphig's faces operation, and defend
-  themselves instead: `faces.id` is AUTOINCREMENT so a face id never names a
-  different face, `identify` re-checks the embedding it compared, and
+  themselves instead: `faces.id` is AUTOINCREMENT so a deleted id is never
+  reissued and a face deleted mid-run matches nothing, `identify` writes under
+  `person_id IS NULL` so it refuses a face another labeler named first, and
   `rebuild` reads each image id inside the transaction that writes its
   faces. A lock only excludes other lock-takers, so it was never protection
   against an ABI caller anyway.
@@ -398,16 +457,87 @@ checkboxes — write it to `docs/plans/` as an artifact and open or update the
 numbered plan that owns it.
 
 Status is one of: `designing` (open questions remain), `planned` (designed,
-not started), `in-progress` (started; the index row says what's left),
+not started), `in-progress` (started; the plan file says what's left),
 `completed` (shipped, including pieces explicitly deferred to a later plan),
 `deferred` (deliberately not now), `superseded` (replaced — the row and the
 file's frontmatter both name the replacement).
+
+**An index row is one sentence.** It says what the plan is, in enough words
+to decide whether to open it — 15 to 30, the length of the 001-005 rows. It
+carries no status, no progress, no measurements and no design reasoning: all
+of that lives in the plan file, which is the only place it can be kept
+current. A row that restates the plan makes the index unscannable, which is
+the one thing it exists to be.
 
 New cross-project or monorepo-wide design docs go in `docs/`. Completed
 plans should not be edited unless the user explicitly asks — it's fine to
 add cross-references to other plans. Changes to completed features get a new
 plan rather than editing the original. Always write a plan and get approval
 before implementing.
+
+## Rules of record
+
+`rules/` states what must be true when phig moves, deletes or overwrites —
+conflict resolution, reconciliation, atomicity, recoverability, metadata
+preservation, attachments, concurrency, cancellation, authorization. One TOML
+record per rule, each naming the statement, why it is that way, where it is
+enforced, which operations it binds, which asset it protects, and the test that
+pins it. `rules/README.md` is the field reference. Plan 054 owns the mechanism.
+
+**Read the relevant `rules/*.toml` before designing anything that moves,
+deletes or overwrites** — do not reconstruct the behaviour from call sites.
+That reconstruction is exactly what this exists to stop: designing plans 041
+and 042 turned up five cases where the code did something other than what it
+appeared to, each found by reading six files while designing something else.
+
+Four working rules:
+
+- **Changing a guard means updating its record in the same commit**, then
+  running `python3 scripts/rules.py --check --emit` and committing the
+  regenerated views alongside it. A rule whose `enforced_at` no longer matches
+  the code is worse than no rule, because the next design will trust it.
+- **Enforcement belongs in `core/` or `libphig/`, never `cli/`.** A guard that
+  lives in `cli/` is unreachable by libphig, by `phigd`, and by every GUI — so
+  it is a finding to record, not a record to file. This is Interface
+  discipline above, applied to data safety. CI enforces it rather than trusting
+  it: an anchor under `cli/` fails the build unless the rule's `status` is
+  `violated`, where the misplacement is the thing being recorded and an open
+  plan's `closes_rules` claims the rule.
+- **Behaviour no rule states? Write the rule.** A new guard, a new operation,
+  or a behaviour discovered while reading code each need a record. The
+  discovered-while-reading case is the important one — that is how all five
+  original findings surfaced, and none was ever reported as a bug.
+- **A rule the code violates is recorded, not deleted.** Set `status =
+  "violated"` and add the rule id to an open plan's `closes_rules`. Deleting
+  the inconvenient rule turns the record into a description of the code, which
+  is the one thing it must never become. The same applies to `test_gap` when a
+  test is weaker than the claim it pins — that one needs no plan, because a
+  weak test is not unsafe code.
+
+An **operation** in `rules/operations.toml` is a `core/` primitive that
+surfaces hang off (`surfaces_cli`, `surfaces_abi`, `surfaces_http`), not a CLI
+command — so a rule bound to an operation is inherited by every surface,
+including ones added later. A function that mutates but is internal to an
+operation goes in `core_internal`; rules anchor at it and bind the operation
+that covers it.
+
+`rules/by-invariant.md`, `by-operation.md` and `by-asset.md` are **generated
+from the TOML by `scripts/rules.py --emit` and are never hand-edited.** An edit
+to one is discarded on the next run and fails CI in the meantime, because the
+build-and-test job regenerates all three and diffs them against what was
+committed. The same run checks the records' own schema, that anchors resolve,
+that a `holds` rule's tests exist and pass, that every `violated` or `partial`
+rule is claimed by an open plan's `closes_rules` and that no closed plan still
+claims one, that every ABI symbol and CLI command is classified, and that the
+ABI version macros agree with the CMake `VERSION`/`SOVERSION`.
+
+Status: the enumeration phase is complete, reported in
+`docs/plans/2026-08-09-054-enumeration-report.md` — for how many rules there
+are now, run `python3 scripts/rules.py --check`, which prints the count from
+the records themselves. The report's figure was three short within a week, so
+this file does not carry one. The set is still incomplete on CLI flags: 054's
+phase 3 writes rules for the mutation-capable ones and records the read-only
+ones as `n/a`.
 
 ## Conventions
 
