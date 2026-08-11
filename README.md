@@ -65,10 +65,22 @@ cmake --install build --prefix ~/.local        # installs to ~/.local/bin/phig
 ```
 
 Notes:
-- **OpenCV** ≥ 4.5.4 — the YuNet/SFace face-recognition APIs
-  (`cv::FaceDetectorYN::create`, `cv::FaceRecognizerSF::create`) are called
-  unconditionally and need that version. Only core modules are used — no
-  `opencv_contrib`.
+- **OpenCV** — two different numbers, and one does not cover the other.
+  - **≥ 4.5.4 to build.** `cv::FaceDetectorYN::create` and
+    `cv::FaceRecognizerSF::create` are called unconditionally, so CMake fails
+    below that version.
+  - **≥ 4.8.0 to detect faces.** YuNet 2023mar, the model `phig models
+    download` fetches, has an ONNX graph that older importers accept and then
+    cannot run: `create()` succeeds and the first `detect()` throws
+    `(-204:Requested object was not found) Layer with requested id=-1 not
+    found`. Measured against that model file — 4.6.0 and 4.7.0 both throw,
+    4.8.0 and 4.10.0 both run it clean.
+
+  Between the two, phig builds and everything except the face path works;
+  `--faces`, `phig face`, and searching by face fail with a message naming the
+  version needed and the version installed. Ubuntu 22.04 ships 4.5.4 and 24.04
+  ships 4.6.0, so both are below the face floor; 25.10 and 26.04 ship 4.10.0.
+  Only core modules are used — no `opencv_contrib`.
 - **FFmpeg on Fedora**: the official repos ship `ffmpeg-free-devel`, which is
   sufficient. The fully-featured `ffmpeg-devel` lives in the third-party RPM Fusion
   repo; you only need it if `ffmpeg-free-devel` is missing a codec you require.
