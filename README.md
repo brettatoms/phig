@@ -76,11 +76,13 @@ Notes:
     found`. Measured against that model file — 4.6.0 and 4.7.0 both throw,
     4.8.0 and 4.10.0 both run it clean.
 
-  Between the two, phig builds and everything except the face path works;
-  `--faces`, `phig face`, and searching by face fail with a message naming the
-  version needed and the version installed. Ubuntu 22.04 ships 4.5.4 and 24.04
-  ships 4.6.0, so both are below the face floor; 25.10 and 26.04 ship 4.10.0.
-  Only core modules are used — no `opencv_contrib`.
+  Between the two, phig builds and everything that does not detect a face
+  works. What fails, with a message naming the version needed and the version
+  installed: `scan --faces`, `face rebuild`, `face name`, and `search --face`.
+  What still works: `face list`, `face identify`, and `search --person`, which
+  read stored embeddings and labels and build no detector. Ubuntu 22.04 ships
+  4.5.4 and 24.04 ships 4.6.0, so both are below the face floor; 25.10 and
+  26.04 ship 4.10.0. Only core modules are used — no `opencv_contrib`.
 - **FFmpeg on Fedora**: the official repos ship `ffmpeg-free-devel`, which is
   sufficient. The fully-featured `ffmpeg-devel` lives in the third-party RPM Fusion
   repo; you only need it if `ffmpeg-free-devel` is missing a codec you require.

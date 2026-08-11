@@ -113,6 +113,7 @@ bool download_face_models() {
 
     for (const auto& model : models) {
         std::string dest = dir + "/" + model.filename;
+        bool replacing_mismatch = false;
         if (fs::exists(dest)) {
             if (compute_sha256(dest) == model.sha256) {
                 std::cout << "Already exists: " << dest << "\n\n";
@@ -124,9 +125,22 @@ bool download_face_models() {
             // hand. If the fresh copy is wrong too, that is upstream having
             // moved, and the check below says so instead of looping.
             std::cout << "Checksum mismatch, re-downloading: " << dest << "\n";
+            replacing_mismatch = true;
         }
 
         if (!download_file(model.url, dest)) {
+            if (replacing_mismatch) {
+                // download_file removes only its own temporary, so the file
+                // that failed the hash is still at dest and face_models_exist()
+                // still reports it. Kept on purpose: a mismatch is as likely to
+                // mean phig's pin has gone stale against a model opencv_zoo
+                // replaced as it is to mean the file is damaged, and deleting a
+                // working model because the network was down is the worse of
+                // the two mistakes. Said out loud rather than left implicit,
+                // because the next faces run will load it.
+                std::cerr << "Warning: keeping " << dest
+                          << ", which does not match the expected sha256\n";
+            }
             return false;
         }
 
@@ -134,8 +148,9 @@ bool download_face_models() {
         if (got != model.sha256) {
             std::cerr << "Error: " << model.filename << " sha256 is " << got << ", expected "
                       << model.sha256 << "\n";
-            // Removed, so face_models_exist() does not report a file phig has
-            // just decided it cannot trust.
+            // This one is removed: it arrived just now and was never a working
+            // model, so nothing is lost, and leaving it would let
+            // face_models_exist() report a file phig has just refused.
             fs::remove(dest);
             return false;
         }

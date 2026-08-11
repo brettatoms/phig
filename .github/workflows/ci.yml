@@ -158,24 +158,73 @@ jobs:
         id: test
         run: ctest --test-dir build --output-on-failure --parallel
 
-      # One leg only, on both steps below: the rule record describes the repo,
-      # not a platform, so a second leg doubles the work for no extra coverage.
-      # It is the 26.04 leg rather than 24.04 because check 2 — a `holds` rule's
-      # tests pass — is the one check that reads a test run, and the face models
-      # are here. A skipped test would not fail it: measured, gtest writes
-      # result="skipped" and rules.py buckets that as neither pass nor failure,
-      # so running this on 24.04 would report OK for R52 while its only witness
-      # never ran. Green with no evidence is the failure mode the record exists
-      # to prevent, so the check goes where the evidence is.
+      # R72 has two branches and the run above only reaches one of them. This
+      # reaches the other: models_dir() is cache_dir() + "/models" and cache_dir()
+      # reads XDG_CACHE_HOME (core/paths.cpp), so an empty one is all it takes to
+      # put the models out of reach for one process. Nothing is uninstalled and
+      # the cache restored above is untouched.
       #
-      # Both also run after a failing suite, which is what the explicit
-      # condition buys — a bare `if:` carries an implicit success(), and a red
-      # Test step would then skip the step that says which rule the failing test
-      # was pinning. The Test step above is what gates on the suite, so tolerating
-      # its failure here hides nothing.
+      # The XML check is not ceremony. A --gtest_filter that matches nothing
+      # prints a warning and exits 0 — measured — so a renamed test would turn
+      # this step into a silent no-op, and a skip (models somehow reachable)
+      # would too. result="completed" is what gtest writes for a case that ran;
+      # a skip is result="skipped".
+      #
+      # Its own step rather than folded into the gate's XML below: rules.py reads
+      # one results file, and that file has to be the models-present run, where
+      # R52's witness passes. Merging a second XML into it would be workflow
+      # machinery bought for one attribution line — check 2 still catches this
+      # test being renamed or deleted, because the models-present XML lists it
+      # (as a skip), and a failure here reddens the job on its own.
+      - name: Test the models-absent path
+        id: models_absent
+        if: matrix.os == 'ubuntu-26.04'
+        run: |
+          XDG_CACHE_HOME="$(mktemp -d)" ./build/phig-tests \
+            --gtest_filter='ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing' \
+            --gtest_output=xml:build/models-absent.xml
+          python3 - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          cases = [c for s in ET.parse("build/models-absent.xml").iter("testsuite")
+                   for c in s.iter("testcase")]
+          got = [(c.get("name"), c.get("result")) for c in cases]
+          if len(cases) != 1 or cases[0].get("result") != "completed":
+              sys.exit(f"::error::the models-absent case did not run and pass: {got}")
+          PY
+
+      # The rule record splits across the two ubuntu legs, because its two halves
+      # need different things.
+      #
+      # Everything except check 2 describes the repo — schema, anchors, closures,
+      # surface classification, the ABI version comparison, and whether the
+      # generated views match what was committed. None of it reads a test run, so
+      # it goes on ubuntu-latest, the stable label. ubuntu-26.04 is Preview: if it
+      # is withdrawn, the record's decay gate should not go with it.
+      #
+      # Check 2 — a `holds` rule's tests exist and pass — is the half that reads a
+      # gtest XML, and it needs the face models, so it stays on 26.04. A skipped
+      # test does not fail it: measured, gtest writes result="skipped" and
+      # rules.py buckets that as neither pass nor failure, so running it on a
+      # models-less leg would report OK for R52 with its only witness never having
+      # run. Green with no evidence is what this record exists to prevent.
+      #
+      # Every step below tolerates a red test step, which is what the explicit
+      # condition buys — a bare `if:` carries an implicit success(), and a failing
+      # suite would then skip the step that says which rule the failing test was
+      # pinning. The test steps above are what gate on the suite, so tolerating
+      # their failure here hides nothing.
       - name: Rules record — unit tests
-        if: ${{ matrix.os == 'ubuntu-26.04' && (success() || steps.test.outcome == 'failure') }}
+        if: ${{ matrix.os == 'ubuntu-latest' && (success() || steps.test.outcome == 'failure') }}
         run: python3 -m unittest discover -s scripts -t scripts -p 'test_*.py'
+
+      - name: Rules record — check and regenerate
+        if: ${{ matrix.os == 'ubuntu-latest' && (success() || steps.test.outcome == 'failure') }}
+        run: |
+          python3 scripts/rules.py --check --emit
+          git diff --exit-code rules/ || {
+            echo "::error::rules/by-*.md are generated from rules/*.toml. Run 'python3 scripts/rules.py --emit' and commit the result — do not edit the views by hand."
+            exit 1
+          }
 
       # ctest registers one ctest test per gtest case (gtest_discover_tests), so
       # it produces no single gtest XML — hence invoking the binary directly for
@@ -183,15 +232,11 @@ jobs:
       # before writing results is still reported, because rules.py rejects an
       # unreadable or empty XML rather than reading it as every cited test
       # having been deleted.
-      - name: Rules record — check and regenerate
-        if: ${{ matrix.os == 'ubuntu-26.04' && (success() || steps.test.outcome == 'failure') }}
+      - name: Rules record — tests cited by holds rules
+        if: ${{ matrix.os == 'ubuntu-26.04' && (success() || steps.test.outcome == 'failure' || steps.models_absent.outcome == 'failure') }}
         run: |
           ./build/phig-tests --gtest_output=xml:build/test-results.xml || true
-          python3 scripts/rules.py --check --emit --test-results build/test-results.xml
-          git diff --exit-code rules/ || {
-            echo "::error::rules/by-*.md are generated from rules/*.toml. Run 'python3 scripts/rules.py --emit' and commit the result — do not edit the views by hand."
-            exit 1
-          }
+          python3 scripts/rules.py --check --test-results build/test-results.xml
 
   # Sanitizers. Two configurations because ASan and TSan cannot be combined.
   #
