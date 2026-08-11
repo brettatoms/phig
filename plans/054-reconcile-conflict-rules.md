@@ -185,6 +185,31 @@ much known data-safety debt exists, and who owns each item, becomes a number.
   `main()` and a brace-matching classifier calls their flags read-only. No
   mutation-capable count is to be stated until it has been read from the file.
 
+  The third workstream is **face models in CI**, which is a configuration gap
+  rather than a missing test and closes R52 outright. R52 is `holds` and its
+  single witness calls `models_or_skip()`, so it skips wherever the models are
+  absent — including CI, which downloads none. A rule that guards a real branch
+  currently has no evidence in the gate, which is a false green the `test_gap`
+  discloses and nothing else would. Nine face tests skip there for the same
+  reason.
+
+  The download is two files from `github.com/opencv/opencv_zoo`, measured:
+  `face_detection_yunet_2023mar.onnx` at 227 KB and
+  `face_recognition_sface_2021dec.onnx` at 37 MB. Cache it with
+  `actions/cache` on `~/.cache/phig/models` — `download_face_models()` already
+  returns early for a file that exists, so a warm cache makes the step a no-op
+  with no code change, and the filenames carry their model dates, so a key
+  naming those dates stays valid until someone deliberately bumps a model.
+
+  Three things to size before wiring it. The cache costs 37 MB against the
+  repo's allowance and GitHub evicts entries unused for seven days, so a quiet
+  week re-downloads and the step has to work cold as well as warm. Unskipping
+  the nine tests means CI starts running face detection on every push, which is
+  compute rather than just transfer, and no wall-clock for that has been
+  measured on a runner. And the model files are pinned by name but not by hash,
+  so `opencv_zoo` moving a file under the same name would change what CI tests
+  with nothing noticing — worth a checksum if the cost is a line.
+
 ## Open questions, all resolved
 
 1. **Where the document lives** — `rules/` at the repo root, a peer of `plans/`.
