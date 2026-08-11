@@ -421,9 +421,14 @@ class MalformedClosuresTest(unittest.TestCase):
     """The four shapes a review of Task 16 found indistinguishable from no
     claim at all: a block sequence, a bare scalar, frontmatter missing its
     closing '---', and a stray unindented '---' before the key. The last two
-    turn out not to be malformed under the raw-line scan — they still parse —
-    so only the first two land in plan_closure_malformed; both are asserted
-    here so a regression in either direction is caught."""
+    turn out not to be malformed under the frontmatter-region scan — they
+    still parse — so only the first two land in plan_closure_malformed; both
+    are asserted here so a regression in either direction is caught.
+
+    A second review round found that scanning raw file text (rather than a
+    '---'-bounded region) let a plan's body forge a claim: a fenced example
+    or a sentence describing the syntax. Those two shapes, plus a duplicate
+    key within one frontmatter region, are covered below."""
 
     def test_block_sequence_is_malformed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -474,6 +479,42 @@ class MalformedClosuresTest(unittest.TestCase):
             root = pathlib.Path(tmp)
             plan_file(root, "041-x.md", closes_rules="R04")
             self.assertEqual(rules.plan_closure_malformed(root), {})
+
+    def test_a_fenced_example_in_the_body_is_not_a_claim(self):
+        # The plan's real frontmatter claims nothing; its body, well past the
+        # first blank line, shows the closes_rules syntax in a fenced block.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "201-x.md", raw_frontmatter=(
+                "---\nname: Test\nstatus: designing\ncreated: 2026-08-11\n"
+                "description: >\n  words\n---\n\n"
+                "# 201 — Test\n\n"
+                "Example syntax:\n\n"
+                "```\ncloses_rules: [R12]\n```\n"))
+            self.assertEqual(rules.plan_closures(root), {})
+            self.assertEqual(rules.plan_closure_malformed(root), {})
+
+    def test_an_inline_mention_in_the_body_is_not_a_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "202-x.md", raw_frontmatter=(
+                "---\nname: Test\nstatus: designing\ncreated: 2026-08-11\n"
+                "description: >\n  words\n---\n\n"
+                "# 202 — Test\n\n"
+                "closes_rules: [R13] is the syntax used elsewhere.\n"))
+            self.assertEqual(rules.plan_closures(root), {})
+            self.assertEqual(rules.plan_closure_malformed(root), {})
+
+    def test_duplicate_closes_rules_keys_are_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan_file(root, "041-x.md", raw_frontmatter=(
+                "---\nname: Test\nstatus: planned\ncreated: 2026-08-07\n"
+                "closes_rules: [R04]\n"
+                "closes_rules: [R25]\n"
+                "description: >\n  words\n---\n\n# words\n"))
+            self.assertEqual(rules.plan_closures(root), {})
+            self.assertIn("041", rules.plan_closure_malformed(root))
 
 
 class ClosuresTest(unittest.TestCase):

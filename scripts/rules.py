@@ -259,20 +259,42 @@ CLOSES_RULES_LIST = re.compile(r"^\[([^\]]*)\]$")
 PLAN_FILENAME = re.compile(r"^(\d{3})-")
 
 
+def _frontmatter_region(text):
+    """The text between a file's opening '---' and wherever its frontmatter
+    actually ends — the first blank line or heading line, whichever comes
+    first — or None if the file doesn't open with '---' at all.
+
+    That boundary, not the closing '---' itself, is what real frontmatter
+    ends at in this repo's plan convention: checked against every plan file
+    with frontmatter, none has a blank line before its closing '---', and the
+    closing '---' is always immediately followed by a blank line then the
+    '# NNN — Title' heading. Stopping there — rather than at the closing
+    '---' — means a missing or misplaced closing '---' still leaves the key
+    reachable if it comes before the real boundary, while a plan's body never
+    is: a fenced example or a sentence describing the closes_rules syntax
+    sits past the first blank line, however much its text resembles a key.
+    """
+    if not text.startswith("---\n"):
+        return None
+    region = []
+    for line in text.split("\n")[1:]:
+        if line.strip() == "" or line.startswith("#"):
+            break
+        region.append(line)
+    return "\n".join(region)
+
+
 def _scan_closes_rules(root):
     """One pass over plans/NNN-*.md, splitting each plan's closes_rules line
     into a well-formed claim or a malformed one. See plan_closures and
     plan_closure_malformed, which each return one half of this.
 
-    Matched against the raw file text, not a bounded '---'-delimited
-    frontmatter block: a missing closing '---', or a stray one earlier in the
-    block, would otherwise make the key unreachable and this scan would never
-    even see it to call it malformed. Read from plans/NNN-*.md with `re`, the
-    same idiom plan_statuses uses on plans/000-INDEX.md — closes_rules is a
-    flat, flow-style TOML list of bare ids and does not warrant a YAML
-    dependency. Safe only because closes_rules names no other thing in a
-    plan's prose — checked against the real corpus, every occurrence sits on
-    the frontmatter line Task 15 wrote, never in a plan's body.
+    Read from plans/NNN-*.md with `re`, the same idiom plan_statuses uses on
+    plans/000-INDEX.md — closes_rules is a flat, flow-style TOML list of bare
+    ids and does not warrant a YAML dependency. Two closes_rules keys in one
+    file's frontmatter region are as malformed as either alone: there is no
+    way to tell which is the real claim, so both are reported rather than
+    the first silently winning.
     """
     closures = {}
     malformed = {}
@@ -282,10 +304,18 @@ def _scan_closes_rules(root):
         number = PLAN_FILENAME.match(path.name)
         if not number:
             continue
-        found = CLOSES_RULES_LINE.search(path.read_text())
+        region = _frontmatter_region(path.read_text())
+        if region is None:
+            continue
+        found = CLOSES_RULES_LINE.findall(region)
         if not found:
             continue
-        value = found.group(1).strip()
+        if len(found) > 1:
+            malformed[number.group(1)] = (
+                f"{len(found)} closes_rules keys: "
+                + " | ".join(v.strip() for v in found))
+            continue
+        value = found[0].strip()
         listed = CLOSES_RULES_LIST.match(value)
         if not listed:
             malformed[number.group(1)] = value
@@ -305,8 +335,9 @@ def plan_closures(root):
 
 def plan_closure_malformed(root):
     """Map plan number to the raw closes_rules value, for a plan whose
-    closes_rules key exists but is not a bracketed list of ids — a block
-    sequence, a bare scalar. A malformed claim must not read as no claim:
+    frontmatter region has a closes_rules key that is not a single bracketed
+    list of ids — a block sequence, a bare scalar, or two closes_rules keys
+    where there should be one. A malformed claim must not read as no claim:
     check_closures' orphan sweep already catches a rule with no other
     claimant, but a rule with a second, well-formed, open claimant stays out
     of orphan status while the malformed claim beside it goes unnoticed."""
