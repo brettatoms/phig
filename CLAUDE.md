@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite (~1s), 686 tests
-./build/phig-perf-tests   # performance suite (~3s), 4 tests
-ctest --test-dir build --parallel   # both — 690, what CI runs (~7s; 48s without --parallel)
+./build/phig-tests        # fast suite, 807 tests
+./build/phig-perf-tests   # performance suite (~2s), 4 tests
+ctest --test-dir build --parallel   # both — 811, what CI runs (~14s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -53,13 +53,24 @@ CI pins — not required for a build, only for the lint gate to agree with CI.
 
 Performance tests live in a separate target so the everyday suite stays
 fast. Which tests skip depends on the machine, so a skip count only matches
-an environment, not the tree. With face models present in
-`~/.cache/phig/models`, the only skip is
-`ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing`. Without them that
-test runs and nine others skip instead — `ScanEngine.DetectsFacesWithMultipleWorkers`
-plus the eight `FacesEngineRun` cases — each naming the missing model file.
-`MoveFileTest.CrossDevice*` (three) skips unless the temp directory is on a
-different filesystem from the test's working directory. If a single
+an environment, not the tree.
+
+Ten tests need the face path — `ScanEngine.DetectsFacesWithMultipleWorkers`
+plus nine of the ten `FacesEngineRun` cases — and two more exist only to cover
+a way it can be unavailable. Two conditions gate them, checked in this order by
+`face_path_blocker()` in `tests/face_path.h`:
+
+- **OpenCV ≥ 4.8.0.** Below it the ten skip naming the version, and
+  `ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor` runs instead of
+  skipping. `ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing` also skips,
+  because the version guard fires ahead of the models check.
+- **The models in `~/.cache/phig/models`.** Absent, the ten skip naming the
+  missing file and `FacesModeFailsClearlyWhenModelsAreMissing` runs.
+
+So on an above-floor machine with the models present — the everyday case, and
+the ubuntu-26.04 CI leg — the two clear-failure tests are the only face-path
+skips. `MoveFileTest.CrossDevice*` (three) skips unless the temp directory is
+on a different filesystem from the test's working directory. If a single
 unattributed failure shows up, check
 `DatabaseConcurrency.ConcurrentMigrationIsSafe` first — see Known issues
 below before assuming your change caused it.
@@ -154,22 +165,40 @@ collection:
     against the absolute path, so a leading `^` matches nothing and silently
     suppresses every finding in phig's own headers — which is what it did,
     hiding 16 of them, until commit `b89d6e8`'s follow-up.
-- **Rules record:** the build-and-test job's **ubuntu leg** runs
-  `scripts/rules.py`'s own unit tests, then `python3 scripts/rules.py --check
-  --emit --test-results <gtest xml>`, then `git diff --exit-code rules/`. That
-  is five decay checks over `rules/*.toml` — schema, anchors, tests, surface
+- **Rules record:** the build-and-test job runs it across its two ubuntu legs.
+  On **ubuntu-latest**: `scripts/rules.py`'s own unit tests, then `python3
+  scripts/rules.py --check --emit`, then `git diff --exit-code rules/`. That is
+  four decay checks over `rules/*.toml` — schema, anchors, surface
   classification, plan closures — plus an ABI-version comparison, and a
   requirement that the three generated `rules/by-*.md` views match what was
-  committed — regenerate them, never edit them. Deliberately not in the lint
+  committed — regenerate them, never edit them. On **ubuntu-26.04**: `python3
+  scripts/rules.py --check --test-results <gtest xml>`, which adds check 2, that
+  a `holds` rule's tests exist and pass. Check 2 is the only check that reads a
+  test run, so it goes on the leg with the face models: a skip is neither a pass
+  nor a failure to `rules.py`, so on a models-less leg it would report OK for
+  R52 with its only witness never having run. The rest goes on the stable label
+  rather than on `ubuntu-26.04`, which is Preview. Deliberately not in the lint
   job: check 2 reads a gtest XML, which needs the compiled test binary that
   `lint` has no reason to build. See "Rules of record" below.
 - **CI:** `.github/workflows/ci.yml` runs four jobs — build + test on
-  ubuntu-latest and macos-latest (with `-DPHIG_WERROR=ON`, and the rules gate
-  above on ubuntu only), ASan+UBSan and TSan (see Sanitizers above), a gtk job
-  that installs libphig and then builds and tests `gtk/` against it through
-  pkg-config, and the lint gate. GitHub Actions are pinned to full commit SHAs.
-- **Not every job runs on every push.** A push or PR gets the ubuntu test leg,
-  gtk and lint — 15 billable minutes. The macOS leg and both sanitizer jobs are
+  ubuntu-latest, ubuntu-26.04 and macos-latest (with `-DPHIG_WERROR=ON`, and
+  the rules gate above split across the two ubuntu legs), ASan+UBSan and TSan
+  (see Sanitizers above), a gtk job that installs libphig and then builds and
+  tests `gtk/` against it through pkg-config, and the lint gate. GitHub Actions
+  are pinned to full commit SHAs.
+
+  **Two ubuntu legs, because OpenCV's version decides whether phig can detect a
+  face.** `ubuntu-latest` is 24.04 and ships libopencv-dev 4.6.0, below the
+  4.8.0 the YuNet model needs, so the face tests skip there and the version
+  guard's failure path is what runs. `ubuntu-26.04` ships 4.10.0, is where the
+  face models install, and is the only leg that detects a face. `ubuntu-26.04`
+  is a GitHub **Preview** label: it can change or be withdrawn without a
+  deprecation window, and when 26.04 becomes the default it and `ubuntu-latest`
+  will be the same image.
+- **Not every job runs on every push.** A push or PR gets both ubuntu test
+  legs, gtk and lint. That cost has not been measured since the second ubuntu
+  leg was added; before it, the set was 15 billable minutes.
+  The macOS leg and both sanitizer jobs are
   weekly (Mondays 09:00 UTC) plus `workflow_dispatch`, which runs the full set
   on any branch: `gh workflow run CI --ref <branch>`. macOS runners bill at 10x,
   so that one job was 40 of a full run's 71 minutes and 64% of a month's spend.
@@ -177,11 +206,16 @@ collection:
   merging, needs the manual run — a green PR has not been near macOS or TSan.
 - **Prose-only pushes do not run CI at all.** `paths-ignore` covers `plans/`,
   `docs/` and top-level `*.md`. `rules/` is deliberately not in that list: the
-  ubuntu leg gates its records and generated views.
-- **Builds use ccache** on the test and gtk jobs, cached across runs by
-  `actions/cache`. Each build job prints `ccache --show-stats`, which is where
-  to look if a build step is slower than expected. The sanitizer jobs are
-  deliberately excluded: at a weekly cadence their cache is always stale.
+  ubuntu legs gate its records and generated views.
+- **`actions/cache` carries two things.** ccache on the test and gtk jobs —
+  each build job prints `ccache --show-stats`, which is where to look if a
+  build step is slower than expected — and the 37 MB of face models on the
+  ubuntu-26.04 leg, keyed by the model filenames so the key stays valid until a
+  model is deliberately bumped. A models cache miss costs a download, not a
+  failure. The action's save runs in a post step declared `post-if: success()`,
+  so a red job never writes its cache back and the next run pays the miss
+  again. The sanitizer jobs are deliberately excluded from ccache: at a weekly
+  cadence their cache is always stale.
 
 ## Tech stack
 
