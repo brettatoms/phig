@@ -181,6 +181,14 @@ description of the code instead of a statement of what should be true.
   does with `OverwritePolicyStillRenamesAroundAnExistingFile`.
 - **`conformance`** — one parameterized suite instantiated over every operation
   in `binds`.
+
+  **Correction (2026-08-11): this definition did not survive.** It conflicted
+  with `rules/README.md`, which defines `conformance` as evidence checked
+  against a spec rather than one scenario, and the README's reading won — it is
+  what the other three values describe, and three boundary-tier rules claim
+  `conformance` with no `binds` at all, which is incoherent here. The check that
+  compared an instantiation list against `binds` was dropped rather than built.
+  `rules/README.md` is normative for the field.
 - **`subprocess`** — the process is killed mid-run and the resulting state
   inspected.
 - **`sanitizer`** — the evidence is a clean TSan or ASan run, not an assertion.
