@@ -48,12 +48,24 @@ jobs:
       fail-fast: false
       # The macOS leg joins only on the scheduled and manual runs — see the
       # schedule comment in `on:` above. An expression rather than a second job,
-      # so both legs keep one name and one set of steps.
+      # so all legs keep one name and one set of steps.
+      #
+      # Two ubuntu legs because OpenCV's version decides whether phig can detect
+      # a face at all. ubuntu-latest is 24.04 and ships libopencv-dev 4.6.0,
+      # which is below the 4.8.0 the YuNet model needs, so the face tests skip
+      # there and the version guard's failure path is what runs instead. 26.04
+      # ships 4.10.0 and is the leg that actually detects faces, so it is the one
+      # that installs the models. 24.04 stays because it is the current LTS.
+      #
+      # `ubuntu-26.04` is a GitHub **Preview** label: it can change behaviour or
+      # be withdrawn without a deprecation window, and when 26.04 becomes the
+      # default this leg and `ubuntu-latest` will be the same image — at which
+      # point pin the older one explicitly or drop it.
       matrix:
         os: >-
           ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-          && fromJSON('["ubuntu-latest", "macos-latest"]')
-          || fromJSON('["ubuntu-latest"]') }}
+          && fromJSON('["ubuntu-latest", "ubuntu-26.04", "macos-latest"]')
+          || fromJSON('["ubuntu-latest", "ubuntu-26.04"]') }}
     runs-on: ${{ matrix.os }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -94,16 +106,20 @@ jobs:
       # it between runs; the model dates are in the filenames, so the key stays
       # valid until a model is deliberately bumped. A miss costs a download, not
       # a failure: the step below runs unconditionally and download_face_models()
-      # returns early for a file that already exists, so a hit makes it a no-op.
-      # GitHub evicts an entry unused for seven days, which a quiet week reaches.
+      # returns early for a file that is already present and hashes correctly, so
+      # a hit makes it a no-op. GitHub evicts an entry unused for seven days,
+      # which a quiet week reaches. actions/cache saves in a post step declared
+      # `post-if: success()`, so a red job never writes the cache back and the
+      # next run downloads again — a cost, not a correctness problem.
       #
-      # Ubuntu only, here and on the download below. R52's gate is the per-push
-      # leg, which is this one; the macOS leg is weekly and bills at 10x. Leaving
-      # it models-less also keeps ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing
-      # running somewhere other than the sanitizer jobs — it is the one test that
-      # needs the models absent, so installing them everywhere would retire it.
+      # 26.04 only, here and on the download below: it is the only leg whose
+      # OpenCV can run the detector. Putting them on 24.04 as well would install
+      # 37 MB so that ten tests could fail on a cv::Exception, and putting them
+      # on macOS would spend a 10x-billed weekly leg on the same coverage 26.04
+      # already gives. Leaving 24.04 models-less is also what lets
+      # ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor run without them.
       - name: Restore face models
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-26.04'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/phig/models
@@ -125,26 +141,15 @@ jobs:
       # After the build because the built binary is what downloads them, which
       # keeps the two URLs in core/models.cpp and nowhere else.
       #
-      # The hashes are the point of the second half. The files are pinned by
-      # name, so opencv_zoo replacing one under the same name would change what
-      # the face tests exercise with nothing in the diff to say so, and a
-      # restored cache entry is trusted just as blindly. Both become a red build
-      # instead of a silent one. Bumping a model means editing core/models.cpp,
-      # the cache key above, and the hash here. cmake -E sha256sum rather than
-      # sha256sum: cmake is already a dependency and behaves the same on macOS,
-      # should this step ever move to that leg.
-      - name: Download and verify face models
-        if: runner.os == 'Linux'
-        run: |
-          ./build/phig models download
-          for want_file in \
-            8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4:face_detection_yunet_2023mar.onnx \
-            0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79:face_recognition_sface_2021dec.onnx; do
-            want="${want_file%%:*}"; file="${want_file#*:}"
-            got="$(cmake -E sha256sum "$HOME/.cache/phig/models/$file" | cut -d' ' -f1)"
-            echo "$file: $got"
-            [ "$got" = "$want" ] || { echo "::error::$file sha256 is $got, expected $want"; exit 1; }
-          done
+      # No checksum loop here: download_face_models() pins a sha256 beside each
+      # URL and exits 1 on a mismatch, whether the file arrived from the network
+      # or from the cache above. That covers everything a step here could — a
+      # file opencv_zoo replaced under the same name on `main`, a truncated or
+      # poisoned cache entry — and covers a developer's own `phig models
+      # download` besides, which a workflow step never could.
+      - name: Download face models
+        if: matrix.os == 'ubuntu-26.04'
+        run: ./build/phig models download
 
       # Runs both phig-tests and phig-perf-tests: gtest_discover_tests
       # registers each target's cases into the same ctest run, so this one
@@ -153,9 +158,15 @@ jobs:
         id: test
         run: ctest --test-dir build --output-on-failure --parallel
 
-      # Ubuntu only, on both steps below: the rule record describes the repo,
-      # not a platform, so running it on the macOS leg as well doubles the work
-      # for no extra coverage.
+      # One leg only, on both steps below: the rule record describes the repo,
+      # not a platform, so a second leg doubles the work for no extra coverage.
+      # It is the 26.04 leg rather than 24.04 because check 2 — a `holds` rule's
+      # tests pass — is the one check that reads a test run, and the face models
+      # are here. A skipped test would not fail it: measured, gtest writes
+      # result="skipped" and rules.py buckets that as neither pass nor failure,
+      # so running this on 24.04 would report OK for R52 while its only witness
+      # never ran. Green with no evidence is the failure mode the record exists
+      # to prevent, so the check goes where the evidence is.
       #
       # Both also run after a failing suite, which is what the explicit
       # condition buys — a bare `if:` carries an implicit success(), and a red
@@ -163,7 +174,7 @@ jobs:
       # was pinning. The Test step above is what gates on the suite, so tolerating
       # its failure here hides nothing.
       - name: Rules record — unit tests
-        if: ${{ runner.os == 'Linux' && (success() || steps.test.outcome == 'failure') }}
+        if: ${{ matrix.os == 'ubuntu-26.04' && (success() || steps.test.outcome == 'failure') }}
         run: python3 -m unittest discover -s scripts -t scripts -p 'test_*.py'
 
       # ctest registers one ctest test per gtest case (gtest_discover_tests), so
@@ -173,7 +184,7 @@ jobs:
       # unreadable or empty XML rather than reading it as every cited test
       # having been deleted.
       - name: Rules record — check and regenerate
-        if: ${{ runner.os == 'Linux' && (success() || steps.test.outcome == 'failure') }}
+        if: ${{ matrix.os == 'ubuntu-26.04' && (success() || steps.test.outcome == 'failure') }}
         run: |
           ./build/phig-tests --gtest_output=xml:build/test-results.xml || true
           python3 scripts/rules.py --check --emit --test-results build/test-results.xml

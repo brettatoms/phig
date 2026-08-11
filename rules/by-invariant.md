@@ -735,7 +735,7 @@ The gap between reading an id and opening the write transaction is two statement
 | Binds | `faces.rebuild` |
 | Protects | db-row, user-metadata |
 | Evidence | witness: `FacesEngineRun.ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun` |
-| Test gap | The witness asserts only that FacesEngine::run threw nothing — not that a file was skipped, nor that any worker entered the window — so a run whose timing misses the race passes identically to one the guard saved. Its deleter holds the write lock for 400 ms to keep the window wide, and the case takes 739 ms locally against 86 ms for the four-image rebuild next door, but nothing checks the window was entered. The models are no longer the gap: the ubuntu leg caches ~/.cache/phig/models and downloads on a miss, so this witness runs on every push. |
+| Test gap | The witness asserts only that FacesEngine::run threw nothing — not that a file was skipped, nor that any worker entered the window — so a run whose timing misses the race passes identically to one the guard saved. Its deleter holds the write lock for 400 ms to keep the window wide, and the case takes 739 ms locally against 86 ms for the four-image rebuild next door, but nothing checks the window was entered. The models are no longer the gap: the ubuntu-26.04 leg caches ~/.cache/phig/models and downloads on a miss, and that is the leg scripts/rules.py reads its results from, so check 2 sees this witness pass rather than skip on every push. It skips on the ubuntu-24.04 leg, whose OpenCV is below the 4.8.0 the detector needs (R72). |
 
 ### R53 — holds (test gap)
 
@@ -846,7 +846,7 @@ The four cancellable engines answer this differently. ThumbsEngine and FacesEngi
 | Binds | `scan.walk`, `thumbs.rebuild`, `faces.rebuild`, `organize.copy`, `organize.move` |
 | Protects | db-row, activity-log |
 | Evidence | witness: `Parallel.ReturnsFalseWhenAlreadyCancelled`, `ThumbsEngineRun.AlreadyCancelledGeneratesNothingAndReportsIncomplete`, `ThumbsEngineRun.AlreadyCancelledOverAnEmptySelectionReportsIncomplete`, `FacesEngineRun.AlreadyCancelledOverAnEmptySelectionReportsIncomplete`, `ScanEngine.AnAlreadyCancelledTokenProcessesNothing`, `OrganizeEngineTest.AlreadyCancelledAppliesNothingAndReportsIncomplete`, `AbiOperations.CancelBeforeAnyWorkReportsCancelledAndIncomplete` |
-| Test gap | The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls models_or_skip() and skips without face models, which the ubuntu CI leg installs and a bare machine need not, while its empty-selection sibling needs none and is listed instead. |
+| Test gap | The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls face_path_blocker() and skips wherever the face path cannot run — no models, or an OpenCV below the 4.8.0 floor (R72) — which is every machine but the ubuntu-26.04 CI leg and one that has downloaded them. Its empty-selection sibling needs neither and is listed instead. |
 
 ### R67 — holds
 
@@ -930,7 +930,7 @@ rm asks (R22), organize publishes a plan the caller applies, and reconcile trans
 | Binds | `faces.rebuild` |
 | Protects | user-metadata |
 | Evidence | subprocess: none |
-| Test gap | FacesEngineRun.RerunReplacesRatherThanAccumulatesFaceRows covers the delete-and-reinsert and asserts nothing about labels, and every FacesEngineRun case skips wherever the face models are absent — the ubuntu CI leg installs them, a bare machine has none. The loss was measured by running the binary; no test asserts it either way. |
+| Test gap | FacesEngineRun.RerunReplacesRatherThanAccumulatesFaceRows covers the delete-and-reinsert and asserts nothing about labels, and every FacesEngineRun case skips wherever the face path cannot run — the models absent, or an OpenCV below the 4.8.0 floor (R72). The ubuntu-26.04 leg is the only CI leg where it can; a bare machine has neither. The loss was measured by running the binary; no test asserts it either way. |
 
 ### R61 — violated (test gap)
 

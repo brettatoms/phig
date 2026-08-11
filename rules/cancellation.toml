@@ -65,4 +65,4 @@ tests = [
 ]
 test_kind = "witness"
 status = "partial"
-test_gap = "The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls models_or_skip() and skips without face models, which the ubuntu CI leg installs and a bare machine need not, while its empty-selection sibling needs none and is listed instead."
+test_gap = "The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls face_path_blocker() and skips wherever the face path cannot run — no models, or an OpenCV below the 4.8.0 floor (R72) — which is every machine but the ubuntu-26.04 CI leg and one that has downloaded them. Its empty-selection sibling needs neither and is listed instead."
