@@ -2,6 +2,7 @@
 name: Silent Loss on a Successful Run
 status: designing
 created: 2026-08-10
+closes_rules: [R27, R48, R60, R69]
 description: >
   Four measured defects that share one shape: the operation finishes, reports
   success, exits 0, and something that mattered is gone or wrongly counted.
@@ -13,7 +14,7 @@ description: >
   producing `Done: 1 / Errors: 1` against a `[2/1]` progress tick. And
   `--output` truncates whatever file it names, on `search` and on `duplicates`,
   with no prompt and no log entry. Filed out of plan 054's enumeration, where
-  all four are `violated` rules whose recorded owner cannot close them. R60 is
+  all four are `violated` rules no other open plan could close. R60 is
   the one that destroys data a rescan cannot rebuild; the other three are
   near-mechanical, and the plan is ordered so they cannot gate it.
 ---
@@ -29,7 +30,7 @@ about what an operation destroys or how it counts. This plan is the home.
 
 All three records were re-pointed at 060 when it opened: R60
 (`rules/authorization.toml`), R27 (`rules/recoverability.toml`) and R48
-(`rules/atomicity.toml`) each read `owner = "060"`.
+(`rules/atomicity.toml`) are all claimed by this plan's `closes_rules`.
 
 A fourth arrived on 2026-08-10 from the same enumeration's unowned residue, and
 was written against this plan rather than transferred to it: R69
@@ -240,8 +241,8 @@ on how R60 is answered, and R60 depends on none of them.
   R60 in `rules/authorization.toml`, R27 in `rules/recoverability.toml`, R48 in
   `rules/atomicity.toml`, R69 in `rules/boundary.toml`. Each is `violated` with
   a `test_gap`; none of the four is pinned by a test that asserts the statement.
-- **Plan 053** (libphig feature parity) was the owner all three records named
-  before this plan opened, and is the plan that picks up 020's deferred
+- **Plan 053** (libphig feature parity) was the plan all three records named
+  before this one opened, and is the plan that picks up 020's deferred
   activity-log reader. It stays the owner of *reaching* faces and the log
   through the ABI; it is not the owner of what a rebuild destroys. R66 stays on
   053 for the same reason: it is `partial` for two causes — faces having no plan

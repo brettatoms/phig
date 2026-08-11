@@ -16,7 +16,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch is the only test that opens the phase-1-to-phase-2 window with another writer in it, and it passes on id retirement alone: measured in a scratch copy with `AND embedding = ?` deleted from set_face_person_if_unchanged, it stays green and the suite's only failure is AFaceWhoseEmbeddingChangedIsNotLabeled, so it does not discriminate between the clauses of the predicate it is cited for. AnUnchangedFaceIsStillLabeled does pin `person_id IS NULL` — deleting that clause fails it — but single-threaded, two calls in one thread with no gap and no second writer. Nothing pins two labelers racing for the same candidate."
 
 [[rule]]
@@ -40,7 +39,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The three tests drive WriterLock directly, with a raw flock on a second descriptor standing in for the other process. Nothing pins which commands take it: the call sites are in cli/main.cpp, outside this anchor and outside every test, so 'no read takes it' was measured by running the binary rather than asserted anywhere."
 
 [[rule]]
@@ -48,7 +46,7 @@ id = "R50"
 tier = "engine"
 concern = "concurrency"
 statement = "A mutating command's advisory lock is taken on the lock file belonging to the database that command is about to write."
-rationale = "It is not. lock_path() takes no argument and returns default_db_path() + '.lock', and cli/main.cpp's acquire_writer_lock calls it after --db has already been parsed, so every CLI command locks the default collection's sidecar whatever database it was given — while libphig locks ctx->db_path + '.lock'. Measured with the built binary, both directions: 'phig --no-wait tag add' against a scratch database succeeded while a separate process held the flock on that database's own .lock file, and the same command was refused with 'Another phig operation is running' while that process instead held ~/.local/share/phig/phig.db.lock. So the CLI serializes commands that share no database, and fails to exclude an ABI caller on the database it was actually given. Plan 029 contains both halves and they disagree with each other: its acceptance criteria say the lock is per-machine and per-DB, and its implementation step defines lock_path() as default_db_path() + '.lock'. 029 is completed and cannot own the fix. Plan 039 names core/lockfile.cpp ('Rewrite') and core/paths.cpp ('Platform split') as files it touches, which is where WriterLock and lock_path() live, so it owns lock_path()'s core/ half; it excludes cli/, though, so acquire_writer_lock's call site — the other half of this rule, and the one that actually has to pass the parsed --db path through — is not this owner's to fix. The call site's difficulty is sharper than 'pass the path through' suggests: default_db_path() is itself overridable, and set_path_overrides is fed cfg.db, the config file's value, at cli/main.cpp:1829 — the parsed --db never reaches it. So the lock file follows the config-resolved default and --db has no bearing on it at all. Measured with XDG_DATA_HOME redirected: 'tag add --db /tmp/lk/scratch.db' created <XDG_DATA_HOME>/phig/phig.db.lock and no scratch.db.lock. Two commands given the same non-default --db therefore do still serialize, both on the wrong file; what the rule loses is exclusion against anyone holding the lock that belongs to the database being written, which is what libphig takes."
+rationale = "It is not. lock_path() takes no argument and returns default_db_path() + '.lock', and cli/main.cpp's acquire_writer_lock calls it after --db has already been parsed, so every CLI command locks the default collection's sidecar whatever database it was given — while libphig locks ctx->db_path + '.lock'. Measured with the built binary, both directions: 'phig --no-wait tag add' against a scratch database succeeded while a separate process held the flock on that database's own .lock file, and the same command was refused with 'Another phig operation is running' while that process instead held ~/.local/share/phig/phig.db.lock. So the CLI serializes commands that share no database, and fails to exclude an ABI caller on the database it was actually given. Plan 029 contains both halves and they disagree with each other: its acceptance criteria say the lock is per-machine and per-DB, and its implementation step defines lock_path() as default_db_path() + '.lock'. 029 is completed and cannot own the fix. Plan 039 names core/lockfile.cpp ('Rewrite') and core/paths.cpp ('Platform split') as files it touches, which is where WriterLock and lock_path() live, so it owns lock_path()'s core/ half; it excludes cli/, though, so acquire_writer_lock's call site — the other half of this rule, and the one that actually has to pass the parsed --db path through — is not 039's to fix. The call site's difficulty is sharper than 'pass the path through' suggests: default_db_path() is itself overridable, and set_path_overrides is fed cfg.db, the config file's value, at cli/main.cpp:1829 — the parsed --db never reaches it. So the lock file follows the config-resolved default and --db has no bearing on it at all. Measured with XDG_DATA_HOME redirected: 'tag add --db /tmp/lk/scratch.db' created <XDG_DATA_HOME>/phig/phig.db.lock and no scratch.db.lock. Two commands given the same non-default --db therefore do still serialize, both on the wrong file; what the rule loses is exclusion against anyone holding the lock that belongs to the database being written, which is what libphig takes."
 enforced_at = [
     "core/paths.cpp:lock_path",
     "core/lockfile.cpp:WriterLock",
@@ -64,7 +62,6 @@ protects = ["db-row", "user-metadata"]
 tests = []
 test_kind = "subprocess"
 status = "violated"
-owner = "039"
 test_gap = "Nothing tests which file a command locks. LockfileTest is handed a path, and the choice of path is made in cli/main.cpp, which no test drives. Both directions above were measured by running the binary. 039 excludes cli/, so it closes lock_path()'s core/ half of this rule but not acquire_writer_lock's call site — cli/ needs a follow-up before a CLI command actually locks the right file."
 
 [[rule]]
@@ -96,7 +93,6 @@ protects = ["db-row", "user-metadata"]
 tests = ["FacesEngineRun.ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun"]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The single witness calls models_or_skip() and skips wherever the YuNet and SFace models are absent, which includes CI — .github/workflows/ci.yml downloads no models — so the gate that guards this branch has no evidence for it. It passed locally against models in ~/.cache/phig/models."
 
 [[rule]]
@@ -116,7 +112,6 @@ protects = ["db-row"]
 tests = ["DatabaseConcurrency.ConcurrentMigrationIsSafe"]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The listed test races concurrent first-runs and would catch a regression only statistically — it is the test that flaked at about 10% when the ordering was wrong, so one green run is weak evidence. Nothing asserts the ordering itself."
 
 [[rule]]
@@ -134,7 +129,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "Both tests would also pass with the flag removed on a THREADSAFE=1 build, because such a build mutexes the connection anyway. The flag earns its keep only on a THREADSAFE=2 build, which no CI job provides, so nothing here distinguishes the guarantee from the default it happens to match."
 
 [[rule]]
@@ -177,5 +171,4 @@ protects = ["user-metadata"]
 tests = ["IdentifyTest.AFaceWhoseEmbeddingChangedIsNotLabeled"]
 test_kind = "witness"
 status = "holds"
-owner = "044"
 test_gap = "That test is the clause's only cover, and it writes the changed embedding by hand through a raw sqlite3 UPDATE because no concurrent path produces one — the test says so itself. Measured in a scratch copy with `AND embedding = ?` deleted: 806 tests ran and it was the only failure. So nothing covers this clause against a state phig can reach, and nothing can until some path rewrites an embedding in place."

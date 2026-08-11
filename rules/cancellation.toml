@@ -13,7 +13,6 @@ protects = ["user-metadata", "db-row", "activity-log"]
 tests = ["ScanEngine.ReconcileStillRunsAfterCancellation"]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The witness cancels before the worker phase and then checks reconcile still removed both stale rows. Nothing covers the handler swap in cli/main.cpp — the mechanism that makes a real Ctrl-C land where the split intends — because no test drives cmd_scan, and nothing covers a signal arriving while reconcile is running."
 
 [[rule]]
@@ -45,7 +44,7 @@ id = "R58"
 tier = "engine"
 concern = "cancellation"
 statement = "A run whose token is already cancelled does no work and reports itself incomplete."
-rationale = "The four cancellable engines answer this differently. ThumbsEngine and FacesEngine each guard the empty-selection path on purpose — thumbs with 'images.empty() ? !cancel.stop() : parallel_for_each(...)' and faces with a token check placed ahead of its empty-selection return — because parallel_for_each returns true unconditionally for a zero-length range and would otherwise report an already-cancelled run over nothing as completed. ScanEngine and OrganizeEngine have no such guard: run_workers assigns result.completed only inside 'if (!files.empty())' and apply only inside its per-item loop, so a cancelled scan of a directory holding no media files, and a cancelled apply of an empty plan, both return completed = true. Through the ABI that is the difference between PHIG_OP_DONE and PHIG_OP_CANCELLED, since both spawn wrappers derive the terminal state from that flag. Read from the code and corroborated by the test asymmetry — thumbs and faces each have an empty-selection case, scan and organize have none — not measured, because nothing outside the engines can produce an already-cancelled run over an empty selection on demand. The owner is provisional: 056 is the open plan that owns what an operation reports about its own status, and it does not name this."
+rationale = "The four cancellable engines answer this differently. ThumbsEngine and FacesEngine each guard the empty-selection path on purpose — thumbs with 'images.empty() ? !cancel.stop() : parallel_for_each(...)' and faces with a token check placed ahead of its empty-selection return — because parallel_for_each returns true unconditionally for a zero-length range and would otherwise report an already-cancelled run over nothing as completed. ScanEngine and OrganizeEngine have no such guard: run_workers assigns result.completed only inside 'if (!files.empty())' and apply only inside its per-item loop, so a cancelled scan of a directory holding no media files, and a cancelled apply of an empty plan, both return completed = true. Through the ABI that is the difference between PHIG_OP_DONE and PHIG_OP_CANCELLED, since both spawn wrappers derive the terminal state from that flag. Read from the code and corroborated by the test asymmetry — thumbs and faces each have an empty-selection case, scan and organize have none — not measured, because nothing outside the engines can produce an already-cancelled run over an empty selection on demand. The claim is provisional: 056 is the open plan that owns what an operation reports about its own status, and it does not name this."
 enforced_at = [
     "core/thumbs_engine.cpp:ThumbsEngine::run",
     "core/faces_engine.cpp:FacesEngine::run",
@@ -66,5 +65,4 @@ tests = [
 ]
 test_kind = "witness"
 status = "partial"
-owner = "056"
 test_gap = "The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls models_or_skip() and skips without face models, including in CI, while its empty-selection sibling needs none and is listed instead."

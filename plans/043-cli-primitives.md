@@ -2,6 +2,7 @@
 name: CLI Primitive Split
 status: designing
 created: 2026-08-07
+closes_rules: [R70]
 description: >
   Apply the same decomposition plan 031 gave the ABI to `cli/`: indexing,
   thumbnail generation, and face detection as primitives rather than jobs fused

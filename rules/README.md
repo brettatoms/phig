@@ -48,39 +48,46 @@ files are generated from these records, not hand-maintained.
   - `sanitizer` — the rule's evidence depends on a sanitizer run (ASan,
     UBSan, TSan) catching a violation that a normal run would not surface.
 - `status` (required) — one of `holds` | `partial` | `violated` |
-  `unenforced`. `holds` with a `test_gap` and an open `owner` is the standard
-  shape for a rule the code satisfies but no test fully pins — R26, R49, R53,
-  R54 and R64 all take this shape, and it is preferred over `unenforced`
-  whenever the code is right and only the test is weak. `unenforced` narrows
-  to mean only "nothing can pin this today" — true of R34 and R65, where no
-  test exists and none could be written short of new machinery.
-- `owner` — a plan number (from `plans/`) responsible for closing the gap.
-  Required whenever `status` is `partial` or `violated`, and required
-  whenever `test_gap` is present, even if `status` is `holds`.
-- `test_gap` — free text describing what the listed tests do not cover.
-  Its presence requires `owner`, per the rule above.
+  `unenforced`. `holds` with a `test_gap` is the standard shape for a rule the
+  code satisfies but no test fully pins — R26, R49, R53, R54 and R64 all take
+  this shape, and it is preferred over `unenforced` whenever the code is right
+  and only the test is weak. `unenforced` narrows to mean only "nothing can pin
+  this today" — true of R34 and R65, where no test exists and none could be
+  written short of new machinery.
+- `test_gap` — free text describing what the listed tests do not cover. It
+  says the evidence is thinner than the claim, so that a `holds` is never read
+  as a pin it does not have.
 
-## Required-owner rules
+## A rule names no plan
 
-- `status` of `partial` or `violated` requires `owner`.
-- Any `test_gap` requires `owner`, regardless of `status`.
+Which plan will close a gap is a scheduling question, and a plan is an
+implementation document that gets completed and stops being touched. A rule is
+a permanent statement about code safety, so the reference runs the other way: a
+plan's frontmatter carries `closes_rules: [R04, R25]`, and a rule says nothing
+about plans at all.
 
-`owner` may name plan 054 itself when the gap is a missing test rather than
-missing behavior: 054's phase 3 is the pass that writes the tests this record
-set discovers are absent. A gap owned by 054 therefore means "no test pins
-this yet", and a gap owned by any other plan means that plan has to change the
-code before the rule can hold.
+Two checks read it, both in `scripts/rules.py`'s `check_closures`:
+
+- Every `partial` or `violated` rule is claimed by some open plan's
+  `closes_rules`. Recorded debt with nobody working on it fails the build.
+- No plan that is `completed`, `superseded` or `deferred` still claims a rule
+  that is `partial` or `violated`. Closing a plan while the fault it promised
+  to fix is still recorded fails the build.
+
+A `test_gap` needs no claim. A weak test is not unsafe code, and the gap text
+is the coverage information; the work of closing one finds it by reading the
+records.
 
 ## Anchors outside `core/` and `libphig/`
 
 `enforced_at` normally resolves under `core/` or `libphig/`, per the
 enforcement-belongs-in-core rule in the root `CLAUDE.md`. An anchor outside
 both is legal on exactly one shape of rule: `status = "violated"`, where the
-anchor's location is itself the defect and `owner` names the plan moving the
-code into `core/` or `libphig/`. R68 is the example — its guard lives at
-`cli/main.cpp:cmd_trash_empty` because no `core/` primitive for `trash.empty`
-exists yet, and plan 053 owns creating one. When the code moves, the anchor
-updates to name the new location and `status` becomes `holds`.
+anchor's location is itself the defect and an open plan's `closes_rules` claims
+the rule. R68 is the example — its guard lives at `cli/main.cpp:cmd_trash_empty`
+because no `core/` primitive for `trash.empty` exists yet, and plan 053 owns
+creating one. When the code moves, the anchor updates to name the new location
+and `status` becomes `holds`.
 
 ## core_headers classification
 

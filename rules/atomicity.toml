@@ -64,7 +64,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The listed tests pin the ordering, not the boundaries. No test interrupts reconcile between the transfer passes and the delete, so the interrupted state in the statement is read off the transaction boundaries rather than observed by a test — R37 records the faces half being forced by hand and re-scanned to the same end state as an uninterrupted control — and the next scan's cleanup of that state is untested."
 
 [[rule]]
@@ -87,7 +86,6 @@ protects = ["activity-log"]
 tests = ["OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted"]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The listed test covers a cancelled run, which reaches log_finish_operation through the normal return rather than through a catch. Nothing drives the exception path in run_reconcile or cmd_rm, and nothing covers a killed process, which is the case that leaves in_progress forever."
 
 [[rule]]
@@ -130,7 +128,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The listed tests show the entry is written after a successful disk action. None covers the window itself, which needs a failure injected between the two calls, and none covers the absent compensation."
 
 [[rule]]
@@ -150,7 +147,6 @@ protects = ["db-row", "user-metadata", "activity-log"]
 tests = []
 test_kind = "subprocess"
 status = "unenforced"
-owner = "054"
 test_gap = "Nothing tests durability across a power loss, and an ordinary test process cannot: it would need the machine to stop between the commit and the checkpoint. The statement is read from the pragma and SQLite's documented WAL behaviour, not from a measurement."
 
 [[rule]]
@@ -165,5 +161,4 @@ protects = ["attachment", "activity-log"]
 tests = []
 test_kind = "witness"
 status = "violated"
-owner = "060"
 test_gap = "Nothing drives apply with a carry that fails. The three OrganizeCarryNoClobber tests call carry_sidecars directly and assert the occupant survives, so the throw is covered and its effect on the counters is not. No test anywhere asserts a non-zero organize error count — OrganizeEngineTest and tests/test_libphig_organize.cpp both only ever assert errors == 0 — so the double count was measured by running the binary."

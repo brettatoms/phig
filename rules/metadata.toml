@@ -33,7 +33,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "Both tests call Database::insert directly and assert on the faces and vec_faces tables. Neither carries a person label, so the clause that matters most — an unchanged file keeps the name someone typed — is inferred from the label living on the same row rather than asserted, and nothing drives the pair through ScanEngine, where the has_faces guard against a duplicate second set lives."
 
 [[rule]]
@@ -74,7 +73,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The two listed tests drive run_reconcile end to end and show the metadata survives on the target, which is the ordering's effect. Neither asserts the deletion happened after the transfer rather than merely alongside it, and no test covers a Live Photo demotion inside run_reconcile at all — the two that exercise demote_live_photo_rows call it directly."
 
 [[rule]]
@@ -114,5 +112,4 @@ tests = [
 ]
 test_kind = "witness"
 status = "violated"
-owner = "041"
 test_gap = "Both listed tests pin today's contrary behaviour — the occupant row and its faces go — which is what plan 022 asked for. Nothing tests the statement, because no code path implements it, and neither test puts a tag or a gallery on the row it destroys, so the loss those two carry is only visible by running the binary. UpdatePathOntoStaleDestClearsItsFaces is also one of the three DatabaseTest cases plan 046 records as failing on Linux, so on that platform this rule's only witness is InsertCopyOntoStaleDestClearsItsFaces. Plan 041's decision 6 now names update_path_in_txn and insert_copy explicitly and its Testing section specifies the two tests this rule needs — a tracked destination carrying a tag and a gallery, moved or copied onto under the default --on-conflict skip, produces a purge_row entry naming both — but neither test is written yet, so the gap is that the work is undone, not that 041's scope excludes it."

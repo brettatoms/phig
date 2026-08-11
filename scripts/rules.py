@@ -15,7 +15,9 @@ STATUSES = {"holds", "partial", "violated", "unenforced"}
 TEST_KINDS = {"witness", "conformance", "subprocess", "sanitizer"}
 TIERS = {"engine", "boundary"}
 SURFACES = {"abi", "cli", "http"}
-NEEDS_OWNER = {"partial", "violated"}
+# Recorded debt: the code does not do what the rule says. A rule in one of
+# these states must be claimed by an open plan's closes_rules — check_closures.
+NEEDS_CLAIM = {"partial", "violated"}
 
 REQUIRED = ("id", "tier", "concern", "statement", "rationale",
             "enforced_at", "protects", "tests", "test_kind", "status")
@@ -71,11 +73,6 @@ def check_schema(model):
             problems.append(f"{rid}: status must be one of {sorted(STATUSES)}")
         if rule.get("test_kind") not in TEST_KINDS:
             problems.append(f"{rid}: test_kind must be one of {sorted(TEST_KINDS)}")
-
-        if rule.get("status") in NEEDS_OWNER and not rule.get("owner"):
-            problems.append(f"{rid}: status '{rule.get('status')}' requires an owner")
-        if rule.get("test_gap") and not rule.get("owner"):
-            problems.append(f"{rid}: test_gap requires an owner")
 
         if rule.get("tier") == "engine":
             if "binds" not in rule:
@@ -215,7 +212,8 @@ def check_sources(model):
                 problems.append(
                     f"{rid}: enforced_at '{rel}' is outside core/ and libphig/ — "
                     f"a rule enforced there is unreachable by a client, so it is "
-                    f"status = \"violated\" with an owner, not status = \"holds\"")
+                    f"status = \"violated\" claimed by an open plan's closes_rules, "
+                    f"not status = \"holds\"")
                 continue
             path = model.root / rel
             if not path.is_file():
@@ -254,25 +252,159 @@ def plan_statuses(root):
     return statuses
 
 
-def check_owners(model):
-    """Check 3: a violated or partial rule names an open plan, and so does any
-    test_gap (which is what the design numbered check 10)."""
+CLOSES_RULES_LINE = re.compile(r"^closes_rules:[ \t]*(.*)$", re.M)
+CLOSES_RULES_LIST = re.compile(r"^\[([^\]]*)\]$")
+PLAN_FILENAME = re.compile(r"^(\d{3})-")
+
+
+def _frontmatter_region(text):
+    """The text between a file's opening '---' and wherever its frontmatter
+    actually ends — the first blank line or heading line, whichever comes
+    first — or None if the file doesn't open with '---' at all.
+
+    That boundary, not the closing '---' itself, is what real frontmatter
+    ends at in this repo's plan convention: checked against every plan file
+    with frontmatter, none has a blank line before its closing '---', and the
+    closing '---' is always immediately followed by a blank line then the
+    '# NNN — Title' heading. Stopping there — rather than at the closing
+    '---' — means a missing or misplaced closing '---' still leaves the key
+    reachable if it comes before the real boundary, while a plan's body never
+    is: a fenced example or a sentence describing the closes_rules syntax
+    sits past the first blank line, however much its text resembles a key.
+    """
+    if not text.startswith("---\n"):
+        return None
+    region = []
+    for line in text.split("\n")[1:]:
+        if line.strip() == "" or line.startswith("#"):
+            break
+        region.append(line)
+    return "\n".join(region)
+
+
+def _scan_closes_rules(root):
+    """One pass over plans/NNN-*.md, splitting each plan's closes_rules line
+    into a well-formed claim or a malformed one. See plan_closures and
+    plan_closure_malformed, which each return one half of this.
+
+    Read from plans/NNN-*.md with `re`, the same idiom plan_statuses uses on
+    plans/000-INDEX.md — closes_rules is a flat, flow-style TOML list of bare
+    ids and does not warrant a YAML dependency. Two closes_rules keys in one
+    file's frontmatter region are as malformed as either alone: there is no
+    way to tell which is the real claim, so both are reported rather than
+    the first silently winning.
+    """
+    closures = {}
+    malformed = {}
+    for path in sorted((pathlib.Path(root) / "plans").glob("*.md")):
+        if path.name == "000-INDEX.md":
+            continue
+        number = PLAN_FILENAME.match(path.name)
+        if not number:
+            continue
+        region = _frontmatter_region(path.read_text())
+        if region is None:
+            continue
+        found = CLOSES_RULES_LINE.findall(region)
+        if not found:
+            continue
+        if len(found) > 1:
+            malformed[number.group(1)] = (
+                f"{len(found)} closes_rules keys: "
+                + " | ".join(v.strip() for v in found))
+            continue
+        value = found[0].strip()
+        listed = CLOSES_RULES_LIST.match(value)
+        if not listed:
+            malformed[number.group(1)] = value
+            continue
+        ids = [piece.strip().strip("'\"")
+               for piece in listed.group(1).split(",") if piece.strip()]
+        if ids:
+            closures[number.group(1)] = ids
+    return closures, malformed
+
+
+def plan_closures(root):
+    """Map plan number to the rule ids its frontmatter claims to close. Most
+    plans have no closes_rules key and are absent from the returned dict."""
+    return _scan_closes_rules(root)[0]
+
+
+def plan_closure_malformed(root):
+    """Map plan number to the raw closes_rules value, for a plan whose
+    frontmatter region has a closes_rules key that is not a single bracketed
+    list of ids — a block sequence, a bare scalar, or two closes_rules keys
+    where there should be one. A malformed claim must not read as no claim:
+    check_closures' orphan sweep already catches a rule with no other
+    claimant, but a rule with a second, well-formed, open claimant stays out
+    of orphan status while the malformed claim beside it goes unnoticed."""
+    return _scan_closes_rules(root)[1]
+
+
+def check_closures(model):
+    """The two checks that read closes_rules, in place of the design's check 3.
+
+    Design check 10 — a test_gap needs an owning plan too — has no successor. A
+    weak test is not unsafe code, so the gap text stands on its own and no plan
+    has to claim it.
+
+    1. A plan cannot be closed (completed, superseded, deferred — anything
+       not in OPEN_PLAN_STATUSES) while closes_rules still names a rule that
+       is 'violated' or 'partial' — the stronger half, since it gates real
+       work rather than a live pointer.
+    2. Every 'violated' or 'partial' rule is claimed by some open plan's
+       closes_rules — the orphaned-debt guarantee, stated from the side that
+       can act on it.
+
+    Also reports a closes_rules id that names no rule in the record at all —
+    a plan claiming a retired rule should say so rather than pass — a plan
+    number absent from plans/000-INDEX.md entirely, and a closes_rules key
+    present but not a bracketed list (see plan_closure_malformed): that last
+    one is reported unconditionally, not folded into check 2's sweep, because
+    a second well-formed claimant on the same rule would otherwise keep it
+    out of orphan status while the malformed claim beside it goes unnoticed.
+    """
     problems = []
     statuses = plan_statuses(model.root)
+    closures = plan_closures(model.root)
+    rules_by_id = {rule["id"]: rule for rule in model.rules if "id" in rule}
+
+    for plan, value in plan_closure_malformed(model.root).items():
+        problems.append(
+            f"plan '{plan}': closes_rules is present but not a bracketed list of ids "
+            f"— '{value}'")
+
+    claimed_by_open_plan = set()
+    for plan, ids in closures.items():
+        plan_status = statuses.get(plan)
+        for rid in ids:
+            rule = rules_by_id.get(rid)
+            if rule is None:
+                problems.append(
+                    f"plan '{plan}': closes_rules claims '{rid}', which is not a rule "
+                    f"id in the record")
+                continue
+            if plan_status is None:
+                problems.append(
+                    f"plan '{plan}': closes_rules claims {rid}, but '{plan}' is not "
+                    f"in plans/000-INDEX.md")
+            elif plan_status not in OPEN_PLAN_STATUSES and rule.get("status") in NEEDS_CLAIM:
+                problems.append(
+                    f"{rid}: plan '{plan}' is '{plan_status}', not an open plan, but "
+                    f"its closes_rules still claims {rid}, which is still "
+                    f"'{rule.get('status')}'")
+            if plan_status in OPEN_PLAN_STATUSES:
+                claimed_by_open_plan.add(rid)
+
     for rule in model.rules:
-        owner = rule.get("owner")
-        if not owner:
+        if rule.get("status") not in NEEDS_CLAIM:
             continue
         rid = rule.get("id", "<no id>")
-        why = ("status " + rule.get("status", "?")
-               if rule.get("status") in NEEDS_OWNER else "test_gap")
-        status = statuses.get(owner)
-        if status is None:
-            problems.append(f"{rid}: owner '{owner}' ({why}) is not in plans/000-INDEX.md")
-        elif status not in OPEN_PLAN_STATUSES:
+        if rid not in claimed_by_open_plan:
             problems.append(
-                f"{rid}: owner '{owner}' ({why}) is '{status}', not an open plan — "
-                f"either the debt is paid and the rule should change, or it needs a new owner")
+                f"{rid}: status '{rule.get('status')}' is claimed by no open plan's "
+                f"closes_rules")
     return problems
 
 
@@ -344,8 +476,8 @@ def check_tests(model, results):
     would mean 'holds' forever with nothing behind it. A violated or partial
     rule's tests are checked for existence only, because R08's and R40's pin
     the contrary behaviour on purpose. And a 'holds' rule may name no test at
-    all when it carries a test_gap and an owner, which is what rules/README.md
-    defines that shape to mean.
+    all when it carries a test_gap, which is what rules/README.md defines that
+    shape to mean.
     """
     problems = []
     for rule in model.rules:
@@ -359,9 +491,9 @@ def check_tests(model, results):
 
         if rule.get("status") != "holds":
             continue
-        if not names and not (rule.get("test_gap") and rule.get("owner")):
+        if not names and not rule.get("test_gap"):
             problems.append(f"{rid}: status 'holds' but no test named, and no "
-                            f"test_gap with an owner saying why")
+                            f"test_gap saying why")
         for name in names:
             if results.get(name) == "failed":
                 problems.append(f"{rid}: test '{name}' failed")
@@ -457,9 +589,15 @@ SURFACES_ORDER = ("abi", "cli", "http")
 
 
 def _badge(rule):
+    """A rule's status, marked when its own record says the evidence is thin.
+
+    by-asset.md has one Status column and no room for the gap text, so without
+    the marker a rule whose only witness skips in CI reads there as a plain
+    'holds' — the record disclosing a weak pin and the view hiding it. The
+    text itself appears in full in by-invariant.md's Test gap row.
+    """
     status = rule.get("status", "?")
-    owner = rule.get("owner")
-    return f"{status} ({owner})" if owner else status
+    return f"{status} (test gap)" if rule.get("test_gap") else status
 
 
 def render(model):
@@ -535,7 +673,8 @@ def render(model):
     }
 
 
-CHECKS = [check_schema, check_sources, check_owners, check_coverage, check_abi_version]
+CHECKS = [check_schema, check_sources, check_coverage, check_abi_version,
+          check_closures]
 
 
 def main(argv=None):

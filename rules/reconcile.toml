@@ -32,7 +32,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "Only rm's half is driven end to end. No test runs scan's reconcile over an unreadable path, with or without the flag, so scan's refusal to delete a check_failed row rests on reading run_reconcile rather than on a test."
 
 [[rule]]
@@ -51,7 +50,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "Every listed test drives rm. ScanEngine.IgnoreMountWarningOverridesTheGuard exercises scan's coarse all-rows-missing warning, whose parent directories still exist, so no test covers scan's reconcile deleting a missing-parent row — which is the behaviour plan 032 changed for existing users of the flag."
 
 [[rule]]
@@ -70,7 +68,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The listed tests cover all rows deletable (the guard fires), the flag override, and some files still present (it does not). None drives run_reconcile with a mixed set — some rows deletable, others parent_missing — which is the case where every tracked file is gone, the guard still does not fire, and the deletable rows are deleted."
 
 [[rule]]
@@ -117,5 +114,4 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "Only the authoritative half is pinned. The six demote tests call demote_jpeg_rows and demote_live_photo_rows directly, and the two run_reconcile tests both have a non-empty removed_paths, so the block is entered whatever the peek answers. No test covers the case the peek exists for: removed_paths empty and the only work demotable."

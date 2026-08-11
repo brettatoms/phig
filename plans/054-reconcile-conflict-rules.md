@@ -81,10 +81,11 @@ list.
 
 **Debt is recorded, not deleted.** If a rule the code violates turns CI red, the
 pressure is to delete the rule and the record decays into a description of the
-code. So `status = "violated"` and a `test_gap` field each require an open
-owning plan and neither fails on a missing test. Finding 4 lands day one as
-`status = "partial"`, `owner = "041"`. The side effect is the useful part: how
-much known data-safety debt exists, and who owns each item, becomes a number.
+code. So neither `status = "violated"` nor a `test_gap` fails on a missing test,
+and a `violated` or `partial` rule has to be claimed by an open plan's
+`closes_rules`. Finding 4 lands day one as R04, `status = "partial"`,
+claimed by 041. The side effect is the useful part: how much known data-safety
+debt exists, and which plan owns each item, becomes a number.
 
 ## Phasing, and the decision point
 
@@ -135,12 +136,49 @@ much known data-safety debt exists, and who owns each item, becomes a number.
   `MINOR` still 3 and `VERSION` still 1.3.0; no path through CI asks for the
   bump. Demoting on that basis would have taken the unenforced half from weakly
   recorded to unrecorded — the outcome the conditional demotion existed to
-  avoid. R64's prose was corrected instead: `holds`, owner 054, with the
-  narrowed gap named.
-- **Phase 3 — the missing tests, and flag coverage.** Its test task list is
-  written after phase 1, because which rules lack a test is what the enumeration
-  discovers — the `test_gap` records are that list, and `rules/by-invariant.md`
-  renders each one under its rule with the owning plan. The second
+  avoid. R64's prose was corrected instead: `holds`, with the narrowed gap
+  named.
+- **Phase 2b — a rule must not name a plan. Done.** Raised after phase 2
+  merged, and it corrects a mistake in this plan's own design rather than in
+  its execution. The retired `owner` field answered "who will fix this", which
+  is a work-tracking question, and putting it on the rule tied a permanent
+  statement about code safety to a document that gets completed and stops being
+  touched. The reference pointed the wrong way: the shorter-lived artifact
+  should name the longer-lived one.
+
+  Measured against the merged set before the change: **44 of 70 rules named a
+  plan**, so closing any one of those plans reported every rule pointing at it
+  — 26 for this plan alone. And **28 of the 44 were not about unsafe code at
+  all**: the code satisfies the rule and only the test is weak.
+
+  The link is now inverted. A plan declares the rules it closes in a
+  `closes_rules` frontmatter list; a rule says nothing about plans and keeps
+  only what bears on safety — its statement, its `status`, its `test_gap`. The
+  old check is replaced by two that are stronger than the one they retire: **a
+  plan cannot be closed while a rule it claimed to close is still `violated` or
+  `partial`**, which gates real work and which nothing checked before; and
+  **every `violated` or `partial` rule is claimed by some open plan**, which is
+  the orphaned-debt guarantee the old check gave, stated from the side that can
+  act on it. The first fires on any status outside `designing`, `planned` and
+  `in-progress`, not on `completed` alone, because a stale claim beside a
+  legitimate one is invisible to the second check whatever closed status the
+  stale claimant carries.
+
+  The question that decided 28 of the 44 — **does a `test_gap` need an owner at
+  all?** — was answered no. A weak test is not unsafe code, so the gap text
+  stays and the plan reference goes; the work of closing one finds its records
+  by reading them. `rules/by-invariant.md` and `by-asset.md` badge such a rule
+  `holds (test gap)`, so the disclosure survives in the views that have no room
+  for the text.
+
+  Sixteen rules across seven plans were code faults and got a `closes_rules`
+  entry: 039, 041, 043, 053, 056, 059, 060.
+
+- **Phase 3 — the missing tests, and flag coverage.** Depends on phase 2b; the
+  `test_gap` records it works from are the ones phase 2b settled the shape of.
+  Its test task list is written after phase 1, because which rules lack a test
+  is what the enumeration discovers — the `test_gap` records are that list, and
+  `rules/by-invariant.md` renders each one under its rule. The second
   workstream, added by decision 9, is flag coverage — write a rule for every
   mutation-capable CLI flag that has none, and record every read-only flag as an
   explicit `n/a` rather than omitting it. The mutation-capable split must be read
@@ -148,6 +186,31 @@ much known data-safety debt exists, and who owns each item, becomes a number.
   miscounted it, because `scan`, `cp`/`mv`, `rm` and `trash` parse inline in
   `main()` and a brace-matching classifier calls their flags read-only. No
   mutation-capable count is to be stated until it has been read from the file.
+
+  The third workstream is **face models in CI**, which is a configuration gap
+  rather than a missing test and closes R52 outright. R52 is `holds` and its
+  single witness calls `models_or_skip()`, so it skips wherever the models are
+  absent — including CI, which downloads none. A rule that guards a real branch
+  currently has no evidence in the gate, which is a false green the `test_gap`
+  discloses and nothing else would. Nine face tests skip there for the same
+  reason.
+
+  The download is two files from `github.com/opencv/opencv_zoo`, measured:
+  `face_detection_yunet_2023mar.onnx` at 227 KB and
+  `face_recognition_sface_2021dec.onnx` at 37 MB. Cache it with
+  `actions/cache` on `~/.cache/phig/models` — `download_face_models()` already
+  returns early for a file that exists, so a warm cache makes the step a no-op
+  with no code change, and the filenames carry their model dates, so a key
+  naming those dates stays valid until someone deliberately bumps a model.
+
+  Three things to size before wiring it. The cache costs 37 MB against the
+  repo's allowance and GitHub evicts entries unused for seven days, so a quiet
+  week re-downloads and the step has to work cold as well as warm. Unskipping
+  the nine tests means CI starts running face detection on every push, which is
+  compute rather than just transfer, and no wall-clock for that has been
+  measured on a runner. And the model files are pinned by name but not by hash,
+  so `opencv_zoo` moving a file under the same name would change what CI tests
+  with nothing noticing — worth a checksum if the cost is a line.
 
 ## Open questions, all resolved
 
@@ -170,16 +233,16 @@ act, which is the mitigation, and it is weaker than the claim implies.
 ## Relationship to other plans
 
 - **041 and 042** produced the findings; 041 owns the restore-snapshot fix and
-  is finding 4's `owner`.
+  its `closes_rules` claims finding 4.
 - **022** added the no-clobber `move_file` and the audit findings the on-disk
   guard exists for.
 - **032** owns the mount-guard semantics this records.
 - **045** owns the `faces.id` AUTOINCREMENT rule the concurrency records cite.
-- **046** owns the three `DatabaseTest` failures on Linux, which are the `owner`
-  for any rule pinned to them.
+- **046** owns the three `DatabaseTest` failures on Linux, which is what any
+  rule pinned to them is waiting on.
 - **053** exposes `rm` through the ABI and will add `surfaces_abi` entries to
   operations that have none. It also owns moving R68's guard out of `cli/`.
-- **060** was opened out of phase 1, to own the three `violated` rules whose
-  recorded owner could not close them — R27, R48 and R60.
+- **060** was opened out of phase 1, to own the three `violated` rules that
+  phase 1 could find no plan able to close — R27, R48 and R60.
 - **052** faces the same rules over the wire; `surfaces_http` exists for it.
 - **059** owns the `--on-conflict overwrite` decision split out of here.

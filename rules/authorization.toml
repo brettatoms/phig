@@ -10,7 +10,6 @@ protects = ["original-file", "db-row", "activity-log"]
 tests = ["RemoveExecTest.RmDryRunTouchesNothing"]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The test checks the file and the row survive; it does not check that no operation row was opened, and nothing pins the second clause at all. Both were measured by running the binary: a dry-run rm against a path with no database left a 120 KB v8 database there, and a dry-run rm against a populated one left the operations table exactly as it found it."
 
 [[rule]]
@@ -25,7 +24,6 @@ protects = ["original-file", "db-row", "activity-log"]
 tests = ["OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase"]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The listed test pins the first clause, at the engine. Nothing pins the second: no test drives cmd_organize, and the migration it performs on a dry run was measured by running the binary."
 
 [[rule]]
@@ -66,7 +64,6 @@ tests = [
 ]
 test_kind = "conformance"
 status = "partial"
-owner = "041"
 test_gap = "Every listed test is about organize. Nothing pins the reconcile half, because there is no reconcile plan to test — the claim there is about an absence, and the only thing a test could assert today is that run_reconcile takes no plan argument."
 
 [[rule]]
@@ -85,7 +82,6 @@ protects = ["user-metadata"]
 tests = []
 test_kind = "subprocess"
 status = "violated"
-owner = "060"
 test_gap = "FacesEngineRun.RerunReplacesRatherThanAccumulatesFaceRows covers the delete-and-reinsert and asserts nothing about labels, and every FacesEngineRun case skips wherever the face models are absent, which includes CI — .github/workflows/ci.yml downloads none. The loss was measured by running the binary; no test asserts it either way."
 
 [[rule]]
@@ -103,7 +99,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "violated"
-owner = "053"
 test_gap = "The organize half is covered. Nothing asserts what a dry-run rm returns, because it returns nothing to assert: RemoveExecTest.RmDryRunTouchesNothing checks that the file and the row survive and cannot check the preview, which exists only on stdout."
 
 [[rule]]
@@ -118,5 +113,4 @@ protects = ["original-file", "attachment"]
 tests = []
 test_kind = "subprocess"
 status = "violated"
-owner = "053"
 test_gap = "No test calls cmd_trash_empty at all — not the empty-trash short-circuit, not the --yes bypass, not the non-interactive refusal, not the typed-confirmation path. It reads stdin and calls isatty directly, so the only test that could reach it is a subprocess driving the built phig binary, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes, which pins the equivalent guard on cmd_rm."
