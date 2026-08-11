@@ -14,6 +14,7 @@
 
 #include "cancel.h"
 #include "database.h"
+#include "face_path.h"
 #include "faces_engine.h"
 #include "models.h"
 #include "progress_queue.h"
@@ -66,8 +67,6 @@ struct ScratchFaces {
     }
 };
 
-bool models_or_skip() { return face_models_exist(); }
-
 // Total rows in the faces table. Database exposes insert_face and
 // delete_faces_for_image but no per-image getter, so read the table directly.
 size_t count_face_rows(const ScratchFaces& coll) {
@@ -93,7 +92,7 @@ size_t count_face_rows(const ScratchFaces& coll) {
 }  // namespace
 
 TEST(FacesEngineRun, DetectsFacesInEveryImageAcrossWorkers) {
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 2;
@@ -122,7 +121,7 @@ TEST(FacesEngineRun, DetectsFacesInEveryImageAcrossWorkers) {
 TEST(FacesEngineRun, RerunReplacesRatherThanAccumulatesFaceRows) {
     // The delete-then-reinsert contract. If the delete were dropped, a second
     // rebuild would double every image's face count.
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 2;
@@ -141,7 +140,7 @@ TEST(FacesEngineRun, RerunReplacesRatherThanAccumulatesFaceRows) {
 }
 
 TEST(FacesEngineRun, AlreadyCancelledDetectsNothingAndReportsIncomplete) {
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 2;
@@ -176,7 +175,7 @@ TEST(FacesEngineRun, PublishesModelLoadThenSelectedThenFiles) {
     // Ordering matters for rendering: the CLI prints "Loading face recognition
     // models (N instances)..." before the per-file lines, and model loading is
     // the slowest part of a small rebuild.
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(2);
     FacesRebuildOptions opts;
     opts.parallel = 1;
@@ -205,7 +204,7 @@ TEST(FacesEngineRun, PublishesModelLoadThenSelectedThenFiles) {
 
 TEST(FacesEngineRun, UndecodableFileIsSkippedWithoutFailingTheRun) {
     // A file that cannot be decoded must not abort the rebuild or write rows.
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(2);
     fs::path junk = coll.dir / "broken.jpg";
     {
@@ -238,7 +237,7 @@ TEST(FacesEngineRun, UndecodableFileIsCountedAsAnError) {
     // Skipping the file is right; skipping it silently is not. Without a count,
     // an unreadable image is indistinguishable from one with no faces in it, so
     // a rebuild over a collection with unreadable files reports total success.
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(2);
     fs::path junk = coll.dir / "broken.jpg";
     {
@@ -273,7 +272,7 @@ TEST(FacesEngineRun, UndecodableFilePublishesTheDecodeErrorOnProgress) {
     // own message per decode — and is currently discarded. Route it to the
     // caller the way ScanProgress::error does, so a client can say which file
     // failed and why rather than only how many did.
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(1);
     fs::path junk = coll.dir / "broken.jpg";
     {
@@ -316,7 +315,7 @@ TEST(FacesEngineRun, UndecodableFilePublishesTheDecodeErrorOnProgress) {
 }
 
 TEST(FacesEngineRun, SelectionFiltersRestrictWhatIsProcessed) {
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 1;
@@ -337,7 +336,7 @@ TEST(FacesEngineRun, SelectionFiltersRestrictWhatIsProcessed) {
 // of its loop -- so one deleted image abandons the entire rebuild rather than
 // skipping one file.
 TEST(FacesEngineRun, ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun) {
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(40);
 
     std::vector<std::string> paths;

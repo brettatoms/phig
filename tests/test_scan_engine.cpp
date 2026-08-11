@@ -14,6 +14,7 @@
 
 #include "cancel.h"
 #include "database.h"
+#include "face_path.h"
 #include "faces.h"
 #include "models.h"
 #include "progress_queue.h"
@@ -718,6 +719,11 @@ TEST(ScanEngine, DoesNotAnnounceModelLoadingWithoutTheFacesFlag) {
 }
 
 TEST(ScanEngine, FacesModeFailsClearlyWhenModelsAreMissing) {
+    if (!PHIG_FACES_OPENCV_OK) {
+        GTEST_SKIP() << "OpenCV " << CV_VERSION << " is below " << PHIG_FACES_MIN_OPENCV
+                     << "; the version guard fires ahead of the models check, so the "
+                        "case below this one is the one that runs";
+    }
     if (face_models_exist()) {
         GTEST_SKIP() << "models are installed; this test covers the missing-models path";
     }
@@ -741,6 +747,35 @@ TEST(ScanEngine, FacesModeFailsClearlyWhenModelsAreMissing) {
     EXPECT_EQ(db.count(), 0) << "nothing may be written when model loading fails";
 }
 
+TEST(ScanEngine, FacesModeFailsClearlyBelowTheOpenCVFloor) {
+    if (PHIG_FACES_OPENCV_OK) {
+        GTEST_SKIP() << "OpenCV " << CV_VERSION << " is at or above " << PHIG_FACES_MIN_OPENCV
+                     << "; this test covers the below-floor path";
+    }
+    ScratchCollection c(2);
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+
+    ScanOptions o = c.options();
+    o.faces = true;
+    o.parallel = 2;
+
+    // Without the guard this run reaches the first detect() and dies on an
+    // opaque cv::Exception, having already committed whatever batches got that
+    // far. The message has to name both versions — what is needed and what is
+    // installed — because neither alone tells the reader what to change.
+    try {
+        ScanEngine(o, db).run_workers(cancel, nullptr);
+        FAIL() << "faces mode must not proceed on an OpenCV that cannot run the detector";
+    } catch (const std::exception& e) {
+        std::string msg = e.what();
+        EXPECT_NE(msg.find(PHIG_FACES_MIN_OPENCV), std::string::npos) << msg;
+        EXPECT_NE(msg.find(CV_VERSION), std::string::npos) << msg;
+    }
+    EXPECT_EQ(db.count(), 0) << "nothing may be written when the OpenCV check fails";
+}
+
 TEST(ScanEngine, DetectsFacesWithMultipleWorkers) {
     // Exercises the real `detector_for_worker(face_detectors, worker_id)` CALL with
     // more than one worker — the one piece the unit test above cannot reach, since
@@ -750,10 +785,7 @@ TEST(ScanEngine, DetectsFacesWithMultipleWorkers) {
     // last input size and calls setInputSize only when it changes, so two workers
     // sharing one instance interleave that cached size with detect(). Identical
     // images would leave the cached size constant and hide the sharing entirely.
-    if (!face_models_exist()) {
-        GTEST_SKIP() << "face models not found at " << yunet_model_path()
-                     << "; run `phig models download` to enable this test";
-    }
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     // Downscaled from OpenCV's BSD-licensed sample data (samples/data/lena.jpg and
     // messi5.jpg), the only images to hand that YuNet actually detects. Committed
     // rather than read from the OpenCV package, which is not a declared dependency.

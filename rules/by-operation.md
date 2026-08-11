@@ -5,7 +5,7 @@
 | Operation | conflict | reconcile | atomicity | recoverability | metadata | attachments | concurrency | cancellation | authorization |
 |---|---|---|---|---|---|---|---|---|---|
 | faces.identify | — | — | R28 R29 R34 | — | — | — | R07 R51 R53 R71 | — | — |
-| **faces.rebuild** | — | — | R28 R29 R34 | — | — | — | R51 R52 R53 R55 | R57 R58 | R60 |
+| **faces.rebuild** | — | — | R28 R29 R34 R72 | — | — | — | R51 R52 R53 R55 | R57 R58 | R60 |
 | metadata.write | — | — | R28 R29 R34 | — | — | — | R49 R50 R53 R54 R55 | — | — |
 | organize.copy | R01 R03 R05 R08 R09 R10 R11 | — | R28 R29 R31 R32 R33 R34 R48 | R18 R19 R27 | R40 | R41 R44 R45 R47 | R49 R50 R53 R55 | R57 R58 | R59 |
 | **organize.move** | R01 R02 R03 R06 R08 R09 R10 R11 | — | R28 R29 R31 R32 R33 R34 R48 | R18 R19 R27 | R40 | R41 R44 R45 R47 | R49 R50 R53 R55 | R57 R58 | R59 |
@@ -18,7 +18,7 @@
 | **remove.orphans** | — | R12 R13 R14 | R28 R29 R31 R34 | R04 R18 R19 R25 R26 R27 | — | — | R49 R50 R53 | — | R20 R22 R61 |
 | **remove.trash** | R02 | — | R28 R29 R31 R33 R34 | R04 R18 R19 R23 R25 R26 R27 | — | R46 | R49 R50 R53 | — | R20 R22 R61 |
 | **scan.reconcile** | — | R12 R13 R14 R15 R16 R17 | R28 R29 R30 R31 R34 | R04 R18 R19 R25 R26 | R37 R38 R39 | R43 | R49 R50 R53 | R56 | R59 |
-| scan.walk | — | — | R28 R29 R34 | — | R35 R36 | R42 R43 | R49 R50 R53 R55 | R57 R58 | — |
+| scan.walk | — | — | R28 R29 R34 R72 | — | R35 R36 | R42 R43 | R49 R50 R53 R55 | R57 R58 | — |
 | thumbs.rebuild | — | — | R29 | — | — | — | R49 R50 R53 R55 | R57 R58 | — |
 | **trash.empty** | — | — | — | — | — | — | R49 R50 | — | R68 |
 

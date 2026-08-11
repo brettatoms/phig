@@ -373,6 +373,20 @@ The struct is caller-allocated and filled by phig_op_poll, with no size and no v
 | Evidence | conformance: none |
 | Test gap | A sizeof pin in tests/test_libphig_c_compile.c would catch a field added to this struct the same way the existing bitfield pins catch a renumbered enum, and none is written. Until one is, the rule is prose in libphig/CLAUDE.md and nothing more. |
 
+### R72 — holds (test gap)
+
+A run that will detect faces establishes that it can detect before it writes anything: the OpenCV it was built against must be able to run the detection model, and both model files must be present.
+
+Both engines build every FaceDetector up front — ScanEngine::run_workers before the first file, FacesEngine::run after selection and before the first worker — so a constructor that throws costs the run and nothing else. Deferring either check to the first detection would not: the workers are already committing batches by then, and parallel_for_each stops every worker on the first exception, so the failure would arrive on top of a partly written scan. The OpenCV half is the one that was missing. YuNet 2023mar's ONNX graph imports on older OpenCV and cannot run: FaceDetectorYN::create succeeds and the first detect() throws '(-204:Requested object was not found) Layer with requested id=-1 not found in function getLayerData'. Measured against the model file phig downloads — 4.6.0 and 4.7.0 both throw, 4.8.0 and 4.10.0 both run it clean, and FaceRecognizerSF::create works on all four, so the detector alone sets the 4.8.0 floor. Ubuntu 24.04 ships 4.6.0, which is why the guard exists rather than being a theoretical case. The check is compile-time because the linked OpenCV is fixed when phig is built, and it runs ahead of the models check because below the floor the models are beside the point: telling that user to download them would send them the wrong way.
+
+| | |
+|---|---|
+| Enforced at | `core/faces.cpp:FaceDetector::Impl` |
+| Binds | `scan.walk`, `faces.rebuild` |
+| Protects | db-row |
+| Evidence | witness: `ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor`, `ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing` |
+| Test gap | Each witness runs only in the environment its own branch needs, and neither is the leg that runs this gate. The below-floor case needs an OpenCV under 4.8.0, which is the ubuntu-24.04 leg; the missing-models case needs models absent on an OpenCV at or above it, which per-push CI has nowhere and only the weekly macOS leg supplies. On ubuntu-26.04, where scripts/rules.py reads the results, both skip — so check 2 reports this rule OK on a run that exercised neither branch. Both are scan-path only: nothing pins that FacesEngine::run, `phig face rebuild` or a face search refuses the same way, though all three construct the same FaceDetector. The 4.8.0 floor itself is pinned by no test at all — it came from running the shipped model against four OpenCV builds by hand, and a future model swap would not re-derive it. |
+
 ## recoverability
 
 ### R04 — partial (test gap)

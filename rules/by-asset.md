@@ -134,6 +134,7 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R67 | cancellation | holds | phig_op_free joins the operation's worker rather than detaching it, so no engine thread outlives the handle or the Database it writes through. |
 | R70 | authorization | violated (test gap) | A command that only reads a collection neither creates its database nor migrates its schema. |
+| R72 | atomicity | holds (test gap) | A run that will detect faces establishes that it can detect before it writes anything: the OpenCV it was built against must be able to run the detection model, and both model files must be present. |
 
 ## activity-log — rebuildable: no
 
