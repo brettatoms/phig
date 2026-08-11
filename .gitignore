@@ -17,6 +17,9 @@ compile_commands.json
 # clangd index cache
 .cache/
 
+# Python bytecode from scripts/
+__pycache__/
+
 # Editor tag index
 TAGS
 
