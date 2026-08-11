@@ -176,11 +176,19 @@ def _strip_noise(text):
 def _resolves(text, symbol):
     """True when `symbol` is declared or defined in `text`.
 
-    Tries the qualified form first, then the bare member name. Both are matched
-    on a word boundary: a substring test lets ScanEngine::run resolve against
-    run_workers, so the anchor survives the symbol being deleted. Comments and
-    string/char literals are blanked out first, so mentioning a symbol in
-    prose cannot resolve it.
+    Tries the qualified form first, then the bare member name. The fallback is
+    load-bearing, not defensive: a member declared inside a class body is
+    written bare, so core/organize_engine.h contains set_resolution and never
+    OrganizePlan::set_resolution, and the qualified-only match would report a
+    live anchor as missing. What it costs is the converse, and it was measured:
+    23 of the 144 rule anchors sit in a file where the bare name occurs more
+    often than the qualified one, Database::Database worst at 1 against 73, so
+    deleting the qualified symbol from those files still resolves.
+
+    Both forms are matched on a word boundary: a substring test lets
+    ScanEngine::run resolve against run_workers, so the anchor survives the
+    symbol being deleted. Comments and string/char literals are blanked out
+    first, so mentioning a symbol in prose cannot resolve it.
     """
     text = _strip_noise(text)
     for candidate in (symbol, symbol.split("::")[-1]):
@@ -412,7 +420,10 @@ def check_abi_version(model):
     R64 says a symbol bump moves MINOR and VERSION and never SOVERSION. Its own
     test only checks that phig_abi_version()'s high half equals the header
     macro, which passes with the CMake values set to anything at all. This is
-    strictly stronger, and it is why R64 can leave the record set.
+    stronger than that test, and not stronger than R64's statement: it compares
+    the three numbers to each other and never asks why they have the values
+    they do. Adding an exported symbol without bumping MINOR passes here, so
+    R64 stays in the record set — see its test_gap.
     """
     header = model.root / ABI_HEADER
     cmake = model.root / ABI_CMAKE
@@ -529,9 +540,11 @@ CHECKS = [check_schema, check_sources, check_owners, check_coverage, check_abi_v
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    # Accepted but not consulted: the checks always run, because emitting views
-    # from a record that failed them would publish the failure as documentation.
-    # The flag stays so a check-only invocation can say what it is doing.
+    # Accepted but not consulted: the checks always run. --emit still writes the
+    # views when they fail, deliberately — a regenerated view of a broken record
+    # is the diagnosis — but it cannot do so quietly, because the same run
+    # reports every problem and exits 1. The flag stays so a check-only
+    # invocation can say what it is doing.
     parser.add_argument("--check", action="store_true",
                         help="no-op; the checks always run, with or without this")
     parser.add_argument("--root", default=pathlib.Path(__file__).resolve().parent.parent)
