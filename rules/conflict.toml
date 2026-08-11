@@ -91,7 +91,6 @@ protects = ["original-file"]
 tests = ["OrganizeEngineTest.OverwritePolicyStillRenamesAroundAnExistingFile"]
 test_kind = "witness"
 status = "violated"
-owner = "059"
 test_gap = "The listed test pins today's contrary behavior, which is the regression test plan 042 wanted. Nothing tests the statement, because no code path implements it. Plan 059 decides whether the policy changes or the flag does."
 
 [[rule]]

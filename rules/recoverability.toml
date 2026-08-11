@@ -10,7 +10,6 @@ protects = ["user-metadata", "db-row"]
 tests = ["DatabaseTest.PurgeSnapshotMarksOmittedFaces", "DatabaseTest.PurgeLogsRestorableSnapshot"]
 test_kind = "conformance"
 status = "partial"
-owner = "041"
 test_gap = "The tests pin the shape the snapshot has today: one asserts a face count is recorded, the other that the path and sha256 are present. Neither asserts a tag, because no code path writes one, and neither round-trips the metadata. There is no restorer to round-trip against: plan 020 deferred phig undo and plan 053 records that the activity log has no reader in core/. PurgeSnapshotMarksOmittedFaces is also one of the three DatabaseTest cases plan 046 records as failing on Linux, so on that platform this rule's only other witness is PurgeLogsRestorableSnapshot."
 
 [[rule]]
@@ -40,7 +39,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "Every listed test drives the success path and checks the entry is there. Nothing drives the rollback half — a database write that throws after the entry was added, leaving neither behind. OrganizeExecTest.CopyRestoresPriorFileOnDbFailureOverwrite comes closest and passes op_id = 0, so there is no entry for it to look for."
 
 [[rule]]
@@ -81,7 +79,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "053"
 test_gap = "The tests cover filling the trash and its no-clobber retry under collision. Nothing asserts that a tracked file's trash entry is accompanied by the purge_row entry for its row — the pairing this rule's rationale measured by running the binary is not pinned by any test."
 
 [[rule]]
@@ -100,7 +97,6 @@ protects = ["user-metadata", "db-row", "activity-log"]
 tests = ["ScanEngine.RemovesRowsForFilesThatDisappeared"]
 test_kind = "witness"
 status = "partial"
-owner = "041"
 test_gap = "The unlogged branch is well covered for deletion and not at all for the snapshot's absence. ScratchCollection::options() sets log_enabled = false for every ScanEngine test in tests/test_scan_engine.cpp, and three of them delete files and rescan through delete_paths — the listed one, ScanEngine.ReconcileStillRunsAfterCancellation and ScanEngine.IgnoreMountWarningOverridesTheGuard. All three assert the rows are gone; none asserts that no operation and no entry were written, which is the clause this rule turns on and which came from running the binary."
 
 [[rule]]
@@ -108,14 +104,13 @@ id = "R26"
 tier = "engine"
 concern = "recoverability"
 statement = "delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns."
-rationale = "Plan 041's guard inventory names this as the third of three guards on the delete path, so that once reconcile is split into a plan and an apply, a plan entry that has gone stale deletes nothing rather than something else. The guard is correct; nothing pins it yet — one call with an unknown path would. Filed as holds rather than unenforced, per the holds-plus-test_gap-plus-open-owner shape for a rule the code satisfies but no test fully pins, which R49, R53, R54 and R64 also use; unenforced stays reserved for a rule nothing could pin even in principle, which this is not. The skip is silent a second way: both callers discard the returned count. cmd_rm prints rows_to_delete.size() at remove_exec.cpp:198 and run_reconcile sets removed_count = removed_paths.size() at scan_engine.cpp:588, so a skipped path is still reported as removed."
+rationale = "Plan 041's guard inventory names this as the third of three guards on the delete path, so that once reconcile is split into a plan and an apply, a plan entry that has gone stale deletes nothing rather than something else. The guard is correct; nothing pins it yet — one call with an unknown path would. Filed as holds rather than unenforced, per the holds-plus-test_gap shape for a rule the code satisfies but no test fully pins, which R49, R53, R54 and R64 also use; unenforced stays reserved for a rule nothing could pin even in principle, which this is not. The skip is silent a second way: both callers discard the returned count. cmd_rm prints rows_to_delete.size() at remove_exec.cpp:198 and run_reconcile sets removed_count = removed_paths.size() at scan_engine.cpp:588, so a skipped path is still reported as removed."
 enforced_at = ["core/database.cpp:delete_paths_logged"]
 binds = ["scan.reconcile", "remove.trash", "remove.hard", "remove.db-only", "remove.orphans"]
 protects = ["db-row", "activity-log"]
 tests = []
 test_kind = "conformance"
 status = "holds"
-owner = "054"
 test_gap = "Nothing calls delete_paths_logged with a path that has no row, so neither the skip nor the returned count is pinned. Both callers build their list from rows they have just read, so today the branch is reachable only when another writer removes one in between; plan 041's plan/apply split is what makes it reachable in ordinary use, which is why the guard is there."
 
 [[rule]]
@@ -130,5 +125,4 @@ protects = ["activity-log"]
 tests = ["OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted"]
 test_kind = "witness"
 status = "violated"
-owner = "060"
 test_gap = "The listed test pins the cancellation case, where organize does write interrupted. Nothing covers a run with per-file errors, which is where the two commands disagree, and nothing pins either command's exit code on that path."

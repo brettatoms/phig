@@ -81,10 +81,11 @@ list.
 
 **Debt is recorded, not deleted.** If a rule the code violates turns CI red, the
 pressure is to delete the rule and the record decays into a description of the
-code. So `status = "violated"` and a `test_gap` field each require an open
-owning plan and neither fails on a missing test. Finding 4 lands day one as
-`status = "partial"`, `owner = "041"`. The side effect is the useful part: how
-much known data-safety debt exists, and who owns each item, becomes a number.
+code. So neither `status = "violated"` nor a `test_gap` fails on a missing test,
+and a `violated` or `partial` rule has to be claimed by an open plan's
+`closes_rules`. Finding 4 lands day one as R04, `status = "partial"`,
+claimed by 041. The side effect is the useful part: how much known data-safety
+debt exists, and which plan owns each item, becomes a number.
 
 ## Phasing, and the decision point
 
@@ -135,48 +136,49 @@ much known data-safety debt exists, and who owns each item, becomes a number.
   `MINOR` still 3 and `VERSION` still 1.3.0; no path through CI asks for the
   bump. Demoting on that basis would have taken the unenforced half from weakly
   recorded to unrecorded — the outcome the conditional demotion existed to
-  avoid. R64's prose was corrected instead: `holds`, owner 054, with the
-  narrowed gap named.
-- **Phase 2b — a rule must not name a plan.** Raised after phase 2 merged, and
-  it corrects a mistake in this plan's own design rather than in its execution.
-  `owner` answers "who will fix this", which is a work-tracking question, and
-  putting it on the rule ties a permanent statement about code safety to a
-  document that gets completed and stops being touched. The reference points the
-  wrong way: the shorter-lived artifact should name the longer-lived one.
+  avoid. R64's prose was corrected instead: `holds`, with the narrowed gap
+  named.
+- **Phase 2b — a rule must not name a plan. Done.** Raised after phase 2
+  merged, and it corrects a mistake in this plan's own design rather than in
+  its execution. The retired `owner` field answered "who will fix this", which
+  is a work-tracking question, and putting it on the rule tied a permanent
+  statement about code safety to a document that gets completed and stops being
+  touched. The reference pointed the wrong way: the shorter-lived artifact
+  should name the longer-lived one.
 
-  Measured against the merged set: **44 of 70 rules name a plan**, so closing
-  any one of those plans fires `check_owners` on every rule pointing at it —
-  26 for this plan alone. And **28 of the 44 are not about unsafe code at
-  all**: the code satisfies the rule and only the test is weak. Those rules
-  carry a scheduling field that has nothing to do with what they assert.
+  Measured against the merged set before the change: **44 of 70 rules named a
+  plan**, so closing any one of those plans reported every rule pointing at it
+  — 26 for this plan alone. And **28 of the 44 were not about unsafe code at
+  all**: the code satisfies the rule and only the test is weak.
 
-  The fix is to invert the link. A plan declares the rules it closes; a rule
-  says nothing about plans and keeps only what bears on safety — its statement,
-  its `status`, its `test_gap`. `check_owners` is replaced by two checks that
-  are stronger than the one they retire: **a plan cannot be `completed` while a
-  rule it claimed to close is still `violated` or `partial`**, which gates real
-  work and which nothing checks today; and **every `violated` or `partial` rule
-  is claimed by some open plan**, which is the orphaned-debt guarantee the
-  current check gives, stated from the side that can act on it.
+  The link is now inverted. A plan declares the rules it closes in a
+  `closes_rules` frontmatter list; a rule says nothing about plans and keeps
+  only what bears on safety — its statement, its `status`, its `test_gap`. The
+  old check is replaced by two that are stronger than the one they retire: **a
+  plan cannot be closed while a rule it claimed to close is still `violated` or
+  `partial`**, which gates real work and which nothing checked before; and
+  **every `violated` or `partial` rule is claimed by some open plan**, which is
+  the orphaned-debt guarantee the old check gave, stated from the side that can
+  act on it. The first fires on any status outside `designing`, `planned` and
+  `in-progress`, not on `completed` alone, because a stale claim beside a
+  legitimate one is invisible to the second check whatever closed status the
+  stale claimant carries.
 
-  One question to settle first, because it decides 28 of the 44: **does a
-  `test_gap` need an owner at all?** A weak test is not unsafe code. It may be
-  enough for the rule to say the evidence is thin and let the work find them by
-  grep, which would drop those couplings without replacing them.
+  The question that decided 28 of the 44 — **does a `test_gap` need an owner at
+  all?** — was answered no. A weak test is not unsafe code, so the gap text
+  stays and the plan reference goes; the work of closing one finds its records
+  by reading them. `rules/by-invariant.md` and `by-asset.md` badge such a rule
+  `holds (test gap)`, so the disclosure survives in the views that have no room
+  for the text.
 
-  Blast radius, measured: 44 rules, 6 references in `scripts/rules.py`, 8 in
-  `rules/README.md`, 4 in the generated views, 2 in the root `CLAUDE.md`.
-
-  **This sequences before phase 3.** Phase 3's first workstream is closing the
-  26 `test_gap` records that name this plan, and doing that through a field
-  being removed would mean doing it twice.
+  Sixteen rules across seven plans were code faults and got a `closes_rules`
+  entry: 039, 041, 043, 053, 056, 059, 060.
 
 - **Phase 3 — the missing tests, and flag coverage.** Depends on phase 2b; the
-  `test_gap` records it works from are the ones phase 2b decides the shape of.
-  Its test task list is
-  written after phase 1, because which rules lack a test is what the enumeration
-  discovers — the `test_gap` records are that list, and `rules/by-invariant.md`
-  renders each one under its rule with the owning plan. The second
+  `test_gap` records it works from are the ones phase 2b settled the shape of.
+  Its test task list is written after phase 1, because which rules lack a test
+  is what the enumeration discovers — the `test_gap` records are that list, and
+  `rules/by-invariant.md` renders each one under its rule. The second
   workstream, added by decision 9, is flag coverage — write a rule for every
   mutation-capable CLI flag that has none, and record every read-only flag as an
   explicit `n/a` rather than omitting it. The mutation-capable split must be read
@@ -231,16 +233,16 @@ act, which is the mitigation, and it is weaker than the claim implies.
 ## Relationship to other plans
 
 - **041 and 042** produced the findings; 041 owns the restore-snapshot fix and
-  is finding 4's `owner`.
+  its `closes_rules` claims finding 4.
 - **022** added the no-clobber `move_file` and the audit findings the on-disk
   guard exists for.
 - **032** owns the mount-guard semantics this records.
 - **045** owns the `faces.id` AUTOINCREMENT rule the concurrency records cite.
-- **046** owns the three `DatabaseTest` failures on Linux, which are the `owner`
-  for any rule pinned to them.
+- **046** owns the three `DatabaseTest` failures on Linux, which is what any
+  rule pinned to them is waiting on.
 - **053** exposes `rm` through the ABI and will add `surfaces_abi` entries to
   operations that have none. It also owns moving R68's guard out of `cli/`.
-- **060** was opened out of phase 1, to own the three `violated` rules whose
-  recorded owner could not close them — R27, R48 and R60.
+- **060** was opened out of phase 1, to own the three `violated` rules that
+  phase 1 could find no plan able to close — R27, R48 and R60.
 - **052** faces the same rules over the wire; `surfaces_http` exists for it.
 - **059** owns the `--on-conflict overwrite` decision split out of here.

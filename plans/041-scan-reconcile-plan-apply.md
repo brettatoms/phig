@@ -237,10 +237,10 @@ override. `rules/metadata.toml`'s R40 measured it against the built binary: a
 stale row carrying the tag `precious` and the gallery `wedding`, a `mv` of
 another file onto its path, `Done: 1 Skipped: 0 Errors: 0` and exit 0, with the
 row, the tag association and the gallery gone. `cp` replaced the row the same
-way. R40 is `status = "violated"` with this plan as `owner`, and its `test_gap`
-names the reason this decision is worded as it is: 041's acceptance criteria
-were written against `delete_paths_logged`, which neither of those two paths
-calls, so closing 041 as written would leave the loss open.
+way. R40 is `status = "violated"`, claimed by this plan's `closes_rules`, and
+its `test_gap` names the reason this decision is worded as it is: 041's
+acceptance criteria were written against `delete_paths_logged`, which neither
+of those two paths calls, so closing 041 as written would leave the loss open.
 
 So the decision is the general one — every path that drops a row writes the same
 snapshot — and the two organize paths are in scope here rather than deferred.

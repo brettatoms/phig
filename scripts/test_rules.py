@@ -94,15 +94,15 @@ class SchemaTest(unittest.TestCase):
         problems = rules.check_schema(model)
         self.assertTrue(any("status" in p and "R01" in p for p in problems))
 
-    def test_violated_without_owner_is_reported(self):
+    def test_violated_rule_names_no_plan(self):
+        # A rule states what must be true; which plan will make it true is a
+        # plan's business, declared by its closes_rules and checked there.
         model = self.build(GOOD_RULE.replace('status = "holds"', 'status = "violated"'))
-        problems = rules.check_schema(model)
-        self.assertTrue(any("owner" in p and "R01" in p for p in problems))
+        self.assertEqual(rules.check_schema(model), [])
 
-    def test_test_gap_without_owner_is_reported(self):
+    def test_test_gap_names_no_plan(self):
         model = self.build(GOOD_RULE + '\ntest_gap = "weaker than the claim"\n')
-        problems = rules.check_schema(model)
-        self.assertTrue(any("owner" in p and "R01" in p for p in problems))
+        self.assertEqual(rules.check_schema(model), [])
 
     def test_duplicate_rule_id_is_reported(self):
         model = self.build(GOOD_RULE + GOOD_RULE)
@@ -217,7 +217,7 @@ class SourceAnchorTest(unittest.TestCase):
                 GOOD_RULE
                 .replace('["core/paths.cpp:resolve_conflict"]',
                          '["cli/main.cpp:cmd_organize"]')
-                .replace('status = "holds"', 'status = "violated"\nowner = "043"'))
+                .replace('status = "holds"', 'status = "violated"'))
             self.assertEqual(rules.check_sources(model), [])
 
     def test_valid_anchor_is_clean(self):
@@ -295,62 +295,23 @@ INDEX = """# Plan Index
 """
 
 
-def violated(owner):
+def violated():
     """GOOD_RULE with its status replaced, not appended.
 
     Appending `status = ...` would put a second `status` key in the same
     [[rule]] table, which TOML forbids — tomllib raises TOMLDecodeError and the
     test errors instead of asserting anything.
     """
-    return GOOD_RULE.replace('status = "holds"',
-                             f'status = "violated"\nowner = "{owner}"')
+    return GOOD_RULE.replace('status = "holds"', 'status = "violated"')
 
 
-class OwnerTest(unittest.TestCase):
-    def build(self, root, rule_text):
-        write(root, "taxonomy.toml", MINIMAL_TAXONOMY)
-        write(root, "operations.toml", MINIMAL_OPS)
-        write(root, "conflict.toml", rule_text)
-        (root / "plans").mkdir(exist_ok=True)
-        (root / "plans" / "000-INDEX.md").write_text(INDEX)
-        return rules.load(root)
-
+class PlanStatusTest(unittest.TestCase):
     def test_index_is_parsed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "plans").mkdir()
             (root / "plans" / "000-INDEX.md").write_text(INDEX)
             self.assertEqual(rules.plan_statuses(root)["042"], "completed")
-
-    def test_owner_that_is_completed_is_reported(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            model = self.build(pathlib.Path(tmp), violated("042"))
-            problems = rules.check_owners(model)
-            self.assertTrue(any("042" in p and "completed" in p for p in problems))
-
-    def test_owner_that_is_open_is_clean(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            model = self.build(pathlib.Path(tmp), violated("041"))
-            self.assertEqual(rules.check_owners(model), [])
-
-    def test_owner_not_in_index_is_reported(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            model = self.build(pathlib.Path(tmp), violated("099"))
-            self.assertTrue(any("099" in p for p in rules.check_owners(model)))
-
-    def test_test_gap_owner_is_checked_too(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            # test_gap is a new key, so appending is safe here.
-            model = self.build(pathlib.Path(tmp),
-                               GOOD_RULE + '\ntest_gap = "weak"\nowner = "042"\n')
-            self.assertTrue(any("042" in p for p in rules.check_owners(model)))
-
-    def test_in_progress_is_an_open_owner(self):
-        # 054 owns 26 of its own test gaps and is in-progress, not planned.
-        with tempfile.TemporaryDirectory() as tmp:
-            model = self.build(pathlib.Path(tmp),
-                               GOOD_RULE + '\ntest_gap = "weak"\nowner = "054"\n')
-            self.assertEqual(rules.check_owners(model), [])
 
 
 CLOSURES_INDEX = """# Plan Index
@@ -531,7 +492,7 @@ class ClosuresTest(unittest.TestCase):
     def test_completed_plan_claiming_a_violated_rule_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            model = self.build(root, violated("041"), {"042": "R01"})
+            model = self.build(root, violated(), {"042": "R01"})
             problems = rules.check_closures(model)
             self.assertTrue(any("R01" in p and "042" in p for p in problems))
 
@@ -544,14 +505,14 @@ class ClosuresTest(unittest.TestCase):
     def test_violated_rule_claimed_by_nobody_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            model = self.build(root, violated("041"), {})
+            model = self.build(root, violated(), {})
             problems = rules.check_closures(model)
             self.assertTrue(any("R01" in p for p in problems))
 
     def test_violated_rule_claimed_by_an_open_plan_is_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            model = self.build(root, violated("041"), {"041": "R01"})
+            model = self.build(root, violated(), {"041": "R01"})
             self.assertEqual(rules.check_closures(model), [])
 
     def test_claim_naming_a_nonexistent_rule_id_is_reported(self):
@@ -571,7 +532,7 @@ class ClosuresTest(unittest.TestCase):
     def test_superseded_plan_claiming_a_violated_rule_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            model = self.build(root, violated("041"), {"006": "R01"})
+            model = self.build(root, violated(), {"006": "R01"})
             problems = rules.check_closures(model)
             self.assertTrue(
                 any("R01" in p and "006" in p and "superseded" in p for p in problems))
@@ -579,15 +540,15 @@ class ClosuresTest(unittest.TestCase):
     def test_deferred_plan_claiming_a_violated_rule_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            model = self.build(root, violated("041"), {"028": "R01"})
+            model = self.build(root, violated(), {"028": "R01"})
             problems = rules.check_closures(model)
             self.assertTrue(
                 any("R01" in p and "028" in p and "deferred" in p for p in problems))
 
     def test_claiming_plan_absent_from_the_index_is_reported_distinctly(self):
         # Distinct from "claimed by no open plan" — this plan does not exist
-        # in plans/000-INDEX.md at all, the same gap check_owners already
-        # names for its own 'owner' field.
+        # in plans/000-INDEX.md at all, so its status is unknowable rather
+        # than closed, and saying so names the actual defect.
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             model = self.build(root, GOOD_RULE, {"099": "R01"})
@@ -602,7 +563,7 @@ class ClosuresTest(unittest.TestCase):
         # surface on its own.
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            model = self.build(root, violated("041"), {"041": "R01"})
+            model = self.build(root, violated(), {"041": "R01"})
             plan_file(root, "039-x.md", raw_frontmatter=(
                 "---\nname: Test\nstatus: designing\ncreated: 2026-08-06\n"
                 "closes_rules: R01\n"
@@ -627,26 +588,12 @@ class ClosuresTest(unittest.TestCase):
     def test_quoted_id_is_recognized_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            model = self.build(root, violated("041"), {})
+            model = self.build(root, violated(), {})
             plan_file(root, "041-x.md", raw_frontmatter=(
                 '---\nname: Test\nstatus: planned\ncreated: 2026-08-07\n'
                 'closes_rules: ["R01"]\n'
                 'description: >\n  words\n---\n\n# words\n'))
             self.assertEqual(rules.check_closures(model), [])
-
-    def test_dropping_closes_rules_orphans_a_rule_while_check_owners_stays_silent(self):
-        """The property that justifies retiring check_owners in Task 17: a
-        rule's owner field can still name a live, open plan while no plan's
-        closes_rules claims it. check_owners cannot see that gap — it never
-        reads closes_rules — check_closures can. Pinned here so Task 17
-        cannot remove check_owners out from under an unverified assumption.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            model = self.build(root, violated("041"), {})
-            self.assertEqual(rules.check_owners(model), [])
-            problems = rules.check_closures(model)
-            self.assertTrue(any("R01" in p for p in problems))
 
 
 # Shapes taken from a probe binary built against the repo's gtest 1.17.0, and
@@ -777,7 +724,7 @@ class TestAnchorTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             text = (GOOD_RULE
-                    .replace('status = "holds"', 'status = "violated"\nowner = "041"')
+                    .replace('status = "holds"', 'status = "violated"')
                     .replace(PASSING, DISABLED))
             self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
 
@@ -788,19 +735,20 @@ class TestAnchorTest(unittest.TestCase):
             problems = rules.check_tests(model, self.results(root))
             self.assertTrue(any("R01" in p and "no test" in p for p in problems))
 
-    def test_holds_rule_with_no_test_but_a_gap_and_owner_is_clean(self):
-        # R26's shape: the code satisfies the rule, nothing pins it, 054 owns it.
+    def test_holds_rule_with_no_test_but_a_gap_is_clean(self):
+        # R26's shape: the code satisfies the rule and nothing pins it, which
+        # the gap text says instead of the rule claiming evidence it lacks.
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             text = (GOOD_RULE.replace(f"tests = [{PASSING}]", "tests = []")
-                    + '\ntest_gap = "nothing calls it with an unknown path"\nowner = "054"\n')
+                    + '\ntest_gap = "nothing calls it with an unknown path"\n')
             self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
 
     def test_violated_rule_with_no_test_is_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             text = (GOOD_RULE
-                    .replace('status = "holds"', 'status = "violated"\nowner = "041"')
+                    .replace('status = "holds"', 'status = "violated"')
                     .replace(f"tests = [{PASSING}]", "tests = []"))
             self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
 
@@ -810,7 +758,7 @@ class TestAnchorTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             text = (GOOD_RULE
-                    .replace('status = "holds"', 'status = "violated"\nowner = "059"')
+                    .replace('status = "holds"', 'status = "violated"')
                     .replace(PASSING, '"DatabaseTest.PurgeSnapshotMarksOmittedFaces"'))
             self.assertEqual(rules.check_tests(self.build(root, text), self.results(root)), [])
 
@@ -951,6 +899,19 @@ class RenderTest(unittest.TestCase):
         text = rules.render(self.build())["by-asset.md"]
         self.assertIn("client-process", text)
         self.assertIn("Protected by no rule.", text)
+
+    def test_a_rule_with_a_gap_is_badged_in_both_pivots(self):
+        # by-invariant renders the gap text in full under the rule; by-asset
+        # has no room for it and would otherwise show a bare "holds" for a
+        # rule whose evidence the record itself says is thin.
+        views = rules.render(self.build(GOOD_RULE + '\ntest_gap = "no test drives it"\n'))
+        self.assertIn("### R01 — holds (test gap)", views["by-invariant.md"])
+        self.assertIn("no test drives it", views["by-invariant.md"])
+        self.assertIn("holds (test gap)", views["by-asset.md"])
+
+    def test_a_rule_with_no_gap_is_badged_with_its_status_alone(self):
+        for text in rules.render(self.build()).values():
+            self.assertNotIn("(test gap)", text)
 
     def test_no_view_has_trailing_whitespace(self):
         for name, text in rules.render(self.build()).items():

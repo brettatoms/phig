@@ -35,7 +35,6 @@ protects = ["db-row", "attachment"]
 tests = ["ScannerTest.SkipsUnknownExtensions"]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The listed test pins the allowlist with .pdf, .db, .txt and .DS_Store; no test in the suite puts a real sidecar extension in front of scan_directory, so the disjointness the statement turns on is read off the two extension sets rather than asserted. One scan over a directory holding a photo and its .xmp would close it."
 
 [[rule]]
@@ -60,7 +59,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The demotion half is well covered and the predicate has six tests of its own. The skip is not tested at any level: nothing runs ScanEngine over a directory holding a RAW and its JPEG to assert one row comes out, which is the RAW analogue of ScanEngineLivePhoto.IndexesTheStillAndNotItsPairedVideo. It was measured by running the binary instead."
 
 [[rule]]
@@ -79,7 +77,6 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "Every listed test drives the success path: the parent moves and the attachment follows. The negative half is untested — neither OrganizeEngineTest.ApplySkipsItemsWithNoDestination nor ApplySkipsAnItemWhoseDestinationBecameOccupied puts a sidecar next to the source, so nothing asserts that a skipped parent leaves its attachment where it is."
 
 [[rule]]
@@ -112,7 +109,6 @@ protects = ["attachment", "original-file"]
 tests = ["RemoveExecTest.RemoveMediaCarriesSidecarsNotSiblings"]
 test_kind = "witness"
 status = "holds"
-owner = "054"
 test_gap = "The listed test covers a RAW with an append-style sidecar and a same-stem JPEG. Nothing covers a Live Photo's video, which is not same-stem in general and is excluded for the same reason — the sidecar allowlist — so that half of the statement rests on reading find_sidecars rather than on a test."
 
 [[rule]]

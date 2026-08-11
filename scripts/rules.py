@@ -15,7 +15,9 @@ STATUSES = {"holds", "partial", "violated", "unenforced"}
 TEST_KINDS = {"witness", "conformance", "subprocess", "sanitizer"}
 TIERS = {"engine", "boundary"}
 SURFACES = {"abi", "cli", "http"}
-NEEDS_OWNER = {"partial", "violated"}
+# Recorded debt: the code does not do what the rule says. A rule in one of
+# these states must be claimed by an open plan's closes_rules — check_closures.
+NEEDS_CLAIM = {"partial", "violated"}
 
 REQUIRED = ("id", "tier", "concern", "statement", "rationale",
             "enforced_at", "protects", "tests", "test_kind", "status")
@@ -71,11 +73,6 @@ def check_schema(model):
             problems.append(f"{rid}: status must be one of {sorted(STATUSES)}")
         if rule.get("test_kind") not in TEST_KINDS:
             problems.append(f"{rid}: test_kind must be one of {sorted(TEST_KINDS)}")
-
-        if rule.get("status") in NEEDS_OWNER and not rule.get("owner"):
-            problems.append(f"{rid}: status '{rule.get('status')}' requires an owner")
-        if rule.get("test_gap") and not rule.get("owner"):
-            problems.append(f"{rid}: test_gap requires an owner")
 
         if rule.get("tier") == "engine":
             if "binds" not in rule:
@@ -215,7 +212,8 @@ def check_sources(model):
                 problems.append(
                     f"{rid}: enforced_at '{rel}' is outside core/ and libphig/ — "
                     f"a rule enforced there is unreachable by a client, so it is "
-                    f"status = \"violated\" with an owner, not status = \"holds\"")
+                    f"status = \"violated\" claimed by an open plan's closes_rules, "
+                    f"not status = \"holds\"")
                 continue
             path = model.root / rel
             if not path.is_file():
@@ -344,38 +342,20 @@ def plan_closure_malformed(root):
     return _scan_closes_rules(root)[1]
 
 
-def check_owners(model):
-    """Check 3: a violated or partial rule names an open plan, and so does any
-    test_gap (which is what the design numbered check 10)."""
-    problems = []
-    statuses = plan_statuses(model.root)
-    for rule in model.rules:
-        owner = rule.get("owner")
-        if not owner:
-            continue
-        rid = rule.get("id", "<no id>")
-        why = ("status " + rule.get("status", "?")
-               if rule.get("status") in NEEDS_OWNER else "test_gap")
-        status = statuses.get(owner)
-        if status is None:
-            problems.append(f"{rid}: owner '{owner}' ({why}) is not in plans/000-INDEX.md")
-        elif status not in OPEN_PLAN_STATUSES:
-            problems.append(
-                f"{rid}: owner '{owner}' ({why}) is '{status}', not an open plan — "
-                f"either the debt is paid and the rule should change, or it needs a new owner")
-    return problems
-
-
 def check_closures(model):
-    """The two checks that read closes_rules, alongside check_owners above.
+    """The two checks that read closes_rules, in place of the design's check 3.
+
+    Design check 10 — a test_gap needs an owning plan too — has no successor. A
+    weak test is not unsafe code, so the gap text stands on its own and no plan
+    has to claim it.
 
     1. A plan cannot be closed (completed, superseded, deferred — anything
        not in OPEN_PLAN_STATUSES) while closes_rules still names a rule that
        is 'violated' or 'partial' — the stronger half, since it gates real
        work rather than a live pointer.
     2. Every 'violated' or 'partial' rule is claimed by some open plan's
-       closes_rules — the orphaned-debt guarantee check_owners already gives,
-       stated from the side that can act on it.
+       closes_rules — the orphaned-debt guarantee, stated from the side that
+       can act on it.
 
     Also reports a closes_rules id that names no rule in the record at all —
     a plan claiming a retired rule should say so rather than pass — a plan
@@ -409,7 +389,7 @@ def check_closures(model):
                 problems.append(
                     f"plan '{plan}': closes_rules claims {rid}, but '{plan}' is not "
                     f"in plans/000-INDEX.md")
-            elif plan_status not in OPEN_PLAN_STATUSES and rule.get("status") in NEEDS_OWNER:
+            elif plan_status not in OPEN_PLAN_STATUSES and rule.get("status") in NEEDS_CLAIM:
                 problems.append(
                     f"{rid}: plan '{plan}' is '{plan_status}', not an open plan, but "
                     f"its closes_rules still claims {rid}, which is still "
@@ -418,7 +398,7 @@ def check_closures(model):
                 claimed_by_open_plan.add(rid)
 
     for rule in model.rules:
-        if rule.get("status") not in NEEDS_OWNER:
+        if rule.get("status") not in NEEDS_CLAIM:
             continue
         rid = rule.get("id", "<no id>")
         if rid not in claimed_by_open_plan:
@@ -496,8 +476,8 @@ def check_tests(model, results):
     would mean 'holds' forever with nothing behind it. A violated or partial
     rule's tests are checked for existence only, because R08's and R40's pin
     the contrary behaviour on purpose. And a 'holds' rule may name no test at
-    all when it carries a test_gap and an owner, which is what rules/README.md
-    defines that shape to mean.
+    all when it carries a test_gap, which is what rules/README.md defines that
+    shape to mean.
     """
     problems = []
     for rule in model.rules:
@@ -511,9 +491,9 @@ def check_tests(model, results):
 
         if rule.get("status") != "holds":
             continue
-        if not names and not (rule.get("test_gap") and rule.get("owner")):
+        if not names and not rule.get("test_gap"):
             problems.append(f"{rid}: status 'holds' but no test named, and no "
-                            f"test_gap with an owner saying why")
+                            f"test_gap saying why")
         for name in names:
             if results.get(name) == "failed":
                 problems.append(f"{rid}: test '{name}' failed")
@@ -609,9 +589,15 @@ SURFACES_ORDER = ("abi", "cli", "http")
 
 
 def _badge(rule):
+    """A rule's status, marked when its own record says the evidence is thin.
+
+    by-asset.md has one Status column and no room for the gap text, so without
+    the marker a rule whose only witness skips in CI reads there as a plain
+    'holds' — the record disclosing a weak pin and the view hiding it. The
+    text itself appears in full in by-invariant.md's Test gap row.
+    """
     status = rule.get("status", "?")
-    owner = rule.get("owner")
-    return f"{status} ({owner})" if owner else status
+    return f"{status} (test gap)" if rule.get("test_gap") else status
 
 
 def render(model):
@@ -687,7 +673,7 @@ def render(model):
     }
 
 
-CHECKS = [check_schema, check_sources, check_owners, check_coverage, check_abi_version,
+CHECKS = [check_schema, check_sources, check_coverage, check_abi_version,
           check_closures]
 
 

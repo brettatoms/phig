@@ -79,9 +79,9 @@ position, and no document states it.
 
 The deliverable is a stated position plus whichever code change follows, and the
 corresponding update to plan 054's conflict records — `rules/conflict.toml`
-carries this as `status = "violated"` with `owner = "059"` until it resolves.
-It does not touch the reconcile side, the layered guards themselves, or the
-per-item override semantics 042 settled.
+carries this as `status = "violated"`, claimed by this plan's `closes_rules`,
+until it resolves. It does not touch the reconcile side, the layered guards
+themselves, or the per-item override semantics 042 settled.
 
 ## Relationship to other plans
 

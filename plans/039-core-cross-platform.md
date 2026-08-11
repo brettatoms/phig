@@ -78,8 +78,8 @@ rewrites.
 the call site that has to pass the parsed `--db` path through is
 `acquire_writer_lock` in `cli/main.cpp`. Until that follow-up lands, a widened
 `lock_path()` changes nothing a CLI user can observe. R50 in
-`rules/concurrency.toml` records the whole rule, names this plan as `owner`,
-and says the same thing in its `test_gap`.
+`rules/concurrency.toml` records the whole rule and says the same thing in its
+`test_gap`; this plan's `closes_rules` claims it.
 
 Confirmed non-issues, so they don't reappear as questions later: threading is
 only `std::thread`/`std::mutex`/`hardware_concurrency()`; `core/dates.cpp:97`

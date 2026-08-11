@@ -157,8 +157,9 @@ collection:
 - **Rules record:** the build-and-test job's **ubuntu leg** runs
   `scripts/rules.py`'s own unit tests, then `python3 scripts/rules.py --check
   --emit --test-results <gtest xml>`, then `git diff --exit-code rules/`. That
-  is five decay checks over `rules/*.toml` plus an ABI-version comparison, and
-  a requirement that the three generated `rules/by-*.md` views match what was
+  is five decay checks over `rules/*.toml` — schema, anchors, tests, surface
+  classification, plan closures — plus an ABI-version comparison, and a
+  requirement that the three generated `rules/by-*.md` views match what was
   committed — regenerate them, never edit them. Deliberately not in the lint
   job: check 2 reads a gtest XML, which needs the compiled test binary that
   `lint` has no reason to build. See "Rules of record" below.
@@ -500,17 +501,18 @@ Four working rules:
   it is a finding to record, not a record to file. This is Interface
   discipline above, applied to data safety. CI enforces it rather than trusting
   it: an anchor under `cli/` fails the build unless the rule's `status` is
-  `violated`, where the misplacement is the thing being recorded and `owner`
-  names the plan moving the code.
+  `violated`, where the misplacement is the thing being recorded and an open
+  plan's `closes_rules` claims the rule.
 - **Behaviour no rule states? Write the rule.** A new guard, a new operation,
   or a behaviour discovered while reading code each need a record. The
   discovered-while-reading case is the important one — that is how all five
   original findings surfaced, and none was ever reported as a bug.
 - **A rule the code violates is recorded, not deleted.** Set `status =
-  "violated"` and name an open plan as `owner`. Deleting the inconvenient rule
-  turns the record into a description of the code, which is the one thing it
-  must never become. The same applies to `test_gap` when a test is weaker than
-  the claim it pins.
+  "violated"` and add the rule id to an open plan's `closes_rules`. Deleting
+  the inconvenient rule turns the record into a description of the code, which
+  is the one thing it must never become. The same applies to `test_gap` when a
+  test is weaker than the claim it pins — that one needs no plan, because a
+  weak test is not unsafe code.
 
 An **operation** in `rules/operations.toml` is a `core/` primitive that
 surfaces hang off (`surfaces_cli`, `surfaces_abi`, `surfaces_http`), not a CLI
@@ -523,10 +525,11 @@ that covers it.
 from the TOML by `scripts/rules.py --emit` and are never hand-edited.** An edit
 to one is discarded on the next run and fails CI in the meantime, because the
 build-and-test job regenerates all three and diffs them against what was
-committed. The same run checks that anchors resolve, that a `holds` rule's
-tests exist and pass, that recorded debt names an open plan, that every ABI
-symbol and CLI command is classified, and that the ABI version macros agree
-with the CMake `VERSION`/`SOVERSION`.
+committed. The same run checks the records' own schema, that anchors resolve,
+that a `holds` rule's tests exist and pass, that every `violated` or `partial`
+rule is claimed by an open plan's `closes_rules` and that no closed plan still
+claims one, that every ABI symbol and CLI command is classified, and that the
+ABI version macros agree with the CMake `VERSION`/`SOVERSION`.
 
 Status: the enumeration phase is complete, reported in
 `docs/plans/2026-08-09-054-enumeration-report.md` — for how many rules there
