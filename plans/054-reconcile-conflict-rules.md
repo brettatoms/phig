@@ -137,7 +137,43 @@ much known data-safety debt exists, and who owns each item, becomes a number.
   recorded to unrecorded — the outcome the conditional demotion existed to
   avoid. R64's prose was corrected instead: `holds`, owner 054, with the
   narrowed gap named.
-- **Phase 3 — the missing tests, and flag coverage.** Its test task list is
+- **Phase 2b — a rule must not name a plan.** Raised after phase 2 merged, and
+  it corrects a mistake in this plan's own design rather than in its execution.
+  `owner` answers "who will fix this", which is a work-tracking question, and
+  putting it on the rule ties a permanent statement about code safety to a
+  document that gets completed and stops being touched. The reference points the
+  wrong way: the shorter-lived artifact should name the longer-lived one.
+
+  Measured against the merged set: **44 of 70 rules name a plan**, so closing
+  any one of those plans fires `check_owners` on every rule pointing at it —
+  26 for this plan alone. And **28 of the 44 are not about unsafe code at
+  all**: the code satisfies the rule and only the test is weak. Those rules
+  carry a scheduling field that has nothing to do with what they assert.
+
+  The fix is to invert the link. A plan declares the rules it closes; a rule
+  says nothing about plans and keeps only what bears on safety — its statement,
+  its `status`, its `test_gap`. `check_owners` is replaced by two checks that
+  are stronger than the one they retire: **a plan cannot be `completed` while a
+  rule it claimed to close is still `violated` or `partial`**, which gates real
+  work and which nothing checks today; and **every `violated` or `partial` rule
+  is claimed by some open plan**, which is the orphaned-debt guarantee the
+  current check gives, stated from the side that can act on it.
+
+  One question to settle first, because it decides 28 of the 44: **does a
+  `test_gap` need an owner at all?** A weak test is not unsafe code. It may be
+  enough for the rule to say the evidence is thin and let the work find them by
+  grep, which would drop those couplings without replacing them.
+
+  Blast radius, measured: 44 rules, 6 references in `scripts/rules.py`, 8 in
+  `rules/README.md`, 4 in the generated views, 2 in the root `CLAUDE.md`.
+
+  **This sequences before phase 3.** Phase 3's first workstream is closing the
+  26 `test_gap` records that name this plan, and doing that through a field
+  being removed would mean doing it twice.
+
+- **Phase 3 — the missing tests, and flag coverage.** Depends on phase 2b; the
+  `test_gap` records it works from are the ones phase 2b decides the shape of.
+  Its test task list is
   written after phase 1, because which rules lack a test is what the enumeration
   discovers — the `test_gap` records are that list, and `rules/by-invariant.md`
   renders each one under its rule with the owning plan. The second
