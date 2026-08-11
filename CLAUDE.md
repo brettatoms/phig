@@ -25,7 +25,7 @@ tools that look for that filename resolve to something.
 | `scripts/` | Dev tooling (e.g. `clang-tidy.sh`). | — |
 | `docs/` | Cross-project specs/ledgers from when phig, phig-gtk, and phig-web were separate repos, plus execution artifacts owned by a numbered plan. Date-stamped files. | Historical record |
 | `plans/` | Numbered implementation plans (`NNN-name.md`) for the whole monorepo — the single index of what's outstanding. | Working index |
-| `rules/` | phig's data-integrity rules as TOML records: what must be true when a destination is occupied, when a row's file is gone, and what may destroy user-authored metadata. Plan 054. | Normative |
+| `rules/` | phig's data-integrity rules as TOML records: what must be true when a destination is occupied, when a row's file is gone, and what may destroy user-authored metadata. Plus three views generated from them by `scripts/rules.py`, which CI also runs as a decay check. Plan 054. | Normative |
 | `MARKET.md` | Competitive analysis: the field, its recurring weaknesses, phig's differentiators. Dated, additive. | Working document |
 
 See each directory's `CLAUDE.md` for what it is, its stability contract, and
@@ -468,13 +468,17 @@ appeared to, each found by reading six files while designing something else.
 
 Four working rules:
 
-- **Changing a guard means updating its record in the same commit.** A rule
-  whose `enforced_at` no longer matches the code is worse than no rule,
-  because the next design will trust it.
+- **Changing a guard means updating its record in the same commit**, then
+  running `python3 scripts/rules.py --check --emit` and committing the
+  regenerated views alongside it. A rule whose `enforced_at` no longer matches
+  the code is worse than no rule, because the next design will trust it.
 - **Enforcement belongs in `core/` or `libphig/`, never `cli/`.** A guard that
   lives in `cli/` is unreachable by libphig, by `phigd`, and by every GUI — so
   it is a finding to record, not a record to file. This is Interface
-  discipline above, applied to data safety.
+  discipline above, applied to data safety. CI enforces it rather than trusting
+  it: an anchor under `cli/` fails the build unless the rule's `status` is
+  `violated`, where the misplacement is the thing being recorded and `owner`
+  names the plan moving the code.
 - **Behaviour no rule states? Write the rule.** A new guard, a new operation,
   or a behaviour discovered while reading code each need a record. The
   discovered-while-reading case is the important one — that is how all five
@@ -492,13 +496,22 @@ including ones added later. A function that mutates but is internal to an
 operation goes in `core_internal`; rules anchor at it and bind the operation
 that covers it.
 
-Status: the enumeration phase is complete — 67 rules across the nine concerns,
-reported in `docs/plans/2026-08-09-054-enumeration-report.md`. The set is still
-incomplete on CLI flags: 054's phase 3 writes rules for the mutation-capable
-ones and records the read-only ones as `n/a`. The generator that produces the
-by-invariant / by-operation / by-asset views and the CI checks that keep records
-honest are phase 2 and do not exist yet, so records are maintained and verified
-by hand.
+`rules/by-invariant.md`, `by-operation.md` and `by-asset.md` are **generated
+from the TOML by `scripts/rules.py --emit` and are never hand-edited.** An edit
+to one is discarded on the next run and fails CI in the meantime, because the
+build-and-test job regenerates all three and diffs them against what was
+committed. The same run checks that anchors resolve, that a `holds` rule's
+tests exist and pass, that recorded debt names an open plan, that every ABI
+symbol and CLI command is classified, and that the ABI version macros agree
+with the CMake `VERSION`/`SOVERSION`.
+
+Status: the enumeration phase is complete, reported in
+`docs/plans/2026-08-09-054-enumeration-report.md` — for how many rules there
+are now, run `python3 scripts/rules.py --check`, which prints the count from
+the records themselves. The report's figure was three short within a week, so
+this file does not carry one. The set is still incomplete on CLI flags: 054's
+phase 3 writes rules for the mutation-capable ones and records the read-only
+ones as `n/a`.
 
 ## Conventions
 

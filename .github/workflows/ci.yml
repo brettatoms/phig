@@ -50,7 +50,37 @@ jobs:
       # registers each target's cases into the same ctest run, so this one
       # invocation gates on the perf suite too, not just the fast default one.
       - name: Test
+        id: test
         run: ctest --test-dir build --output-on-failure --parallel
+
+      # Ubuntu only, on both steps below: the rule record describes the repo,
+      # not a platform, so running it on the macOS leg as well doubles the work
+      # for no extra coverage.
+      #
+      # Both also run after a failing suite, which is what the explicit
+      # condition buys — a bare `if:` carries an implicit success(), and a red
+      # Test step would then skip the step that says which rule the failing test
+      # was pinning. The Test step above is what gates on the suite, so tolerating
+      # its failure here hides nothing.
+      - name: Rules record — unit tests
+        if: ${{ runner.os == 'Linux' && (success() || steps.test.outcome == 'failure') }}
+        run: python3 -m unittest discover -s scripts -t scripts -p 'test_*.py'
+
+      # ctest registers one ctest test per gtest case (gtest_discover_tests), so
+      # it produces no single gtest XML — hence invoking the binary directly for
+      # one. Its exit code is dropped for the reason above; a run that dies
+      # before writing results is still reported, because rules.py rejects an
+      # unreadable or empty XML rather than reading it as every cited test
+      # having been deleted.
+      - name: Rules record — check and regenerate
+        if: ${{ runner.os == 'Linux' && (success() || steps.test.outcome == 'failure') }}
+        run: |
+          ./build/phig-tests --gtest_output=xml:build/test-results.xml || true
+          python3 scripts/rules.py --check --emit --test-results build/test-results.xml
+          git diff --exit-code rules/ || {
+            echo "::error::rules/by-*.md are generated from rules/*.toml. Run 'python3 scripts/rules.py --emit' and commit the result — do not edit the views by hand."
+            exit 1
+          }
 
   # Sanitizers. Two configurations because ASan and TSan cannot be combined.
   #

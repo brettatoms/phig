@@ -20,3 +20,15 @@ of its own.
 - The progress printer renders `ProgressQueue<T>` updates from a `core/`
   engine; it does not decide wording for engine-side stages, only how to
   print what the engine already labeled.
+
+## Rules of record
+
+`cli/` is not an enforcement site for `rules/`. It appears there as an
+operation's `surfaces_cli` entry in `rules/operations.toml` — the command a
+`core/` primitive is reached through — and nothing more.
+
+A rule whose `enforced_at` names `cli/main.cpp` is therefore a guard in the
+wrong place, not a record of how `cli/` is meant to work: it is recorded with
+`status = "violated"` and the plan that will move the guard into `core/` as its
+`owner`. CI accepts a `cli/` anchor on that shape of rule alone. Three are in
+that position today — R68 (owner 053), R69 (060) and R70 (043).

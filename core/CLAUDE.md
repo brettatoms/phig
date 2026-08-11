@@ -32,3 +32,12 @@ run_workers` / `run_reconcile`), the split exists because only some phases
 are safely cancellable — a phase that mutates user-authored metadata inside
 one logged operation may not poll the token. Check the class comment before
 assuming cancellation covers the whole `run()`.
+
+## Rules of record
+
+A data-integrity guard in this directory is recorded in `rules/`, and most of
+phig's rules anchor here — root `CLAUDE.md` puts enforcement in `core/` or
+`libphig/` and nowhere else. Changing a guard means updating its record's
+`enforced_at` and re-running `python3 scripts/rules.py --check --emit` in the
+same commit. CI resolves every anchor against the source, so renaming or
+deleting an enforcing symbol without touching its record fails the build.

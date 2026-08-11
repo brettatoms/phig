@@ -146,6 +146,26 @@ defensible. Unresolved, and out of scope for plan 031.
   decision type, not of the mechanism — organize's conflict resolutions are,
   reconcile's deletions are not. Plans 041 and 042.
 
+## Rules of record
+
+The ABI rules in the section above are recorded in `rules/boundary.toml`. That
+is a pointer, not a claim that the two lists match — they do not, in both
+directions. The export-list bullet has no rule; R67 (`phig_op_free` joins the
+operation's worker rather than detaching it) is a record with no bullet; and
+two of the file's eight records bind `cli` rather than `abi`. Read the TOML for
+the record and this file for the practice, and change both together: CI
+resolves every `enforced_at` anchor against the source. It also compares the
+header's `PHIG_ABI_VERSION_MAJOR`/`MINOR` against `CMakeLists.txt`'s `VERSION`
+and `SOVERSION`, so the symbol-bump bullet above is now checked rather than
+left to whoever remembers it.
+
+An operation in `rules/operations.toml` with an empty `surfaces_abi` is an ABI
+gap the record set can name — ten of the seventeen operations are in that state.
+It is not another spelling of "What is missing" above, which is the wider
+hand-maintained inventory plan 053 owns: most of that table's rows are
+capabilities rather than operations, and the three `relink.*` operations appear
+in it nowhere.
+
 ## Not covered by CI lint
 
 `libphig/include/phig/phig.h` is nested below the `-maxdepth 1` clang-format
