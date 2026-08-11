@@ -75,9 +75,10 @@ inside `gtk/`) and 13 tests across two binaries — see `gtk/CLAUDE.md`.
 
 ### Sanitizers
 
-CI runs ASan+UBSan and TSan as two ubuntu jobs on every push, configured
-through `CMAKE_CXX_FLAGS` (there is no `PHIG_SANITIZE` option). To reproduce
-one locally:
+CI runs ASan+UBSan and TSan as two ubuntu jobs, configured through
+`CMAKE_CXX_FLAGS` (there is no `PHIG_SANITIZE` option). They run on the weekly
+schedule and on `workflow_dispatch`, not on every push — see "CI" below. To
+reproduce one locally:
 
 ```bash
 cmake -B build-san -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -166,6 +167,20 @@ collection:
   above on ubuntu only), ASan+UBSan and TSan (see Sanitizers above), a gtk job
   that installs libphig and then builds and tests `gtk/` against it through
   pkg-config, and the lint gate. GitHub Actions are pinned to full commit SHAs.
+- **Not every job runs on every push.** A push or PR gets the ubuntu test leg,
+  gtk and lint — 15 billable minutes. The macOS leg and both sanitizer jobs are
+  weekly (Mondays 09:00 UTC) plus `workflow_dispatch`, which runs the full set
+  on any branch: `gh workflow run CI --ref <branch>`. macOS runners bill at 10x,
+  so that one job was 40 of a full run's 71 minutes and 64% of a month's spend.
+  A change to platform code, or anything you want a sanitizer verdict on before
+  merging, needs the manual run — a green PR has not been near macOS or TSan.
+- **Prose-only pushes do not run CI at all.** `paths-ignore` covers `plans/`,
+  `docs/` and top-level `*.md`. `rules/` is deliberately not in that list: the
+  ubuntu leg gates its records and generated views.
+- **Builds use ccache** on the test and gtk jobs, cached across runs by
+  `actions/cache`. Each build job prints `ccache --show-stats`, which is where
+  to look if a build step is slower than expected. The sanitizer jobs are
+  deliberately excluded: at a weekly cadence their cache is always stale.
 
 ## Tech stack
 
