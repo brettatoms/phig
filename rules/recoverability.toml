@@ -126,3 +126,29 @@ tests = ["OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted"]
 test_kind = "witness"
 status = "violated"
 test_gap = "The listed test pins the cancellation case, where organize does write interrupted. Nothing covers a run with per-file errors, which is where the two commands disagree, and nothing pins either command's exit code on that path."
+
+[[rule]]
+id = "R83"
+tier = "engine"
+concern = "recoverability"
+statement = "An operation that fails against the database reports the cause: the message it raises names what SQLite refused, not the state of the connection after the rollback that followed."
+rationale = "It does not, at three sites in core/database.cpp, all of them on the delete path. delete_paths_logged and log_prune each open a transaction and then define a `fail` lambda that runs exec('ROLLBACK') first and reads sqlite3_errmsg(db_) second; delete_paths inlines that order twice, at its prepare guard and inside its delete loop. sqlite3_errmsg reports the connection's most recent result, and a ROLLBACK that succeeds is the most recent thing that happened on it, so the cause is overwritten before the message is built and the connection answers 'not an error'. Measured with a BEFORE DELETE trigger raising ABORT (tests/fault_injection.h's BlockedImageDeletes, and the same shape on operations for log_prune): delete_paths_logged threw `Failed to delete path '/x/a.jpg': not an error`, delete_paths threw the identical string, and log_prune threw `Failed to prune operations: not an error`. The abort text the trigger raised reached nobody in any of the three. What is lost is the diagnosis, not the data — the ROLLBACK is correct and discards the transaction whole (R18, R30) — but it is lost from every place phig keeps a reason, at once. That string is what cmd_rm's and run_reconcile's callers print and what the diagnostic log records, and the activity log has no reason field: both catch handlers close the operation as 'interrupted' (R27) and write nothing else. So a removal that failed on a full disk, on a busy timeout that expired, on a foreign-key constraint or on an I/O error produces one sentence in all four cases, and the operator cannot tell a failure worth retrying from one that will never succeed. The same file has the right shape in two forms: step_write_or_throw builds its message from sqlite3_errmsg immediately after the step that failed, and init_schema's three migration blocks, insert_batch and update_path all use `catch (...) { exec('ROLLBACK'); throw; }`, which rolls back and rethrows the original exception with its text intact. Reading the message into a local before the rollback is the whole of what the statement asks for. Two throws from inside these same transactions do keep their text, because they never reach `fail`: delete_faces_for_image's step_write_or_throw and log_add_entry both throw directly. Read from the code rather than measured here, that is why the erasure has gone unnoticed — `Failed to delete face vectors: SQL logic error`, the one database failure phig actually sees in the field (plan 046), takes the other route, and it does not reproduce on this machine. Plan 060 owns it. R27 is the sibling that decides the routing: it is already 060's, it protects the same asset, and it is the same kind of defect one branch over — R27 is a failed run recorded with the wrong terminal status, this is a failed run recorded with no reason at all. The fit is imperfect and the imperfection is the plan's title: 060's runs report success, and this one reports failure. That strain is the one 060 already accepted for R81, whose third case also exits 1, and the plan's unifying sentence is about the signal the user is given rather than about the exit code. Plan 041 was the alternative considered — it rewrites delete_paths and delete_paths_logged for R25 and R40, so it will have two of these three anchors open in front of it — and was rejected because log_prune is not among its files and because a plan about splitting reconcile into decide and apply would be closing this one in passing."
+enforced_at = [
+    "core/database.cpp:delete_paths",
+    "core/database.cpp:delete_paths_logged",
+    "core/database.cpp:log_prune",
+]
+binds = [
+    "scan.reconcile", "remove.trash", "remove.hard", "remove.db-only", "remove.orphans",
+    "organize.copy", "organize.move",
+]
+# activity-log alone, and it is the record of why rather than the record of
+# what: the rows, files and entries are all where the rollback left them, and
+# nothing here can destroy one. What is destroyed is the only account of the
+# failure phig ever produces, and no field in operations or operation_entries
+# holds a copy of it.
+protects = ["activity-log"]
+tests = []
+test_kind = "witness"
+status = "violated"
+test_gap = "Nothing asserts what a failed database operation reports. DatabaseTest.PurgeEntryRollsBackWithTheDeleteItDescribes injects the very abort this rule was measured with and then checks the message only for `Failed to delete path '/x/a.jpg'`, the half delete_paths_logged builds itself, so it passes with the cause erased — which is how the erasure survived the test written against that window. tests/fault_injection.h records it in the header comment on BlockedImageDeletes, as the reason that helper's witness is a counter in C++ rather than the abort text. A test asserting this statement fails today at all three sites, so none is written."

@@ -2,7 +2,7 @@
 name: Silent Loss on a Successful Run
 status: designing
 created: 2026-08-10
-closes_rules: [R27, R48, R60, R69, R73, R81]
+closes_rules: [R27, R48, R60, R69, R73, R81, R83]
 description: >
   Four measured defects that share one shape: the operation finishes, reports
   success, exits 0, and something that mattered is gone or wrongly counted.
@@ -238,6 +238,54 @@ moving the guard, not writing it.
 It does not gate R60, and the two are still worth deciding together — an
 authorization step in front of a rebuild blunts a typo as well, and a parser
 that refuses unknown flags does not make an unprompted rebuild safe.
+
+## R83 — a failed delete reports no reason
+
+Added by plan 054's phase 3, and the one finding here about a run that *fails*.
+`delete_paths_logged` and `log_prune` (`core/database.cpp:972` and `:729`) each
+define a `fail` lambda that runs `exec("ROLLBACK")` and then reads
+`sqlite3_errmsg(db_)`; `delete_paths` inlines the same order twice, at `:944`
+and `:959`. A ROLLBACK that succeeds is the connection's most recent result, so
+by the time the message is built the cause is gone. Measured with a
+`BEFORE DELETE` trigger raising `ABORT`: `Failed to delete path '/x/a.jpg': not
+an error` from both delete functions, `Failed to prune operations: not an error`
+from the prune. The abort's own text reached nobody.
+
+Nothing is lost from disk or from the database — the rollback is correct. What
+is lost is the only account of the failure phig produces: that string is what
+the caller prints and what the diagnostic log records, and the activity log has
+no reason field, so R27's `interrupted` is the whole of the record. A full disk,
+an expired busy timeout, a constraint and an I/O error all read the same, and
+the operator cannot tell a retry worth making from one that never will be.
+
+The fix is to read the message into a local before the rollback, at three sites.
+`step_write_or_throw` in the same file already has the right shape, and so do
+the five `catch (...) { exec("ROLLBACK"); throw; }` blocks that rethrow the
+original exception untouched.
+
+It is here because R27 is its sibling: same asset, same file for one of the
+three anchors, and the same kind of defect one branch over — R27 is a failed run
+recorded with the wrong terminal status, this is a failed run recorded with no
+reason at all. It strains the title in the same direction R81 does, and further:
+every branch of it reports failure. The plan's subject is the signal the user is
+given, and here the signal carries nothing. Plan 041 was the alternative — it
+rewrites `delete_paths` and `delete_paths_logged` for R25 and R40, so two of the
+three anchors are already open in front of it — and was rejected because
+`log_prune` is not among its files and because closing this in passing is how a
+three-line fix acquires the schedule of a reconcile redesign.
+
+Independent of the fix and not claimed by this rule: a throw from
+`delete_faces_for_image` or `log_add_entry` inside `delete_paths_logged` reaches
+no `fail` at all, so the transaction it opened is never rolled back. That is why
+the erasure went unnoticed — the one database failure phig sees in the field
+(plan 046) takes that route and keeps its text — but it leaves the transaction
+open. Measured with a `BEFORE INSERT ON operation_entries` trigger raising
+`ABORT`: `delete_paths_logged` threw `Failed to insert operation entry:
+phig-test-fault: entry blocked` and left `sqlite3_get_autocommit` at 0, and the
+caller's `log_finish_operation(op_id, "interrupted")` then succeeded inside that
+same open transaction, so the `interrupted` status is never committed. Neither
+`run_reconcile` nor `cmd_rm` rolls back on this path; the connection's close
+does.
 
 ## Ordering: R60 does not wait for the others
 
