@@ -12,6 +12,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "database.h"
 #include "paths.h"
@@ -65,6 +66,20 @@ class RemoveExecTest : public ::testing::Test {
         info.height = 1;
         info.metadata_json = "{}";
         db->insert(info);
+    }
+
+    // Rows in `table` of the test database.
+    int count_table(const std::string& table) {
+        std::string sql = "SELECT COUNT(*) FROM " + table;
+        int n = -1;
+        sqlite3_exec(
+            db->db_ptr(), sql.c_str(),
+            [](void* out, int, char** v, char**) {
+                *static_cast<int*>(out) = std::atoi(v[0]);
+                return 0;
+            },
+            &n, nullptr);
+        return n;
     }
 
     // Count operation_entries rows of a given kind for a src path.
@@ -194,6 +209,29 @@ TEST_F(RemoveExecTest, RemoveMediaCarriesSidecarsNotSiblings) {
     EXPECT_EQ(count_entries("trash", xmp), 1);
 }
 
+// The other half of the same statement. A Live Photo's video is an attachment
+// of its still, carried on mv and cp — but removal takes only find_sidecars'
+// output, whose allowlist holds no media extension, so the video is left
+// behind. The pair here is real: live_photo_still.jpg carries the identifier
+// live_photo.mov carries, and both are given the same stem, which is the shape
+// a stem-matching sidecar finder would take by mistake.
+TEST_F(RemoveExecTest, RemoveMediaLeavesAPairedLivePhotoVideoAlone) {
+    const std::string still = (photos / "shot.jpg").string();
+    const std::string video = (photos / "shot.mov").string();
+    fs::copy_file("tests/data/live_photo_still.jpg", still);
+    fs::copy_file("tests/data/live_photo.mov", video);
+    const auto video_size = fs::file_size(video);
+    int64_t op = db->log_begin_operation("rm", "phig rm", "2026-07-12T00:00:00Z");
+
+    auto acted = remove_media_with_sidecars(*db, still, /*hard=*/false, op);
+
+    EXPECT_FALSE(fs::exists(still));
+    ASSERT_TRUE(fs::exists(video)) << "an attachment deleted with its parent is not recoverable";
+    EXPECT_EQ(fs::file_size(video), video_size);
+    EXPECT_EQ(acted, std::vector<std::string>{still});
+    EXPECT_EQ(count_entries("trash", video), 0) << "the video must not be logged as removed";
+}
+
 TEST_F(RemoveExecTest, RmTrashRemovesFileAndRow) {
     std::string p = (photos / "a.jpg").string();
     write_file(p, "x");
@@ -255,6 +293,35 @@ TEST_F(RemoveExecTest, RmDryRunTouchesNothing) {
     EXPECT_EQ(cmd_rm(opts), 0);
     EXPECT_TRUE(fs::exists(p));                  // untouched
     EXPECT_EQ(db->get_all_images().size(), 1u);  // row kept
+    // The preview returns before log_begin_operation, so nothing about the
+    // selection is recorded either.
+    EXPECT_EQ(count_table("operations"), 0) << "a preview must not open an operation";
+    EXPECT_EQ(count_table("operation_entries"), 0);
+}
+
+// The second half of the same rule, and the surprising half: what a dry run
+// does not skip is the connection. cmd_rm constructs a Database and calls
+// init_schema before it reads dry_run, so a preview against a path with no
+// database there creates one at the current schema version. The selection is
+// necessarily empty — a database that did not exist has no rows — which is
+// exactly the run a caller expects to be inert.
+TEST_F(RemoveExecTest, RmDryRunCreatesAndMigratesADatabaseThatWasNotThere) {
+    const std::string fresh = (root / "fresh.db").string();
+    ASSERT_FALSE(fs::exists(fresh));
+
+    RemoveOptions opts;
+    opts.db_path = fresh;
+    opts.matches = {"*c.jpg"};
+    opts.mode = RemoveMode::Trash;
+    opts.dry_run = true;
+    opts.assume_yes = true;
+
+    EXPECT_EQ(cmd_rm(opts), 0);
+
+    ASSERT_TRUE(fs::exists(fresh)) << "the preview left no database behind";
+    Database opened(fresh);
+    EXPECT_EQ(opened.schema_version(), Database::expected_schema_version())
+        << "the preview created the file but left it un-migrated";
 }
 
 TEST_F(RemoveExecTest, ConfirmCallbackRefusalCancelsTheOperation) {

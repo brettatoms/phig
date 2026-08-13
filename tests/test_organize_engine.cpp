@@ -267,6 +267,10 @@ TEST_F(OrganizeEngineTest, ApplySkipsItemsWithNoDestination) {
     Database db(db_path);
     db.init_schema();
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    {
+        std::ofstream f(dir / "src" / "a.xmp");
+        f << "sidecar";
+    }
     fs::create_directories(dir / "out" / "2019");
     {
         std::ofstream f(dir / "out" / "2019" / "a.jpg");
@@ -283,6 +287,10 @@ TEST_F(OrganizeEngineTest, ApplySkipsItemsWithNoDestination) {
     EXPECT_EQ(result.applied, 0u);
     EXPECT_EQ(result.skipped, 1u);
     EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg")) << "a skipped source stays put";
+    // An attachment is carried only after its parent's own action returned, so
+    // a parent that was never acted on carries nothing.
+    EXPECT_TRUE(fs::exists(dir / "src" / "a.xmp")) << "a skipped parent's sidecar stays put";
+    EXPECT_EQ(result.files_written, 0u) << "a skipped parent writes no files at all";
 }
 
 // Sidecars move with their parent and are counted separately, so the denominator
@@ -378,6 +386,10 @@ TEST_F(OrganizeEngineTest, ApplySkipsAnItemWhoseDestinationBecameOccupied) {
     Database db(db_path);
     db.init_schema();
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    {
+        std::ofstream f(dir / "src" / "a.xmp");
+        f << "sidecar";
+    }
 
     OrganizeEngine engine(base_opts(), db);
     CancelToken cancel;
@@ -400,6 +412,12 @@ TEST_F(OrganizeEngineTest, ApplySkipsAnItemWhoseDestinationBecameOccupied) {
     f >> content;
     EXPECT_EQ(content, "latecomer") << "the file that arrived first must survive";
     EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg"));
+    // The parent's action never ran, so its attachment must not have moved
+    // either -- an orphaned sidecar in the destination would name a photo that
+    // is not there.
+    EXPECT_TRUE(fs::exists(dir / "src" / "a.xmp")) << "a skipped parent's sidecar stays put";
+    EXPECT_FALSE(fs::exists(dir / "out" / "2019" / "a.xmp"));
+    EXPECT_EQ(result.files_written, 0u) << "a skipped parent writes no files at all";
 }
 
 // An explicit override is the caller's authority to replace, so re-verification

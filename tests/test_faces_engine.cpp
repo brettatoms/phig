@@ -387,16 +387,31 @@ TEST(FacesEngineRun, ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun) {
         running.store(false);
     });
 
+    ProgressQueue<FacesProgress> q;
+    FacesResult r;
     std::string threw;
     try {
-        engine.run(tok, nullptr);
+        r = engine.run(tok, &q);
     } catch (const std::exception& e) {
         threw = e.what();
     }
     running.store(false);
     deleter.join();
+    q.close();
 
     EXPECT_TRUE(threw.empty()) << "the rebuild aborted instead of skipping: " << threw;
+
+    // "Nothing threw" alone would pass a run whose timing missed the race
+    // entirely, which is the same verdict a broken guard gets on a lucky run.
+    // The engine counts a lost row as an error and publishes the reason, so
+    // both are asserted: a run that never enters the window now fails.
+    EXPECT_GT(r.errors, 0u) << "no file was skipped -- the race window was never entered";
+    size_t vanished = 0;
+    FacesProgress p;
+    while (q.try_pop(p)) {
+        if (p.error.find("image no longer in the database") != std::string::npos) vanished++;
+    }
+    EXPECT_GT(vanished, 0u) << "no progress line named a row that vanished mid-run";
 }
 
 // A rebuild deletes an image's faces before re-detecting them, and an empty

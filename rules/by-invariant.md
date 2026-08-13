@@ -500,19 +500,18 @@ The snapshot lives in operation_entries.restore_json, so the switch that turns o
 | Evidence | witness: `ScanEngine.RemovesRowsForFilesThatDisappeared` |
 | Test gap | The unlogged branch is well covered for deletion and not at all for the snapshot's absence. ScratchCollection::options() sets log_enabled = false for every ScanEngine test in tests/test_scan_engine.cpp, and three of them delete files and rescan through delete_paths — the listed one, ScanEngine.ReconcileStillRunsAfterCancellation and ScanEngine.IgnoreMountWarningOverridesTheGuard. All three assert the rows are gone; none asserts that no operation and no entry were written, which is the clause this rule turns on and which came from running the binary. |
 
-### R26 — holds (test gap)
+### R26 — holds
 
 delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns.
 
-Plan 041's guard inventory names this as the third of three guards on the delete path, so that once reconcile is split into a plan and an apply, a plan entry that has gone stale deletes nothing rather than something else. The guard is correct; nothing pins it yet — one call with an unknown path would. Filed as holds rather than unenforced, per the holds-plus-test_gap shape for a rule the code satisfies but no test fully pins, which R49, R53, R54 and R64 also use; unenforced stays reserved for a rule nothing could pin even in principle, which this is not. The skip is silent a second way: both callers discard the returned count. cmd_rm prints rows_to_delete.size() at remove_exec.cpp:198 and run_reconcile sets removed_count = removed_paths.size() at scan_engine.cpp:588, so a skipped path is still reported as removed.
+Plan 041's guard inventory names this as the third of three guards on the delete path, so that once reconcile is split into a plan and an apply, a plan entry that has gone stale deletes nothing rather than something else. One call with an unknown path beside a real one pins all three of its clauses at once. Filed as holds rather than unenforced, per the holds-plus-test_gap shape for a rule the code satisfies but no test fully pins, which R49, R53, R54 and R64 also use; unenforced stays reserved for a rule nothing could pin even in principle, which this is not. The skip is silent a second way: both callers discard the returned count. cmd_rm prints rows_to_delete.size() at remove_exec.cpp:198 and run_reconcile sets removed_count = removed_paths.size() at scan_engine.cpp:588, so a skipped path is still reported as removed.
 
 | | |
 |---|---|
 | Enforced at | `core/database.cpp:delete_paths_logged` |
 | Binds | `scan.reconcile`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans` |
 | Protects | db-row, activity-log |
-| Evidence | conformance: none |
-| Test gap | Nothing calls delete_paths_logged with a path that has no row, so neither the skip nor the returned count is pinned. Both callers build their list from rows they have just read, so today the branch is reachable only when another writer removes one in between; plan 041's plan/apply split is what makes it reachable in ordinary use, which is why the guard is there. |
+| Evidence | witness: `DatabaseTest.DeletePathsLoggedSkipsAPathWithNoRow` |
 
 ### R27 — violated (test gap)
 
@@ -555,7 +554,7 @@ A face box and its embedding describe pixels, so once the bytes change they desc
 | Binds | `scan.walk` |
 | Protects | user-metadata |
 | Evidence | witness: `DatabaseTest.ReinsertSameContentKeepsFaces`, `DatabaseTest.ReinsertChangedContentClearsFacesAndVecFaces` |
-| Test gap | Both tests call Database::insert directly and assert on the faces and vec_faces tables. Neither carries a person label, so the clause that matters most — an unchanged file keeps the name someone typed — is inferred from the label living on the same row rather than asserted, and nothing drives the pair through ScanEngine, where the has_faces guard against a duplicate second set lives. |
+| Test gap | Both tests now label their face and assert the name is still on the row after an unchanged re-insert and gone after a changed one, so the clause that matters most is asserted rather than inferred. Both still call Database::insert directly: nothing drives the pair through ScanEngine, where the has_faces guard against a duplicate second set lives, and that half needs a real detection run, so it gates on face_path_blocker() like the other face tests. |
 
 ### R37 — holds
 
@@ -654,7 +653,7 @@ move_file declines and throws, but atomic_copy_file ends in a rename that replac
 | Protects | attachment |
 | Evidence | witness: `OrganizeCarryNoClobber.CopyRefusesToClobberAnExistingSidecar`, `OrganizeCarryNoClobber.CopyRefusesToClobberAnExistingSiblingJpeg`, `OrganizeCarryNoClobber.StillCarriesWhenTheDestinationIsFree`, `OrganizeLivePhotoSafety.CopyRefusesToClobberAnExistingVideoAtTheDestination` |
 
-### R42 — holds (test gap)
+### R42 — holds
 
 A metadata sidecar is never indexed as a photo of its own: the walk admits a file only when its extension is in the media allowlist, and no sidecar extension is in it.
 
@@ -665,8 +664,7 @@ A sidecar describes a photo; indexing it would give one shot two rows, double ev
 | Enforced at | `core/scanner.cpp:scan_directory`, `core/scanner.cpp:is_known_media_extension`, `core/sidecar.cpp:is_known_sidecar_extension` |
 | Binds | `scan.walk` |
 | Protects | db-row, attachment |
-| Evidence | witness: `ScannerTest.SkipsUnknownExtensions` |
-| Test gap | The listed test pins the allowlist with .pdf, .db, .txt and .DS_Store; no test in the suite puts a real sidecar extension in front of scan_directory, so the disjointness the statement turns on is read off the two extension sets rather than asserted. One scan over a directory holding a photo and its .xmp would close it. |
+| Evidence | witness: `ScannerTest.SkipsUnknownExtensions`, `ScannerTest.SkipsEverySidecarExtensionBesideAPhoto` |
 
 ### R43 — holds (test gap)
 
@@ -693,8 +691,8 @@ Three kinds of file have no row and so cannot move themselves: a metadata sideca
 | Enforced at | `core/organize_engine.cpp:OrganizeEngine::apply` |
 | Binds | `organize.copy`, `organize.move` |
 | Protects | attachment, original-file |
-| Evidence | witness: `OrganizeEngineTest.SidecarsCountInFilesWrittenNotInApplied`, `OrganizeEngineTest.AttachedJpegForARawCountsInFilesWritten`, `OrganizeExecTest.CarryLogsSidecarEntryWithParentId` |
-| Test gap | Every listed test drives the success path: the parent moves and the attachment follows. The negative half is untested — neither OrganizeEngineTest.ApplySkipsItemsWithNoDestination nor ApplySkipsAnItemWhoseDestinationBecameOccupied puts a sidecar next to the source, so nothing asserts that a skipped parent leaves its attachment where it is. |
+| Evidence | witness: `OrganizeEngineTest.SidecarsCountInFilesWrittenNotInApplied`, `OrganizeEngineTest.AttachedJpegForARawCountsInFilesWritten`, `OrganizeExecTest.CarryLogsSidecarEntryWithParentId`, `OrganizeEngineTest.ApplySkipsItemsWithNoDestination`, `OrganizeEngineTest.ApplySkipsAnItemWhoseDestinationBecameOccupied` |
+| Test gap | Both skip branches now carry a sidecar beside the source and assert it stays there with files_written at 0. The third arm of the statement is still untested: no test drives an item whose own move or copy throws, so 'a parent whose action failed carries nothing' rests on the carry sitting inside the try block after execute_organize_action rather than on a test. |
 
 ### R45 — holds
 
@@ -709,7 +707,7 @@ A sidecar is found by name, so a parent filed as IMG_1-1.CR2 with its sidecar st
 | Protects | attachment |
 | Evidence | witness: `OrganizeExecTest.CarryRenamesSidecarToMatchRenamedParent`, `OrganizeExecTest.CarryHandlesAppendStyleRawSidecar`, `OrganizeExecTest.CarryRenamesAttachedJpegToMatchRenamedRaw`, `OrganizeLivePhotoSafety.CarriesAnUnindexedPairedVideo` |
 
-### R46 — holds (test gap)
+### R46 — holds
 
 Removing a photo removes its metadata sidecars with it and leaves every other file beside it alone, including the attached JPEG and the Live Photo video that belong to it.
 
@@ -720,8 +718,7 @@ The set removed is exactly find_sidecars' output, whose allowlist holds no media
 | Enforced at | `core/remove_exec.cpp:remove_media_with_sidecars`, `core/sidecar.cpp:find_sidecars` |
 | Binds | `remove.trash`, `remove.hard` |
 | Protects | attachment, original-file |
-| Evidence | witness: `RemoveExecTest.RemoveMediaCarriesSidecarsNotSiblings` |
-| Test gap | The listed test covers a RAW with an append-style sidecar and a same-stem JPEG. Nothing covers a Live Photo's video, which is not same-stem in general and is excluded for the same reason — the sidecar allowlist — so that half of the statement rests on reading find_sidecars rather than on a test. |
+| Evidence | witness: `RemoveExecTest.RemoveMediaCarriesSidecarsNotSiblings`, `RemoveExecTest.RemoveMediaLeavesAPairedLivePhotoVideoAlone` |
 
 ### R47 — holds
 
@@ -805,7 +802,7 @@ The gap between reading an id and opening the write transaction is two statement
 | Binds | `faces.rebuild` |
 | Protects | db-row, user-metadata |
 | Evidence | witness: `FacesEngineRun.ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun` |
-| Test gap | The witness asserts only that FacesEngine::run threw nothing — not that a file was skipped, nor that any worker entered the window — so a run whose timing misses the race passes identically to one the guard saved. Its deleter holds the write lock for 400 ms to keep the window wide, and the case takes 739 ms locally against 86 ms for the four-image rebuild next door, but nothing checks the window was entered. The models are no longer the gap: the ubuntu-26.04 leg caches ~/.cache/phig/models and downloads on a miss, and that is the leg scripts/rules.py reads its results from, so check 2 sees this witness pass rather than skip on every push. It skips on the ubuntu-24.04 leg, whose OpenCV is below the 4.8.0 the detector needs (R72). |
+| Test gap | The witness now asserts the window was entered: result.errors above zero and at least one progress line reading 'image no longer in the database', both of which the engine produces only on this branch, so a run whose timing misses the race fails instead of passing identically. What it still does not pin is the 'rather than the whole run' half — its deleter removes every row, so no image survives to have its faces written, and the run's completion is evidenced by the absence of a throw rather than by other files finishing. The models are no longer the gap: the ubuntu-26.04 leg caches ~/.cache/phig/models and downloads on a miss, and that is the leg scripts/rules.py reads its results from, so check 2 sees this witness pass rather than skip on every push. It skips on the ubuntu-24.04 leg, whose OpenCV is below the 4.8.0 the detector needs (R72), so on that leg the rule has no evidence at all. |
 
 ### R53 — holds (test gap)
 
@@ -944,8 +941,8 @@ The preview returns before the confirmation guard and before log_begin_operation
 | Enforced at | `core/remove_exec.cpp:cmd_rm` |
 | Binds | `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans` |
 | Protects | original-file, db-row, activity-log |
-| Evidence | witness: `RemoveExecTest.RmDryRunTouchesNothing` |
-| Test gap | The test checks the file and the row survive; it does not check that no operation row was opened, and nothing pins the second clause at all. Both were measured by running the binary: a dry-run rm against a path with no database left a 120 KB v8 database there, and a dry-run rm against a populated one left the operations table exactly as it found it. |
+| Evidence | witness: `RemoveExecTest.RmDryRunTouchesNothing`, `RemoveExecTest.RmDryRunCreatesAndMigratesADatabaseThatWasNotThere` |
+| Test gap | The two listed tests pin the file, the row, the empty operations and operation_entries tables, and that a preview against a path with no database leaves one there at the current schema version. What is still read off the code rather than asserted is the migration half of the second clause: no test opens an older database and checks a dry run left it upgraded, because the suite has no way to build a pre-v8 file — it was measured by running the binary against a database pinned at schema_version 7, which came back at 8. |
 
 ### R21 — holds (test gap)
 

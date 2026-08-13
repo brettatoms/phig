@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "database.h"
 #include "temp_dir.h"
@@ -126,6 +128,10 @@ TEST_F(DatabaseTest, ReinsertPreservesGallery) {
     EXPECT_TRUE(found);
 }
 
+// A person label is user-authored and nothing can reconstruct it, so an
+// unchanged file must not lose one to an ordinary re-scan. The boxes and
+// embeddings are re-derivable; the name is not, which is why it is asserted
+// here rather than inferred from the face row surviving.
 TEST_F(DatabaseTest, ReinsertSameContentKeepsFaces) {
     db->insert(make_image("/test/a.jpg", "sha1"));
     int64_t id = db->get_image_id("/test/a.jpg");
@@ -135,11 +141,14 @@ TEST_F(DatabaseTest, ReinsertSameContentKeepsFaces) {
     face.y = 2;
     face.width = 10;
     face.height = 10;
-    db->insert_face(id, face);
+    int64_t face_id = db->insert_face(id, face);
+    ASSERT_TRUE(db->set_face_person(face_id, db->get_or_create_person("alice")));
 
     db->insert(make_image("/test/a.jpg", "sha1"));  // same bytes (e.g. --force)
     EXPECT_TRUE(db->has_faces("/test/a.jpg"));
     EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 1);
+    EXPECT_EQ(db->get_images_for_person("alice"), std::vector<std::string>{"/test/a.jpg"})
+        << "an unchanged file must keep the name someone typed";
 }
 
 TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
@@ -151,12 +160,15 @@ TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
     face.y = 2;
     face.width = 10;
     face.height = 10;
-    db->insert_face(id, face);
+    int64_t face_id = db->insert_face(id, face);
+    ASSERT_TRUE(db->set_face_person(face_id, db->get_or_create_person("alice")));
 
     db->insert(make_image("/test/a.jpg", "sha2"));  // content changed
     EXPECT_FALSE(db->has_faces("/test/a.jpg"));
     EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM faces"), 0);
     EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 0);
+    // The label describes a box over pixels that are gone, so it goes with it.
+    EXPECT_TRUE(db->get_images_for_person("alice").empty());
 }
 
 TEST_F(DatabaseTest, InsertFaceReturnsTheNewRowid) {
@@ -891,6 +903,37 @@ TEST_F(DatabaseTest, PurgeLogsRestorableSnapshot) {
     EXPECT_NE(restore.find("shaA"), std::string::npos);
     EXPECT_NE(restore.find("/x/a.jpg"), std::string::npos);
     sqlite3_finalize(s);
+}
+
+// The third of plan 041's three guards on the delete path: a path with no row
+// deletes nothing, logs nothing and is not counted. Both callers build their
+// list from rows they have just read, so today the branch is reachable only
+// when another writer removes one in between — the call itself needs no
+// concurrency to exercise it.
+TEST_F(DatabaseTest, DeletePathsLoggedSkipsAPathWithNoRow) {
+    db->insert(make_image("/x/present.jpg", "shaA"));
+    int64_t op = db->log_begin_operation("rm", "phig rm --db-only", "2026-07-06T00:00:00Z");
+
+    int n = db->delete_paths_logged({"/x/present.jpg", "/x/absent.jpg"}, op);
+    db->log_finish_operation(op, "completed");
+
+    EXPECT_EQ(n, 1) << "a path with no row must not be counted as removed";
+    EXPECT_LT(db->get_image_id("/x/present.jpg"), 0) << "the row that existed was still deleted";
+
+    std::vector<std::string> logged_srcs;
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db->db_ptr(),
+                                 "SELECT src FROM operation_entries WHERE op_id=? AND "
+                                 "kind='purge_row' ORDER BY src",
+                                 -1, &s, nullptr),
+              SQLITE_OK);
+    sqlite3_bind_int64(s, 1, op);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        logged_srcs.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)));
+    }
+    sqlite3_finalize(s);
+    EXPECT_EQ(logged_srcs, std::vector<std::string>{"/x/present.jpg"})
+        << "the absent path must produce no entry";
 }
 
 TEST_F(DatabaseTest, LogPruneAlwaysKeepsNewestOperation) {

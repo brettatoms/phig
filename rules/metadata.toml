@@ -33,7 +33,7 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "Both tests call Database::insert directly and assert on the faces and vec_faces tables. Neither carries a person label, so the clause that matters most — an unchanged file keeps the name someone typed — is inferred from the label living on the same row rather than asserted, and nothing drives the pair through ScanEngine, where the has_faces guard against a duplicate second set lives."
+test_gap = "Both tests now label their face and assert the name is still on the row after an unchanged re-insert and gone after a changed one, so the clause that matters most is asserted rather than inferred. Both still call Database::insert directly: nothing drives the pair through ScanEngine, where the has_faces guard against a duplicate second set lives, and that half needs a real detection run, so it gates on face_path_blocker() like the other face tests."
 
 [[rule]]
 id = "R37"

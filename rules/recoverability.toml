@@ -104,14 +104,13 @@ id = "R26"
 tier = "engine"
 concern = "recoverability"
 statement = "delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns."
-rationale = "Plan 041's guard inventory names this as the third of three guards on the delete path, so that once reconcile is split into a plan and an apply, a plan entry that has gone stale deletes nothing rather than something else. The guard is correct; nothing pins it yet — one call with an unknown path would. Filed as holds rather than unenforced, per the holds-plus-test_gap shape for a rule the code satisfies but no test fully pins, which R49, R53, R54 and R64 also use; unenforced stays reserved for a rule nothing could pin even in principle, which this is not. The skip is silent a second way: both callers discard the returned count. cmd_rm prints rows_to_delete.size() at remove_exec.cpp:198 and run_reconcile sets removed_count = removed_paths.size() at scan_engine.cpp:588, so a skipped path is still reported as removed."
+rationale = "Plan 041's guard inventory names this as the third of three guards on the delete path, so that once reconcile is split into a plan and an apply, a plan entry that has gone stale deletes nothing rather than something else. One call with an unknown path beside a real one pins all three of its clauses at once. Filed as holds rather than unenforced, per the holds-plus-test_gap shape for a rule the code satisfies but no test fully pins, which R49, R53, R54 and R64 also use; unenforced stays reserved for a rule nothing could pin even in principle, which this is not. The skip is silent a second way: both callers discard the returned count. cmd_rm prints rows_to_delete.size() at remove_exec.cpp:198 and run_reconcile sets removed_count = removed_paths.size() at scan_engine.cpp:588, so a skipped path is still reported as removed."
 enforced_at = ["core/database.cpp:delete_paths_logged"]
 binds = ["scan.reconcile", "remove.trash", "remove.hard", "remove.db-only", "remove.orphans"]
 protects = ["db-row", "activity-log"]
-tests = []
-test_kind = "conformance"
+tests = ["DatabaseTest.DeletePathsLoggedSkipsAPathWithNoRow"]
+test_kind = "witness"
 status = "holds"
-test_gap = "Nothing calls delete_paths_logged with a path that has no row, so neither the skip nor the returned count is pinned. Both callers build their list from rows they have just read, so today the branch is reachable only when another writer removes one in between; plan 041's plan/apply split is what makes it reachable in ordinary use, which is why the guard is there."
 
 [[rule]]
 id = "R27"
