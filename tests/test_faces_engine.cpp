@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -17,6 +19,7 @@
 #include "face_path.h"
 #include "faces_engine.h"
 #include "models.h"
+#include "phig_binary.h"
 #include "progress_queue.h"
 #include "types.h"
 
@@ -394,4 +397,66 @@ TEST(FacesEngineRun, ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun) {
     deleter.join();
 
     EXPECT_TRUE(threw.empty()) << "the rebuild aborted instead of skipping: " << threw;
+}
+
+// A rebuild deletes an image's faces before re-detecting them, and an empty
+// match list selects the whole collection -- so a flag the parser does not
+// recognize has to stop the command, not run it over everything. That guard is
+// in argv parsing, which lives in cli/main.cpp and is not linked into
+// phig-tests, so this drives the built binary as a subprocess.
+TEST(FacesEngineRun, CliRejectsAnUnknownFlagWithoutTouchingFaceData) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+
+    ScratchFaces coll(2);
+
+    // One face row carrying a person's name. Written directly rather than
+    // detected: what is being pinned is that the command leaves it alone, and
+    // that holds on a machine with no face models too.
+    int64_t image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    ASSERT_GT(image_id, 0);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 1;
+    face.y = 2;
+    face.width = 10;
+    face.height = 10;
+    int64_t face_id = coll.db->insert_face(image_id, face);
+    ASSERT_GT(face_id, 0);
+    int64_t person_id = coll.db->get_or_create_person("Ada");
+    ASSERT_GT(person_id, 0);
+    ASSERT_TRUE(coll.db->set_face_person(face_id, person_id));
+
+    fs::path out_path = coll.dir / "rebuild-out.txt";
+    std::string cmd = phig_bin.string() + " face rebuild --mtach '" +
+                      (coll.dir / "f0.jpg").string() + "' --db '" + coll.db_path + "' > '" +
+                      out_path.string() + "' 2>&1";
+    int rc = std::system(cmd.c_str());
+    int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+
+    std::ifstream in(out_path);
+    std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    EXPECT_EQ(exit_code, 1) << "output was:\n" << output;
+    EXPECT_NE(output.find("Unknown option: --mtach"), std::string::npos) << "output was:\n"
+                                                                         << output;
+
+    // The assertions that matter: the exit code alone would still pass if the
+    // command destroyed the data on its way out. Nothing was re-detected, and
+    // the labeled row is the same row -- faces.id is AUTOINCREMENT, so a
+    // deleted id is never reissued and this cannot match a replacement.
+    EXPECT_EQ(count_face_rows(coll), 1u) << "output was:\n" << output;
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(coll.db->db_ptr(), "SELECT person_id FROM faces WHERE id = ?", -1,
+                                 &s, nullptr),
+              SQLITE_OK);
+    sqlite3_bind_int64(s, 1, face_id);
+    int step = sqlite3_step(s);
+    int64_t labeled_as = step == SQLITE_ROW ? sqlite3_column_int64(s, 0) : -1;
+    sqlite3_finalize(s);
+    EXPECT_EQ(step, SQLITE_ROW) << "the named face was deleted; output was:\n" << output;
+    EXPECT_EQ(labeled_as, person_id);
 }

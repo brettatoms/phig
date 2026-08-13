@@ -210,26 +210,34 @@ This one is not "silent loss on a *successful* run" in every branch — case 3
 exits 1 — so it stretches the plan's title. It is kept here anyway because the
 plan's subject is the shape, and cases 1 and 2 are the shape exactly.
 
-## R73 — `face rebuild` ignores a flag it does not recognize
+## R73 — an unrecognized flag is rejected in `cli/` only
 
-Added by plan 054's flag pass and claimed here because it is R60's loss with a
-cheaper trigger. Twelve of `cli/main.cpp`'s thirteen flag loops end in an else
-that prints `Unknown option:` and returns 1. `face rebuild`'s (`:1421-1432`)
-has none: it steps over an argument it does not recognize, steps over that
-argument's value too, and runs. `opts.matches` therefore stays empty, which
-selects every image (R74), and the rebuild deletes every selected image's face
-rows including the labels somebody typed.
+Added by plan 054's flag pass, claimed here because it was R60's loss with a
+cheaper trigger, and still claimed because only half of it is closed.
 
-Measured with the built binary against a two-image scratch collection: `phig
-face rebuild --match '*a.jpg'` printed `Rebuilding face data for 1 images...`;
-the same command with the flag misspelled `--mtach` printed `Rebuilding face
-data for 2 images...` and exited 0. A typo widens a one-image rebuild to the
-whole collection and reports success.
+The behaviour is fixed. All thirteen of `cli/main.cpp`'s flag loops now end in
+an else that prints `Unknown option:` and returns 1; `face rebuild`'s
+(`:1421-1435`) was the last to get one. Until it did, an argument that loop did
+not recognize was stepped over along with its value and the run proceeded, which
+left `opts.matches` empty — that selects every image (R74), and the rebuild
+deletes every selected image's face rows, labels included. Measured with the
+built binary against a two-image scratch collection holding one named face:
+`--mtach '*a.jpg'` printed `Rebuilding face data for 2 images...`, exited 0 and
+left the person with no faces attached, where `--match '*a.jpg'` printed
+`Rebuilding face data for 1 images...`. With the else branch the same typo
+prints `Unknown option: --mtach` and exits 1 with the labeled face row
+untouched, pinned by
+`FacesEngineRun.CliRejectsAnUnknownFlagWithoutTouchingFaceData`.
 
-The fix is one else branch, so this does not wait on R60's design decision —
-but the two are worth deciding together, because an authorization step in front
-of a rebuild also blunts this, and a parser that refuses unknown flags does not
-make the unprompted rebuild safe. R73 is recorded in `rules/boundary.toml`.
+What is left is the layer. All thirteen guards are argv validation in `cli/`, so
+libphig and a future `phigd` inherit none of them and each has to refuse input
+it does not recognize on its own. That is why the record stays `violated` in
+`rules/boundary.toml` and why this plan still claims it: the work remaining is
+moving the guard, not writing it.
+
+It does not gate R60, and the two are still worth deciding together — an
+authorization step in front of a rebuild blunts a typo as well, and a parser
+that refuses unknown flags does not make an unprompted rebuild safe.
 
 ## Ordering: R60 does not wait for the others
 
