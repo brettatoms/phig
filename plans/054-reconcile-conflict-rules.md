@@ -1,6 +1,6 @@
 ---
 name: Rules of Record
-status: in-progress
+status: completed
 created: 2026-08-09
 description: >
   Turn phig's unwritten conflict, reconciliation and data-integrity rules into a
