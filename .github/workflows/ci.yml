@@ -131,8 +131,26 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
+      # PHIG_BUILD_JOBS caps compiler parallelism where an unbounded
+      # `--parallel` exhausts the runner. On a cold ccache the ubuntu-26.04 leg
+      # died twice at the same point — 96%, where the largest translation units
+      # compile together — with no diagnostic, ~55s of silence, then every
+      # in-flight compile Terminated at once and exit 143. ubuntu-latest
+      # survived the same commit on a warm cache, compiling 123 of 255 TUs
+      # rather than all of them. The capacity line below is what makes a
+      # recurrence diagnosable rather than a guess.
       - name: Build
-        run: cmake --build build --parallel
+        env:
+          PHIG_BUILD_JOBS: ${{ matrix.os == 'ubuntu-26.04' && '2' || '0' }}
+        run: |
+          echo "cores: $(getconf _NPROCESSORS_ONLN)"
+          free -h 2>/dev/null || true
+          df -h . | tail -1
+          if [ "${PHIG_BUILD_JOBS}" != "0" ]; then
+            cmake --build build --parallel "${PHIG_BUILD_JOBS}"
+          else
+            cmake --build build --parallel
+          fi
 
       # The hit rate is the only evidence that the cache above is doing anything.
       - name: ccache statistics
