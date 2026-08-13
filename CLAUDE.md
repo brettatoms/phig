@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite, 807 tests
+./build/phig-tests        # fast suite, 851 tests
 ./build/phig-perf-tests   # performance suite (~2s), 4 tests
-ctest --test-dir build --parallel   # both — 811, what CI runs (~14s; 48s without --parallel)
+ctest --test-dir build --parallel   # both — 855 (~15s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -53,7 +53,9 @@ CI pins — not required for a build, only for the lint gate to agree with CI.
 
 Performance tests live in a separate target so the everyday suite stays
 fast. Which tests skip depends on the machine, so a skip count only matches
-an environment, not the tree.
+an environment, not the tree. A CI leg reports fewer than a local run — 846 on
+both ubuntu legs against 855 here — because fixtures those tests need are
+absent there, not because tests are missing.
 
 Ten tests need the face path — `ScanEngine.DetectsFacesWithMultipleWorkers`
 plus nine of the ten `FacesEngineRun` cases — and two more exist only to cover
@@ -132,13 +134,27 @@ finding.
 
 ### Real-run checks
 
-Two commands that must keep producing these outputs against the real
-collection:
-
 ```bash
-./build/phig search --count --db ~/.local/share/phig/phig.db   # 29925
 ./build/phig --version                                          # phig 0.3.0
 ```
+
+**The `search --count` check that used to sit here was unsound and has been
+removed.** It read `./build/phig search --count --db
+~/.local/share/phig/phig.db   # 29925`. Two problems, both measured 2026-08-13:
+
+- That database holds zero images. It contains schema v8, no operations, and
+  one tag — `favorite`, the one `init_schema` creates — so it is a database
+  that was never populated rather than one that was emptied. No `scan`, `rm`,
+  `mv` or `cp` in `~/.local/state/phig/phig.log` has ever named that path.
+- **Running the check creates the thing it verifies.** phig opens the database
+  read-write and initializes the schema even for a read (R70), so
+  `search --count` against a missing path makes an empty database and then
+  reports it empty. The check could never fail with "no such database", which
+  is the failure it existed to catch.
+
+A real-run check against a live collection is still worth having. It needs a
+path that a read cannot bring into existence, so write it against a collection
+you have actually scanned and state where.
 
 ### Linting & CI
 
@@ -536,7 +552,11 @@ Four working rules:
   discipline above, applied to data safety. CI enforces it rather than trusting
   it: an anchor under `cli/` fails the build unless the rule's `status` is
   `violated`, where the misplacement is the thing being recorded and an open
-  plan's `closes_rules` claims the rule.
+  plan's `closes_rules` claims the rule. **Such a rule must also name a user
+  asset the command can actually destroy** — the rule's whole value is that a
+  plan moves it into `core/`, so a finding with nothing to move and nothing to
+  protect is an ordinary bug and belongs in a plan's body. Without that bar the
+  record drifts into a bug tracker for `cli/`.
 - **Behaviour no rule states? Write the rule.** A new guard, a new operation,
   or a behaviour discovered while reading code each need a record. The
   discovered-while-reading case is the important one — that is how all five
@@ -562,16 +582,23 @@ build-and-test job regenerates all three and diffs them against what was
 committed. The same run checks the records' own schema, that anchors resolve,
 that a `holds` rule's tests exist and pass, that every `violated` or `partial`
 rule is claimed by an open plan's `closes_rules` and that no closed plan still
-claims one, that every ABI symbol and CLI command is classified, and that the
+claims one, that every ABI symbol, CLI command and CLI flag is classified, and that the
 ABI version macros agree with the CMake `VERSION`/`SOVERSION`.
 
 Status: the enumeration phase is complete, reported in
 `docs/plans/2026-08-09-054-enumeration-report.md` — for how many rules there
 are now, run `python3 scripts/rules.py --check`, which prints the count from
 the records themselves. The report's figure was three short within a week, so
-this file does not carry one. The set is still incomplete on CLI flags: 054's
-phase 3 writes rules for the mutation-capable ones and records the read-only
-ones as `n/a`.
+this file does not carry one.
+
+**CLI flags are covered.** Every long flag `cli/main.cpp` parses sits in either
+`mutating_cli_flags` or `read_only_cli_flags` in `rules/operations.toml`, and
+check 4 fails the build on one that is in neither or in both. A flag is
+mutating when it can change what is written to disk or the database —
+including which files an operation writes to or destroys, not only whether it
+writes at all. Classify by what the flag reaches, never by whether its command
+sounds read-only: `search --similar -` stages its query image through a
+fixed-path truncating write, and was filed read-only until that was measured.
 
 ## Conventions
 
@@ -599,6 +626,13 @@ Reproducible from a clean build at `3177320`, so a change that leaves exactly
 these three failing has not caused them. **Platform-dependent**: all three pass
 on macOS at `7c59d2d` against Apple's system SQLite 3.51.0, so a clean run
 proves the machine, not the fix. Diagnosis in progress: plan 046.
+
+**They no longer reproduce on CI.** All three passed on both the ubuntu-latest
+and ubuntu-26.04 legs on 2026-08-13 (run against `b69dae0`), where the whole
+suite was green. That is a measurement of those runners, not a fix: nothing has
+changed in `delete_faces_for_image` or the vendored vec0, so the likely
+explanation is the environment rather than the code. Do not close 046 on this —
+but do not spend time chasing a failure CI is not showing either.
 
 `DatabaseConcurrency.ConcurrentMigrationIsSafe` was a genuine 10% flake
 caused by `sqlite3_busy_timeout` being set after `PRAGMA
