@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite (~1s), 686 tests
-./build/phig-perf-tests   # performance suite (~3s), 4 tests
-ctest --test-dir build --parallel   # both — 690, what CI runs (~7s; 48s without --parallel)
+./build/phig-tests        # fast suite, 851 tests
+./build/phig-perf-tests   # performance suite (~2s), 4 tests
+ctest --test-dir build --parallel   # both — 855 (~15s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -53,13 +53,26 @@ CI pins — not required for a build, only for the lint gate to agree with CI.
 
 Performance tests live in a separate target so the everyday suite stays
 fast. Which tests skip depends on the machine, so a skip count only matches
-an environment, not the tree. With face models present in
-`~/.cache/phig/models`, the only skip is
-`ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing`. Without them that
-test runs and nine others skip instead — `ScanEngine.DetectsFacesWithMultipleWorkers`
-plus the eight `FacesEngineRun` cases — each naming the missing model file.
-`MoveFileTest.CrossDevice*` (three) skips unless the temp directory is on a
-different filesystem from the test's working directory. If a single
+an environment, not the tree. A CI leg reports fewer than a local run — 846 on
+both ubuntu legs against 855 here — because fixtures those tests need are
+absent there, not because tests are missing.
+
+Ten tests need the face path — `ScanEngine.DetectsFacesWithMultipleWorkers`
+plus nine of the ten `FacesEngineRun` cases — and two more exist only to cover
+a way it can be unavailable. Two conditions gate them, checked in this order by
+`face_path_blocker()` in `tests/face_path.h`:
+
+- **OpenCV ≥ 4.8.0.** Below it the ten skip naming the version, and
+  `ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor` runs instead of
+  skipping. `ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing` also skips,
+  because the version guard fires ahead of the models check.
+- **The models in `~/.cache/phig/models`.** Absent, the ten skip naming the
+  missing file and `FacesModeFailsClearlyWhenModelsAreMissing` runs.
+
+So on an above-floor machine with the models present — the everyday case, and
+the ubuntu-26.04 CI leg — the two clear-failure tests are the only face-path
+skips. `MoveFileTest.CrossDevice*` (three) skips unless the temp directory is
+on a different filesystem from the test's working directory. If a single
 unattributed failure shows up, check
 `DatabaseConcurrency.ConcurrentMigrationIsSafe` first — see Known issues
 below before assuming your change caused it.
@@ -121,13 +134,27 @@ finding.
 
 ### Real-run checks
 
-Two commands that must keep producing these outputs against the real
-collection:
-
 ```bash
-./build/phig search --count --db ~/.local/share/phig/phig.db   # 29925
 ./build/phig --version                                          # phig 0.3.0
 ```
+
+**The `search --count` check that used to sit here was unsound and has been
+removed.** It read `./build/phig search --count --db
+~/.local/share/phig/phig.db   # 29925`. Two problems, both measured 2026-08-13:
+
+- That database holds zero images. It contains schema v8, no operations, and
+  one tag — `favorite`, the one `init_schema` creates — so it is a database
+  that was never populated rather than one that was emptied. No `scan`, `rm`,
+  `mv` or `cp` in `~/.local/state/phig/phig.log` has ever named that path.
+- **Running the check creates the thing it verifies.** phig opens the database
+  read-write and initializes the schema even for a read (R70), so
+  `search --count` against a missing path makes an empty database and then
+  reports it empty. The check could never fail with "no such database", which
+  is the failure it existed to catch.
+
+A real-run check against a live collection is still worth having. It needs a
+path that a read cannot bring into existence, so write it against a collection
+you have actually scanned and state where.
 
 ### Linting & CI
 
@@ -154,22 +181,40 @@ collection:
     against the absolute path, so a leading `^` matches nothing and silently
     suppresses every finding in phig's own headers — which is what it did,
     hiding 16 of them, until commit `b89d6e8`'s follow-up.
-- **Rules record:** the build-and-test job's **ubuntu leg** runs
-  `scripts/rules.py`'s own unit tests, then `python3 scripts/rules.py --check
-  --emit --test-results <gtest xml>`, then `git diff --exit-code rules/`. That
-  is five decay checks over `rules/*.toml` — schema, anchors, tests, surface
+- **Rules record:** the build-and-test job runs it across its two ubuntu legs.
+  On **ubuntu-latest**: `scripts/rules.py`'s own unit tests, then `python3
+  scripts/rules.py --check --emit`, then `git diff --exit-code rules/`. That is
+  four decay checks over `rules/*.toml` — schema, anchors, surface
   classification, plan closures — plus an ABI-version comparison, and a
   requirement that the three generated `rules/by-*.md` views match what was
-  committed — regenerate them, never edit them. Deliberately not in the lint
+  committed — regenerate them, never edit them. On **ubuntu-26.04**: `python3
+  scripts/rules.py --check --test-results <gtest xml>`, which adds check 2, that
+  a `holds` rule's tests exist and pass. Check 2 is the only check that reads a
+  test run, so it goes on the leg with the face models: a skip is neither a pass
+  nor a failure to `rules.py`, so on a models-less leg it would report OK for
+  R52 with its only witness never having run. The rest goes on the stable label
+  rather than on `ubuntu-26.04`, which is Preview. Deliberately not in the lint
   job: check 2 reads a gtest XML, which needs the compiled test binary that
   `lint` has no reason to build. See "Rules of record" below.
 - **CI:** `.github/workflows/ci.yml` runs four jobs — build + test on
-  ubuntu-latest and macos-latest (with `-DPHIG_WERROR=ON`, and the rules gate
-  above on ubuntu only), ASan+UBSan and TSan (see Sanitizers above), a gtk job
-  that installs libphig and then builds and tests `gtk/` against it through
-  pkg-config, and the lint gate. GitHub Actions are pinned to full commit SHAs.
-- **Not every job runs on every push.** A push or PR gets the ubuntu test leg,
-  gtk and lint — 15 billable minutes. The macOS leg and both sanitizer jobs are
+  ubuntu-latest, ubuntu-26.04 and macos-latest (with `-DPHIG_WERROR=ON`, and
+  the rules gate above split across the two ubuntu legs), ASan+UBSan and TSan
+  (see Sanitizers above), a gtk job that installs libphig and then builds and
+  tests `gtk/` against it through pkg-config, and the lint gate. GitHub Actions
+  are pinned to full commit SHAs.
+
+  **Two ubuntu legs, because OpenCV's version decides whether phig can detect a
+  face.** `ubuntu-latest` is 24.04 and ships libopencv-dev 4.6.0, below the
+  4.8.0 the YuNet model needs, so the face tests skip there and the version
+  guard's failure path is what runs. `ubuntu-26.04` ships 4.10.0, is where the
+  face models install, and is the only leg that detects a face. `ubuntu-26.04`
+  is a GitHub **Preview** label: it can change or be withdrawn without a
+  deprecation window, and when 26.04 becomes the default it and `ubuntu-latest`
+  will be the same image.
+- **Not every job runs on every push.** A push or PR gets both ubuntu test
+  legs, gtk and lint. That cost has not been measured since the second ubuntu
+  leg was added; before it, the set was 15 billable minutes.
+  The macOS leg and both sanitizer jobs are
   weekly (Mondays 09:00 UTC) plus `workflow_dispatch`, which runs the full set
   on any branch: `gh workflow run CI --ref <branch>`. macOS runners bill at 10x,
   so that one job was 40 of a full run's 71 minutes and 64% of a month's spend.
@@ -177,11 +222,16 @@ collection:
   merging, needs the manual run — a green PR has not been near macOS or TSan.
 - **Prose-only pushes do not run CI at all.** `paths-ignore` covers `plans/`,
   `docs/` and top-level `*.md`. `rules/` is deliberately not in that list: the
-  ubuntu leg gates its records and generated views.
-- **Builds use ccache** on the test and gtk jobs, cached across runs by
-  `actions/cache`. Each build job prints `ccache --show-stats`, which is where
-  to look if a build step is slower than expected. The sanitizer jobs are
-  deliberately excluded: at a weekly cadence their cache is always stale.
+  ubuntu legs gate its records and generated views.
+- **`actions/cache` carries two things.** ccache on the test and gtk jobs —
+  each build job prints `ccache --show-stats`, which is where to look if a
+  build step is slower than expected — and the 37 MB of face models on the
+  ubuntu-26.04 leg, keyed by the model filenames so the key stays valid until a
+  model is deliberately bumped. A models cache miss costs a download, not a
+  failure. The action's save runs in a post step declared `post-if: success()`,
+  so a red job never writes its cache back and the next run pays the miss
+  again. The sanitizer jobs are deliberately excluded from ccache: at a weekly
+  cadence their cache is always stale.
 
 ## Tech stack
 
@@ -502,7 +552,11 @@ Four working rules:
   discipline above, applied to data safety. CI enforces it rather than trusting
   it: an anchor under `cli/` fails the build unless the rule's `status` is
   `violated`, where the misplacement is the thing being recorded and an open
-  plan's `closes_rules` claims the rule.
+  plan's `closes_rules` claims the rule. **Such a rule must also name a user
+  asset the command can actually destroy** — the rule's whole value is that a
+  plan moves it into `core/`, so a finding with nothing to move and nothing to
+  protect is an ordinary bug and belongs in a plan's body. Without that bar the
+  record drifts into a bug tracker for `cli/`.
 - **Behaviour no rule states? Write the rule.** A new guard, a new operation,
   or a behaviour discovered while reading code each need a record. The
   discovered-while-reading case is the important one — that is how all five
@@ -528,16 +582,23 @@ build-and-test job regenerates all three and diffs them against what was
 committed. The same run checks the records' own schema, that anchors resolve,
 that a `holds` rule's tests exist and pass, that every `violated` or `partial`
 rule is claimed by an open plan's `closes_rules` and that no closed plan still
-claims one, that every ABI symbol and CLI command is classified, and that the
+claims one, that every ABI symbol, CLI command and CLI flag is classified, and that the
 ABI version macros agree with the CMake `VERSION`/`SOVERSION`.
 
 Status: the enumeration phase is complete, reported in
 `docs/plans/2026-08-09-054-enumeration-report.md` — for how many rules there
 are now, run `python3 scripts/rules.py --check`, which prints the count from
 the records themselves. The report's figure was three short within a week, so
-this file does not carry one. The set is still incomplete on CLI flags: 054's
-phase 3 writes rules for the mutation-capable ones and records the read-only
-ones as `n/a`.
+this file does not carry one.
+
+**CLI flags are covered.** Every long flag `cli/main.cpp` parses sits in either
+`mutating_cli_flags` or `read_only_cli_flags` in `rules/operations.toml`, and
+check 4 fails the build on one that is in neither or in both. A flag is
+mutating when it can change what is written to disk or the database —
+including which files an operation writes to or destroys, not only whether it
+writes at all. Classify by what the flag reaches, never by whether its command
+sounds read-only: `search --similar -` stages its query image through a
+fixed-path truncating write, and was filed read-only until that was measured.
 
 ## Conventions
 
@@ -565,6 +626,13 @@ Reproducible from a clean build at `3177320`, so a change that leaves exactly
 these three failing has not caused them. **Platform-dependent**: all three pass
 on macOS at `7c59d2d` against Apple's system SQLite 3.51.0, so a clean run
 proves the machine, not the fix. Diagnosis in progress: plan 046.
+
+**They no longer reproduce on CI.** All three passed on both the ubuntu-latest
+and ubuntu-26.04 legs on 2026-08-13 (run against `b69dae0`), where the whole
+suite was green. That is a measurement of those runners, not a fix: nothing has
+changed in `delete_faces_for_image` or the vendored vec0, so the likely
+explanation is the environment rather than the code. Do not close 046 on this —
+but do not spend time chasing a failure CI is not showing either.
 
 `DatabaseConcurrency.ConcurrentMigrationIsSafe` was a genuine 10% flake
 caused by `sqlite3_busy_timeout` being set after `PRAGMA

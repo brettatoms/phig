@@ -10,6 +10,7 @@
 #include "cancel.h"
 #include "database.h"
 #include "organize_engine.h"
+#include "phig_binary.h"
 #include "progress_queue.h"
 #include "temp_dir.h"
 #include "types.h"
@@ -267,6 +268,10 @@ TEST_F(OrganizeEngineTest, ApplySkipsItemsWithNoDestination) {
     Database db(db_path);
     db.init_schema();
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    {
+        std::ofstream f(dir / "src" / "a.xmp");
+        f << "sidecar";
+    }
     fs::create_directories(dir / "out" / "2019");
     {
         std::ofstream f(dir / "out" / "2019" / "a.jpg");
@@ -283,6 +288,10 @@ TEST_F(OrganizeEngineTest, ApplySkipsItemsWithNoDestination) {
     EXPECT_EQ(result.applied, 0u);
     EXPECT_EQ(result.skipped, 1u);
     EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg")) << "a skipped source stays put";
+    // An attachment is carried only after its parent's own action returned, so
+    // a parent that was never acted on carries nothing.
+    EXPECT_TRUE(fs::exists(dir / "src" / "a.xmp")) << "a skipped parent's sidecar stays put";
+    EXPECT_EQ(result.files_written, 0u) << "a skipped parent writes no files at all";
 }
 
 // Sidecars move with their parent and are counted separately, so the denominator
@@ -378,6 +387,10 @@ TEST_F(OrganizeEngineTest, ApplySkipsAnItemWhoseDestinationBecameOccupied) {
     Database db(db_path);
     db.init_schema();
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    {
+        std::ofstream f(dir / "src" / "a.xmp");
+        f << "sidecar";
+    }
 
     OrganizeEngine engine(base_opts(), db);
     CancelToken cancel;
@@ -400,6 +413,12 @@ TEST_F(OrganizeEngineTest, ApplySkipsAnItemWhoseDestinationBecameOccupied) {
     f >> content;
     EXPECT_EQ(content, "latecomer") << "the file that arrived first must survive";
     EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg"));
+    // The parent's action never ran, so its attachment must not have moved
+    // either -- an orphaned sidecar in the destination would name a photo that
+    // is not there.
+    EXPECT_TRUE(fs::exists(dir / "src" / "a.xmp")) << "a skipped parent's sidecar stays put";
+    EXPECT_FALSE(fs::exists(dir / "out" / "2019" / "a.xmp"));
+    EXPECT_EQ(result.files_written, 0u) << "a skipped parent writes no files at all";
 }
 
 // An explicit override is the caller's authority to replace, so re-verification
@@ -561,4 +580,130 @@ TEST_F(OrganizeEngineTest, CancellationPartwayMarksTheOperationInterrupted) {
     for (const auto& img : db.get_all_images()) {
         EXPECT_TRUE(fs::exists(img.path)) << img.path << " is recorded but missing";
     }
+}
+
+// ---- The dry run below cli/ (R21, R74) ----
+
+namespace {
+// One integer out of a scratch database, over a connection of this test's own.
+// The child process has already exited, so nothing is racing the read.
+int64_t scalar(const std::string& db_path, const char* sql) {
+    sqlite3* raw = nullptr;
+    if (sqlite3_open_v2(db_path.c_str(), &raw, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        ADD_FAILURE() << "could not open " << db_path;
+        if (raw) sqlite3_close(raw);
+        return -1;
+    }
+    sqlite3_stmt* stmt = nullptr;
+    int64_t n = -1;
+    if (sqlite3_prepare_v2(raw, sql, -1, &stmt, nullptr) == SQLITE_OK &&
+        sqlite3_step(stmt) == SQLITE_ROW) {
+        n = sqlite3_column_int64(stmt, 0);
+    } else {
+        ADD_FAILURE() << "query failed: " << sqlite3_errmsg(raw);
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(raw);
+    return n;
+}
+}  // namespace
+
+// OrganizeEngine::plan writes nothing, which the test above pins. The command
+// that calls it opens the database read-write and migrates it before it looks
+// at --dry-run, so the preview is side-effect-free only below cli/ — and that
+// half has never been asserted, only measured by hand. cmd_organize lives in
+// cli/main.cpp and is not linked into phig-tests, so the binary is the way in.
+TEST_F(OrganizeEngineTest, CliDryRunOverAnAbsentDatabaseStillCreatesAndMigratesIt) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    const fs::path absent = dir / "absent.db";
+    const fs::path dest = dir / "out";
+    ASSERT_FALSE(fs::exists(absent));
+
+    PhigRun run = run_phig(phig_bin, dir,
+                           "cp '" + dest.string() + "' --dry-run --db '" + absent.string() + "'");
+
+    // Exit 1, not 0: a database with no rows is refused before the preview is
+    // printed. The refusal is beside the point — the file it just created is
+    // the point.
+    EXPECT_EQ(run.exit_code, 1) << run.output;
+    EXPECT_NE(run.output.find("Database is empty"), std::string::npos) << run.output;
+    EXPECT_FALSE(fs::exists(dest)) << "a preview must not create the destination tree";
+
+    ASSERT_TRUE(fs::exists(absent)) << "measured: the preview leaves a database behind";
+    Database opened(absent.string());
+    EXPECT_EQ(opened.schema_version(), Database::expected_schema_version())
+        << "the preview created the file and migrated it, both before --dry-run was read";
+}
+
+TEST_F(OrganizeEngineTest, CliDryRunPreviewsEveryCopyAndWritesNothingElse) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    {
+        Database db(db_path);
+        db.init_schema();
+        add_image(db, "a.jpg", "2019:07:04 10:00:00");
+        add_image(db, "b.jpg", "2020:01:02 10:00:00");
+    }
+    const fs::path preview_dest = dir / "preview";
+
+    PhigRun preview = run_phig(
+        phig_bin, dir, "cp '" + preview_dest.string() + "' --dry-run --db '" + db_path + "'");
+
+    EXPECT_EQ(preview.exit_code, 0) << preview.output;
+    EXPECT_NE(preview.output.find("[DRY RUN]"), std::string::npos) << preview.output;
+    EXPECT_NE(preview.output.find("2019/07"), std::string::npos) << preview.output;
+    EXPECT_NE(preview.output.find("2020/01"), std::string::npos) << preview.output;
+
+    EXPECT_FALSE(fs::exists(preview_dest)) << "the preview created the destination tree";
+    EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg")) << "the preview moved a source";
+    EXPECT_EQ(scalar(db_path, "SELECT COUNT(*) FROM images"), 2);
+    EXPECT_EQ(scalar(db_path, "SELECT COUNT(*) FROM operations"), 0)
+        << "the preview opened a logged operation";
+    EXPECT_EQ(scalar(db_path, "SELECT COUNT(*) FROM operation_entries"), 0);
+
+    // The control. Without it every assertion above would also hold for a `cp`
+    // that had simply found nothing to do, and the test would pin the fixture
+    // rather than the flag.
+    const fs::path applied_dest = dir / "applied";
+    PhigRun applied =
+        run_phig(phig_bin, dir, "cp '" + applied_dest.string() + "' --db '" + db_path + "'");
+    EXPECT_EQ(applied.exit_code, 0) << applied.output;
+    EXPECT_TRUE(fs::exists(applied_dest / "2019" / "07" / "a.jpg")) << applied.output;
+    EXPECT_TRUE(fs::exists(applied_dest / "2020" / "01" / "b.jpg")) << applied.output;
+}
+
+TEST_F(OrganizeEngineTest, ApplyLeavesAnExcludedFileAndItsRowAlone) {
+    // PlanHonorsMatchAndExclude pins the plan. This pins the move: the file the
+    // caller excluded is still where it was and its row still points at it,
+    // which is what R74 claims and what no test of passes_selection can show.
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "moved.jpg", "2019:07:04 10:00:00");
+    add_image(db, "spared.jpg", "2019:07:04 10:00:00");
+
+    OrganizeOptions o = base_opts();
+    o.excludes.push_back("*spared*");
+    OrganizeEngine engine(o, db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    OrganizeResult result = engine.apply(plan, /*is_move=*/true, cancel, nullptr);
+
+    EXPECT_EQ(result.applied, 1u);
+    EXPECT_EQ(result.errors, 0u);
+    const std::string spared = (dir / "src" / "spared.jpg").string();
+    EXPECT_FALSE(fs::exists(dir / "src" / "moved.jpg")) << "the matched file was not moved";
+    EXPECT_TRUE(fs::exists(spared)) << "--exclude did not reach the move";
+
+    bool row_still_at_source = false;
+    for (const auto& img : db.get_all_images()) {
+        if (img.path == spared) row_still_at_source = true;
+    }
+    EXPECT_TRUE(row_still_at_source) << "the excluded row was rewritten to a destination";
 }

@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -14,8 +16,12 @@
 
 #include "cancel.h"
 #include "database.h"
+#include "face_path.h"
 #include "faces_engine.h"
+#include "fault_injection.h"
 #include "models.h"
+#include "paths.h"
+#include "phig_binary.h"
 #include "progress_queue.h"
 #include "types.h"
 
@@ -66,8 +72,6 @@ struct ScratchFaces {
     }
 };
 
-bool models_or_skip() { return face_models_exist(); }
-
 // Total rows in the faces table. Database exposes insert_face and
 // delete_faces_for_image but no per-image getter, so read the table directly.
 size_t count_face_rows(const ScratchFaces& coll) {
@@ -93,7 +97,7 @@ size_t count_face_rows(const ScratchFaces& coll) {
 }  // namespace
 
 TEST(FacesEngineRun, DetectsFacesInEveryImageAcrossWorkers) {
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 2;
@@ -122,7 +126,7 @@ TEST(FacesEngineRun, DetectsFacesInEveryImageAcrossWorkers) {
 TEST(FacesEngineRun, RerunReplacesRatherThanAccumulatesFaceRows) {
     // The delete-then-reinsert contract. If the delete were dropped, a second
     // rebuild would double every image's face count.
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 2;
@@ -141,7 +145,7 @@ TEST(FacesEngineRun, RerunReplacesRatherThanAccumulatesFaceRows) {
 }
 
 TEST(FacesEngineRun, AlreadyCancelledDetectsNothingAndReportsIncomplete) {
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 2;
@@ -176,7 +180,7 @@ TEST(FacesEngineRun, PublishesModelLoadThenSelectedThenFiles) {
     // Ordering matters for rendering: the CLI prints "Loading face recognition
     // models (N instances)..." before the per-file lines, and model loading is
     // the slowest part of a small rebuild.
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(2);
     FacesRebuildOptions opts;
     opts.parallel = 1;
@@ -205,7 +209,7 @@ TEST(FacesEngineRun, PublishesModelLoadThenSelectedThenFiles) {
 
 TEST(FacesEngineRun, UndecodableFileIsSkippedWithoutFailingTheRun) {
     // A file that cannot be decoded must not abort the rebuild or write rows.
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(2);
     fs::path junk = coll.dir / "broken.jpg";
     {
@@ -238,7 +242,7 @@ TEST(FacesEngineRun, UndecodableFileIsCountedAsAnError) {
     // Skipping the file is right; skipping it silently is not. Without a count,
     // an unreadable image is indistinguishable from one with no faces in it, so
     // a rebuild over a collection with unreadable files reports total success.
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(2);
     fs::path junk = coll.dir / "broken.jpg";
     {
@@ -273,7 +277,7 @@ TEST(FacesEngineRun, UndecodableFilePublishesTheDecodeErrorOnProgress) {
     // own message per decode — and is currently discarded. Route it to the
     // caller the way ScanProgress::error does, so a client can say which file
     // failed and why rather than only how many did.
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(1);
     fs::path junk = coll.dir / "broken.jpg";
     {
@@ -316,7 +320,7 @@ TEST(FacesEngineRun, UndecodableFilePublishesTheDecodeErrorOnProgress) {
 }
 
 TEST(FacesEngineRun, SelectionFiltersRestrictWhatIsProcessed) {
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 1;
@@ -337,7 +341,7 @@ TEST(FacesEngineRun, SelectionFiltersRestrictWhatIsProcessed) {
 // of its loop -- so one deleted image abandons the entire rebuild rather than
 // skipping one file.
 TEST(FacesEngineRun, ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun) {
-    if (!models_or_skip()) GTEST_SKIP() << "face models not found at " << yunet_model_path();
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(40);
 
     std::vector<std::string> paths;
@@ -385,14 +389,222 @@ TEST(FacesEngineRun, ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun) {
         running.store(false);
     });
 
+    ProgressQueue<FacesProgress> q;
+    FacesResult r;
     std::string threw;
     try {
-        engine.run(tok, nullptr);
+        r = engine.run(tok, &q);
     } catch (const std::exception& e) {
         threw = e.what();
     }
     running.store(false);
     deleter.join();
+    q.close();
 
     EXPECT_TRUE(threw.empty()) << "the rebuild aborted instead of skipping: " << threw;
+
+    // "Nothing threw" alone would pass a run whose timing missed the race
+    // entirely, which is the same verdict a broken guard gets on a lucky run.
+    // The engine counts a lost row as an error and publishes the reason, so
+    // both are asserted: a run that never enters the window now fails.
+    EXPECT_GT(r.errors, 0u) << "no file was skipped -- the race window was never entered";
+    size_t vanished = 0;
+    FacesProgress p;
+    while (q.try_pop(p)) {
+        if (p.error.find("image no longer in the database") != std::string::npos) vanished++;
+    }
+    EXPECT_GT(vanished, 0u) << "no progress line named a row that vanished mid-run";
+}
+
+// A rebuild deletes an image's faces before re-detecting them, and an empty
+// match list selects the whole collection -- so a flag the parser does not
+// recognize has to stop the command, not run it over everything. That guard is
+// in argv parsing, which lives in cli/main.cpp and is not linked into
+// phig-tests, so this drives the built binary as a subprocess.
+TEST(FacesEngineRun, CliRejectsAnUnknownFlagWithoutTouchingFaceData) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+
+    ScratchFaces coll(2);
+
+    // One face row carrying a person's name. Written directly rather than
+    // detected: what is being pinned is that the command leaves it alone, and
+    // that holds on a machine with no face models too.
+    int64_t image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    ASSERT_GT(image_id, 0);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 1;
+    face.y = 2;
+    face.width = 10;
+    face.height = 10;
+    int64_t face_id = coll.db->insert_face(image_id, face);
+    ASSERT_GT(face_id, 0);
+    int64_t person_id = coll.db->get_or_create_person("Ada");
+    ASSERT_GT(person_id, 0);
+    ASSERT_TRUE(coll.db->set_face_person(face_id, person_id));
+
+    fs::path out_path = coll.dir / "rebuild-out.txt";
+    std::string cmd = phig_bin.string() + " face rebuild --mtach '" +
+                      (coll.dir / "f0.jpg").string() + "' --db '" + coll.db_path + "' > '" +
+                      out_path.string() + "' 2>&1";
+    int rc = std::system(cmd.c_str());
+    int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+
+    std::ifstream in(out_path);
+    std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    EXPECT_EQ(exit_code, 1) << "output was:\n" << output;
+    EXPECT_NE(output.find("Unknown option: --mtach"), std::string::npos) << "output was:\n"
+                                                                         << output;
+
+    // The assertions that matter: the exit code alone would still pass if the
+    // command destroyed the data on its way out. Nothing was re-detected, and
+    // the labeled row is the same row -- faces.id is AUTOINCREMENT, so a
+    // deleted id is never reissued and this cannot match a replacement.
+    EXPECT_EQ(count_face_rows(coll), 1u) << "output was:\n" << output;
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(coll.db->db_ptr(), "SELECT person_id FROM faces WHERE id = ?", -1,
+                                 &s, nullptr),
+              SQLITE_OK);
+    sqlite3_bind_int64(s, 1, face_id);
+    int step = sqlite3_step(s);
+    int64_t labeled_as = step == SQLITE_ROW ? sqlite3_column_int64(s, 0) : -1;
+    sqlite3_finalize(s);
+    EXPECT_EQ(step, SQLITE_ROW) << "the named face was deleted; output was:\n" << output;
+    EXPECT_EQ(labeled_as, person_id);
+}
+
+// ---- Selection (R74) ----
+
+TEST(FacesEngineRun, AnExcludedImagesFacesAreLeftAlone) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(2);
+
+    // A named face on the image the run is told to skip. A rebuild deletes an
+    // image's faces before re-detecting them, so an --exclude that failed to
+    // reach the engine takes this row and its label with it -- which is the
+    // half of R74 that no test of passes_selection can show.
+    int64_t excluded = coll.db->get_image_id((coll.dir / "f1.jpg").string());
+    ASSERT_GT(excluded, 0);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.width = 10;
+    face.height = 10;
+    int64_t face_id = coll.db->insert_face(excluded, face);
+    ASSERT_GT(face_id, 0);
+    int64_t person_id = coll.db->get_or_create_person("Ada");
+    ASSERT_GT(person_id, 0);
+    ASSERT_TRUE(coll.db->set_face_person(face_id, person_id));
+
+    FacesRebuildOptions opts;
+    opts.parallel = 2;
+    opts.excludes = {"*f1*"};
+    CancelToken tok;
+    FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
+
+    EXPECT_EQ(r.total_selected, 1u);
+    EXPECT_GT(r.faces_detected, 0u) << "the included image was not processed either";
+
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(coll.db->db_ptr(), "SELECT person_id FROM faces WHERE id = ?", -1,
+                                 &s, nullptr),
+              SQLITE_OK);
+    sqlite3_bind_int64(s, 1, face_id);
+    int step = sqlite3_step(s);
+    int64_t labeled_as = step == SQLITE_ROW ? sqlite3_column_int64(s, 0) : -1;
+    sqlite3_finalize(s);
+    EXPECT_EQ(step, SQLITE_ROW) << "--exclude did not reach the delete: the face row is gone";
+    EXPECT_EQ(labeled_as, person_id);
+}
+
+// ---- The other entry points that build a detector (R72) ----
+
+namespace {
+// Points models_dir() at an empty directory for the scope. models_dir() is
+// cache_dir() + "/models" unless overridden, so this drives the missing-models
+// refusal on a machine that has the models installed -- which is the only way
+// these three cases run anywhere but a bare CI leg. The subprocess cases get
+// the same condition from run_phig's redirected XDG_CACHE_HOME.
+struct MissingModels {
+    explicit MissingModels(const fs::path& empty_dir) {
+        fs::create_directories(empty_dir);
+        set_path_overrides(std::nullopt, empty_dir.string(), std::nullopt);
+    }
+    ~MissingModels() { set_path_overrides(std::nullopt, std::nullopt, std::nullopt); }
+};
+
+// What a refusal has to name. Above the OpenCV floor the models are what is
+// missing; below it the version check fires first and the models are beside the
+// point, so the same test runs on both legs and asserts the reason that applies.
+std::string expected_detector_refusal() {
+    return PHIG_FACES_OPENCV_OK ? "models download" : PHIG_FACES_MIN_OPENCV;
+}
+}  // namespace
+
+// Both of R72's existing witnesses are scan-path. FacesEngine::run builds its
+// detectors after selection and before the first worker, on the same claim: the
+// run establishes it can detect before it writes.
+TEST(FacesEngineRun, RefusesTheRunWhenNoDetectorCanBeBuiltAndWritesNothing) {
+    ScratchFaces coll(2);
+    int64_t image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    ASSERT_GT(image_id, 0);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.width = 10;
+    face.height = 10;
+    ASSERT_GT(coll.db->insert_face(image_id, face), 0);
+
+    MissingModels missing(coll.dir / "empty-models");
+    FacesRebuildOptions opts;
+    opts.parallel = 2;
+    CancelToken tok;
+    std::string err = thrown_message([&] { FacesEngine(opts, *coll.db).run(tok, nullptr); });
+
+    EXPECT_NE(err.find(expected_detector_refusal()), std::string::npos)
+        << "the refusal must name what is missing: [" << err << "]";
+    EXPECT_EQ(count_face_rows(coll), 1u)
+        << "a rebuild deletes an image's faces first, so this run wrote before it checked";
+}
+
+TEST(FacesEngineRun, CliFaceNameRefusesWhenNoDetectorCanBeBuilt) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    ScratchFaces coll(1);
+    PhigRun run = run_phig(
+        phig_bin, coll.dir,
+        "face name '" + (coll.dir / "f0.jpg").string() + "' Ada --db '" + coll.db_path + "'");
+
+    EXPECT_EQ(run.exit_code, 1) << run.output;
+    EXPECT_NE(run.output.find(expected_detector_refusal()), std::string::npos) << run.output;
+    EXPECT_TRUE(coll.db->list_people().empty())
+        << "the command named somebody before it found out it could not detect";
+    EXPECT_EQ(count_face_rows(coll), 0u);
+}
+
+TEST(FacesEngineRun, CliSearchByFaceRefusesWhenNoDetectorCanBeBuilt) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    ScratchFaces coll(1);
+    // A copy under a name no row carries, so a listed result is the only thing
+    // that can put "f0.jpg" in the output.
+    fs::path query = coll.dir / "query.jpg";
+    fs::copy_file(coll.dir / "f0.jpg", query);
+
+    PhigRun run = run_phig(phig_bin, coll.dir,
+                           "search --face '" + query.string() + "' --db '" + coll.db_path + "'");
+
+    EXPECT_EQ(run.exit_code, 1) << run.output;
+    EXPECT_NE(run.output.find(expected_detector_refusal()), std::string::npos) << run.output;
+    EXPECT_EQ(run.output.find("f0.jpg"), std::string::npos)
+        << "the search ran anyway: " << run.output;
 }

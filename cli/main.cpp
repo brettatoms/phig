@@ -1428,6 +1428,9 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
                 parallel = std::stoi(argv[++i]);
             } else if (arg == "--db") {
                 i++;  // already handled
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                return 1;
             }
         }
         opts.parallel = parallel;

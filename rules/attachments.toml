@@ -32,10 +32,12 @@ enforced_at = [
 ]
 binds = ["scan.walk"]
 protects = ["db-row", "attachment"]
-tests = ["ScannerTest.SkipsUnknownExtensions"]
+tests = [
+    "ScannerTest.SkipsUnknownExtensions",
+    "ScannerTest.SkipsEverySidecarExtensionBesideAPhoto",
+]
 test_kind = "witness"
 status = "holds"
-test_gap = "The listed test pins the allowlist with .pdf, .db, .txt and .DS_Store; no test in the suite puts a real sidecar extension in front of scan_directory, so the disjointness the statement turns on is read off the two extension sets rather than asserted. One scan over a directory holding a photo and its .xmp would close it."
 
 [[rule]]
 id = "R43"
@@ -56,10 +58,11 @@ tests = [
     "RelinkTest.DemotesJpegToSameBasenameRaw",
     "RelinkTest.LoneJpegNotDemoted",
     "RelinkTest.JpegWithRawRowMissingNotDemoted",
+    "ScanEngine.AJpegBesideARawGetsNoRowOfItsOwn",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The demotion half is well covered and the predicate has six tests of its own. The skip is not tested at any level: nothing runs ScanEngine over a directory holding a RAW and its JPEG to assert one row comes out, which is the RAW analogue of ScanEngineLivePhoto.IndexesTheStillAndNotItsPairedVideo. It was measured by running the binary instead."
+test_gap = "The skip now runs through ScanEngine, but a row count is not what shows it and a later test of this rule that checks only the surviving row would be vacuous. The two halves overlap: with has_sibling_raw removed the JPEG is indexed and then demoted away by the same run, so the collection ends at one row either way. What separates them is the walk counters, which ScanEngine.AJpegBesideARawGetsNoRowOfItsOwn asserts at skipped 1, processed 1, demoted 0."
 
 [[rule]]
 id = "R44"
@@ -74,10 +77,12 @@ tests = [
     "OrganizeEngineTest.SidecarsCountInFilesWrittenNotInApplied",
     "OrganizeEngineTest.AttachedJpegForARawCountsInFilesWritten",
     "OrganizeExecTest.CarryLogsSidecarEntryWithParentId",
+    "OrganizeEngineTest.ApplySkipsItemsWithNoDestination",
+    "OrganizeEngineTest.ApplySkipsAnItemWhoseDestinationBecameOccupied",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "Every listed test drives the success path: the parent moves and the attachment follows. The negative half is untested — neither OrganizeEngineTest.ApplySkipsItemsWithNoDestination nor ApplySkipsAnItemWhoseDestinationBecameOccupied puts a sidecar next to the source, so nothing asserts that a skipped parent leaves its attachment where it is."
+test_gap = "Both skip branches now carry a sidecar beside the source and assert it stays there with files_written at 0. The third arm of the statement is still untested: no test drives an item whose own move or copy throws, so 'a parent whose action failed carries nothing' rests on the carry sitting inside the try block after execute_organize_action rather than on a test."
 
 [[rule]]
 id = "R45"
@@ -106,10 +111,12 @@ rationale = "The set removed is exactly find_sidecars' output, whose allowlist h
 enforced_at = ["core/remove_exec.cpp:remove_media_with_sidecars", "core/sidecar.cpp:find_sidecars"]
 binds = ["remove.trash", "remove.hard"]
 protects = ["attachment", "original-file"]
-tests = ["RemoveExecTest.RemoveMediaCarriesSidecarsNotSiblings"]
+tests = [
+    "RemoveExecTest.RemoveMediaCarriesSidecarsNotSiblings",
+    "RemoveExecTest.RemoveMediaLeavesAPairedLivePhotoVideoAlone",
+]
 test_kind = "witness"
 status = "holds"
-test_gap = "The listed test covers a RAW with an append-style sidecar and a same-stem JPEG. Nothing covers a Live Photo's video, which is not same-stem in general and is excluded for the same reason — the sidecar allowlist — so that half of the statement rests on reading find_sidecars rather than on a test."
 
 [[rule]]
 id = "R47"

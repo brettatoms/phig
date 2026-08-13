@@ -19,6 +19,22 @@ struct FaceDetector::Impl {
     int last_height = 0;
 
     Impl() {
+        // Before the models check, not after: below the floor the models are
+        // beside the point, and telling someone to download them would send
+        // them the wrong way. Every faces entry point constructs one of these
+        // before it touches a file, so both failures arrive with nothing
+        // written.
+        if (!PHIG_FACES_OPENCV_OK) {
+            std::string required = PHIG_FACES_MIN_OPENCV;
+            throw std::runtime_error("Face detection needs OpenCV " + required +
+                                     " or newer; this phig was built against " + CV_VERSION +
+                                     ".\n"
+                                     "The YuNet detection model loads on that version and then "
+                                     "fails on the first detection.\n"
+                                     "Install OpenCV " +
+                                     required + " or newer and rebuild phig.");
+        }
+
         if (!face_models_exist()) {
             throw std::runtime_error(
                 "Face recognition models not found.\n"

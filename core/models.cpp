@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "hasher.h"
 #include "paths.h"
 
 namespace fs = std::filesystem;
@@ -88,28 +89,69 @@ bool download_face_models() {
     std::string dir = models_dir();
     fs::create_directories(dir);
 
+    // The hash sits beside the URL because opencv_zoo serves `main`, not a tag:
+    // a file replaced upstream under the same name would change what phig
+    // detects with nothing in any diff to say so. It also covers a file that is
+    // present but wrong — truncated, half-copied, or restored from a poisoned
+    // cache — which existence alone cannot tell from a good one.
     struct ModelFile {
         std::string url;
         std::string filename;
+        std::string sha256;
     };
 
     std::vector<ModelFile> models = {
         {"https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
          "face_detection_yunet_2023mar.onnx",
-         "face_detection_yunet_2023mar.onnx"},
+         "face_detection_yunet_2023mar.onnx",
+         "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"},
         {"https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/"
          "face_recognition_sface_2021dec.onnx",
-         "face_recognition_sface_2021dec.onnx"},
+         "face_recognition_sface_2021dec.onnx",
+         "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"},
     };
 
     for (const auto& model : models) {
         std::string dest = dir + "/" + model.filename;
+        bool replacing_mismatch = false;
         if (fs::exists(dest)) {
-            std::cout << "Already exists: " << dest << "\n\n";
-            continue;
+            if (compute_sha256(dest) == model.sha256) {
+                std::cout << "Already exists: " << dest << "\n\n";
+                continue;
+            }
+            // Re-download rather than refuse: making the models present and
+            // correct is the whole job of this command, and a wrong file is
+            // not something the person who typed it can be expected to fix by
+            // hand. If the fresh copy is wrong too, that is upstream having
+            // moved, and the check below says so instead of looping.
+            std::cout << "Checksum mismatch, re-downloading: " << dest << "\n";
+            replacing_mismatch = true;
         }
 
         if (!download_file(model.url, dest)) {
+            if (replacing_mismatch) {
+                // download_file removes only its own temporary, so the file
+                // that failed the hash is still at dest and face_models_exist()
+                // still reports it. Kept on purpose: a mismatch is as likely to
+                // mean phig's pin has gone stale against a model opencv_zoo
+                // replaced as it is to mean the file is damaged, and deleting a
+                // working model because the network was down is the worse of
+                // the two mistakes. Said out loud rather than left implicit,
+                // because the next faces run will load it.
+                std::cerr << "Warning: keeping " << dest
+                          << ", which does not match the expected sha256\n";
+            }
+            return false;
+        }
+
+        std::string got = compute_sha256(dest);
+        if (got != model.sha256) {
+            std::cerr << "Error: " << model.filename << " sha256 is " << got << ", expected "
+                      << model.sha256 << "\n";
+            // This one is removed: it arrived just now and was never a working
+            // model, so nothing is lost, and leaving it would let
+            // face_models_exist() report a file phig has just refused.
+            fs::remove(dest);
             return false;
         }
     }

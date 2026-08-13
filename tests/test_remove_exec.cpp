@@ -2,9 +2,6 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#if defined(__APPLE__)
-#include <mach-o/dyld.h>
-#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -15,33 +12,17 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "database.h"
+#include "fault_injection.h"
 #include "paths.h"
+#include "phig_binary.h"
 #include "remove_exec.h"
 #include "temp_dir.h"
 #include "types.h"
 
 namespace fs = std::filesystem;
-
-// Directory holding the running test binary. /proc/self/exe exists only on
-// Linux; macOS needs _NSGetExecutablePath. Returns an empty path if neither
-// works, so callers fall back to a relative build path.
-static fs::path test_binary_dir() {
-    std::error_code ec;
-#if defined(__APPLE__)
-    char buf[4096];
-    uint32_t size = sizeof(buf);
-    if (_NSGetExecutablePath(buf, &size) == 0) {
-        fs::path p = fs::canonical(buf, ec);
-        if (!ec) return p.parent_path();
-    }
-#else
-    fs::path p = fs::canonical("/proc/self/exe", ec);
-    if (!ec) return p.parent_path();
-#endif
-    return {};
-}
 
 class RemoveExecTest : public ::testing::Test {
    protected:
@@ -88,10 +69,92 @@ class RemoveExecTest : public ::testing::Test {
         db->insert(info);
     }
 
+    // Rows in `table` of the test database.
+    int count_table(const std::string& table) {
+        std::string sql = "SELECT COUNT(*) FROM " + table;
+        int n = -1;
+        sqlite3_exec(
+            db->db_ptr(), sql.c_str(),
+            [](void* out, int, char** v, char**) {
+                *static_cast<int*>(out) = std::atoi(v[0]);
+                return 0;
+            },
+            &n, nullptr);
+        return n;
+    }
+
+    // Entries directly under `dir`, or 0 when it does not exist.
+    int count_files(const std::string& dir) {
+        if (!fs::exists(dir)) return 0;
+        int n = 0;
+        for (auto it = fs::directory_iterator(dir); it != fs::end(it); ++it) n++;
+        return n;
+    }
+
+    // status of the newest operation row, or "" when there is none.
+    std::string newest_operation_status() {
+        std::string status;
+        sqlite3_exec(
+            db->db_ptr(), "SELECT status FROM operations ORDER BY id DESC LIMIT 1",
+            [](void* out, int, char** v, char**) {
+                *static_cast<std::string*>(out) = v[0] ? v[0] : "";
+                return 0;
+            },
+            &status, nullptr);
+        return status;
+    }
+
     // Count operation_entries rows of a given kind for a src path.
     int count_entries(const std::string& kind, const std::string& src) {
         std::string sql = "SELECT COUNT(*) FROM operation_entries WHERE kind='" + kind +
                           "' AND src='" + src + "'";
+        int n = 0;
+        sqlite3_exec(
+            db->db_ptr(), sql.c_str(),
+            [](void* out, int, char** v, char**) {
+                *static_cast<int*>(out) = std::atoi(v[0]);
+                return 0;
+            },
+            &n, nullptr);
+        return n;
+    }
+
+    // id of the newest operation row, or 0 when there is none.
+    int64_t newest_operation_id() {
+        int64_t id = 0;
+        sqlite3_exec(
+            db->db_ptr(), "SELECT id FROM operations ORDER BY id DESC LIMIT 1",
+            [](void* out, int, char** v, char**) {
+                *static_cast<int64_t*>(out) = v[0] ? std::atoll(v[0]) : 0;
+                return 0;
+            },
+            &id, nullptr);
+        return id;
+    }
+
+    // The single column `col` of the (kind, src) entry under `op`, or "" when
+    // there is no such entry.
+    std::string entry_column(int64_t op, const std::string& kind, const std::string& src,
+                             const std::string& col) {
+        std::string sql = "SELECT " + col +
+                          " FROM operation_entries WHERE op_id=" + std::to_string(op) +
+                          " AND kind='" + kind + "' AND src='" + src + "'";
+        std::string out;
+        sqlite3_exec(
+            db->db_ptr(), sql.c_str(),
+            [](void* dst, int, char** v, char**) {
+                *static_cast<std::string*>(dst) = v[0] ? v[0] : "";
+                return 0;
+            },
+            &out, nullptr);
+        return out;
+    }
+
+    // How many (kind, src) entries belong to operation `op`.
+    int count_entries_in_op(int64_t op, const std::string& kind, const std::string& src) {
+        std::string sql =
+            "SELECT COUNT(*) FROM operation_entries WHERE op_id=" + std::to_string(op) +
+            " AND kind='" + kind + "' AND src='" + src + "'";
         int n = 0;
         sqlite3_exec(
             db->db_ptr(), sql.c_str(),
@@ -115,6 +178,28 @@ TEST_F(RemoveExecTest, TrashMovesFileAndLogs) {
     EXPECT_TRUE(fs::exists(dst));
     EXPECT_EQ(fs::path(dst).parent_path(), fs::path(trash_dir()));
     EXPECT_EQ(count_entries("trash", src), 1);
+}
+
+// The window between the two, entered rather than reasoned about: the file is
+// moved first and logged afterwards, so a log write that fails leaves the move
+// done and unrecorded. Nothing compensates — the file is not moved back — and
+// for a trashed file that is the case where the name on disk does not say where
+// it came from.
+TEST_F(RemoveExecTest, TrashLeavesTheFileMovedAndUnloggedWhenTheLogWriteFails) {
+    std::string src = (photos / "IMG_5.jpg").string();
+    write_file(src, "data");
+    int64_t op = db->log_begin_operation("rm", "phig rm", "2026-07-12T00:00:00Z");
+
+    BlockedWrites blocked(db->db_ptr());
+    std::string err = thrown_message([&] { execute_trash_action(*db, src, op); });
+    blocked.release();
+
+    EXPECT_NE(err.find(BlockedWrites::kMessage), std::string::npos)
+        << "the log write must be what failed, or nothing below proves anything: [" << err << "]";
+    EXPECT_FALSE(fs::exists(src)) << "the move happened first and is not undone";
+    EXPECT_EQ(count_files(trash_dir()), 1)
+        << "one file in the trash: moved once, and not moved back";
+    EXPECT_EQ(count_entries("trash", src), 0) << "the change is done and the log does not know";
 }
 
 TEST_F(RemoveExecTest, TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs) {
@@ -185,6 +270,24 @@ TEST_F(RemoveExecTest, HardDeleteRemovesAndLogs) {
     EXPECT_FALSE(fs::exists(trash_dir() + "/IMG_2.jpg"));  // not trashed
 }
 
+// The same window on the path where it costs the most: a hard delete cannot be
+// compensated even in principle, so a failed log write leaves the file gone
+// with nothing recording that it ever existed.
+TEST_F(RemoveExecTest, HardDeleteLeavesTheFileGoneAndUnloggedWhenTheLogWriteFails) {
+    std::string src = (photos / "IMG_6.jpg").string();
+    write_file(src, "data");
+    int64_t op = db->log_begin_operation("rm", "phig rm --hard", "2026-07-12T00:00:00Z");
+
+    BlockedWrites blocked(db->db_ptr());
+    std::string err = thrown_message([&] { execute_hard_delete_action(*db, src, op); });
+    blocked.release();
+
+    EXPECT_NE(err.find(BlockedWrites::kMessage), std::string::npos)
+        << "the log write must be what failed, or nothing below proves anything: [" << err << "]";
+    EXPECT_FALSE(fs::exists(src)) << "the unlink happened first and cannot be undone";
+    EXPECT_EQ(count_entries("delete_file", src), 0) << "the file is gone and the log does not know";
+}
+
 TEST_F(RemoveExecTest, HardDeleteMissingFileStillLogs) {
     std::string src = (photos / "gone.jpg").string();  // never created
     int64_t op = db->log_begin_operation("rm", "phig rm --hard", "2026-07-12T00:00:00Z");
@@ -215,6 +318,29 @@ TEST_F(RemoveExecTest, RemoveMediaCarriesSidecarsNotSiblings) {
     EXPECT_EQ(count_entries("trash", xmp), 1);
 }
 
+// The other half of the same statement. A Live Photo's video is an attachment
+// of its still, carried on mv and cp — but removal takes only find_sidecars'
+// output, whose allowlist holds no media extension, so the video is left
+// behind. The pair here is real: live_photo_still.jpg carries the identifier
+// live_photo.mov carries, and both are given the same stem, which is the shape
+// a stem-matching sidecar finder would take by mistake.
+TEST_F(RemoveExecTest, RemoveMediaLeavesAPairedLivePhotoVideoAlone) {
+    const std::string still = (photos / "shot.jpg").string();
+    const std::string video = (photos / "shot.mov").string();
+    fs::copy_file("tests/data/live_photo_still.jpg", still);
+    fs::copy_file("tests/data/live_photo.mov", video);
+    const auto video_size = fs::file_size(video);
+    int64_t op = db->log_begin_operation("rm", "phig rm", "2026-07-12T00:00:00Z");
+
+    auto acted = remove_media_with_sidecars(*db, still, /*hard=*/false, op);
+
+    EXPECT_FALSE(fs::exists(still));
+    ASSERT_TRUE(fs::exists(video)) << "an attachment deleted with its parent is not recoverable";
+    EXPECT_EQ(fs::file_size(video), video_size);
+    EXPECT_EQ(acted, std::vector<std::string>{still});
+    EXPECT_EQ(count_entries("trash", video), 0) << "the video must not be logged as removed";
+}
+
 TEST_F(RemoveExecTest, RmTrashRemovesFileAndRow) {
     std::string p = (photos / "a.jpg").string();
     write_file(p, "x");
@@ -233,6 +359,53 @@ TEST_F(RemoveExecTest, RmTrashRemovesFileAndRow) {
     EXPECT_EQ(db->get_all_images().size(), 0u);  // row gone
 }
 
+// Trash is only reversible if the two halves of the removal are recorded
+// together: the entry saying where the bytes went, and the entry saying which
+// row went with them. The three execute_trash_action witnesses cannot show that
+// pairing — they are handed an op_id and write the trash entry alone, because
+// dropping the row is cmd_rm's job — so this drives the command end to end. A
+// trash entry with no purge_row beside it would mean a file in the trash that
+// the collection still claims is where it was; a purge_row with no trash entry
+// would mean a row deleted with no record of where to find the file again.
+TEST_F(RemoveExecTest, RmTrashLogsTheTrashAndThePurgeRowInOneOperation) {
+    std::string p = (photos / "keeper.jpg").string();
+    write_file(p, "x");
+    insert_row(p);
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*keeper.jpg"};
+    opts.mode = RemoveMode::Trash;
+    opts.assume_yes = true;
+    opts.log_enabled = true;
+    opts.argv_str = "phig rm --match *keeper.jpg";
+
+    ASSERT_EQ(cmd_rm(opts), 0);
+
+    int64_t op = newest_operation_id();
+    ASSERT_GT(op, 0) << "the run must have opened an operation";
+    EXPECT_EQ(count_table("operations"), 1) << "one operation, not one per half";
+    EXPECT_EQ(newest_operation_status(), "completed");
+    EXPECT_EQ(count_entries_in_op(op, "trash", p), 1)
+        << "the operation must record where the bytes went";
+    EXPECT_EQ(count_entries_in_op(op, "purge_row", p), 1)
+        << "and, in the same operation, that the row went with them";
+
+    // The trash entry names a path the file is actually at, so the pairing is
+    // usable rather than merely present.
+    std::string dst = entry_column(op, "trash", p, "dst");
+    EXPECT_FALSE(fs::exists(p)) << "the source is gone";
+    ASSERT_FALSE(dst.empty()) << "the trash entry must name its destination";
+    EXPECT_TRUE(fs::exists(dst)) << "the bytes are where the entry says: " << dst;
+    EXPECT_EQ(fs::path(dst).parent_path(), fs::path(trash_dir()));
+    EXPECT_EQ(db->count(), 0) << "the row is gone";
+
+    // And the purge_row entry carries the snapshot the row could be rebuilt
+    // from, which is what makes the pair a reversal rather than a note.
+    EXPECT_NE(entry_column(op, "purge_row", p, "restore_json").find(p), std::string::npos)
+        << "the purge_row entry must snapshot the row it deleted";
+}
+
 TEST_F(RemoveExecTest, RmDbOnlyKeepsFile) {
     std::string p = (photos / "b.jpg").string();
     write_file(p, "x");
@@ -248,6 +421,42 @@ TEST_F(RemoveExecTest, RmDbOnlyKeepsFile) {
     EXPECT_EQ(cmd_rm(opts), 0);
     EXPECT_TRUE(fs::exists(p));                  // file kept
     EXPECT_EQ(db->get_all_images().size(), 0u);  // row gone
+}
+
+// The exception path, which the cancellation witness does not reach: the
+// operation row was committed on its own by log_begin_operation, so a throw out
+// of the work leaves it behind, and cmd_rm's catch marks it interrupted rather
+// than letting it linger as in_progress forever.
+//
+// FaultWitness::StateOnly because cmd_rm opens its own connection: the witness
+// that the fault fired is that both rows are still there. A run that reached
+// the end would have deleted them and returned 0 instead of throwing, and the
+// second row's delete is the one blocked, so the first surviving is also what
+// pins the batch rolling back whole.
+TEST_F(RemoveExecTest, RmMarksItsOperationInterruptedWhenTheDeleteThrows) {
+    std::string first = (photos / "f.jpg").string();
+    std::string second = (photos / "g.jpg").string();
+    write_file(first, "x");
+    write_file(second, "x");
+    insert_row(first);
+    insert_row(second);
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*.jpg"};
+    opts.mode = RemoveMode::DbOnly;
+    opts.assume_yes = true;
+    opts.argv_str = "phig rm --db-only --match *.jpg";
+
+    BlockedImageDeletes blocked(db->db_ptr(), second, FaultWitness::StateOnly);
+    std::string err = thrown_message([&] { cmd_rm(opts); });
+    blocked.release();
+
+    EXPECT_NE(err.find("Failed to delete"), std::string::npos)
+        << "the run must have failed at the blocked delete: [" << err << "]";
+    EXPECT_EQ(db->count(), 2) << "the batch rolls back whole, so neither row went";
+    EXPECT_EQ(newest_operation_status(), "interrupted")
+        << "an operation abandoned by a throw must not stay in_progress";
 }
 
 TEST_F(RemoveExecTest, RmRequiresMatchExceptOrphans) {
@@ -276,6 +485,35 @@ TEST_F(RemoveExecTest, RmDryRunTouchesNothing) {
     EXPECT_EQ(cmd_rm(opts), 0);
     EXPECT_TRUE(fs::exists(p));                  // untouched
     EXPECT_EQ(db->get_all_images().size(), 1u);  // row kept
+    // The preview returns before log_begin_operation, so nothing about the
+    // selection is recorded either.
+    EXPECT_EQ(count_table("operations"), 0) << "a preview must not open an operation";
+    EXPECT_EQ(count_table("operation_entries"), 0);
+}
+
+// The second half of the same rule, and the surprising half: what a dry run
+// does not skip is the connection. cmd_rm constructs a Database and calls
+// init_schema before it reads dry_run, so a preview against a path with no
+// database there creates one at the current schema version. The selection is
+// necessarily empty — a database that did not exist has no rows — which is
+// exactly the run a caller expects to be inert.
+TEST_F(RemoveExecTest, RmDryRunCreatesAndMigratesADatabaseThatWasNotThere) {
+    const std::string fresh = (root / "fresh.db").string();
+    ASSERT_FALSE(fs::exists(fresh));
+
+    RemoveOptions opts;
+    opts.db_path = fresh;
+    opts.matches = {"*c.jpg"};
+    opts.mode = RemoveMode::Trash;
+    opts.dry_run = true;
+    opts.assume_yes = true;
+
+    EXPECT_EQ(cmd_rm(opts), 0);
+
+    ASSERT_TRUE(fs::exists(fresh)) << "the preview left no database behind";
+    Database opened(fresh);
+    EXPECT_EQ(opened.schema_version(), Database::expected_schema_version())
+        << "the preview created the file but left it un-migrated";
 }
 
 TEST_F(RemoveExecTest, ConfirmCallbackRefusalCancelsTheOperation) {
@@ -369,9 +607,8 @@ TEST_F(RemoveExecTest, ConfirmCallbackBroadRemovalWarningTextIsExact) {
 // isn't linked into phig-tests, so nothing above exercises it. Invoke the
 // built `phig` binary as a subprocess to pin that the guard is still there.
 TEST_F(RemoveExecTest, CliRefusesNonInteractiveConfirmationEvenWithPipedYes) {
-    fs::path phig_bin = test_binary_dir() / "phig";
-    if (!fs::exists(phig_bin)) phig_bin = "./build/phig";
-    if (!fs::exists(phig_bin)) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
         GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
                         "build it with `cmake --build build` to run this test";
     }
@@ -563,4 +800,32 @@ TEST_F(RemoveExecTest, RmOrphansNeverRemovesUnreadablePathsEvenWithIgnoreMountWa
 
     EXPECT_EQ(rc, 0);
     EXPECT_EQ(remaining, 1u) << "an unreadable path is never overridden";
+}
+
+TEST_F(RemoveExecTest, HardRemovalLeavesAnExcludedFileAndItsRowAlone) {
+    // R74's five FilterTest cases call passes_selection directly. This is the
+    // other half of the claim: that the removal executor routes its selection
+    // through that function rather than filtering some other way. A --hard run,
+    // because that is the mode with no trash behind it.
+    std::string doomed = (photos / "doomed.jpg").string();
+    std::string spared = (photos / "spared.jpg").string();
+    write_file(doomed, "x");
+    write_file(spared, "x");
+    insert_row(doomed);
+    insert_row(spared);
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*.jpg"};
+    opts.excludes = {"*spared*"};
+    opts.mode = RemoveMode::Hard;
+    opts.assume_yes = true;
+
+    EXPECT_EQ(cmd_rm(opts), 0);
+
+    EXPECT_FALSE(fs::exists(doomed)) << "the matched file was not removed";
+    EXPECT_TRUE(fs::exists(spared)) << "--exclude did not reach the delete";
+    auto rows = db->get_all_images();
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].path, spared);
 }

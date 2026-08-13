@@ -2,7 +2,7 @@
 name: Scan Reconcile Plan/Apply
 status: planned
 created: 2026-08-07
-closes_rules: [R04, R25, R40, R59]
+closes_rules: [R04, R25, R40, R59, R80]
 description: >
   Split scan's destructive reconcile phase into a decision that writes nothing
   and an application the caller authorizes, so a GUI can show "12 files are gone
@@ -269,11 +269,23 @@ design knew about. Reconcile is more layered, not less.
 | Mount warning | `scan_engine.cpp:517-523` | Skips the entire destructive phase when every row under the prefix is missing |
 | `paths_safe_to_delete` | `core/paths.cpp` | Partitions into deletable / parent_missing / check_failed |
 | `delete_paths_logged` | `database.cpp:996-999` | Skips any path with no row, so a stale plan entry deletes nothing |
+| Phase sequencing | `cli/main.cpp:324-334` | A walk that threw returns 1 before `run_reconcile` is reached |
 
 The plan/apply split must not weaken any of them, and apply's re-check
 (decision 4) is a fourth layer rather than a replacement for these. Plan 054
 owns writing the full set down, including the reconcile side; this table is the
 inventory this plan's implementer needs in hand.
+
+The fourth row is R80, added by 054's flag pass and claimed by this plan's
+`closes_rules`. It is the guard behind `scan --on-error fail`: a walk that
+aborted partway has not seen the files it did not reach, so reconciling after it
+would delete rows for files that are still on disk. `ScanEngine::run` composes
+the phases in that order too, but it has no production caller — `cli/` and
+`libphig/` both call the split phases — so today the order is re-stated by
+every caller and a caller that forgets it gets no complaint. Making reconcile an
+operation of its own is what lets the sequencing live in one place; until then
+R80 is `violated` on the location, not on the behaviour. Nothing in the four
+rows above changes: an aborted walk simply never reaches them.
 
 ## ABI shape
 
