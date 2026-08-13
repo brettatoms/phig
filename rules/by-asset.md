@@ -79,6 +79,7 @@ The bytes on disk.
 | R69 | conflict | violated (test gap) | Writing a command's results to the path named by --output does not destroy what is already at that path. |
 | R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
 | R77 | authorization | violated (test gap) | Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all. |
+| R81 | conflict | violated (test gap) | Staging a stdin query image does not destroy anything already on disk. |
 
 ## attachment — rebuildable: backup-only
 
@@ -147,6 +148,7 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
 | R75 | reconcile | holds (test gap) | Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk. |
 | R80 | atomicity | violated (test gap) | A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish. |
+| R82 | atomicity | violated (test gap) | A malformed flag value is reported and exits non-zero; it never terminates the process. |
 
 ## activity-log — rebuildable: no
 

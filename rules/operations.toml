@@ -55,6 +55,12 @@ read_only_cli = ["search", "duplicates", "help", "models"]
 # even though the same spelling on search, duplicates and fav list only picks
 # between text, csv and json.
 #
+# "Belongs to a read-only command" is not a reason to file a flag read-only,
+# and two of search's did exactly that in the first pass. --similar and --face
+# accept "-", and reading stdin truncates whatever is at a fixed path in the
+# temp directory (R81). search is on read_only_cli as a command and three of
+# its flags are on the mutating list.
+#
 # The split was read off cli/main.cpp branch by branch, not scripted. scan,
 # cp/mv, rm and trash parse inline in main() while the other commands parse in
 # their own cmd_* function, so a classifier that attributes a flag to the
@@ -121,17 +127,28 @@ mutating_cli_flags = [
     "--path",
     # gallery set. Whether an existing gallery assignment is replaced (R79).
     "--no-overwrite",
+    # search. Both accept "-" for stdin, and reading stdin writes a file at a
+    # fixed path in the temp directory, through a symlink if one is there
+    # (R81). The query itself only reads; the flag's value decides whether
+    # anything is written at all, which is what puts them here. Everything
+    # else about them — the phash comparison, the face embedding — is a read.
+    "--similar", "--face",
 ]
 
 # Flags that change only what is read or printed. Recorded rather than omitted:
 # a flag missing from both lists would be indistinguishable from one nobody had
 # looked at.
 read_only_cli_flags = [
-    # Global. --version prints and returns before load_config, and --help
-    # before dispatch. Neither is free of every write, because
-    # migrate_flat_thumb_cache() and log_init() run at cli/main.cpp:1835 and
-    # :1843 on every invocation; but that happens with or without the flag, so
-    # passing it strictly reduces what a run writes.
+    # Global, and not the same case as each other. --version returns at
+    # cli/main.cpp:1815, above load_config (:1824), migrate_flat_thumb_cache
+    # (:1835) and log_init (:1843), so it writes nothing at all — measured
+    # under a fresh set of XDG directories, it created no file. --help returns
+    # at :1855, below all three, so it can rename files in the thumbnail cache
+    # and it does create the diagnostic log: the same measurement left
+    # state/phig/phig.log behind. That happens with or without the flag, so
+    # --help still reduces what a run writes rather than adding to it, which is
+    # why it is read-only. The pre-dispatch writes belong to R70's territory —
+    # a read is not free — not to this flag.
     "--version", "--help",
     # scan, thumbs rebuild, face rebuild. Worker count. It changes how many
     # threads write, never what any of them writes; the concurrency rules
@@ -147,8 +164,8 @@ read_only_cli_flags = [
     # search. Query predicates, every one of them a WHERE clause.
     "--ext", "--after", "--before", "--camera", "--make",
     "--min-size", "--max-size", "--min-duration", "--max-duration",
-    "--similar", "--similar-hash",
-    "--face", "--face-threshold", "--person",
+    # --similar and --face are NOT here: both take "-" and write (R81).
+    "--similar-hash", "--face-threshold", "--person",
     # search. --tag and --gallery here read the metadata that the tag and
     # gallery commands write; the flags themselves only filter.
     "--tag", "--gallery",

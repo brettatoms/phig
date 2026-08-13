@@ -2,7 +2,7 @@
 name: Silent Loss on a Successful Run
 status: designing
 created: 2026-08-10
-closes_rules: [R27, R48, R60, R69, R73]
+closes_rules: [R27, R48, R60, R69, R73, R81]
 description: >
   Four measured defects that share one shape: the operation finishes, reports
   success, exits 0, and something that mattered is gone or wrongly counted.
@@ -172,6 +172,43 @@ it, and phig was given the path only as somewhere to write. R69 records it under
 that is the one place this plan's shape strains the taxonomy.
 
 The fix lands in `cli/` and is the same scoping question as open question 3.
+
+## R81 — staging a stdin query image destroys a file nobody named
+
+R69's sibling, found in 054's flag fix round and claimed here for the same
+reasons: same file, same function, same asset, and open question 6 has to be
+answered for it at the same time as for the four `ofstream` sites. It is worse
+than R69 on every axis. `--output` at least names the path it destroys; here
+the operator names nothing, and the destroyed path is not in the command line.
+
+`search --similar -` and `search --face -` both call `read_stdin_to_temp`
+(`cli/main.cpp:821`). Three properties, independent of each other:
+
+1. **The name is fixed.** `fs::temp_directory_path() / "phig-stdin-image"` —
+   no PID, no randomization, no `mkstemp`. A regular file there is truncated
+   and then removed by `TempCleanup` (`:879-884`), so it is gone rather than
+   overwritten. Two concurrent stdin searches share the path, and nothing
+   serializes them: `search` takes no writer lock (R49).
+2. **The open follows a symlink.** `std::ofstream` writes through it, so the
+   bytes land outside the temp directory entirely, and the `fs::remove`
+   afterwards unlinks only the link — the victim keeps phig's bytes and the
+   evidence is deleted.
+3. **It destroys on a run that reports failure.** The stream truncates before
+   `file_size` is consulted, so empty stdin leaves the target at 0 bytes, then
+   prints `No data received on stdin` and exits 1.
+
+Measured with the built binary against a two-image collection, the temp path
+symlinked to a 24-byte file reading `IRREPLACEABLE USER DATA`: `cat
+faces_small.jpg | phig search --similar -` printed one result, exited 0, and
+left a 27070-byte 320x320 JPEG in its place with the symlink gone. `--face -`
+did the same to another file. Empty stdin left a 26-byte file empty on an
+exit-1 run. `cmd_search`'s empty-database guard (`:858`) returns above the
+stdin read, so a collection with no rows exits first and the file survives —
+which is why a first attempt at reproducing this can show nothing.
+
+This one is not "silent loss on a *successful* run" in every branch — case 3
+exits 1 — so it stretches the plan's title. It is kept here anyway because the
+plan's subject is the shape, and cases 1 and 2 are the shape exactly.
 
 ## R73 — `face rebuild` ignores a flag it does not recognize
 

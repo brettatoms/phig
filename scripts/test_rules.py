@@ -853,11 +853,17 @@ class CoverageTest(unittest.TestCase):
     def test_a_flag_named_only_in_a_usage_line_needs_no_classifying(self):
         # --size sits inside a longer help string and no branch compares
         # against it, so it is not a flag the parser has. cli/main.cpp is in
-        # exactly this position today; plan 043 owns wiring it.
+        # exactly this position today; plan 043 owns wiring it. Asserted
+        # against a fixture where the check IS firing — --dry-run is on
+        # neither list — because asserting no problems on a clean fixture
+        # would pass with the flag check deleted.
         with tempfile.TemporaryDirectory() as tmp:
-            ops = self.classified(extra_cli=', "cp"')
+            ops = self.classified(extra_cli=', "cp"').replace(
+                'mutating_cli_flags = ["--dry-run"]', 'mutating_cli_flags = []')
             problems = rules.check_coverage(self.build(pathlib.Path(tmp), ops))
-            self.assertEqual(problems, [])
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("--dry-run", problems[0])
+            self.assertNotIn("--size", problems[0])
 
     def test_a_flag_on_both_lists_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:

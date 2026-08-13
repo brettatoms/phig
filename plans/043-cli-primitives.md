@@ -2,7 +2,7 @@
 name: CLI Primitive Split
 status: designing
 created: 2026-08-07
-closes_rules: [R70]
+closes_rules: [R70, R82]
 description: >
   Apply the same decomposition plan 031 gave the ABI to `cli/`: indexing,
   thumbnail generation, and face detection as primitives rather than jobs fused
@@ -79,6 +79,27 @@ than defaulting.
   `read_only = true` on the commands that only read, and decide what those
   commands do with a database older than the build, where libphig returns
   `PHIG_ERR_SCHEMA`.
+- **Nine numeric flags abort the process on a non-numeric value** (R82,
+  `rules/atomicity.toml`). `std::stoi`, `std::stof`, `std::stod` and
+  `parse_size` throw `std::invalid_argument` and nothing catches it. Measured:
+  `scan --parallel abc` (`cli/main.cpp:1924`), `duplicates --threshold abc`
+  (`:1967`) and `search`'s `--min-size`, `--max-size`, `--threshold`,
+  `--face-threshold`, `--min-sharpness`, `--max-sharpness` and `--limit`
+  (`:2232` to `:2264`) each give `libc++abi: terminating due to uncaught
+  exception of type std::invalid_argument` and exit 134. The split is the same
+  one that makes the flag inventory unscriptable: those three commands parse
+  inline in `main()`, outside every `try`, while `thumbs rebuild --parallel`
+  (`:1135`) and `face rebuild --parallel` (`:1428`) sit inside `cmd_*` calls
+  wrapped at `:2158` and `:2189` and exit 1 with `[error] thumbs: stoi: no
+  conversion`. `--min-duration` and `--max-duration` already carry their own
+  `try`/`catch` (`:2285`, `:2292`), so the defect was noticed once and fixed at
+  one call site rather than at the parser. Nothing is at risk today — every one
+  of the nine converts before any `Database` is constructed — and R82 exists
+  because that ordering is the only thing making it safe: `std::terminate` runs
+  no destructor, which is the failure `core/scan_engine.cpp:472-496` already
+  carries a comment about having been bitten by. It lands here for the reason
+  R70 does: the fix is `cli/` argv parsing, and this is the open plan that owns
+  `cli/`.
 - Whether `cli/` moves onto plan 042's organize engine once it exists, replacing
   the inline orchestration at `cli/main.cpp:720-744`.
 - Whether scan gains `--dry-run` from plan 041's reconcile plan phase.

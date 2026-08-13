@@ -136,6 +136,20 @@ It does. cmd_search and cmd_duplicates hand the path to a default std::ofstream:
 | Evidence | subprocess: none |
 | Test gap | Nothing tests --output at all: no test in tests/ passes the flag, and none calls cmd_search or cmd_duplicates, which are cli/ functions no fixture drives. Every fact above was measured by running the built binary. Only a subprocess test could pin it, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes. |
 
+### R81 — violated (test gap)
+
+Staging a stdin query image does not destroy anything already on disk.
+
+It destroys two different things for two independent reasons. `search --similar -` and `search --face -` both call read_stdin_to_temp (cli/main.cpp:821), which opens fs::temp_directory_path() / 'phig-stdin-image' with a default std::ofstream — truncating — and hands the path back for the query. The first property is the fixed name: there is no PID, no randomization and no mkstemp, so the path is predictable and phig claims it unconditionally. Whatever regular file sits there is truncated, and TempCleanup's destructor (cli/main.cpp:879-884) then removes it, so the file is gone rather than merely overwritten — measured, a 31-byte file at that path was not there afterwards. Two concurrent stdin searches also share the one path, and nothing serializes them: search takes no writer lock, and R49 records that reads never do. The second property is independent of the first: std::ofstream opens through a symlink, so if that path is a link the write lands wherever it points, outside the temp directory entirely, and the fs::remove afterwards unlinks only the link — which leaves the victim holding phig's bytes and deletes the evidence. Measured with the built binary against a two-image collection, with the temp path symlinked to a 24-byte file reading IRREPLACEABLE USER DATA: `cat faces_small.jpg | phig search --similar - ` printed one result and exited 0, and the 24-byte file was a 27070-byte JPEG afterwards, 320x320, with the symlink gone. `--face -` did the same to another file. A third case destroys on a run that reports failure: the ofstream truncates before file_size is consulted, so empty stdin leaves the target at 0 bytes and then prints 'No data received on stdin' and exits 1 — measured, a 26-byte file came back empty on a run that reported an error and printed no results. One thing narrows it: cmd_search's empty-database guard returns at cli/main.cpp:858, above the stdin read, so a collection with no rows exits first and the file survives — measured at its original 7 bytes. This is R69's sibling and strictly worse. R69 names four ofstream sites and read_stdin_to_temp is not among them, so nothing in this record covered it; --output at least names the path it destroys, while here the operator names nothing and the destroyed path is not in the command line at all. Anchored in cli/ because that is where it lives: no core/ primitive stages a query image, and libphig's face and phash entry points take embeddings and hashes rather than files, so no other surface has this to inherit or to fix. Plan 060 owns it.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:read_stdin_to_temp`, `cli/main.cpp:cmd_search` |
+| Binds | `cli` |
+| Protects | original-file |
+| Evidence | subprocess: none |
+| Test gap | Nothing in tests/ passes '-' to either flag, and nothing calls read_stdin_to_temp or cmd_search, which are cli/ functions no fixture drives. Every measurement above came from running the binary. Only a subprocess test could pin any of the three properties, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes; the symlink one additionally needs a temp directory the test controls, which fs::temp_directory_path reads from the environment. |
+
 ## reconcile
 
 ### R12 — holds
@@ -414,6 +428,20 @@ Reconcile deletes rows whose files it could not find, so running it after a walk
 | Protects | db-row, user-metadata |
 | Evidence | witness: `ScanEngine.FailOnErrorThrowsAndCommitsWhatCompleted` |
 | Test gap | The listed test drives ScanEngine::run with fail_on_error and an undecodable file and checks that what completed before the throw was flushed. It asserts nothing about reconcile: it neither indexes a file, deletes it from disk and checks the row survives the failed rescan, nor covers cmd_scan, which is the sequencing the CLI actually runs and which no fixture calls. The engine and the CLI stating the same order twice is the defect, and no test compares them. |
+
+### R82 — violated (test gap)
+
+A malformed flag value is reported and exits non-zero; it never terminates the process.
+
+Nine numeric flags convert their argument with std::stoi, std::stof, std::stod or parse_size and let the resulting std::invalid_argument escape: scan --parallel (cli/main.cpp:1924), duplicates --threshold (:1967), and search's --min-size, --max-size, --threshold, --face-threshold, --min-sharpness, --max-sharpness and --limit (:2232 to :2264). Measured with the built binary, each one gives 'libc++abi: terminating due to uncaught exception of type std::invalid_argument' and exit 134 — SIGABRT, not a usage error. Which flags are affected follows the same split that makes the flag inventory unscriptable: scan, duplicates and search parse inline in main(), outside every try, while thumbs rebuild --parallel (:1135) and face rebuild --parallel (:1428) parse inside cmd_ functions whose whole call is wrapped at :2158 and :2189, so those two report '[error] thumbs: stoi: no conversion' and exit 1. --min-duration and --max-duration carry their own try/catch (:2285, :2292) and exit 1 cleanly, which says the defect was noticed once and fixed locally rather than at the parser. Nothing is at risk today and the record says so plainly: every one of the nine converts during argv parsing, before any Database is constructed, so the abort happens with nothing open and nothing half-written. The rule exists because that ordering is the only thing making it safe. std::terminate runs no destructor, so the same throw after a run had started would abort with an uncheckpointed WAL — the exact failure core/scan_engine.cpp:472-496 already carries a comment about having been bitten by, where an exception escaping a std::thread lambda called std::terminate mid-write. Exit 134 is also not a code a script can distinguish from a crash. Anchored in cli/ because every one of the nine sites is there and no core/ primitive parses argv.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:main` |
+| Binds | `scan.walk`, `scan.reconcile`, `thumbs.rebuild`, `faces.rebuild` |
+| Protects | db-row |
+| Evidence | subprocess: none |
+| Test gap | No test passes a non-numeric value to any flag, and nothing drives main() or the cmd_ parsers, so all thirteen outcomes above were measured by running the binary. Only a subprocess test could pin them — an abort is exit 134 with output on stderr, which is what EXPECT_EXIT already checks elsewhere in the suite. |
 
 ## recoverability
 
@@ -1062,7 +1090,7 @@ Twelve of cli/main.cpp's thirteen flag loops end in an else that prints 'Unknown
 
 An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything.
 
-One function decides this for every command: passes_selection checks the excludes first and returns false on the first hit, so exclude wins wherever the two overlap and an excluded path cannot be moved, deleted, re-detected or relabelled by the run that excluded it. The second half is the one that surprises. With an empty match list the function returns true for every path, so `phig rm --exclude '*.png'` selects the whole collection minus the PNGs rather than nothing, and `phig face rebuild` with no flags selects every image. Both are deliberate and both have a guard elsewhere rather than here: rm's broad-selection confirmation covers the first (R22), and tag, gallery and fav refuse an unnamed selection outright (R78). The comparison is against the whole path, not the basename — callers pass img.path — so an exclude may name a directory. Nine core/ call sites route through it (faces_engine.cpp:81, organize_engine.cpp:76, remove_exec.cpp:82, thumbs_engine.cpp:28, search_engine.cpp:100) plus two in cli/ (main.cpp:489 and :1538, the second being select_paths, which is how tag, gallery and fav reach it).
+One function decides this for every command: passes_selection checks the excludes first and returns false on the first hit, so exclude wins wherever the two overlap and an excluded path cannot be moved, deleted, re-detected or relabelled by the run that excluded it. The second half is the one that surprises. With an empty match list the function returns true for every path, so `phig rm --exclude '*.png'` selects the whole collection minus the PNGs rather than nothing, and `phig face rebuild` with no flags selects every image. Both are deliberate and both have a guard elsewhere rather than here: rm's broad-selection confirmation covers the first (R22), and tag, gallery and fav refuse an unnamed selection outright (R78). The comparison is against the whole path, not the basename — callers pass img.path — so an exclude may name a directory. Seven call sites in all: five in core/ (faces_engine.cpp:81, organize_engine.cpp:76, remove_exec.cpp:82, thumbs_engine.cpp:28, search_engine.cpp:100) and two in cli/ (main.cpp:489 and :1538, the second being select_paths, which is how tag, gallery and fav reach it).
 
 | | |
 |---|---|
