@@ -193,4 +193,4 @@ A foreign caller's address space and its ability to keep running against this li
 | R62 | atomicity | partial (test gap) | No C++ exception crosses an ABI entry point. |
 | R63 | concurrency | holds | phig_last_error returns the calling thread's own last message, and only until that thread's next ABI call. |
 | R64 | atomicity | holds (test gap) | Adding a symbol bumps PHIG_ABI_VERSION_MINOR and the CMake VERSION, and never SOVERSION. |
-| R65 | atomicity | unenforced (test gap) | phig_op_progress gains no field: a new counter means a new struct and a new poll symbol. |
+| R65 | atomicity | holds (test gap) | phig_op_progress gains no field: a new counter means a new struct and a new poll symbol. |

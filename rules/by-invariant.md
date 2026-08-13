@@ -383,10 +383,10 @@ SOVERSION is the major alone, so an additive, backward-compatible change keeps t
 | Enforced at | `libphig/include/phig/phig.h:PHIG_ABI_VERSION_MINOR`, `libphig/CMakeLists.txt:SOVERSION` |
 | Binds | `abi` |
 | Protects | client-process |
-| Evidence | conformance: `Abi.VersionMajorMatchesHeader` |
-| Test gap | The listed test checks that phig_abi_version()'s high half equals PHIG_ABI_VERSION_MAJOR, a property of one expression that would still pass with the CMake VERSION and SOVERSION set to anything at all. scripts/rules.py's check_abi_version closes the half that test could not reach — the header against libphig/CMakeLists.txt — and runs in CI on every push. Nothing counts exported symbols against the minor, so the other half still rests on whoever remembers. Adding a phig_foo() to the header and bumping nothing does trip check 4 — measured against a mirror of the tree — but it stops the author once and sends them somewhere else: 'ABI symbol phig_foo is claimed by no operation and is not in read_only_abi — classify it in rules/operations.toml'. Classify it, as that message asks, and every check passes with MINOR still 3 and VERSION still 1.3.0. No path through CI asks for the bump. That is why this record outlived the check written to replace it — the check is stronger than the test, not than the statement. Filed as holds rather than unenforced because the code satisfies the rule today and a check plus a test each pin a piece of it, which is what R49, R53 and R54 do in the same position; R65 is the clean unenforced next door, with no test and nothing that could be written short of a new pin. |
+| Evidence | conformance: `Abi.VersionMajorMatchesHeader`, `Abi.ExportedSymbolCountMatchesTheRecordedAbiVersion` |
+| Test gap | The trigger is now asked for. ExportedSymbolCountMatchesTheRecordedAbiVersion parses the header for its lines beginning PHIG_API, counts the phig_-prefixed names declared on them, and compares that to the row kAbiSymbolCounts records for the version the header currently claims. Measured by adding a PHIG_API void phig_break_the_pin(void); to the header: '70 exported symbols and ABI 1.3 was recorded with 69'. What stays open is that a count is not a set. Removing one symbol in the same commit that adds another leaves it at 69 and passes, which is a MAJOR break slipping through a test written for the MINOR one. And the test says only that the header and the table agree, so falsifying the row for the current version satisfies it as surely as bumping does — nothing can distinguish those two edits, which is the same limit check_abi_version has against VERSION and SOVERSION. VersionMajorMatchesHeader remains what it was: phig_abi_version()'s high half against PHIG_ABI_VERSION_MAJOR, a property of one expression that would pass with the CMake numbers set to anything at all. |
 
-### R65 — unenforced (test gap)
+### R65 — holds (test gap)
 
 phig_op_progress gains no field: a new counter means a new struct and a new poll symbol.
 
@@ -397,8 +397,8 @@ The struct is caller-allocated and filled by phig_op_poll, with no size and no v
 | Enforced at | `libphig/include/phig/phig.h:phig_op_progress` |
 | Binds | `abi` |
 | Protects | client-process |
-| Evidence | conformance: none |
-| Test gap | A sizeof pin in tests/test_libphig_c_compile.c would catch a field added to this struct the same way the existing bitfield pins catch a renumbered enum, and none is written. Until one is, the rule is prose in libphig/CLAUDE.md and nothing more. |
+| Evidence | conformance: `Abi.OpProgressGainsNoField` |
+| Test gap | The struct now has the pin the rationale says it lacks, in two places. tests/test_libphig_c_compile.c fixes the whole layout with negative-width bitfields — every field's offset against the one before it, `done`'s against the enum size rounded up to alignof(uint64_t), and sizeof against the last field's offset — so a field added anywhere fails the build as C99. Measured: appending a uint64_t gives "bit-field 'size' has negative width (-1)", and inserting one before `processed` gives the same on 'processed'. Abi.OpProgressGainsNoField asserts the same layout at runtime, which is what gives the rule a name check 2 can see pass. One field can still be added without either noticing: a uint32_t between `stage` and `done` lands in the padding, so it changes no offset and no size. Measured — both pins pass with it in place. It is also the one addition the rationale's harm does not reach, since an older client's buffer is still the right size and every field it reads is where it was; a fifth counter, which is what the statement is about, cannot fit there. |
 
 ### R72 — holds (test gap)
 
@@ -411,8 +411,8 @@ Both engines build every FaceDetector up front — ScanEngine::run_workers befor
 | Enforced at | `core/faces.cpp:FaceDetector::Impl` |
 | Binds | `scan.walk`, `faces.rebuild` |
 | Protects | db-row |
-| Evidence | witness: `ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor`, `ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing` |
-| Test gap | Both witnesses run per-push, on different legs, and neither runs inside the gtest XML that scripts/rules.py reads. The below-floor case needs an OpenCV under 4.8.0, which is the ubuntu-24.04 leg. The missing-models case needs no separate machine — models_dir() is cache_dir() + '/models' and cache_dir() reads XDG_CACHE_HOME, so the ubuntu-26.04 leg runs it a second time under an empty one and asserts from the XML that the case ran rather than skipped; a --gtest_filter matching nothing exits 0, so without that assertion a rename would make the step a silent no-op. What check 2 sees on 26.04 is the models-present run, where both of these skip: a rename or deletion still surfaces there as 'is in no test run', but a failure surfaces as a red step rather than as this rule's name. Both witnesses are scan-path only. Measured on a below-floor build: `phig face rebuild`, `phig face name` and `search --face` refuse with the same message and `scan --faces` writes nothing, but no test pins any of the three, though all four construct the same FaceDetector. The 4.8.0 floor itself is pinned by no test at all — it came from running the shipped model against four OpenCV builds by hand, and a future model swap would not re-derive it. |
+| Evidence | subprocess: `ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor`, `ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing`, `FacesEngineRun.RefusesTheRunWhenNoDetectorCanBeBuiltAndWritesNothing`, `FacesEngineRun.CliFaceNameRefusesWhenNoDetectorCanBeBuilt`, `FacesEngineRun.CliSearchByFaceRefusesWhenNoDetectorCanBeBuilt` |
+| Test gap | The other three entry points are covered now: FacesEngine::run over a non-empty selection, and `phig face name` and `search --face` as subprocess cases. None of them skips. They create the missing-models condition instead of waiting for a machine that has it — the in-process one points models_dir() at an empty directory through set_path_overrides, the two subprocess ones inherit an empty XDG_CACHE_HOME — and each asserts the reason that applies on the leg it runs on, the models below the OpenCV floor and the version below it. Each also asserts nothing was written: the rebuild's existing face row is still there, `face name` created no person, and the search listed no image. Measured with both checks in FaceDetector::Impl short-circuited: all three fail, and what arrives instead is OpenCV's own 'Can't read ONNX file', which is the opaque failure the guard exists to replace. The two scan-path witnesses still skip in the models-present run that check 2 reads, so a failure in either surfaces as a red step rather than as this rule's name. The 4.8.0 floor itself is pinned by no test at all — it came from running the shipped model against four OpenCV builds by hand, and a future model swap would not re-derive it. |
 
 ### R80 — violated (test gap)
 
@@ -647,8 +647,8 @@ set_gallery picks between two statements on its no_overwrite argument: 'UPDATE i
 | Enforced at | `core/database.cpp:set_gallery`, `core/database.cpp:clear_gallery` |
 | Binds | `metadata.write` |
 | Protects | user-metadata |
-| Evidence | witness: `DatabaseTest.GalleryOverwritesByDefault`, `DatabaseTest.GalleryNoOverwriteSkips`, `DatabaseTest.ClearGallery` |
-| Test gap | All three call the Database methods directly with the flag as a bool. Nothing runs `phig gallery set --no-overwrite`, so the parser branch that sets it is unpinned — including its second effect, that the '&& is_set' on cli/main.cpp:1646 makes the same flag an unknown option on `gallery clear`, which exits 1. |
+| Evidence | subprocess: `DatabaseTest.GalleryOverwritesByDefault`, `DatabaseTest.GalleryNoOverwriteSkips`, `DatabaseTest.ClearGallery`, `DatabaseTest.CliGallerySetHonorsNoOverwriteAndClearRefusesTheFlag` |
+| Test gap | The parser branch is now driven through the binary, both of its effects: `gallery set --no-overwrite` reports 'on 0 images' and leaves the existing name, and `gallery clear --no-overwrite` exits 1 with 'Unknown option'. A control run without the flag replaces the name, so neither assertion can be satisfied by a `gallery set` that simply never writes. Measured with the branch changed to 'arg == "--no-overwrite"' setting no_overwrite = false: the declined run reports 'on 1 images' and the name becomes 'second', and the clear exits 0 having cleared the row. What no test covers is the same flag on `fav` and `tag`, which have no --no-overwrite of their own and would reject it by the same else branch; that is argv parsing with no user metadata behind it. |
 
 ## attachments
 
@@ -772,8 +772,8 @@ WriterLock is an flock(2) on a sidecar file, held for the object's lifetime and 
 | Enforced at | `core/lockfile.cpp:WriterLock` |
 | Binds | `scan.walk`, `scan.reconcile`, `organize.plan`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `trash.empty`, `thumbs.rebuild`, `metadata.write`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | db-row, original-file |
-| Evidence | witness: `LockfileTest.AcquiresAndReleases`, `LockfileTest.NoWaitThrowsWhenHeldByAnotherFd`, `LockfileTest.WaitBlocksThenAcquiresAfterRelease` |
-| Test gap | The three tests drive WriterLock directly, with a raw flock on a second descriptor standing in for the other process. Nothing pins which commands take it: the call sites are in cli/main.cpp, outside this anchor and outside every test, so 'no read takes it' was measured by running the binary rather than asserted anywhere. |
+| Evidence | subprocess: `LockfileTest.AcquiresAndReleases`, `LockfileTest.NoWaitThrowsWhenHeldByAnotherFd`, `LockfileTest.WaitBlocksThenAcquiresAfterRelease`, `LockfileTest.CliRefusesALockTakingWriteWhileAllowingReadsAndLocklessWrites` |
+| Test gap | The first three drive WriterLock directly, with a raw flock on a second descriptor standing in for the other process, and pin the class rather than the rule. The fourth holds the lock the same way and drives the built binary against it: `tag add` is refused under --no-wait, `search --count` completes, and `face identify` — a command that mutates and takes no lock — labels its face while the lock is held. A control run after the release shows the refusal was the lock. The scratch database sits at the default path inside a redirected XDG_DATA_HOME so the child's lock_path() is the file the test holds; passing --db would put them on different files, which is R50. What is still unasserted is the ABI's side of the same two clauses — that a phig_query call on a context succeeds while a WriterLock is held, and that a Database::insert does — which needs no subprocess and is not written. Note that the earlier text here said the lock's call sites are all in cli/main.cpp: libphig/mutate.cpp has five of them, and R55 already cites two tests that drive them. |
 
 ### R50 — violated (test gap)
 
@@ -967,8 +967,8 @@ Keeping the preview in core/ rather than in a CLI branch is what lets every surf
 | Enforced at | `core/organize_engine.cpp:OrganizeEngine::plan` |
 | Binds | `organize.plan` |
 | Protects | original-file, db-row, activity-log |
-| Evidence | witness: `OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase` |
-| Test gap | The listed test pins the first clause, at the engine. Nothing pins the second: no test drives cmd_organize, and the migration it performs on a dry run was measured by running the binary. |
+| Evidence | subprocess: `OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase`, `OrganizeEngineTest.CliDryRunOverAnAbsentDatabaseStillCreatesAndMigratesIt`, `OrganizeEngineTest.CliDryRunPreviewsEveryCopyAndWritesNothingElse` |
+| Test gap | Both clauses are now driven through the binary, cmd_organize included. One correction to what the previous gap implied: a dry run against a database that is not there exits 1, not 0 — cmd_organize refuses an empty database at cli/main.cpp:613 before it reaches the dry-run branch — and the file it leaves behind at the current schema version is created on the way to that refusal. What is still read off the code is which migration ran: the test opens an absent path, so it pins 'created and migrated', not 'an older file was upgraded'. The suite has no way to build a pre-v8 database, which is the same limit R20 records. |
 
 ### R22 — holds (test gap)
 
@@ -1093,8 +1093,8 @@ One function decides this for every command: passes_selection checks the exclude
 | Enforced at | `core/selection.cpp:passes_selection` |
 | Binds | `organize.plan`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `thumbs.rebuild`, `faces.rebuild`, `metadata.write` |
 | Protects | original-file, db-row, user-metadata |
-| Evidence | witness: `FilterTest.NoFiltersPassesAll`, `FilterTest.FilterWinsOverMatch`, `FilterTest.MatchAndFilterTogether`, `FilterTest.MatchesAgainstFullPath`, `FilterTest.MultipleFilters` |
-| Test gap | Every listed test calls passes_selection directly, so what is pinned is the predicate. Nothing runs a mutating operation with an --exclude and checks that the excluded file survived it, and nothing checks that each of the ten bound operations routes its selection through this function rather than filtering some other way — cli/main.cpp:select_paths, the route tag, gallery and fav take, has no test of its own. |
+| Evidence | subprocess: `FilterTest.NoFiltersPassesAll`, `FilterTest.FilterWinsOverMatch`, `FilterTest.MatchAndFilterTogether`, `FilterTest.MatchesAgainstFullPath`, `FilterTest.MultipleFilters`, `RemoveExecTest.HardRemovalLeavesAnExcludedFileAndItsRowAlone`, `OrganizeEngineTest.ApplyLeavesAnExcludedFileAndItsRowAlone`, `ThumbsEngineRun.AnExcludedRowGetsNoThumbnail`, `FacesEngineRun.AnExcludedImagesFacesAreLeftAlone`, `DatabaseTest.CliTagAddSkipsAnExcludedPath` |
+| Test gap | The five FilterTest cases pin the predicate. The five below them run a mutating operation with an --exclude and assert the excluded file, its row and its metadata survived: a --hard rm, an OrganizeEngine::apply move, a thumbs run whose excluded sha gets no cache entry, a faces rebuild that leaves a named face where a re-detection would have deleted it, and `phig tag add` through cli/main.cpp:select_paths, the route tag, gallery and fav take and the only one that selects outside core/. Measured with the exclude loop in passes_selection short-circuited: all five fail, each on the file or row it was meant to spare. Two narrower things stay unpinned. The operation tests drive one member of each family — hard of remove's four modes, move of organize's two — which is the shared call site in each executor rather than the whole family, and organize.plan is covered by PlanHonorsMatchAndExclude instead. And FacesEngineRun.AnExcludedImagesFacesAreLeftAlone needs a detector, so it skips below the OpenCV floor and where the models are absent, which is the ubuntu-24.04 leg. |
 
 ### R77 — violated (test gap)
 

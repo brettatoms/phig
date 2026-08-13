@@ -58,10 +58,10 @@ enforced_at = [
 ]
 binds_surface = ["abi"]
 protects = ["client-process"]
-tests = ["Abi.VersionMajorMatchesHeader"]
+tests = ["Abi.VersionMajorMatchesHeader", "Abi.ExportedSymbolCountMatchesTheRecordedAbiVersion"]
 test_kind = "conformance"
 status = "holds"
-test_gap = "The listed test checks that phig_abi_version()'s high half equals PHIG_ABI_VERSION_MAJOR, a property of one expression that would still pass with the CMake VERSION and SOVERSION set to anything at all. scripts/rules.py's check_abi_version closes the half that test could not reach — the header against libphig/CMakeLists.txt — and runs in CI on every push. Nothing counts exported symbols against the minor, so the other half still rests on whoever remembers. Adding a phig_foo() to the header and bumping nothing does trip check 4 — measured against a mirror of the tree — but it stops the author once and sends them somewhere else: 'ABI symbol phig_foo is claimed by no operation and is not in read_only_abi — classify it in rules/operations.toml'. Classify it, as that message asks, and every check passes with MINOR still 3 and VERSION still 1.3.0. No path through CI asks for the bump. That is why this record outlived the check written to replace it — the check is stronger than the test, not than the statement. Filed as holds rather than unenforced because the code satisfies the rule today and a check plus a test each pin a piece of it, which is what R49, R53 and R54 do in the same position; R65 is the clean unenforced next door, with no test and nothing that could be written short of a new pin."
+test_gap = "The trigger is now asked for. ExportedSymbolCountMatchesTheRecordedAbiVersion parses the header for its lines beginning PHIG_API, counts the phig_-prefixed names declared on them, and compares that to the row kAbiSymbolCounts records for the version the header currently claims. Measured by adding a PHIG_API void phig_break_the_pin(void); to the header: '70 exported symbols and ABI 1.3 was recorded with 69'. What stays open is that a count is not a set. Removing one symbol in the same commit that adds another leaves it at 69 and passes, which is a MAJOR break slipping through a test written for the MINOR one. And the test says only that the header and the table agree, so falsifying the row for the current version satisfies it as surely as bumping does — nothing can distinguish those two edits, which is the same limit check_abi_version has against VERSION and SOVERSION. VersionMajorMatchesHeader remains what it was: phig_abi_version()'s high half against PHIG_ABI_VERSION_MAJOR, a property of one expression that would pass with the CMake numbers set to anything at all."
 
 [[rule]]
 id = "R65"
@@ -72,10 +72,10 @@ rationale = "The struct is caller-allocated and filled by phig_op_poll, with no 
 enforced_at = ["libphig/include/phig/phig.h:phig_op_progress"]
 binds_surface = ["abi"]
 protects = ["client-process"]
-tests = []
+tests = ["Abi.OpProgressGainsNoField"]
 test_kind = "conformance"
-status = "unenforced"
-test_gap = "A sizeof pin in tests/test_libphig_c_compile.c would catch a field added to this struct the same way the existing bitfield pins catch a renumbered enum, and none is written. Until one is, the rule is prose in libphig/CLAUDE.md and nothing more."
+status = "holds"
+test_gap = "The struct now has the pin the rationale says it lacks, in two places. tests/test_libphig_c_compile.c fixes the whole layout with negative-width bitfields — every field's offset against the one before it, `done`'s against the enum size rounded up to alignof(uint64_t), and sizeof against the last field's offset — so a field added anywhere fails the build as C99. Measured: appending a uint64_t gives \"bit-field 'size' has negative width (-1)\", and inserting one before `processed` gives the same on 'processed'. Abi.OpProgressGainsNoField asserts the same layout at runtime, which is what gives the rule a name check 2 can see pass. One field can still be added without either noticing: a uint32_t between `stage` and `done` lands in the padding, so it changes no offset and no size. Measured — both pins pass with it in place. It is also the one addition the rationale's harm does not reach, since an older client's buffer is still the right size and every field it reads is where it was; a fifth counter, which is what the statement is about, cannot fit there."
 
 [[rule]]
 id = "R66"
