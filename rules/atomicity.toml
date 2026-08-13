@@ -179,3 +179,20 @@ tests = [
 test_kind = "witness"
 status = "holds"
 test_gap = "Both witnesses run per-push, on different legs, and neither runs inside the gtest XML that scripts/rules.py reads. The below-floor case needs an OpenCV under 4.8.0, which is the ubuntu-24.04 leg. The missing-models case needs no separate machine — models_dir() is cache_dir() + '/models' and cache_dir() reads XDG_CACHE_HOME, so the ubuntu-26.04 leg runs it a second time under an empty one and asserts from the XML that the case ran rather than skipped; a --gtest_filter matching nothing exits 0, so without that assertion a rename would make the step a silent no-op. What check 2 sees on 26.04 is the models-present run, where both of these skip: a rename or deletion still surfaces there as 'is in no test run', but a failure surfaces as a red step rather than as this rule's name. Both witnesses are scan-path only. Measured on a below-floor build: `phig face rebuild`, `phig face name` and `search --face` refuse with the same message and `scan --faces` writes nothing, but no test pins any of the three, though all four construct the same FaceDetector. The 4.8.0 floor itself is pinned by no test at all — it came from running the shipped model against four OpenCV builds by hand, and a future model swap would not re-derive it."
+
+[[rule]]
+id = "R80"
+tier = "engine"
+concern = "atomicity"
+statement = "A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish."
+rationale = "Reconcile deletes rows whose files it could not find, so running it after a walk that aborted partway would delete rows for files that were simply never reached. --on-error fail is the flag that makes that reachable: an unreadable file makes run_workers flush what completed and rethrow, and cmd_scan catches the exception, prints it and returns 1 at cli/main.cpp:324-334, above the run_reconcile call at :340. ScanEngine::run composes the two the same way, run_workers then run_reconcile with a throw from the first propagating past the second (core/scan_engine.cpp:110-114), but it has no production caller — cli/ and libphig/ both call the split phases — so the sequencing has to be re-stated by every caller, and that is why this is recorded as violated rather than as a property of the engine. Cancellation is the other side of the same decision and goes the other way deliberately: an interrupted walk returns completed = false rather than throwing, and cmd_scan reconciles anyway, which is safe for the same reason the statement is needed — a file the walk never reached is still on disk, so it is not a deletion candidate (R75) — and R56 records that reconcile polls no token once it starts."
+enforced_at = [
+    "cli/main.cpp:cmd_scan",
+    "core/scan_engine.cpp:ScanEngine::run",
+]
+binds = ["scan.walk", "scan.reconcile"]
+protects = ["db-row", "user-metadata"]
+tests = ["ScanEngine.FailOnErrorThrowsAndCommitsWhatCompleted"]
+test_kind = "witness"
+status = "violated"
+test_gap = "The listed test drives ScanEngine::run with fail_on_error and an undecodable file and checks that what completed before the throw was flushed. It asserts nothing about reconcile: it neither indexes a file, deletes it from disk and checks the row survives the failed rescan, nor covers cmd_scan, which is the sequencing the CLI actually runs and which no fixture calls. The engine and the CLI stating the same order twice is the defect, and no test compares them."

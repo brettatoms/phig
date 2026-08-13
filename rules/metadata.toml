@@ -19,7 +19,7 @@ id = "R36"
 tier = "engine"
 concern = "metadata"
 statement = "A re-scan clears a row's face data when the file's sha256 differs from the one recorded, or none was recorded, and keeps it — boxes, embeddings and person labels — when the two match."
-rationale = "A face box and its embedding describe pixels, so once the bytes change they describe pixels that no longer exist and repositioning them is not possible; dropping them is the only honest option and a later `face rebuild` or a `--force faces` scan replaces them. The other half matters more: a person label is user-authored and nothing can reconstruct it, so an unchanged file must not lose one to an ordinary re-scan, and `--force hash` alone must not either — the test is the hash, not the flag. run_workers depends on that: it re-adds this run's detections only when db_.has_faces is false, so a row that kept its faces does not also collect a duplicate set."
+rationale = "A face box and its embedding describe pixels, so once the bytes change they describe pixels that no longer exist and repositioning them is not possible; dropping them is the only honest option and a later `face rebuild` replaces them — only that, because no `--force` value reaches face data (R76). The other half matters more: a person label is user-authored and nothing can reconstruct it, so an unchanged file must not lose one to an ordinary re-scan, and `--force hash` alone must not either — the test is the hash, not the flag. run_workers depends on that: it re-adds this run's detections only when db_.has_faces is false, so a row that kept its faces does not also collect a duplicate set."
 enforced_at = [
     "core/database.cpp:Database::insert",
     "core/database.cpp:delete_faces_for_image",
@@ -113,3 +113,41 @@ tests = [
 test_kind = "witness"
 status = "violated"
 test_gap = "Both listed tests pin today's contrary behaviour — the occupant row and its faces go — which is what plan 022 asked for. Nothing tests the statement, because no code path implements it, and neither test puts a tag or a gallery on the row it destroys, so the loss those two carry is only visible by running the binary. UpdatePathOntoStaleDestClearsItsFaces is also one of the three DatabaseTest cases plan 046 records as failing on Linux, so on that platform this rule's only witness is InsertCopyOntoStaleDestClearsItsFaces. Plan 041's decision 6 now names update_path_in_txn and insert_copy explicitly and its Testing section specifies the two tests this rule needs — a tracked destination carrying a tag and a gallery, moved or copied onto under the default --on-conflict skip, produces a purge_row entry naming both — but neither test is written yet, so the gap is that the work is undone, not that 041's scope excludes it."
+
+[[rule]]
+id = "R76"
+tier = "engine"
+concern = "metadata"
+statement = "No value of --force re-detects faces: a scan keeps a row's existing face data whatever it was told to force, and face rebuild is the only path that replaces it."
+rationale = "ForceOptions carries hash, thumbs and faces, and core/ reads the first two only. A grep for force.faces over core/ and libphig/ returns the declaration at core/scan_engine.h:18 and nothing else: the field is written by cli/main.cpp:1904 and by set_all(), and read only by ForceOptions::any(), which nothing calls. --force hash does bypass the mtime skip and reprocess the file, but run_workers re-adds this run's detections only when db_.has_faces is false, and insert() clears faces only when the sha256 changed (R36), so an unchanged file keeps what it had however it was reprocessed. Measured with the built binary on a one-image collection: `scan --faces` reported Faces: 1; a plain repeat reported Processed: 0, Faces: 0; `scan --faces --force faces` reported Processed: 0, Skipped: 1, Faces: 0, identical to the plain repeat; and `scan --faces --force all` reported Processed: 1 — the file was decoded and its faces detected again — with Faces: 0, the detections discarded. The effect is protective, since a person label is the one thing a rescan cannot rebuild, but it is not what the flag says: the help text reads 'Re-process: hash,thumbs,faces,all' and one third of that is inert."
+enforced_at = [
+    "core/scan_engine.cpp:ScanEngine::run_workers",
+    "core/database.cpp:Database::insert",
+]
+binds = ["scan.walk"]
+protects = ["user-metadata"]
+tests = ["DatabaseTest.ReinsertSameContentKeepsFaces"]
+test_kind = "witness"
+status = "holds"
+test_gap = "The listed test pins the sha256 comparison inside insert(), which is why the faces survive — not the fact that no --force value overrides it. Nothing in tests/ builds a ScanOptions with force.faces set, so the dead field has no test that would fail if a later change started reading it, and every measurement above came from running the binary. R36's rationale asserted that a '--force faces' scan replaces face data; it was corrected in the commit that added this record."
+
+[[rule]]
+id = "R79"
+tier = "engine"
+concern = "metadata"
+statement = "Assigning a gallery replaces the assignment already on a row unless the caller asked to fill only the empty ones."
+rationale = "set_gallery picks between two statements on its no_overwrite argument: 'UPDATE images SET gallery = ? WHERE path = ?' and the same with 'AND gallery IS NULL'. The default replaces, so a second `phig gallery set` over an overlapping selection discards the first name, and a gallery is user-authored metadata that nothing rebuilds. There is no prompt, no backup and no record: metadata.write opens no logged operation, so unlike a move or a removal this leaves nothing in the activity log and no restore snapshot to read the old name out of. --no-overwrite is the only way to ask for the safe order, and the count it returns is what tells the caller how many rows it declined to touch. clear_gallery is the opposite corner and needs no flag, narrowing to 'gallery IS NOT NULL' so a row without one is not counted as cleared. This is the same fill-only-when-empty rule reconcile applies to a transferred gallery (R37), with the difference that reconcile applies it always and this applies it on request."
+enforced_at = [
+    "core/database.cpp:set_gallery",
+    "core/database.cpp:clear_gallery",
+]
+binds = ["metadata.write"]
+protects = ["user-metadata"]
+tests = [
+    "DatabaseTest.GalleryOverwritesByDefault",
+    "DatabaseTest.GalleryNoOverwriteSkips",
+    "DatabaseTest.ClearGallery",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "All three call the Database methods directly with the flag as a bool. Nothing runs `phig gallery set --no-overwrite`, so the parser branch that sets it is unpinned — including its second effect, that the '&& is_set' on cli/main.cpp:1646 makes the same flag an unknown option on `gallery clear`, which exits 1."

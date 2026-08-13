@@ -220,6 +220,20 @@ A peek is a read-only disk check made outside any transaction and from a path al
 | Evidence | witness: `RelinkTest.DemotesJpegToSameBasenameRaw`, `RelinkTest.LoneJpegNotDemoted`, `RelinkTest.JpegWithRawRowMissingNotDemoted`, `RelinkTest.DeletedJpegWithIndexedRawNotDemoted`, `LivePhotoDemotion.MovesTheVideoRowsMetadataToItsStillAndDropsTheRow`, `LivePhotoDemotion.LeavesAnOrdinaryVideoRowAlone`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged` |
 | Test gap | Only the authoritative half is pinned. The six demote tests call demote_jpeg_rows and demote_live_photo_rows directly, and the two run_reconcile tests both have a non-empty removed_paths, so the block is entered whatever the peek answers. No test covers the case the peek exists for: removed_paths empty and the only work demotable. |
 
+### R75 — holds (test gap)
+
+Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk.
+
+run_reconcile takes its candidate set from db_.get_paths_with_prefix(scan_prefix) — every tracked row under the scanned directory — and classifies it with paths_safe_to_delete, which asks the filesystem. --recursive, --media and --hidden filter the walk instead (core/scan_engine.cpp:131-146) and reach none of that, so narrowing a scan cannot turn a row into a deletion candidate. That is worth stating because the opposite is the natural reading of the flags: a scan told to look at images only, in one directory only, still leaves every video and every subdirectory row alone. Measured with the built binary against a three-file collection (an image, a video, and an image in a subdirectory) scanned recursively: a following non-recursive `--media image` scan of the same directory reported Removed: 0 and left all three rows. The converse holds too, because the candidate set is the prefix rather than the walk — with the subdirectory's image then deleted from disk, a non-recursive `--media video` scan of the same directory reported Removed: 1 and dropped that row, a file the walk neither entered the directory for nor would have admitted. The prefix is where the containment argument sits: scanning a subdirectory reconciles that subtree and nothing above it.
+
+| | |
+|---|---|
+| Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/paths.cpp:paths_safe_to_delete` |
+| Binds | `scan.reconcile` |
+| Protects | db-row, user-metadata |
+| Evidence | witness: `ScanEngine.MediaFilterExcludesTheOtherType` |
+| Test gap | The listed test checks the half that happens before reconcile — that a --media video walk does not process the .jpg — over a collection where the .jpg was never indexed, so no row of the other type exists to survive. Nothing indexes a file and then rescans with a flag that excludes it to check the row is still there, which is the claim; both measurements above came from running the binary. Nothing covers the --recursive or --hidden half at all. |
+
 ## atomicity
 
 ### R28 — holds
@@ -387,6 +401,20 @@ Both engines build every FaceDetector up front — ScanEngine::run_workers befor
 | Evidence | witness: `ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor`, `ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing` |
 | Test gap | Both witnesses run per-push, on different legs, and neither runs inside the gtest XML that scripts/rules.py reads. The below-floor case needs an OpenCV under 4.8.0, which is the ubuntu-24.04 leg. The missing-models case needs no separate machine — models_dir() is cache_dir() + '/models' and cache_dir() reads XDG_CACHE_HOME, so the ubuntu-26.04 leg runs it a second time under an empty one and asserts from the XML that the case ran rather than skipped; a --gtest_filter matching nothing exits 0, so without that assertion a rename would make the step a silent no-op. What check 2 sees on 26.04 is the models-present run, where both of these skip: a rename or deletion still surfaces there as 'is in no test run', but a failure surfaces as a red step rather than as this rule's name. Both witnesses are scan-path only. Measured on a below-floor build: `phig face rebuild`, `phig face name` and `search --face` refuse with the same message and `scan --faces` writes nothing, but no test pins any of the three, though all four construct the same FaceDetector. The 4.8.0 floor itself is pinned by no test at all — it came from running the shipped model against four OpenCV builds by hand, and a future model swap would not re-derive it. |
 
+### R80 — violated (test gap)
+
+A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish.
+
+Reconcile deletes rows whose files it could not find, so running it after a walk that aborted partway would delete rows for files that were simply never reached. --on-error fail is the flag that makes that reachable: an unreadable file makes run_workers flush what completed and rethrow, and cmd_scan catches the exception, prints it and returns 1 at cli/main.cpp:324-334, above the run_reconcile call at :340. ScanEngine::run composes the two the same way, run_workers then run_reconcile with a throw from the first propagating past the second (core/scan_engine.cpp:110-114), but it has no production caller — cli/ and libphig/ both call the split phases — so the sequencing has to be re-stated by every caller, and that is why this is recorded as violated rather than as a property of the engine. Cancellation is the other side of the same decision and goes the other way deliberately: an interrupted walk returns completed = false rather than throwing, and cmd_scan reconciles anyway, which is safe for the same reason the statement is needed — a file the walk never reached is still on disk, so it is not a deletion candidate (R75) — and R56 records that reconcile polls no token once it starts.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:cmd_scan`, `core/scan_engine.cpp:ScanEngine::run` |
+| Binds | `scan.walk`, `scan.reconcile` |
+| Protects | db-row, user-metadata |
+| Evidence | witness: `ScanEngine.FailOnErrorThrowsAndCommitsWhatCompleted` |
+| Test gap | The listed test drives ScanEngine::run with fail_on_error and an undecodable file and checks that what completed before the throw was flushed. It asserts nothing about reconcile: it neither indexes a file, deletes it from disk and checks the row survives the failed rescan, nor covers cmd_scan, which is the sequencing the CLI actually runs and which no fixture calls. The engine and the CLI stating the same order twice is the defect, and no test compares them. |
+
 ## recoverability
 
 ### R04 — partial (test gap)
@@ -505,7 +533,7 @@ INSERT OR REPLACE deletes the row before inserting the new one, and with foreign
 
 A re-scan clears a row's face data when the file's sha256 differs from the one recorded, or none was recorded, and keeps it — boxes, embeddings and person labels — when the two match.
 
-A face box and its embedding describe pixels, so once the bytes change they describe pixels that no longer exist and repositioning them is not possible; dropping them is the only honest option and a later `face rebuild` or a `--force faces` scan replaces them. The other half matters more: a person label is user-authored and nothing can reconstruct it, so an unchanged file must not lose one to an ordinary re-scan, and `--force hash` alone must not either — the test is the hash, not the flag. run_workers depends on that: it re-adds this run's detections only when db_.has_faces is false, so a row that kept its faces does not also collect a duplicate set.
+A face box and its embedding describe pixels, so once the bytes change they describe pixels that no longer exist and repositioning them is not possible; dropping them is the only honest option and a later `face rebuild` replaces them — only that, because no `--force` value reaches face data (R76). The other half matters more: a person label is user-authored and nothing can reconstruct it, so an unchanged file must not lose one to an ordinary re-scan, and `--force hash` alone must not either — the test is the hash, not the flag. run_workers depends on that: it re-adds this run's detections only when db_.has_faces is false, so a row that kept its faces does not also collect a duplicate set.
 
 | | |
 |---|---|
@@ -568,6 +596,34 @@ Both organize branches drop a row that already names the destination: update_pat
 | Protects | user-metadata, db-row, activity-log |
 | Evidence | witness: `DatabaseTest.UpdatePathOntoStaleDestClearsItsFaces`, `DatabaseTest.InsertCopyOntoStaleDestClearsItsFaces` |
 | Test gap | Both listed tests pin today's contrary behaviour — the occupant row and its faces go — which is what plan 022 asked for. Nothing tests the statement, because no code path implements it, and neither test puts a tag or a gallery on the row it destroys, so the loss those two carry is only visible by running the binary. UpdatePathOntoStaleDestClearsItsFaces is also one of the three DatabaseTest cases plan 046 records as failing on Linux, so on that platform this rule's only witness is InsertCopyOntoStaleDestClearsItsFaces. Plan 041's decision 6 now names update_path_in_txn and insert_copy explicitly and its Testing section specifies the two tests this rule needs — a tracked destination carrying a tag and a gallery, moved or copied onto under the default --on-conflict skip, produces a purge_row entry naming both — but neither test is written yet, so the gap is that the work is undone, not that 041's scope excludes it. |
+
+### R76 — holds (test gap)
+
+No value of --force re-detects faces: a scan keeps a row's existing face data whatever it was told to force, and face rebuild is the only path that replaces it.
+
+ForceOptions carries hash, thumbs and faces, and core/ reads the first two only. A grep for force.faces over core/ and libphig/ returns the declaration at core/scan_engine.h:18 and nothing else: the field is written by cli/main.cpp:1904 and by set_all(), and read only by ForceOptions::any(), which nothing calls. --force hash does bypass the mtime skip and reprocess the file, but run_workers re-adds this run's detections only when db_.has_faces is false, and insert() clears faces only when the sha256 changed (R36), so an unchanged file keeps what it had however it was reprocessed. Measured with the built binary on a one-image collection: `scan --faces` reported Faces: 1; a plain repeat reported Processed: 0, Faces: 0; `scan --faces --force faces` reported Processed: 0, Skipped: 1, Faces: 0, identical to the plain repeat; and `scan --faces --force all` reported Processed: 1 — the file was decoded and its faces detected again — with Faces: 0, the detections discarded. The effect is protective, since a person label is the one thing a rescan cannot rebuild, but it is not what the flag says: the help text reads 'Re-process: hash,thumbs,faces,all' and one third of that is inert.
+
+| | |
+|---|---|
+| Enforced at | `core/scan_engine.cpp:ScanEngine::run_workers`, `core/database.cpp:Database::insert` |
+| Binds | `scan.walk` |
+| Protects | user-metadata |
+| Evidence | witness: `DatabaseTest.ReinsertSameContentKeepsFaces` |
+| Test gap | The listed test pins the sha256 comparison inside insert(), which is why the faces survive — not the fact that no --force value overrides it. Nothing in tests/ builds a ScanOptions with force.faces set, so the dead field has no test that would fail if a later change started reading it, and every measurement above came from running the binary. R36's rationale asserted that a '--force faces' scan replaces face data; it was corrected in the commit that added this record. |
+
+### R79 — holds (test gap)
+
+Assigning a gallery replaces the assignment already on a row unless the caller asked to fill only the empty ones.
+
+set_gallery picks between two statements on its no_overwrite argument: 'UPDATE images SET gallery = ? WHERE path = ?' and the same with 'AND gallery IS NULL'. The default replaces, so a second `phig gallery set` over an overlapping selection discards the first name, and a gallery is user-authored metadata that nothing rebuilds. There is no prompt, no backup and no record: metadata.write opens no logged operation, so unlike a move or a removal this leaves nothing in the activity log and no restore snapshot to read the old name out of. --no-overwrite is the only way to ask for the safe order, and the count it returns is what tells the caller how many rows it declined to touch. clear_gallery is the opposite corner and needs no flag, narrowing to 'gallery IS NOT NULL' so a row without one is not counted as cleared. This is the same fill-only-when-empty rule reconcile applies to a transferred gallery (R37), with the difference that reconcile applies it always and this applies it on request.
+
+| | |
+|---|---|
+| Enforced at | `core/database.cpp:set_gallery`, `core/database.cpp:clear_gallery` |
+| Binds | `metadata.write` |
+| Protects | user-metadata |
+| Evidence | witness: `DatabaseTest.GalleryOverwritesByDefault`, `DatabaseTest.GalleryNoOverwriteSkips`, `DatabaseTest.ClearGallery` |
+| Test gap | All three call the Database methods directly with the flag as a bool. Nothing runs `phig gallery set --no-overwrite`, so the parser branch that sets it is unpinned — including its second effect, that the '&& is_set' on cli/main.cpp:1646 makes the same flag an unknown option on `gallery clear`, which exits 1. |
 
 ## attachments
 
@@ -987,3 +1043,59 @@ Every cli/ command that opens a collection opens it read-write. All twelve Datab
 | Protects | db-row |
 | Evidence | subprocess: none |
 | Test gap | No test drives cmd_search or cmd_duplicates, so neither the creation nor the migration is pinned on the commands this rule is about; both were measured by running the binary. Nothing in tests/ asserts that a read leaves no file behind on either surface — Abi.InitFailsOnUnopenableDatabase is the nearest and only shows that a read-only context fails on a path inside a directory that does not exist. |
+
+### R73 — violated (test gap)
+
+An unrecognized flag stops a command before it changes anything.
+
+Twelve of cli/main.cpp's thirteen flag loops end in an else that prints 'Unknown option: <arg>' and returns 1 — scan (:1937), duplicates (:1991), cp/mv (:2049), rm (:2094), trash (:2138), search (:2302), thumbs rebuild (:1139), thumbs clean (:1241), tag (:1582), gallery (:1650), fav add/remove (:1702) and fav list (:1745). `face rebuild`'s loop has no else at all (cli/main.cpp:1421-1432): an argument it does not recognize is stepped over, so is that argument's value, and the run proceeds. That is the one destructive command where it matters. Because opts.matches stays empty the selection widens to every image (R74), and a face rebuild deletes every selected image's face rows including the person_id somebody typed, re-deriving only what auto_label_face can match (R60). Measured with the built binary against a two-image scratch collection: `phig face rebuild --match '*a.jpg'` printed 'Rebuilding face data for 1 images...'; the same command with the flag misspelled as --mtach printed 'Rebuilding face data for 2 images...' and exited 0. A typo therefore turns a one-image rebuild into a whole-collection loss of face labels, reported as success — the shape plan 060 is named for. The hole is the parser's rather than the engine's, and every parser is in cli/, which is why this is recorded here and why it is violated: no other surface could inherit a fix.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:cmd_face` |
+| Binds | `cli` |
+| Protects | user-metadata |
+| Evidence | subprocess: none |
+| Test gap | Nothing in tests/ drives cmd_face, which is a cli/ function no fixture calls, so neither the missing else nor the twelve loops that have one is pinned; both measurements above came from running the binary. Only a subprocess test could reach it, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes. |
+
+### R74 — holds (test gap)
+
+An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything.
+
+One function decides this for every command: passes_selection checks the excludes first and returns false on the first hit, so exclude wins wherever the two overlap and an excluded path cannot be moved, deleted, re-detected or relabelled by the run that excluded it. The second half is the one that surprises. With an empty match list the function returns true for every path, so `phig rm --exclude '*.png'` selects the whole collection minus the PNGs rather than nothing, and `phig face rebuild` with no flags selects every image. Both are deliberate and both have a guard elsewhere rather than here: rm's broad-selection confirmation covers the first (R22), and tag, gallery and fav refuse an unnamed selection outright (R78). The comparison is against the whole path, not the basename — callers pass img.path — so an exclude may name a directory. Nine core/ call sites route through it (faces_engine.cpp:81, organize_engine.cpp:76, remove_exec.cpp:82, thumbs_engine.cpp:28, search_engine.cpp:100) plus two in cli/ (main.cpp:489 and :1538, the second being select_paths, which is how tag, gallery and fav reach it).
+
+| | |
+|---|---|
+| Enforced at | `core/selection.cpp:passes_selection` |
+| Binds | `organize.plan`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `thumbs.rebuild`, `faces.rebuild`, `metadata.write` |
+| Protects | original-file, db-row, user-metadata |
+| Evidence | witness: `FilterTest.NoFiltersPassesAll`, `FilterTest.FilterWinsOverMatch`, `FilterTest.MatchAndFilterTogether`, `FilterTest.MatchesAgainstFullPath`, `FilterTest.MultipleFilters` |
+| Test gap | Every listed test calls passes_selection directly, so what is pinned is the predicate. Nothing runs a mutating operation with an --exclude and checks that the excluded file survived it, and nothing checks that each of the ten bound operations routes its selection through this function rather than filtering some other way — cli/main.cpp:select_paths, the route tag, gallery and fav take, has no test of its own. |
+
+### R77 — violated (test gap)
+
+Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all.
+
+The cache directory is not phig's private space: thumbs_dir() follows XDG_CACHE_HOME and a config key can point it anywhere, so a recursive delete over it could take files phig never wrote. Every regular file under it is tested with is_thumbnail_filename — a 64-hex stem and a .jpg suffix — and anything else is counted as foreign and left, then a thumbnail whose stem is in db.get_all_sha256s() is kept and the rest are removed. --dry-run prints the same list and removes nothing, including the sweep of emptied subdirectories, which is skipped as a whole rather than per entry. Measured with the built binary against a scratch XDG_CACHE_HOME holding one orphaned thumbnail and one notes.txt: `thumbs clean --dry-run` printed 'Would remove 1 orphaned thumbnails' and 'Left untouched 1 non-thumbnail files in the cache directory' and left both files where they were; the same command without the flag removed the thumbnail and left notes.txt with its bytes intact. Recorded as violated for where the guard lives, not for what it does. is_thumbnail_filename is a core/ predicate, but the loop that consults it, the dry-run branch and the directory sweep are all in cli/main.cpp, and no core/ primitive cleans a thumbnail cache — libphig/CLAUDE.md lists `thumbs clean` among what the ABI cannot reach, noting that the loop itself is in cli/, and 053 owns closing that. A client that grew its own cache cleaning would inherit none of this.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:cmd_thumbs`, `core/thumbs.cpp:is_thumbnail_filename` |
+| Binds | `thumbs.clean` |
+| Protects | thumb-cache, original-file |
+| Evidence | witness: `ThumbsTest.ThumbnailNameAcceptsValidSha256Jpg`, `ThumbsTest.ThumbnailNameRejectsForeignFiles` |
+| Test gap | Both listed tests call is_thumbnail_filename directly; tests/test_thumbs.cpp:117 says so in a comment, that the predicate 'gates thumbs clean deletion'. Nothing drives cmd_thumbs, which is a cli/ function no fixture calls, so the loop that consults the predicate, the --dry-run branch and the empty-directory sweep are all unpinned and were measured by running the binary. |
+
+### R78 — violated (test gap)
+
+A metadata write refuses to run unless the caller named which images it applies to.
+
+tag add, tag remove, gallery set, gallery clear, fav add and fav remove each require at least one --match or a --path and exit 1 otherwise (cli/main.cpp:1587, :1655, :1707). Without that check select_paths would hand the write every row in the collection, since passes_selection returns true for everything when the match list is empty (R74): `phig tag remove holiday` would strip that tag collection-wide and `phig gallery clear` would empty every gallery, both silently, both destroying user-authored metadata nothing can rebuild, and neither leaving a trace — metadata.write opens no logged operation, so there is no restore snapshot and no activity-log entry to read afterwards. Measured with the built binary: all three refused, with 'Error: tag remove requires --match or --path', 'Error: gallery clear requires --match or --path' and 'Error: fav remove requires --match or --path', each exiting 1. Recorded as violated for the guard's location: it is three copies in cli/, and Database::set_tag, set_gallery and clear_gallery act on whatever path list they are handed. The ABI is not exposed today, because phig_tag_add and its five neighbours take an explicit array of image ids and a client cannot ask for everything by omission — but the guard belongs with the write rather than with one caller of it, and 053 owns bringing glob selection to the ABI, which is the change that would otherwise reintroduce the hole.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:cmd_tag`, `cli/main.cpp:cmd_gallery`, `cli/main.cpp:cmd_fav` |
+| Binds | `metadata.write` |
+| Protects | user-metadata |
+| Evidence | subprocess: none |
+| Test gap | Nothing in tests/ drives cmd_tag, cmd_gallery or cmd_fav — all three are cli/ functions no fixture calls — so every refusal above was measured by running the binary. Only a subprocess test could pin them, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes. |

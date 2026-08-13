@@ -115,3 +115,22 @@ tests = [
 test_kind = "witness"
 status = "holds"
 test_gap = "Only the authoritative half is pinned. The six demote tests call demote_jpeg_rows and demote_live_photo_rows directly, and the two run_reconcile tests both have a non-empty removed_paths, so the block is entered whatever the peek answers. No test covers the case the peek exists for: removed_paths empty and the only work demotable."
+
+[[rule]]
+id = "R75"
+tier = "engine"
+concern = "reconcile"
+statement = "Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk."
+rationale = "run_reconcile takes its candidate set from db_.get_paths_with_prefix(scan_prefix) — every tracked row under the scanned directory — and classifies it with paths_safe_to_delete, which asks the filesystem. --recursive, --media and --hidden filter the walk instead (core/scan_engine.cpp:131-146) and reach none of that, so narrowing a scan cannot turn a row into a deletion candidate. That is worth stating because the opposite is the natural reading of the flags: a scan told to look at images only, in one directory only, still leaves every video and every subdirectory row alone. Measured with the built binary against a three-file collection (an image, a video, and an image in a subdirectory) scanned recursively: a following non-recursive `--media image` scan of the same directory reported Removed: 0 and left all three rows. The converse holds too, because the candidate set is the prefix rather than the walk — with the subdirectory's image then deleted from disk, a non-recursive `--media video` scan of the same directory reported Removed: 1 and dropped that row, a file the walk neither entered the directory for nor would have admitted. The prefix is where the containment argument sits: scanning a subdirectory reconciles that subtree and nothing above it."
+enforced_at = [
+    "core/scan_engine.cpp:ScanEngine::run_reconcile",
+    "core/paths.cpp:paths_safe_to_delete",
+]
+binds = ["scan.reconcile"]
+# db-row and the user-metadata it carries. No file is touched by reconcile —
+# it deletes rows for files that are already gone.
+protects = ["db-row", "user-metadata"]
+tests = ["ScanEngine.MediaFilterExcludesTheOtherType"]
+test_kind = "witness"
+status = "holds"
+test_gap = "The listed test checks the half that happens before reconcile — that a --media video walk does not process the .jpg — over a collection where the .jpg was never indexed, so no row of the other type exists to survive. Nothing indexes a file and then rescans with a flag that excludes it to check the row is still there, which is the claim; both measurements above came from running the binary. Nothing covers the --recursive or --hidden half at all."

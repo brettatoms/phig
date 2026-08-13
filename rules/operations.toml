@@ -348,6 +348,20 @@ surfaces_cli = ["thumbs"]
 surfaces_http = []
 
 [[operation]]
+id = "thumbs.clean"
+# Not core/thumbs_engine.h: ThumbsEngine only generates. The scan of the cache
+# directory, the orphan test and the deletion are all in cli/main.cpp's thumbs
+# branch, so this is in trash.empty's position — a destructive thing a person
+# can do with no core/ primitive behind it. Found by plan 054 phase 3's flag
+# pass: thumbs was already claimed by thumbs.rebuild, so the clean subcommand's
+# deletions sat behind it, accounted for by nothing. R77.
+core_entry = "cli/main.cpp:cmd_thumbs"
+destructive = true
+surfaces_abi = []            # plan 053
+surfaces_cli = ["thumbs"]
+surfaces_http = []
+
+[[operation]]
 id = "faces.rebuild"
 core_entry = "core/faces_engine.h:FacesEngine::run"
 destructive = true

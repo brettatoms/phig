@@ -39,6 +39,13 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R61 | authorization | violated (test gap) | A destructive operation's preview is a value the caller can inspect, not text the engine prints. |
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R71 | concurrency | holds (test gap) | A face row's embedding is written only by the insert that creates the row, so identify's `embedding = ?` clause refuses no write that `id = ?` and `person_id IS NULL` have not already refused. |
+| R73 | authorization | violated (test gap) | An unrecognized flag stops a command before it changes anything. |
+| R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
+| R75 | reconcile | holds (test gap) | Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk. |
+| R76 | metadata | holds (test gap) | No value of --force re-detects faces: a scan keeps a row's existing face data whatever it was told to force, and face rebuild is the only path that replaces it. |
+| R78 | authorization | violated (test gap) | A metadata write refuses to run unless the caller named which images it applies to. |
+| R79 | metadata | holds (test gap) | Assigning a gallery replaces the assignment already on a row unless the caller asked to fill only the empty ones. |
+| R80 | atomicity | violated (test gap) | A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish. |
 
 ## original-file — rebuildable: backup-only
 
@@ -70,6 +77,8 @@ The bytes on disk.
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R68 | authorization | violated (test gap) | Trash empty destroys its contents permanently and only after authorization: an empty trash returns without asking, --yes skips the prompt, and otherwise it refuses outright unless run at an interactive terminal where the operator types the literal string 'yes' in response to a prompt naming the item count and the trash directory. |
 | R69 | conflict | violated (test gap) | Writing a command's results to the path named by --output does not destroy what is already at that path. |
+| R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
+| R77 | authorization | violated (test gap) | Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all. |
 
 ## attachment — rebuildable: backup-only
 
@@ -135,6 +144,9 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R67 | cancellation | holds | phig_op_free joins the operation's worker rather than detaching it, so no engine thread outlives the handle or the Database it writes through. |
 | R70 | authorization | violated (test gap) | A command that only reads a collection neither creates its database nor migrates its schema. |
 | R72 | atomicity | holds (test gap) | A run that will detect faces establishes that it can detect before it writes anything: the OpenCV it was built against must be able to run the detection model, and both model files must be present. |
+| R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
+| R75 | reconcile | holds (test gap) | Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk. |
+| R80 | atomicity | violated (test gap) | A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish. |
 
 ## activity-log — rebuildable: no
 
@@ -168,6 +180,7 @@ Present so its rules are visibly cheap, not to guard it.
 | Rule | Concern | Status | Statement |
 |---|---|---|---|
 | R57 | cancellation | holds | Cancellation is polled only between whole items, so a run stopped by it leaves every item either fully done or untouched, and whatever committed before the stop stays committed. |
+| R77 | authorization | violated (test gap) | Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all. |
 
 ## client-process — rebuildable: no
 

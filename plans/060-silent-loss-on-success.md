@@ -2,7 +2,7 @@
 name: Silent Loss on a Successful Run
 status: designing
 created: 2026-08-10
-closes_rules: [R27, R48, R60, R69]
+closes_rules: [R27, R48, R60, R69, R73]
 description: >
   Four measured defects that share one shape: the operation finishes, reports
   success, exits 0, and something that mattered is gone or wrongly counted.
@@ -172,6 +172,27 @@ it, and phig was given the path only as somewhere to write. R69 records it under
 that is the one place this plan's shape strains the taxonomy.
 
 The fix lands in `cli/` and is the same scoping question as open question 3.
+
+## R73 — `face rebuild` ignores a flag it does not recognize
+
+Added by plan 054's flag pass and claimed here because it is R60's loss with a
+cheaper trigger. Twelve of `cli/main.cpp`'s thirteen flag loops end in an else
+that prints `Unknown option:` and returns 1. `face rebuild`'s (`:1421-1432`)
+has none: it steps over an argument it does not recognize, steps over that
+argument's value too, and runs. `opts.matches` therefore stays empty, which
+selects every image (R74), and the rebuild deletes every selected image's face
+rows including the labels somebody typed.
+
+Measured with the built binary against a two-image scratch collection: `phig
+face rebuild --match '*a.jpg'` printed `Rebuilding face data for 1 images...`;
+the same command with the flag misspelled `--mtach` printed `Rebuilding face
+data for 2 images...` and exited 0. A typo widens a one-image rebuild to the
+whole collection and reports success.
+
+The fix is one else branch, so this does not wait on R60's design decision —
+but the two are worth deciding together, because an authorization step in front
+of a rebuild also blunts this, and a parser that refuses unknown flags does not
+make the unprompted rebuild safe. R73 is recorded in `rules/boundary.toml`.
 
 ## Ordering: R60 does not wait for the others
 

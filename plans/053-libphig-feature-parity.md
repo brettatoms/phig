@@ -2,7 +2,7 @@
 name: libphig Feature Parity
 status: designing
 created: 2026-08-08
-closes_rules: [R61, R62, R66, R68]
+closes_rules: [R61, R62, R66, R68, R77, R78]
 description: >
   The gap between what phig can do and what a client can reach. `libphig`
   covers paged queries, per-image metadata, thumbnails, settings,
@@ -121,6 +121,30 @@ merely present.
 Orphaned thumbnail cleanup. `is_thumbnail_filename` is in `core/`; the loop is
 in `cli/main.cpp` and moves to `core/` first. Smallest item here, and nothing
 depends on it.
+
+R77 records what has to survive that move, and is claimed by this plan's
+`closes_rules`: only files matching the thumbnail naming contract are removed,
+only when no row claims their hash, and `--dry-run` removes nothing including
+the empty-directory sweep. All three live in the `cli/` loop today, so a client
+that grew its own cache cleaning would inherit none of them. Plan 054's flag
+pass also added a `thumbs.clean` operation to `rules/operations.toml` — `thumbs`
+was claimed by `thumbs.rebuild` alone, so the clean subcommand's deletions had
+been accounted for by nothing.
+
+### 7a. Glob selection on a metadata write — R78
+
+`tag add|remove`, `gallery set|clear` and `fav add|remove` each refuse to run
+without a `--match` or a `--path`, because an empty match list selects every row
+(R74) and the write would then strip a tag, or empty a gallery, collection-wide
+with no prompt and no log entry. The check is three copies in `cli/main.cpp`;
+`Database::set_tag`, `set_gallery` and `clear_gallery` act on whatever list they
+are handed.
+
+Nothing is exposed today — `phig_tag_add` and its five neighbours take an
+explicit array of image ids, so a client cannot ask for everything by omission.
+It becomes reachable exactly when item 4 brings glob selection to the ABI, which
+is why R78 is claimed here rather than left to whoever writes that. The guard
+belongs beside the write.
 
 ### 8. Activity log — Screen 7 has no data source, in `core/` first
 

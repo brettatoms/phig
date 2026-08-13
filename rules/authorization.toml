@@ -114,3 +114,69 @@ tests = []
 test_kind = "subprocess"
 status = "violated"
 test_gap = "No test calls cmd_trash_empty at all — not the empty-trash short-circuit, not the --yes bypass, not the non-interactive refusal, not the typed-confirmation path. It reads stdin and calls isatty directly, so the only test that could reach it is a subprocess driving the built phig binary, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes, which pins the equivalent guard on cmd_rm."
+
+[[rule]]
+id = "R74"
+tier = "engine"
+concern = "authorization"
+statement = "An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything."
+rationale = "One function decides this for every command: passes_selection checks the excludes first and returns false on the first hit, so exclude wins wherever the two overlap and an excluded path cannot be moved, deleted, re-detected or relabelled by the run that excluded it. The second half is the one that surprises. With an empty match list the function returns true for every path, so `phig rm --exclude '*.png'` selects the whole collection minus the PNGs rather than nothing, and `phig face rebuild` with no flags selects every image. Both are deliberate and both have a guard elsewhere rather than here: rm's broad-selection confirmation covers the first (R22), and tag, gallery and fav refuse an unnamed selection outright (R78). The comparison is against the whole path, not the basename — callers pass img.path — so an exclude may name a directory. Nine core/ call sites route through it (faces_engine.cpp:81, organize_engine.cpp:76, remove_exec.cpp:82, thumbs_engine.cpp:28, search_engine.cpp:100) plus two in cli/ (main.cpp:489 and :1538, the second being select_paths, which is how tag, gallery and fav reach it)."
+enforced_at = ["core/selection.cpp:passes_selection"]
+binds = [
+    "organize.plan", "organize.copy", "organize.move",
+    "remove.trash", "remove.hard", "remove.db-only", "remove.orphans",
+    "thumbs.rebuild", "faces.rebuild", "metadata.write",
+]
+# All three collection assets, because the selection decides which files an
+# operation writes over or deletes, which rows it drops, and which rows lose
+# their tags, gallery or face labels. thumb-cache is left off: thumbs.rebuild
+# only adds to it, and the deletions are thumbs clean's, which takes no globs.
+protects = ["original-file", "db-row", "user-metadata"]
+tests = [
+    "FilterTest.NoFiltersPassesAll",
+    "FilterTest.FilterWinsOverMatch",
+    "FilterTest.MatchAndFilterTogether",
+    "FilterTest.MatchesAgainstFullPath",
+    "FilterTest.MultipleFilters",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "Every listed test calls passes_selection directly, so what is pinned is the predicate. Nothing runs a mutating operation with an --exclude and checks that the excluded file survived it, and nothing checks that each of the ten bound operations routes its selection through this function rather than filtering some other way — cli/main.cpp:select_paths, the route tag, gallery and fav take, has no test of its own."
+
+[[rule]]
+id = "R77"
+tier = "engine"
+concern = "authorization"
+statement = "Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all."
+rationale = "The cache directory is not phig's private space: thumbs_dir() follows XDG_CACHE_HOME and a config key can point it anywhere, so a recursive delete over it could take files phig never wrote. Every regular file under it is tested with is_thumbnail_filename — a 64-hex stem and a .jpg suffix — and anything else is counted as foreign and left, then a thumbnail whose stem is in db.get_all_sha256s() is kept and the rest are removed. --dry-run prints the same list and removes nothing, including the sweep of emptied subdirectories, which is skipped as a whole rather than per entry. Measured with the built binary against a scratch XDG_CACHE_HOME holding one orphaned thumbnail and one notes.txt: `thumbs clean --dry-run` printed 'Would remove 1 orphaned thumbnails' and 'Left untouched 1 non-thumbnail files in the cache directory' and left both files where they were; the same command without the flag removed the thumbnail and left notes.txt with its bytes intact. Recorded as violated for where the guard lives, not for what it does. is_thumbnail_filename is a core/ predicate, but the loop that consults it, the dry-run branch and the directory sweep are all in cli/main.cpp, and no core/ primitive cleans a thumbnail cache — libphig/CLAUDE.md lists `thumbs clean` among what the ABI cannot reach, noting that the loop itself is in cli/, and 053 owns closing that. A client that grew its own cache cleaning would inherit none of this."
+enforced_at = ["cli/main.cpp:cmd_thumbs", "core/thumbs.cpp:is_thumbnail_filename"]
+binds = ["thumbs.clean"]
+# thumb-cache is what it is meant to delete from. original-file is what the
+# foreign-file check protects: a file in that directory that phig did not write
+# is somebody's, and nothing rebuilds it.
+protects = ["thumb-cache", "original-file"]
+tests = [
+    "ThumbsTest.ThumbnailNameAcceptsValidSha256Jpg",
+    "ThumbsTest.ThumbnailNameRejectsForeignFiles",
+]
+test_kind = "witness"
+status = "violated"
+test_gap = "Both listed tests call is_thumbnail_filename directly; tests/test_thumbs.cpp:117 says so in a comment, that the predicate 'gates thumbs clean deletion'. Nothing drives cmd_thumbs, which is a cli/ function no fixture calls, so the loop that consults the predicate, the --dry-run branch and the empty-directory sweep are all unpinned and were measured by running the binary."
+
+[[rule]]
+id = "R78"
+tier = "engine"
+concern = "authorization"
+statement = "A metadata write refuses to run unless the caller named which images it applies to."
+rationale = "tag add, tag remove, gallery set, gallery clear, fav add and fav remove each require at least one --match or a --path and exit 1 otherwise (cli/main.cpp:1587, :1655, :1707). Without that check select_paths would hand the write every row in the collection, since passes_selection returns true for everything when the match list is empty (R74): `phig tag remove holiday` would strip that tag collection-wide and `phig gallery clear` would empty every gallery, both silently, both destroying user-authored metadata nothing can rebuild, and neither leaving a trace — metadata.write opens no logged operation, so there is no restore snapshot and no activity-log entry to read afterwards. Measured with the built binary: all three refused, with 'Error: tag remove requires --match or --path', 'Error: gallery clear requires --match or --path' and 'Error: fav remove requires --match or --path', each exiting 1. Recorded as violated for the guard's location: it is three copies in cli/, and Database::set_tag, set_gallery and clear_gallery act on whatever path list they are handed. The ABI is not exposed today, because phig_tag_add and its five neighbours take an explicit array of image ids and a client cannot ask for everything by omission — but the guard belongs with the write rather than with one caller of it, and 053 owns bringing glob selection to the ABI, which is the change that would otherwise reintroduce the hole."
+enforced_at = [
+    "cli/main.cpp:cmd_tag",
+    "cli/main.cpp:cmd_gallery",
+    "cli/main.cpp:cmd_fav",
+]
+binds = ["metadata.write"]
+protects = ["user-metadata"]
+tests = []
+test_kind = "subprocess"
+status = "violated"
+test_gap = "Nothing in tests/ drives cmd_tag, cmd_gallery or cmd_fav — all three are cli/ functions no fixture calls — so every refusal above was measured by running the binary. Only a subprocess test could pin them, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes."

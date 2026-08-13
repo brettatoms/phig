@@ -158,3 +158,20 @@ tests = []
 test_kind = "subprocess"
 status = "violated"
 test_gap = "No test drives cmd_search or cmd_duplicates, so neither the creation nor the migration is pinned on the commands this rule is about; both were measured by running the binary. Nothing in tests/ asserts that a read leaves no file behind on either surface — Abi.InitFailsOnUnopenableDatabase is the nearest and only shows that a read-only context fails on a path inside a directory that does not exist."
+
+[[rule]]
+id = "R73"
+tier = "boundary"
+concern = "authorization"
+statement = "An unrecognized flag stops a command before it changes anything."
+rationale = "Twelve of cli/main.cpp's thirteen flag loops end in an else that prints 'Unknown option: <arg>' and returns 1 — scan (:1937), duplicates (:1991), cp/mv (:2049), rm (:2094), trash (:2138), search (:2302), thumbs rebuild (:1139), thumbs clean (:1241), tag (:1582), gallery (:1650), fav add/remove (:1702) and fav list (:1745). `face rebuild`'s loop has no else at all (cli/main.cpp:1421-1432): an argument it does not recognize is stepped over, so is that argument's value, and the run proceeds. That is the one destructive command where it matters. Because opts.matches stays empty the selection widens to every image (R74), and a face rebuild deletes every selected image's face rows including the person_id somebody typed, re-deriving only what auto_label_face can match (R60). Measured with the built binary against a two-image scratch collection: `phig face rebuild --match '*a.jpg'` printed 'Rebuilding face data for 1 images...'; the same command with the flag misspelled as --mtach printed 'Rebuilding face data for 2 images...' and exited 0. A typo therefore turns a one-image rebuild into a whole-collection loss of face labels, reported as success — the shape plan 060 is named for. The hole is the parser's rather than the engine's, and every parser is in cli/, which is why this is recorded here and why it is violated: no other surface could inherit a fix."
+enforced_at = ["cli/main.cpp:cmd_face"]
+binds_surface = ["cli"]
+# user-metadata alone. Nothing here deletes a file or a row: the widened
+# selection reaches faces.rebuild, which replaces face rows and drops the
+# person labels on them, and leaves the images and their rows in place.
+protects = ["user-metadata"]
+tests = []
+test_kind = "subprocess"
+status = "violated"
+test_gap = "Nothing in tests/ drives cmd_face, which is a cli/ function no fixture calls, so neither the missing else nor the twelve loops that have one is pinned; both measurements above came from running the binary. Only a subprocess test could reach it, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes."
