@@ -263,7 +263,7 @@ SQLite in WAL mode pins a read snapshot at the first read of a deferred transact
 | Protects | db-row, user-metadata, activity-log |
 | Evidence | witness: `DatabaseConcurrency.BeginTransactionTakesWriteLockImmediately`, `DatabaseConcurrency.DeferredBeginCanBusySnapshotOnReadThenWrite` |
 
-### R29 — holds
+### R29 — holds (test gap)
 
 Each schema migration takes the write lock before it reads the version and re-reads the version inside that transaction, so a step another process already applied is skipped rather than re-run.
 
@@ -275,6 +275,7 @@ The migrations are not idempotent — ALTER TABLE ADD COLUMN fails the second ti
 | Binds | `scan.walk`, `scan.reconcile`, `organize.plan`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `thumbs.rebuild`, `faces.rebuild`, `faces.identify`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo`, `metadata.write` |
 | Protects | db-row, user-metadata, activity-log |
 | Evidence | witness: `DatabaseConcurrency.ConcurrentMigrationIsSafe` |
+| Test gap | The listed test races two threads through init_schema on a rolled-back database and would catch a regression only statistically: nothing forces the interleave, so a run where one thread finishes before the other starts has the second read the current version and do nothing, never entering the re-check inside the IMMEDIATE transaction, and passing identically. Nothing asserts the re-read happens inside the transaction rather than before it, and nothing covers the two schema-creation paths' one-transaction shape. R53's gap describes the same weakness in the same test. |
 
 ### R30 — holds (test gap)
 
@@ -958,7 +959,7 @@ Keeping the preview in core/ rather than in a CLI branch is what lets every surf
 | Evidence | witness: `OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase` |
 | Test gap | The listed test pins the first clause, at the engine. Nothing pins the second: no test drives cmd_organize, and the migration it performs on a dry run was measured by running the binary. |
 
-### R22 — holds
+### R22 — holds (test gap)
 
 A hard delete, and any removal that takes at least half the collection and touches twenty rows or more, proceeds only on an explicit yes: assume_yes, or a confirmer that returns true, with a missing confirmer counted as a refusal.
 
@@ -970,6 +971,7 @@ Hard delete is the one removal mode with no trash behind it, so there is nothing
 | Binds | `remove.hard`, `remove.trash`, `remove.db-only`, `remove.orphans` |
 | Protects | original-file, db-row |
 | Evidence | witness: `RemoveExecTest.ConfirmCallbackRefusalCancelsTheOperation`, `RemoveExecTest.ConfirmCallbackNullRefusesWithoutAsking`, `RemoveExecTest.ConfirmCallbackAcceptanceProceeds`, `RemoveExecTest.ConfirmCallbackBroadRemovalWarningTextIsExact` |
+| Test gap | Three of the four listed tests drive the --hard arm and the fourth drives the broad arm at 20 of 20 rows, so every one of them is a removal the guard is supposed to stop. Nothing pins the negative side of the threshold: every other cmd_rm test in the suite sets assume_yes, so no test shows a removal below either bound — under half the collection, or fewer than twenty rows — proceeding with no confirmer supplied at all. A threshold that had drifted to 'always broad' would pass all four. |
 
 ### R59 — partial (test gap)
 

@@ -42,6 +42,7 @@ protects = ["db-row", "user-metadata", "activity-log"]
 tests = ["DatabaseConcurrency.ConcurrentMigrationIsSafe"]
 test_kind = "witness"
 status = "holds"
+test_gap = "The listed test races two threads through init_schema on a rolled-back database and would catch a regression only statistically: nothing forces the interleave, so a run where one thread finishes before the other starts has the second read the current version and do nothing, never entering the re-check inside the IMMEDIATE transaction, and passing identically. Nothing asserts the re-read happens inside the transaction rather than before it, and nothing covers the two schema-creation paths' one-transaction shape. R53's gap describes the same weakness in the same test."
 
 [[rule]]
 id = "R30"

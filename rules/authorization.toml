@@ -46,6 +46,7 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
+test_gap = "Three of the four listed tests drive the --hard arm and the fourth drives the broad arm at 20 of 20 rows, so every one of them is a removal the guard is supposed to stop. Nothing pins the negative side of the threshold: every other cmd_rm test in the suite sets assume_yes, so no test shows a removal below either bound — under half the collection, or fewer than twenty rows — proceeding with no confirmer supplied at all. A threshold that had drifted to 'always broad' would pass all four."
 
 [[rule]]
 id = "R59"
