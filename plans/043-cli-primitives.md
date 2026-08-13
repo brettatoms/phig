@@ -2,7 +2,7 @@
 name: CLI Primitive Split
 status: designing
 created: 2026-08-07
-closes_rules: [R70, R82]
+closes_rules: [R70]
 description: >
   Apply the same decomposition plan 031 gave the ABI to `cli/`: indexing,
   thumbnail generation, and face detection as primitives rather than jobs fused
@@ -79,9 +79,9 @@ than defaulting.
   `read_only = true` on the commands that only read, and decide what those
   commands do with a database older than the build, where libphig returns
   `PHIG_ERR_SCHEMA`.
-- **Nine numeric flags abort the process on a non-numeric value** (R82,
-  `rules/atomicity.toml`). `std::stoi`, `std::stof`, `std::stod` and
-  `parse_size` throw `std::invalid_argument` and nothing catches it. Measured:
+- **Nine numeric flags abort the process on a non-numeric value.**
+  `std::stoi`, `std::stof`, `std::stod` and `parse_size` throw
+  `std::invalid_argument` and nothing catches it. Measured:
   `scan --parallel abc` (`cli/main.cpp:1924`), `duplicates --threshold abc`
   (`:1967`) and `search`'s `--min-size`, `--max-size`, `--threshold`,
   `--face-threshold`, `--min-sharpness`, `--max-sharpness` and `--limit`
@@ -93,13 +93,23 @@ than defaulting.
   wrapped at `:2158` and `:2189` and exit 1 with `[error] thumbs: stoi: no
   conversion`. `--min-duration` and `--max-duration` already carry their own
   `try`/`catch` (`:2285`, `:2292`), so the defect was noticed once and fixed at
-  one call site rather than at the parser. Nothing is at risk today — every one
-  of the nine converts before any `Database` is constructed — and R82 exists
-  because that ordering is the only thing making it safe: `std::terminate` runs
-  no destructor, which is the failure `core/scan_engine.cpp:472-496` already
-  carries a comment about having been bitten by. It lands here for the reason
-  R70 does: the fix is `cli/` argv parsing, and this is the open plan that owns
-  `cli/`.
+  one call site rather than at the parser.
+
+  **Nothing is at risk.** Every one of the nine converts during argv parsing,
+  before any `Database` is constructed — measured, `phig scan <dir> --parallel
+  abc --db <new path>` aborts and leaves no database file at that path. So this
+  is a robustness defect, not a data-safety one: exit 134 is a code no script
+  can tell from a crash, and the message is a C++ runtime's rather than phig's.
+
+  It is deliberately **not** a rule. It was written as one (R82) and removed
+  after review: a `cli/`-anchored rule has to name a user asset a command can
+  destroy, because the anchor's whole point is that some plan moves the guard
+  into `core/` where every surface inherits it. There is no asset here and
+  nothing to move — `core/` never sees argv. `rules/README.md` now states that
+  bar under "Anchors outside `core/` and `libphig/`", with this as the worked
+  example of what fails it. The fix is one `try`/`catch` per site, or one
+  helper; it lands here for the reason R70 does, that this is the open plan
+  that owns `cli/`.
 - Whether `cli/` moves onto plan 042's organize engine once it exists, replacing
   the inline orchestration at `cli/main.cpp:720-744`.
 - Whether scan gains `--dry-run` from plan 041's reconcile plan phase.

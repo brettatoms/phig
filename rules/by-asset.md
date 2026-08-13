@@ -148,7 +148,6 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
 | R75 | reconcile | holds (test gap) | Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk. |
 | R80 | atomicity | violated (test gap) | A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish. |
-| R82 | atomicity | violated (test gap) | A malformed flag value is reported and exits non-zero; it never terminates the process. |
 
 ## activity-log — rebuildable: no
 

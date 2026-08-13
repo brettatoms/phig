@@ -429,20 +429,6 @@ Reconcile deletes rows whose files it could not find, so running it after a walk
 | Evidence | witness: `ScanEngine.FailOnErrorThrowsAndCommitsWhatCompleted` |
 | Test gap | The listed test drives ScanEngine::run with fail_on_error and an undecodable file and checks that what completed before the throw was flushed. It asserts nothing about reconcile: it neither indexes a file, deletes it from disk and checks the row survives the failed rescan, nor covers cmd_scan, which is the sequencing the CLI actually runs and which no fixture calls. The engine and the CLI stating the same order twice is the defect, and no test compares them. |
 
-### R82 — violated (test gap)
-
-A malformed flag value is reported and exits non-zero; it never terminates the process.
-
-Nine numeric flags convert their argument with std::stoi, std::stof, std::stod or parse_size and let the resulting std::invalid_argument escape: scan --parallel (cli/main.cpp:1924), duplicates --threshold (:1967), and search's --min-size, --max-size, --threshold, --face-threshold, --min-sharpness, --max-sharpness and --limit (:2232 to :2264). Measured with the built binary, each one gives 'libc++abi: terminating due to uncaught exception of type std::invalid_argument' and exit 134 — SIGABRT, not a usage error. Which flags are affected follows the same split that makes the flag inventory unscriptable: scan, duplicates and search parse inline in main(), outside every try, while thumbs rebuild --parallel (:1135) and face rebuild --parallel (:1428) parse inside cmd_ functions whose whole call is wrapped at :2158 and :2189, so those two report '[error] thumbs: stoi: no conversion' and exit 1. --min-duration and --max-duration carry their own try/catch (:2285, :2292) and exit 1 cleanly, which says the defect was noticed once and fixed locally rather than at the parser. Nothing is at risk today and the record says so plainly: every one of the nine converts during argv parsing, before any Database is constructed, so the abort happens with nothing open and nothing half-written. The rule exists because that ordering is the only thing making it safe. std::terminate runs no destructor, so the same throw after a run had started would abort with an uncheckpointed WAL — the exact failure core/scan_engine.cpp:472-496 already carries a comment about having been bitten by, where an exception escaping a std::thread lambda called std::terminate mid-write. Exit 134 is also not a code a script can distinguish from a crash. Anchored in cli/ because every one of the nine sites is there and no core/ primitive parses argv.
-
-| | |
-|---|---|
-| Enforced at | `cli/main.cpp:main` |
-| Binds | `scan.walk`, `scan.reconcile`, `thumbs.rebuild`, `faces.rebuild` |
-| Protects | db-row |
-| Evidence | subprocess: none |
-| Test gap | No test passes a non-numeric value to any flag, and nothing drives main() or the cmd_ parsers, so all thirteen outcomes above were measured by running the binary. Only a subprocess test could pin them — an abort is exit 134 with output on stderr, which is what EXPECT_EXIT already checks elsewhere in the suite. |
-
 ## recoverability
 
 ### R04 — partial (test gap)
