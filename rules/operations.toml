@@ -41,6 +41,123 @@ read_only_abi = [
 # ABI in libphig/CLAUDE.md, owned by 053.
 read_only_cli = ["search", "duplicates", "help", "models"]
 
+# Every long flag cli/main.cpp parses, split by whether it can change what is
+# written. read_only_cli above accounts for top-level commands; these two lists
+# do the same one level down, so the denominator a reader sees is every flag
+# rather than the ones somebody happened to write a rule for. Plan 054 phase 3,
+# workstream B.
+#
+# A flag lands in mutating_cli_flags when any command it reaches can change
+# bytes on disk or rows in the database through it — including changing *which*
+# files an operation writes to or destroys, not only whether it writes at all.
+# One verdict per name, as read_only_cli gives one verdict per command: --format
+# is on the mutating list because cp and mv compute destination paths from it,
+# even though the same spelling on search, duplicates and fav list only picks
+# between text, csv and json.
+#
+# The split was read off cli/main.cpp branch by branch, not scripted. scan,
+# cp/mv, rm and trash parse inline in main() while the other commands parse in
+# their own cmd_* function, so a classifier that attributes a flag to the
+# function containing it calls every inline flag read-only. What is scripted is
+# only the existence check: scripts/rules.py's check_coverage extracts every
+# "--x" literal from cli/main.cpp and requires each to be on exactly one of
+# these lists, so a new flag fails the build until somebody classifies it.
+#
+# Short aliases are not listed: -v, -h and -y are spellings of --version,
+# --help and --yes and carry those flags' verdicts. --size is not listed
+# either — the help text advertises it (cli/main.cpp:129) and no parser branch
+# reads it, so `thumbs rebuild --size 768` exits 1 with "Unknown option". Plan
+# 043 owns wiring it; when it lands it belongs on the mutating list, since it
+# decides which thumbnail files are written.
+mutating_cli_flags = [
+    # Global. --config picks the file that set_path_overrides feeds
+    # default_db_path, models_dir and thumbs_dir from, and that seeds
+    # log.enabled, so it decides which collection a mutating command writes,
+    # where thumbnails and models land, and whether the activity log records
+    # anything (R25 covers the restore snapshot surviving a disabled log).
+    # --no-wait decides whether a mutating command waits for the writer lock or
+    # exits 1 without running (R49, R50).
+    "--config", "--no-wait",
+    # Every command. Names the collection that gets created, migrated and
+    # written — R70 for the creation and migration, R50 for the lock being
+    # taken on the default collection's file rather than on this one's.
+    "--db",
+    # scan. Which files the walk admits, hence which rows are inserted and
+    # updated; R75 records that none of them widens what reconcile deletes.
+    "--recursive", "--media", "--hidden",
+    # scan and thumbs rebuild. --force bypasses the mtime skip and regenerates
+    # thumbnails; R76 records that no value of it reaches face data.
+    "--force",
+    # scan. Fold face detection and thumbnail generation into the indexing
+    # pass — R72 guards the first, and both write.
+    "--faces", "--thumbs",
+    # scan and rm. Turns a row the mount heuristic would keep into a row that
+    # is deleted (R14).
+    "--ignore-mount-warning",
+    # scan. `fail` aborts the run before its destructive reconcile phase (R80).
+    "--on-error",
+    # duplicates, search and fav list. Truncates whatever file it names (R69).
+    "--output",
+    # cp and mv. The destination path format, so it decides what gets written
+    # where and which destinations collide (R01, R03).
+    "--format",
+    # cp, mv, rm, thumbs rebuild, face rebuild, tag, gallery and fav. Which
+    # files an operation moves, deletes, re-detects or labels (R74).
+    "--match", "--exclude",
+    # cp and mv (R21), rm (R20), thumbs clean (R77). The flag whose failure
+    # mode is a write.
+    "--dry-run",
+    # cp and mv. `overwrite` replaces the file at an occupied destination
+    # (R01, R02, R05, R06, R08, R09, R10, R11).
+    "--on-conflict",
+    # rm. Which removal mode runs: permanent instead of trash, row without
+    # file, or rows whose files are already gone (R12, R13, R14, R22, R23).
+    "--hard", "--db-only", "--orphans",
+    # rm (R22) and trash empty (R68). Skips the confirmation.
+    "--yes",
+    # tag, gallery and fav. A directory prefix selecting which rows are
+    # written; one of the two flags that satisfies the named-selection guard
+    # (R78).
+    "--path",
+    # gallery set. Whether an existing gallery assignment is replaced (R79).
+    "--no-overwrite",
+]
+
+# Flags that change only what is read or printed. Recorded rather than omitted:
+# a flag missing from both lists would be indistinguishable from one nobody had
+# looked at.
+read_only_cli_flags = [
+    # Global. --version prints and returns before load_config, and --help
+    # before dispatch. Neither is free of every write, because
+    # migrate_flat_thumb_cache() and log_init() run at cli/main.cpp:1835 and
+    # :1843 on every invocation; but that happens with or without the flag, so
+    # passing it strictly reduces what a run writes.
+    "--version", "--help",
+    # scan, thumbs rebuild, face rebuild. Worker count. It changes how many
+    # threads write, never what any of them writes; the concurrency rules
+    # (R28, R52, R53, R54) bind those writes directly.
+    "--parallel",
+    # duplicates. Which duplicate groups are computed and shown.
+    "--type",
+    # duplicates and search. Hamming distance for the near/similar comparison.
+    "--threshold",
+    # duplicates and search. Restricts the result set — unrelated to the
+    # `fav` command, which mutates.
+    "--fav",
+    # search. Query predicates, every one of them a WHERE clause.
+    "--ext", "--after", "--before", "--camera", "--make",
+    "--min-size", "--max-size", "--min-duration", "--max-duration",
+    "--similar", "--similar-hash",
+    "--face", "--face-threshold", "--person",
+    # search. --tag and --gallery here read the metadata that the tag and
+    # gallery commands write; the flags themselves only filter.
+    "--tag", "--gallery",
+    "--blurry", "--min-sharpness", "--max-sharpness",
+    # search and fav list. How much is printed and in what shape. --output is
+    # the one output flag that is not on this list.
+    "--limit", "--count", "--porcelain", "--print0",
+]
+
 # core/ headers whose declared functions must each map to an operation or be
 # listed in core_read_only below. Bounded on purpose: widening this list is a
 # deliberate act, not a side effect.

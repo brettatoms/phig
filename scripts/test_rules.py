@@ -27,6 +27,8 @@ note = "A foreign caller's address space and its ability to keep running."
 MINIMAL_OPS = """
 read_only_abi = []
 read_only_cli = []
+mutating_cli_flags = ["--dry-run"]
+read_only_cli_flags = ["--help"]
 core_headers = ["core/organize_engine.h"]
 core_internal = []
 core_read_only = []
@@ -772,11 +774,15 @@ PHIG_API int phig_op_move_start(phig_ctx* c, phig_op** out);
 """
 
 # The three shapes cli/main.cpp actually dispatches on: a plain command, a
-# command sharing a branch with another, and the help flags.
+# command sharing a branch with another, and the help flags. Plus a parser
+# branch comparing against a flag, and a usage line naming one it never parses
+# — the two shapes the flag check has to tell apart.
 MAIN_CPP = """
     if (command == "--help" || command == "-h" || command == "help") { usage(); }
     else if (command == "cp" || command == "mv") { return cmd_organize(argc, argv); }
     else if (command == "search") { return cmd_search(argc, argv); }
+    if (arg == "--dry-run") { dry_run = true; }
+    std::cerr << "  phig thumbs rebuild [--size N]  Generate thumbnails\\n";
 """
 
 CMAKELISTS = """
@@ -836,6 +842,31 @@ class CoverageTest(unittest.TestCase):
             ops = self.classified(extra_cli=', "cp"')
             problems = rules.check_coverage(self.build(pathlib.Path(tmp), ops))
             self.assertEqual(problems, [])
+
+    def test_unclassified_cli_flag_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ops = self.classified(extra_cli=', "cp"').replace(
+                'mutating_cli_flags = ["--dry-run"]', 'mutating_cli_flags = []')
+            problems = rules.check_coverage(self.build(pathlib.Path(tmp), ops))
+            self.assertTrue(any("--dry-run" in p for p in problems))
+
+    def test_a_flag_named_only_in_a_usage_line_needs_no_classifying(self):
+        # --size sits inside a longer help string and no branch compares
+        # against it, so it is not a flag the parser has. cli/main.cpp is in
+        # exactly this position today; plan 043 owns wiring it.
+        with tempfile.TemporaryDirectory() as tmp:
+            ops = self.classified(extra_cli=', "cp"')
+            problems = rules.check_coverage(self.build(pathlib.Path(tmp), ops))
+            self.assertEqual(problems, [])
+
+    def test_a_flag_on_both_lists_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ops = self.classified(extra_cli=', "cp"').replace(
+                'read_only_cli_flags = ["--help"]',
+                'read_only_cli_flags = ["--help", "--dry-run"]')
+            problems = rules.check_schema(self.build(pathlib.Path(tmp), ops))
+            self.assertTrue(any("--dry-run" in p and "classified once" in p
+                                for p in problems))
 
     def test_abi_version_agreement_is_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
