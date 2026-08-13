@@ -212,6 +212,43 @@ debt exists, and which plan owns each item, becomes a number.
   so `opencv_zoo` moving a file under the same name would change what CI tests
   with nothing noticing — worth a checksum if the cost is a line.
 
+## Phase 3 outcome (2026-08-13)
+
+All three workstreams shipped. 70 rules → 81; 811 tests → 855 locally, 846 on
+each ubuntu leg; CI green on both legs, gtk and lint. The triage that drove the
+test work is `docs/plans/2026-08-09-054-phase3a-triage.md`, which carries
+per-rule outcomes.
+
+Of 46 core-anchored test gaps: 30 closable, 14 blocked, 2 unclosable. All 30
+were worked — 6 removed outright, 24 narrowed with the residual stated in the
+record. The 8 `cli/`-anchored gaps were deliberately skipped: plan 053 moves
+that logic into `core/` and will rewrite them.
+
+Corrections to this plan's own text above, all measured rather than argued:
+
+- **The models-in-CI note said nine face tests skip. It is ten**, and phase 2's
+  instruction not to add a models download was reversed — a second witness that
+  avoids face models tests something other than the path R52 guards.
+- **Ubuntu's OpenCV cannot run the model this downloads.** 4.6.0 and 4.7.0 throw
+  on `detect()`, 4.8.0 and 4.10.0 do not. That made the workstream a code fix as
+  well as a config change, and added an `ubuntu-26.04` leg.
+- **`n/a` for read-only flags was not built as described.** There is no `n/a`
+  status; flags are classified by two allowlists in `rules/operations.toml`,
+  gated by check 4. The 52-flag count was right; the split is 25/27.
+- **The checksum was worth more than "a line if cheap".** `download_face_models()`
+  skips any file that merely exists, by name, so a truncated or poisoned entry
+  was reused forever while `face_models_exist()` reported it present.
+
+Seven defects surfaced, none previously reported, each recorded as a rule and
+owned by a plan: the OpenCV floor, `face rebuild` destroying every face label on
+a typo'd flag, a dead `--force faces`, `search --similar -` overwriting an
+arbitrary file through a fixed temp path, an unbounded `cmake --build --parallel`
+killing CI on a cold cache, `delete_paths_logged` destroying its own error
+message, and a throw that leaves a transaction open so `interrupted` never
+commits. Two rules also had evidence weaker than their claim with nothing
+recording it (R22, R29), and `DatabaseConcurrency.ConcurrentMigrationIsSafe` —
+cited by both R29 and R53 — was measured catching its regression 0 times in 20.
+
 ## Open questions, all resolved
 
 1. **Where the document lives** — `rules/` at the repo root, a peer of `plans/`.
