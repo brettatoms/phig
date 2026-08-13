@@ -29,10 +29,10 @@ protects = ["user-metadata", "db-row"]
 tests = [
     "RemoveExecTest.RmOrphansNeverRemovesUnreadablePathsEvenWithIgnoreMountWarning",
     "SafeToDeleteTest.UnreadableParentIsCheckFailedNotParentMissing",
+    "ScanEngine.ReconcileNeverDeletesARowWhoseExistenceCouldNotBeChecked",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "Only rm's half is driven end to end. No test runs scan's reconcile over an unreadable path, with or without the flag, so scan's refusal to delete a check_failed row rests on reading run_reconcile rather than on a test."
 
 [[rule]]
 id = "R14"
@@ -47,10 +47,10 @@ tests = [
     "RemoveExecTest.RmOrphansSkipsRowsWhoseParentIsMissingByDefault",
     "RemoveExecTest.RmOrphansRemovesMissingParentRowsWithIgnoreMountWarning",
     "RemoveExecTest.RmOrphansNeverRemovesPresentFilesEvenWithIgnoreMountWarning",
+    "ScanEngine.IgnoreMountWarningDeletesRowsUnderAMissingParentOnScanToo",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "Every listed test drives rm. ScanEngine.IgnoreMountWarningOverridesTheGuard exercises scan's coarse all-rows-missing warning, whose parent directories still exist, so no test covers scan's reconcile deleting a missing-parent row — which is the behaviour plan 032 changed for existing users of the flag."
 
 [[rule]]
 id = "R15"
@@ -65,10 +65,11 @@ tests = [
     "ScanEngine.MountLossGuardKeepsRowsWhenEveryFileVanishes",
     "ScanEngine.IgnoreMountWarningOverridesTheGuard",
     "ScanEngine.RemovesRowsForFilesThatDisappeared",
+    "ScanEngine.MountLossGuardDoesNotFireWhenSomeRowsAreOnlyParentMissing",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The listed tests cover all rows deletable (the guard fires), the flag override, and some files still present (it does not). None drives run_reconcile with a mixed set — some rows deletable, others parent_missing — which is the case where every tracked file is gone, the guard still does not fire, and the deletable rows are deleted."
+test_gap = "The mixed set now covered is deletable plus parent_missing: every tracked file is gone from disk, the guard does not fire, and the two deletable rows are deleted while the third survives. The rationale's other mixed shape is not covered — deletable rows alongside a check_failed one. ScanEngine.ReconcileNeverDeletesARowWhoseExistenceCouldNotBeChecked has nothing deletable, so it short-circuits on the guard's first condition instead of reaching the size comparison."
 
 [[rule]]
 id = "R16"
@@ -111,10 +112,12 @@ tests = [
     "LivePhotoDemotion.LeavesAnOrdinaryVideoRowAlone",
     "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget",
     "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged",
+    "ScanEngine.ReconcileOpensItsOperationForDemotableWorkAlone",
+    "ScanEngine.ReconcileDemotesALivePhotoVideoRow",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "Only the authoritative half is pinned. The six demote tests call demote_jpeg_rows and demote_live_photo_rows directly, and the two run_reconcile tests both have a non-empty removed_paths, so the block is entered whatever the peek answers. No test covers the case the peek exists for: removed_paths empty and the only work demotable."
+test_gap = "Both peeks are now driven with removed_paths empty and the only work demotable — the has_sibling_raw one over a JPEG beside an indexed RAW, the Live Photo one over a paired video row — so the block is no longer entered regardless of what they answer. What remains is the false positive the rationale names: a peek that says yes over work the demote pass then declines, a JPEG whose sibling RAW is on disk but not indexed. RelinkTest.JpegWithRawRowMissingNotDemoted pins the pass's refusal directly; nothing shows the empty operation row reconcile is left holding."
 
 [[rule]]
 id = "R75"
@@ -130,7 +133,12 @@ binds = ["scan.reconcile"]
 # db-row and the user-metadata it carries. No file is touched by reconcile —
 # it deletes rows for files that are already gone.
 protects = ["db-row", "user-metadata"]
-tests = ["ScanEngine.MediaFilterExcludesTheOtherType"]
+tests = [
+    "ScanEngine.MediaFilterExcludesTheOtherType",
+    "ScanEngine.AMediaFilteredRescanKeepsTheOtherTypesRow",
+    "ScanEngine.ANonRecursiveRescanKeepsASubdirectoryRow",
+    "ScanEngine.ARescanWithoutHiddenKeepsAHiddenFilesRow",
+]
 test_kind = "witness"
 status = "holds"
-test_gap = "The listed test checks the half that happens before reconcile — that a --media video walk does not process the .jpg — over a collection where the .jpg was never indexed, so no row of the other type exists to survive. Nothing indexes a file and then rescans with a flag that excludes it to check the row is still there, which is the claim; both measurements above came from running the binary. Nothing covers the --recursive or --hidden half at all."
+test_gap = "All three flags now have a test that indexes a file, rescans with a flag that would have excluded it from the walk, and asserts the row is still there with removed at 0. Two clauses of the rationale are still untested, both of them measured by running the binary rather than pinned. The converse: a row the walk never admitted is still deleted once its file is gone, because the candidate set is the prefix and not the walk. And the containment half: scanning a subdirectory reconciles that subtree and leaves every row above it alone."

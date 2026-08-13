@@ -58,10 +58,11 @@ tests = [
     "RelinkTest.DemotesJpegToSameBasenameRaw",
     "RelinkTest.LoneJpegNotDemoted",
     "RelinkTest.JpegWithRawRowMissingNotDemoted",
+    "ScanEngine.AJpegBesideARawGetsNoRowOfItsOwn",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The demotion half is well covered and the predicate has six tests of its own. The skip is not tested at any level: nothing runs ScanEngine over a directory holding a RAW and its JPEG to assert one row comes out, which is the RAW analogue of ScanEngineLivePhoto.IndexesTheStillAndNotItsPairedVideo. It was measured by running the binary instead."
+test_gap = "The skip now runs through ScanEngine, but a row count is not what shows it and a later test of this rule that checks only the surviving row would be vacuous. The two halves overlap: with has_sibling_raw removed the JPEG is indexed and then demoted away by the same run, so the collection ends at one row either way. What separates them is the walk counters, which ScanEngine.AJpegBesideARawGetsNoRowOfItsOwn asserts at skipped 1, processed 1, demoted 0."
 
 [[rule]]
 id = "R44"

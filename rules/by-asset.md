@@ -11,8 +11,8 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R04 | recoverability | partial (test gap) | Deleting a row captures a restore snapshot sufficient to rebuild that row's user-authored metadata. |
 | R07 | concurrency | holds (test gap) | A read-then-write on a face row labels only the face it compared: an id whose face was deleted in the gap is out of circulation and matches nothing, and `person_id IS NULL` refuses a face another labeler named first. |
 | R12 | reconcile | holds | A tracked path is deletable only when its file is gone and its parent directory still exists; a missing parent and a failed existence check are reported apart from it and kept. |
-| R13 | reconcile | holds (test gap) | A path whose existence could not be determined is never deleted, under any flag. |
-| R14 | reconcile | holds (test gap) | --ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted. |
+| R13 | reconcile | holds | A path whose existence could not be determined is never deleted, under any flag. |
+| R14 | reconcile | holds | --ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted. |
 | R15 | reconcile | holds (test gap) | Scan skips its whole destructive phase when every tracked row under the scanned directory classifies as deletable. |
 | R16 | reconcile | holds | A stale row's user metadata transfers only when exactly one other tracked file with the same sha256 exists on disk; with none or several it transfers nowhere and the row is still deleted. |
 | R17 | reconcile | holds (test gap) | The has_sibling_raw and Live Photo peeks over indexed paths only decide whether to open a logged operation; the demote passes decide again, authoritatively, inside it. |
@@ -108,8 +108,8 @@ Rebuilt by a rescan, except the user-metadata it carries.
 |---|---|---|---|
 | R04 | recoverability | partial (test gap) | Deleting a row captures a restore snapshot sufficient to rebuild that row's user-authored metadata. |
 | R12 | reconcile | holds | A tracked path is deletable only when its file is gone and its parent directory still exists; a missing parent and a failed existence check are reported apart from it and kept. |
-| R13 | reconcile | holds (test gap) | A path whose existence could not be determined is never deleted, under any flag. |
-| R14 | reconcile | holds (test gap) | --ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted. |
+| R13 | reconcile | holds | A path whose existence could not be determined is never deleted, under any flag. |
+| R14 | reconcile | holds | --ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted. |
 | R15 | reconcile | holds (test gap) | Scan skips its whole destructive phase when every tracked row under the scanned directory classifies as deletable. |
 | R17 | reconcile | holds (test gap) | The has_sibling_raw and Live Photo peeks over indexed paths only decide whether to open a logged operation; the demote passes decide again, authoritatively, inside it. |
 | R18 | recoverability | holds (test gap) | A log entry describing a database change is inserted inside the same transaction as that change, so the log never records a change that did not commit. |

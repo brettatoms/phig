@@ -165,7 +165,7 @@ A missing file alone does not say what happened. A missing parent directory usua
 | Protects | user-metadata, db-row |
 | Evidence | conformance: `SafeToDeleteTest.PresentFilesAreNotDeletable`, `SafeToDeleteTest.GenuinelyMissingFileWithPresentParentIsDeletable`, `SafeToDeleteTest.MissingFileUnderAbsentParentIsKept`, `SafeToDeleteTest.PartialUnmountKeepsUnmountedSubtreeDeletesRealMissing`, `SafeToDeleteTest.UnreadableParentIsCheckFailedNotParentMissing` |
 
-### R13 — holds (test gap)
+### R13 — holds
 
 A path whose existence could not be determined is never deleted, under any flag.
 
@@ -176,10 +176,9 @@ An EACCES or EIO on the existence check is an unknown state, not a heuristic jud
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/remove_exec.cpp:cmd_rm` |
 | Binds | `scan.reconcile`, `remove.orphans` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `RemoveExecTest.RmOrphansNeverRemovesUnreadablePathsEvenWithIgnoreMountWarning`, `SafeToDeleteTest.UnreadableParentIsCheckFailedNotParentMissing` |
-| Test gap | Only rm's half is driven end to end. No test runs scan's reconcile over an unreadable path, with or without the flag, so scan's refusal to delete a check_failed row rests on reading run_reconcile rather than on a test. |
+| Evidence | witness: `RemoveExecTest.RmOrphansNeverRemovesUnreadablePathsEvenWithIgnoreMountWarning`, `SafeToDeleteTest.UnreadableParentIsCheckFailedNotParentMissing`, `ScanEngine.ReconcileNeverDeletesARowWhoseExistenceCouldNotBeChecked` |
 
-### R14 — holds (test gap)
+### R14 — holds
 
 --ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted.
 
@@ -190,8 +189,7 @@ One flag with two meanings is how a user learns a destructive command's behavior
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/remove_exec.cpp:cmd_rm` |
 | Binds | `scan.reconcile`, `remove.orphans` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `RemoveExecTest.RmOrphansSkipsRowsWhoseParentIsMissingByDefault`, `RemoveExecTest.RmOrphansRemovesMissingParentRowsWithIgnoreMountWarning`, `RemoveExecTest.RmOrphansNeverRemovesPresentFilesEvenWithIgnoreMountWarning` |
-| Test gap | Every listed test drives rm. ScanEngine.IgnoreMountWarningOverridesTheGuard exercises scan's coarse all-rows-missing warning, whose parent directories still exist, so no test covers scan's reconcile deleting a missing-parent row — which is the behaviour plan 032 changed for existing users of the flag. |
+| Evidence | witness: `RemoveExecTest.RmOrphansSkipsRowsWhoseParentIsMissingByDefault`, `RemoveExecTest.RmOrphansRemovesMissingParentRowsWithIgnoreMountWarning`, `RemoveExecTest.RmOrphansNeverRemovesPresentFilesEvenWithIgnoreMountWarning`, `ScanEngine.IgnoreMountWarningDeletesRowsUnderAMissingParentOnScanToo` |
 
 ### R15 — holds (test gap)
 
@@ -204,8 +202,8 @@ An unmounted drive is indistinguishable from a deleted collection at the point r
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile` |
 | Binds | `scan.reconcile` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `ScanEngine.MountLossGuardKeepsRowsWhenEveryFileVanishes`, `ScanEngine.IgnoreMountWarningOverridesTheGuard`, `ScanEngine.RemovesRowsForFilesThatDisappeared` |
-| Test gap | The listed tests cover all rows deletable (the guard fires), the flag override, and some files still present (it does not). None drives run_reconcile with a mixed set — some rows deletable, others parent_missing — which is the case where every tracked file is gone, the guard still does not fire, and the deletable rows are deleted. |
+| Evidence | witness: `ScanEngine.MountLossGuardKeepsRowsWhenEveryFileVanishes`, `ScanEngine.IgnoreMountWarningOverridesTheGuard`, `ScanEngine.RemovesRowsForFilesThatDisappeared`, `ScanEngine.MountLossGuardDoesNotFireWhenSomeRowsAreOnlyParentMissing` |
+| Test gap | The mixed set now covered is deletable plus parent_missing: every tracked file is gone from disk, the guard does not fire, and the two deletable rows are deleted while the third survives. The rationale's other mixed shape is not covered — deletable rows alongside a check_failed one. ScanEngine.ReconcileNeverDeletesARowWhoseExistenceCouldNotBeChecked has nothing deletable, so it short-circuits on the guard's first condition instead of reaching the size comparison. |
 
 ### R16 — holds
 
@@ -231,8 +229,8 @@ A peek is a read-only disk check made outside any transaction and from a path al
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/relink.cpp:demote_jpeg_rows`, `core/relink.cpp:demote_live_photo_rows` |
 | Binds | `scan.reconcile`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `RelinkTest.DemotesJpegToSameBasenameRaw`, `RelinkTest.LoneJpegNotDemoted`, `RelinkTest.JpegWithRawRowMissingNotDemoted`, `RelinkTest.DeletedJpegWithIndexedRawNotDemoted`, `LivePhotoDemotion.MovesTheVideoRowsMetadataToItsStillAndDropsTheRow`, `LivePhotoDemotion.LeavesAnOrdinaryVideoRowAlone`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged` |
-| Test gap | Only the authoritative half is pinned. The six demote tests call demote_jpeg_rows and demote_live_photo_rows directly, and the two run_reconcile tests both have a non-empty removed_paths, so the block is entered whatever the peek answers. No test covers the case the peek exists for: removed_paths empty and the only work demotable. |
+| Evidence | witness: `RelinkTest.DemotesJpegToSameBasenameRaw`, `RelinkTest.LoneJpegNotDemoted`, `RelinkTest.JpegWithRawRowMissingNotDemoted`, `RelinkTest.DeletedJpegWithIndexedRawNotDemoted`, `LivePhotoDemotion.MovesTheVideoRowsMetadataToItsStillAndDropsTheRow`, `LivePhotoDemotion.LeavesAnOrdinaryVideoRowAlone`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged`, `ScanEngine.ReconcileOpensItsOperationForDemotableWorkAlone`, `ScanEngine.ReconcileDemotesALivePhotoVideoRow` |
+| Test gap | Both peeks are now driven with removed_paths empty and the only work demotable — the has_sibling_raw one over a JPEG beside an indexed RAW, the Live Photo one over a paired video row — so the block is no longer entered regardless of what they answer. What remains is the false positive the rationale names: a peek that says yes over work the demote pass then declines, a JPEG whose sibling RAW is on disk but not indexed. RelinkTest.JpegWithRawRowMissingNotDemoted pins the pass's refusal directly; nothing shows the empty operation row reconcile is left holding. |
 
 ### R75 — holds (test gap)
 
@@ -245,8 +243,8 @@ run_reconcile takes its candidate set from db_.get_paths_with_prefix(scan_prefix
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/paths.cpp:paths_safe_to_delete` |
 | Binds | `scan.reconcile` |
 | Protects | db-row, user-metadata |
-| Evidence | witness: `ScanEngine.MediaFilterExcludesTheOtherType` |
-| Test gap | The listed test checks the half that happens before reconcile — that a --media video walk does not process the .jpg — over a collection where the .jpg was never indexed, so no row of the other type exists to survive. Nothing indexes a file and then rescans with a flag that excludes it to check the row is still there, which is the claim; both measurements above came from running the binary. Nothing covers the --recursive or --hidden half at all. |
+| Evidence | witness: `ScanEngine.MediaFilterExcludesTheOtherType`, `ScanEngine.AMediaFilteredRescanKeepsTheOtherTypesRow`, `ScanEngine.ANonRecursiveRescanKeepsASubdirectoryRow`, `ScanEngine.ARescanWithoutHiddenKeepsAHiddenFilesRow` |
+| Test gap | All three flags now have a test that indexes a file, rescans with a flag that would have excluded it from the walk, and asserts the row is still there with removed at 0. Two clauses of the rationale are still untested, both of them measured by running the binary rather than pinned. The converse: a row the walk never admitted is still deleted once its file is gone, because the candidate set is the prefix and not the walk. And the containment half: scanning a subdirectory reconciles that subtree and leaves every row above it alone. |
 
 ## atomicity
 
@@ -581,8 +579,8 @@ The transfer reads the row it is about to lose, so the order is not a preference
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/relink.cpp:relink_moved_rows`, `core/relink.cpp:demote_jpeg_rows`, `core/relink.cpp:demote_live_photo_rows` |
 | Binds | `scan.reconcile`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged` |
-| Test gap | The two listed tests drive run_reconcile end to end and show the metadata survives on the target, which is the ordering's effect. Neither asserts the deletion happened after the transfer rather than merely alongside it, and no test covers a Live Photo demotion inside run_reconcile at all — the two that exercise demote_live_photo_rows call it directly. |
+| Evidence | witness: `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged`, `ScanEngine.ReconcileDemotesALivePhotoVideoRow` |
+| Test gap | The listed tests drive run_reconcile end to end and show the metadata survives on the target, which is the ordering's effect. All three passes are now covered inside reconcile rather than by calling them directly — the Live Photo one by ScanEngine.ReconcileDemotesALivePhotoVideoRow, which transfers a tag off a paired video row and drops it. None of them asserts the deletion happened after the transfer rather than merely alongside it: that needs the delete blocked partway, so a run can be caught with every pass finished and nothing yet removed. |
 
 ### R39 — holds
 
@@ -622,8 +620,8 @@ ForceOptions carries hash, thumbs and faces, and core/ reads the first two only.
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_workers`, `core/database.cpp:Database::insert` |
 | Binds | `scan.walk` |
 | Protects | user-metadata |
-| Evidence | witness: `DatabaseTest.ReinsertSameContentKeepsFaces` |
-| Test gap | The listed test pins the sha256 comparison inside insert(), which is why the faces survive — not the fact that no --force value overrides it. Nothing in tests/ builds a ScanOptions with force.faces set, so the dead field has no test that would fail if a later change started reading it, and every measurement above came from running the binary. R36's rationale asserted that a '--force faces' scan replaces face data; it was corrected in the commit that added this record. |
+| Evidence | witness: `DatabaseTest.ReinsertSameContentKeepsFaces`, `ScanEngine.NoForceValueDropsAFacesPersonLabel`, `ScanEngine.ForceFacesAloneDoesNotEvenReprocessTheFile` |
+| Test gap | Two tests now build a ScanOptions with force.faces set and drive ScanEngine rather than Database::insert: a labelled face survives a --force all rescan of an unchanged file, and force.faces alone leaves result.processed at 0 because nothing reads the field. The faces-mode half is not covered — run_workers re-adds this run's detections only when db_.has_faces is false, so the discarded detections a `--force all --faces` scan produces need a real detector and gate on face_path_blocker() like the other face tests. R36's rationale asserted that a '--force faces' scan replaces face data; it was corrected in the commit that added this record. |
 
 ### R79 — holds (test gap)
 
@@ -678,8 +676,8 @@ The RAW and the JPEG are one shot, and the RAW is the one that keeps the pixels,
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_workers`, `core/scanner.cpp:has_sibling_raw`, `core/relink.cpp:demote_jpeg_rows` |
 | Binds | `scan.walk`, `scan.reconcile`, `relink.demote` |
 | Protects | db-row, user-metadata, attachment |
-| Evidence | witness: `ScannerTest.HasSiblingRawTrueWhenRawBeside`, `ScannerTest.HasSiblingRawFalseWhenLoneJpeg`, `RelinkTest.DemotesJpegToSameBasenameRaw`, `RelinkTest.LoneJpegNotDemoted`, `RelinkTest.JpegWithRawRowMissingNotDemoted` |
-| Test gap | The demotion half is well covered and the predicate has six tests of its own. The skip is not tested at any level: nothing runs ScanEngine over a directory holding a RAW and its JPEG to assert one row comes out, which is the RAW analogue of ScanEngineLivePhoto.IndexesTheStillAndNotItsPairedVideo. It was measured by running the binary instead. |
+| Evidence | witness: `ScannerTest.HasSiblingRawTrueWhenRawBeside`, `ScannerTest.HasSiblingRawFalseWhenLoneJpeg`, `RelinkTest.DemotesJpegToSameBasenameRaw`, `RelinkTest.LoneJpegNotDemoted`, `RelinkTest.JpegWithRawRowMissingNotDemoted`, `ScanEngine.AJpegBesideARawGetsNoRowOfItsOwn` |
+| Test gap | The skip now runs through ScanEngine, but a row count is not what shows it and a later test of this rule that checks only the surviving row would be vacuous. The two halves overlap: with has_sibling_raw removed the JPEG is indexed and then demoted away by the same run, so the collection ends at one row either way. What separates them is the walk counters, which ScanEngine.AJpegBesideARawGetsNoRowOfItsOwn asserts at skipped 1, processed 1, demoted 0. |
 
 ### R44 — holds (test gap)
 

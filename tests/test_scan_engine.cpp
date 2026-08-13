@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -606,6 +608,157 @@ TEST(ScanEngine, ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged) {
                                    "otherwise the JPEG's gallery wins instead";
 }
 
+// ---- what reconcile deletes, and what it refuses to ----
+
+TEST(ScanEngine, ReconcileNeverDeletesARowWhoseExistenceCouldNotBeChecked) {
+    // An unreadable parent makes existence unknowable. That is an unknown state,
+    // not the mount heuristic, so --ignore-mount-warning has nothing to say
+    // about it and reconcile must leave the row alone even with the flag set.
+    if (geteuid() == 0) GTEST_SKIP() << "root bypasses directory permissions";
+
+    ScratchCollection c(0);
+    Database db(c.db_path);
+    db.init_schema();
+    insert_row(db, c.dir, "locked/img.jpg", "lockedSha", /*on_disk=*/true);
+    fs::path locked = c.dir / "locked";
+    ASSERT_EQ(chmod(locked.c_str(), 0000), 0);
+
+    ScanOptions o = c.options();
+    o.ignore_mount_warning = true;
+    ScanResult r;
+    ScanEngine(o, db).run_reconcile(r);
+    chmod(locked.c_str(), 0755);  // restore before asserting, so cleanup works either way
+
+    EXPECT_EQ(r.skipped_check_failed, 1u) << "the skip must be reported, never silent";
+    EXPECT_EQ(r.removed, 0u);
+    EXPECT_EQ(db.count(), 1) << "an unreadable path is never overridden";
+}
+
+TEST(ScanEngine, IgnoreMountWarningDeletesRowsUnderAMissingParentOnScanToo) {
+    // The flag means the same thing on scan as on `rm --orphans`: proceed past
+    // the mount heuristic, so a row whose parent directory is gone is deleted.
+    // Both branches run against the same state, so the flag is the only
+    // difference between surviving and being removed.
+    ScratchCollection c(0);
+    Database db(c.db_path);
+    db.init_schema();
+    insert_row(db, c.dir, "sub/a.jpg", "aSha", /*on_disk=*/true);
+    insert_row(db, c.dir, "sub/b.jpg", "bSha", /*on_disk=*/true);
+    fs::remove_all(c.dir / "sub");  // the parent directory goes, not just the files
+
+    ScanResult kept;
+    ScanEngine(c.options(), db).run_reconcile(kept);
+    EXPECT_EQ(kept.removed, 0u) << "without the flag a missing parent reads as an unmount";
+    EXPECT_EQ(kept.skipped_parent_missing, 2u);
+    ASSERT_EQ(db.count(), 2);
+
+    ScanOptions o = c.options();
+    o.ignore_mount_warning = true;
+    ScanResult purged;
+    ScanEngine(o, db).run_reconcile(purged);
+    EXPECT_EQ(purged.removed, 2u) << "the flag must fold parent_missing into the deletable set";
+    EXPECT_EQ(purged.skipped_parent_missing, 0u);
+    EXPECT_EQ(db.count(), 0);
+}
+
+TEST(ScanEngine, MountLossGuardDoesNotFireWhenSomeRowsAreOnlyParentMissing) {
+    // Every tracked file is gone from disk, which is what a lost mount looks
+    // like, and the guard still must not fire: it compares the deletable set
+    // against every row under the prefix, and one of these three is
+    // parent_missing rather than deletable. The two deletable rows go, the third
+    // is held by the per-row classifier instead.
+    ScratchCollection c(0);
+    Database db(c.db_path);
+    db.init_schema();
+    insert_row(db, c.dir, "a.jpg", "aSha", /*on_disk=*/false);
+    insert_row(db, c.dir, "b.jpg", "bSha", /*on_disk=*/false);
+    std::string unmounted = insert_row(db, c.dir, "sub/c.jpg", "cSha", /*on_disk=*/true);
+    fs::remove_all(c.dir / "sub");
+
+    ScanResult r;
+    ScanEngine(c.options(), db).run_reconcile(r);
+
+    EXPECT_FALSE(r.mount_warning) << "a mixed set is not an unmount";
+    EXPECT_EQ(r.removed, 2u);
+    EXPECT_EQ(r.skipped_parent_missing, 1u);
+    ASSERT_EQ(db.count(), 1);
+    EXPECT_EQ(db.get_all_images()[0].path, unmounted);
+}
+
+TEST(ScanEngine, ReconcileOpensItsOperationForDemotableWorkAlone) {
+    // Nothing is missing from disk, so removed_paths is empty and the
+    // has_sibling_raw peek is the only thing that can open the block. Every
+    // other run_reconcile test has something to remove, so the block is entered
+    // whatever the peek answers.
+    ScratchCollection c(0);
+    Database db(c.db_path);
+    db.init_schema();
+    std::string jpeg = insert_row(db, c.dir, "IMG_1.jpg", "jpegSha", /*on_disk=*/true);
+    std::string raw = insert_row(db, c.dir, "IMG_1.cr2", "rawSha", /*on_disk=*/true);
+    db.set_tag({jpeg}, "favorite", true);
+
+    ScanResult r;
+    ScanEngine(c.options(), db).run_reconcile(r);
+
+    EXPECT_EQ(r.removed, 0u) << "both files are on disk";
+    EXPECT_EQ(r.demoted, 1u) << "the peek must open the block on demotable work alone";
+    ASSERT_EQ(db.count(), 1);
+    EXPECT_EQ(db.get_all_images()[0].path, raw);
+    auto tags = db.get_tags_for_image(raw);
+    ASSERT_EQ(tags.size(), 1u);
+    EXPECT_EQ(tags[0], "favorite") << "the demoted row's tag must land on the RAW";
+}
+
+TEST(ScanEngine, ReconcileDemotesALivePhotoVideoRow) {
+    // The pre-038 state: a Live Photo indexed as two independent rows, both
+    // files still on disk. The video row is demoted inside reconcile's logged
+    // operation, its tag transferred to the still first — the demote pass runs
+    // to completion before the collected paths are deleted.
+    ReconcileOrderScratch scratch;
+    const fs::path& dir = scratch.dir;
+    fs::copy_file("tests/data/live_photo_still.jpg", dir / "shot.jpg");
+    fs::copy_file("tests/data/live_photo.mov", dir / "motion.mov");
+
+    std::string db_path = (dir / "phig.db").string();
+    Database db(db_path);
+    db.init_schema();
+
+    ImageInfo still;
+    still.path = (dir / "shot.jpg").string();
+    still.filename = "shot.jpg";
+    still.extension = "jpg";
+    still.media_type = "image";
+    still.sha256 = "still-sha";
+    db.insert(still);
+
+    ImageInfo video;
+    video.path = (dir / "motion.mov").string();
+    video.filename = "motion.mov";
+    video.extension = "mov";
+    video.media_type = "video";
+    video.sha256 = "video-sha";
+    db.insert(video);
+    db.set_tag({video.path}, "holiday", true);
+
+    ScanOptions o;
+    o.directory = dir.string();
+    o.db_path = db_path;
+    o.log_enabled = true;
+    o.argv_str = "phig scan test";
+
+    ScanResult r;
+    ScanEngine(o, db).run_reconcile(r);
+
+    EXPECT_EQ(r.removed, 0u) << "neither file is missing";
+    EXPECT_EQ(r.demoted, 1u) << "the paired video row must be demoted inside reconcile";
+    ASSERT_EQ(db.count(), 1);
+    EXPECT_EQ(db.get_all_images()[0].path, still.path);
+    auto tags = db.get_tags_for_image(still.path);
+    EXPECT_NE(std::find(tags.begin(), tags.end(), "holiday"), tags.end())
+        << "the transfer must finish before the row is deleted, or the tag goes with it";
+    EXPECT_TRUE(fs::exists(dir / "motion.mov")) << "reconcile deletes rows, never files";
+}
+
 TEST(ScanEngine, MediaFilterExcludesTheOtherType) {
     ScratchCollection c(3);
     {
@@ -621,6 +774,169 @@ TEST(ScanEngine, MediaFilterExcludesTheOtherType) {
     EXPECT_EQ(r.total_files, 3u) << "the .jpg must be filtered out before processing";
     EXPECT_EQ(r.errors, 0u) << "a filtered-out undecodable file cannot produce an error";
     EXPECT_EQ(r.processed, 3u);
+}
+
+// ---- a flag narrows the walk, never the deletions ----
+//
+// reconcile takes its candidate set from every row under the scanned directory
+// and asks the filesystem about each one. --media, --recursive and --hidden
+// reach only the walk, so a narrowed scan cannot turn a row whose file is still
+// on disk into a deletion. Each case below indexes a file, then rescans with a
+// flag that would have excluded it.
+
+TEST(ScanEngine, AMediaFilteredRescanKeepsTheOtherTypesRow) {
+    ScratchCollection c(1);
+    fs::copy_file("tests/data/orient_1.jpg", c.dir / "photo.jpg");
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+    ScanEngine(c.options(), db).run(cancel, nullptr);
+    ASSERT_EQ(db.count(), 2);
+
+    ScanOptions o = c.options();
+    o.media = "video";
+    ScanResult r = ScanEngine(o, db).run(cancel, nullptr);
+
+    EXPECT_EQ(r.removed, 0u) << "--media narrows the walk, not the deletable set";
+    ASSERT_EQ(db.count(), 2);
+    EXPECT_TRUE(fs::exists(c.dir / "photo.jpg"));
+    bool photo_row = false;
+    for (const auto& img : db.get_all_images()) {
+        if (fs::path(img.path).filename() == "photo.jpg") photo_row = true;
+    }
+    EXPECT_TRUE(photo_row) << "the image row must survive a video-only rescan";
+}
+
+TEST(ScanEngine, ANonRecursiveRescanKeepsASubdirectoryRow) {
+    ScratchCollection c(1);
+    fs::create_directories(c.dir / "sub");
+    fs::copy_file("tests/data/test_red.mov", c.dir / "sub" / "deep.mov");
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+
+    ScanOptions recursive = c.options();
+    recursive.recursive = true;
+    ScanEngine(recursive, db).run(cancel, nullptr);
+    ASSERT_EQ(db.count(), 2);
+
+    // The same directory, this time without --recursive: the subdirectory's file
+    // is never walked, and its row must still be there.
+    ScanResult r = ScanEngine(c.options(), db).run(cancel, nullptr);
+
+    EXPECT_EQ(r.removed, 0u) << "a row the walk did not reach is not a row that vanished";
+    ASSERT_EQ(db.count(), 2);
+    bool deep_row = false;
+    for (const auto& img : db.get_all_images()) {
+        if (fs::path(img.path).filename() == "deep.mov") deep_row = true;
+    }
+    EXPECT_TRUE(deep_row);
+}
+
+TEST(ScanEngine, ARescanWithoutHiddenKeepsAHiddenFilesRow) {
+    ScratchCollection c(1);
+    fs::copy_file("tests/data/test_red.mov", c.dir / ".secret.mov");
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+
+    ScanOptions hidden = c.options();
+    hidden.include_hidden = true;
+    ScanEngine(hidden, db).run(cancel, nullptr);
+    ASSERT_EQ(db.count(), 2);
+
+    ScanResult r = ScanEngine(c.options(), db).run(cancel, nullptr);
+
+    EXPECT_EQ(r.removed, 0u) << "dropping --hidden must not delete the hidden file's row";
+    ASSERT_EQ(db.count(), 2);
+    bool hidden_row = false;
+    for (const auto& img : db.get_all_images()) {
+        if (fs::path(img.path).filename() == ".secret.mov") hidden_row = true;
+    }
+    EXPECT_TRUE(hidden_row);
+}
+
+TEST(ScanEngine, AJpegBesideARawGetsNoRowOfItsOwn) {
+    // The RAW analogue of ScanEngineLivePhoto.IndexesTheStillAndNotItsPairedVideo:
+    // one shot in two files, and the walk must produce one row. The JPEG is also
+    // the RAW's pixel source (tier 1 of raw_decode), which is why this truncated
+    // CR2 fixture indexes at all.
+    ScratchCollection c(0);
+    fs::copy_file("tests/data/truncated_ojpeg.cr2", c.dir / "IMG_1.CR2");
+    fs::copy_file("tests/data/orient_1.jpg", c.dir / "IMG_1.JPG");
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+
+    ScanResult r = ScanEngine(c.options(), db).run(cancel, nullptr);
+
+    // The row count alone would not show the skip: without it the JPEG is
+    // indexed and then demoted away by reconcile, ending at one row either way.
+    // The walk counters are what separate "never indexed" from "indexed and
+    // cleaned up afterwards".
+    EXPECT_EQ(r.skipped, 1u) << "the JPEG must be skipped as a photo of its own";
+    EXPECT_EQ(r.processed, 1u) << "only the RAW may be processed";
+    EXPECT_EQ(r.demoted, 0u) << "a JPEG the walk skipped never had a row to demote";
+    ASSERT_EQ(db.count(), 1) << "a RAW and its JPEG are one shot, not two";
+    EXPECT_EQ(fs::path(db.get_all_images()[0].path).filename(), "IMG_1.CR2")
+        << "the RAW is the indexed shot";
+}
+
+// ---- --force and face data ----
+
+TEST(ScanEngine, NoForceValueDropsAFacesPersonLabel) {
+    // A label nobody can rebuild, on a file whose bytes do not change. --force
+    // all reprocesses the file, and the face and its name have to come through
+    // it: the sha256 is what decides, not the flag.
+    ScratchCollection c(0);
+    fs::copy_file("tests/data/orient_1.jpg", c.dir / "photo.jpg");
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+    ScanEngine(c.options(), db).run(cancel, nullptr);
+    ASSERT_EQ(db.count(), 1);
+
+    std::string photo = (c.dir / "photo.jpg").string();
+    int64_t image_id = db.get_image_id(photo);
+    ASSERT_GE(image_id, 0);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 1;
+    face.y = 2;
+    face.width = 10;
+    face.height = 10;
+    int64_t face_id = db.insert_face(image_id, face);
+    ASSERT_TRUE(db.set_face_person(face_id, db.get_or_create_person("alice")));
+
+    ScanOptions o = c.options();
+    o.force.hash = true;
+    o.force.faces = true;
+    ScanResult r = ScanEngine(o, db).run(cancel, nullptr);
+
+    EXPECT_EQ(r.processed, 1u) << "--force hash must reprocess the file";
+    EXPECT_TRUE(db.has_faces(photo)) << "an unchanged file keeps its face data";
+    EXPECT_EQ(db.get_images_for_person("alice"), std::vector<std::string>{photo})
+        << "no --force value may destroy the name someone typed";
+}
+
+TEST(ScanEngine, ForceFacesAloneDoesNotEvenReprocessTheFile) {
+    // ForceOptions::faces is read nowhere in core/, so a scan given only that
+    // value takes the ordinary mtime skip. This is the assertion that fails the
+    // day something starts reading the field.
+    ScratchCollection c(0);
+    fs::copy_file("tests/data/orient_1.jpg", c.dir / "photo.jpg");
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+    ScanEngine(c.options(), db).run(cancel, nullptr);
+    ASSERT_EQ(db.count(), 1);
+
+    ScanOptions o = c.options();
+    o.force.faces = true;
+    ScanResult r = ScanEngine(o, db).run(cancel, nullptr);
+
+    EXPECT_EQ(r.processed, 0u) << "--force faces reaches nothing, so the mtime skip stands";
+    EXPECT_EQ(r.skipped, 1u);
 }
 
 // ---- Per-worker FaceDetector isolation ----

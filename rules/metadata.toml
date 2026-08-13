@@ -70,10 +70,11 @@ protects = ["user-metadata", "db-row"]
 tests = [
     "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget",
     "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged",
+    "ScanEngine.ReconcileDemotesALivePhotoVideoRow",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The two listed tests drive run_reconcile end to end and show the metadata survives on the target, which is the ordering's effect. Neither asserts the deletion happened after the transfer rather than merely alongside it, and no test covers a Live Photo demotion inside run_reconcile at all — the two that exercise demote_live_photo_rows call it directly."
+test_gap = "The listed tests drive run_reconcile end to end and show the metadata survives on the target, which is the ordering's effect. All three passes are now covered inside reconcile rather than by calling them directly — the Live Photo one by ScanEngine.ReconcileDemotesALivePhotoVideoRow, which transfers a tag off a paired video row and drops it. None of them asserts the deletion happened after the transfer rather than merely alongside it: that needs the delete blocked partway, so a run can be caught with every pass finished and nothing yet removed."
 
 [[rule]]
 id = "R39"
@@ -126,10 +127,14 @@ enforced_at = [
 ]
 binds = ["scan.walk"]
 protects = ["user-metadata"]
-tests = ["DatabaseTest.ReinsertSameContentKeepsFaces"]
+tests = [
+    "DatabaseTest.ReinsertSameContentKeepsFaces",
+    "ScanEngine.NoForceValueDropsAFacesPersonLabel",
+    "ScanEngine.ForceFacesAloneDoesNotEvenReprocessTheFile",
+]
 test_kind = "witness"
 status = "holds"
-test_gap = "The listed test pins the sha256 comparison inside insert(), which is why the faces survive — not the fact that no --force value overrides it. Nothing in tests/ builds a ScanOptions with force.faces set, so the dead field has no test that would fail if a later change started reading it, and every measurement above came from running the binary. R36's rationale asserted that a '--force faces' scan replaces face data; it was corrected in the commit that added this record."
+test_gap = "Two tests now build a ScanOptions with force.faces set and drive ScanEngine rather than Database::insert: a labelled face survives a --force all rescan of an unchanged file, and force.faces alone leaves result.processed at 0 because nothing reads the field. The faces-mode half is not covered — run_workers re-adds this run's detections only when db_.has_faces is false, so the discarded detections a `--force all --faces` scan produces need a real detector and gate on face_path_blocker() like the other face tests. R36's rationale asserted that a '--force faces' scan replaces face data; it was corrected in the commit that added this record."
 
 [[rule]]
 id = "R79"
