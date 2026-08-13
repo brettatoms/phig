@@ -18,7 +18,9 @@
 #include "database.h"
 #include "face_path.h"
 #include "faces_engine.h"
+#include "fault_injection.h"
 #include "models.h"
+#include "paths.h"
 #include "phig_binary.h"
 #include "progress_queue.h"
 #include "types.h"
@@ -474,4 +476,135 @@ TEST(FacesEngineRun, CliRejectsAnUnknownFlagWithoutTouchingFaceData) {
     sqlite3_finalize(s);
     EXPECT_EQ(step, SQLITE_ROW) << "the named face was deleted; output was:\n" << output;
     EXPECT_EQ(labeled_as, person_id);
+}
+
+// ---- Selection (R74) ----
+
+TEST(FacesEngineRun, AnExcludedImagesFacesAreLeftAlone) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(2);
+
+    // A named face on the image the run is told to skip. A rebuild deletes an
+    // image's faces before re-detecting them, so an --exclude that failed to
+    // reach the engine takes this row and its label with it -- which is the
+    // half of R74 that no test of passes_selection can show.
+    int64_t excluded = coll.db->get_image_id((coll.dir / "f1.jpg").string());
+    ASSERT_GT(excluded, 0);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.width = 10;
+    face.height = 10;
+    int64_t face_id = coll.db->insert_face(excluded, face);
+    ASSERT_GT(face_id, 0);
+    int64_t person_id = coll.db->get_or_create_person("Ada");
+    ASSERT_GT(person_id, 0);
+    ASSERT_TRUE(coll.db->set_face_person(face_id, person_id));
+
+    FacesRebuildOptions opts;
+    opts.parallel = 2;
+    opts.excludes = {"*f1*"};
+    CancelToken tok;
+    FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
+
+    EXPECT_EQ(r.total_selected, 1u);
+    EXPECT_GT(r.faces_detected, 0u) << "the included image was not processed either";
+
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(coll.db->db_ptr(), "SELECT person_id FROM faces WHERE id = ?", -1,
+                                 &s, nullptr),
+              SQLITE_OK);
+    sqlite3_bind_int64(s, 1, face_id);
+    int step = sqlite3_step(s);
+    int64_t labeled_as = step == SQLITE_ROW ? sqlite3_column_int64(s, 0) : -1;
+    sqlite3_finalize(s);
+    EXPECT_EQ(step, SQLITE_ROW) << "--exclude did not reach the delete: the face row is gone";
+    EXPECT_EQ(labeled_as, person_id);
+}
+
+// ---- The other entry points that build a detector (R72) ----
+
+namespace {
+// Points models_dir() at an empty directory for the scope. models_dir() is
+// cache_dir() + "/models" unless overridden, so this drives the missing-models
+// refusal on a machine that has the models installed -- which is the only way
+// these three cases run anywhere but a bare CI leg. The subprocess cases get
+// the same condition from run_phig's redirected XDG_CACHE_HOME.
+struct MissingModels {
+    explicit MissingModels(const fs::path& empty_dir) {
+        fs::create_directories(empty_dir);
+        set_path_overrides(std::nullopt, empty_dir.string(), std::nullopt);
+    }
+    ~MissingModels() { set_path_overrides(std::nullopt, std::nullopt, std::nullopt); }
+};
+
+// What a refusal has to name. Above the OpenCV floor the models are what is
+// missing; below it the version check fires first and the models are beside the
+// point, so the same test runs on both legs and asserts the reason that applies.
+std::string expected_detector_refusal() {
+    return PHIG_FACES_OPENCV_OK ? "models download" : PHIG_FACES_MIN_OPENCV;
+}
+}  // namespace
+
+// Both of R72's existing witnesses are scan-path. FacesEngine::run builds its
+// detectors after selection and before the first worker, on the same claim: the
+// run establishes it can detect before it writes.
+TEST(FacesEngineRun, RefusesTheRunWhenNoDetectorCanBeBuiltAndWritesNothing) {
+    ScratchFaces coll(2);
+    int64_t image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    ASSERT_GT(image_id, 0);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.width = 10;
+    face.height = 10;
+    ASSERT_GT(coll.db->insert_face(image_id, face), 0);
+
+    MissingModels missing(coll.dir / "empty-models");
+    FacesRebuildOptions opts;
+    opts.parallel = 2;
+    CancelToken tok;
+    std::string err = thrown_message([&] { FacesEngine(opts, *coll.db).run(tok, nullptr); });
+
+    EXPECT_NE(err.find(expected_detector_refusal()), std::string::npos)
+        << "the refusal must name what is missing: [" << err << "]";
+    EXPECT_EQ(count_face_rows(coll), 1u)
+        << "a rebuild deletes an image's faces first, so this run wrote before it checked";
+}
+
+TEST(FacesEngineRun, CliFaceNameRefusesWhenNoDetectorCanBeBuilt) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    ScratchFaces coll(1);
+    PhigRun run = run_phig(
+        phig_bin, coll.dir,
+        "face name '" + (coll.dir / "f0.jpg").string() + "' Ada --db '" + coll.db_path + "'");
+
+    EXPECT_EQ(run.exit_code, 1) << run.output;
+    EXPECT_NE(run.output.find(expected_detector_refusal()), std::string::npos) << run.output;
+    EXPECT_TRUE(coll.db->list_people().empty())
+        << "the command named somebody before it found out it could not detect";
+    EXPECT_EQ(count_face_rows(coll), 0u);
+}
+
+TEST(FacesEngineRun, CliSearchByFaceRefusesWhenNoDetectorCanBeBuilt) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    ScratchFaces coll(1);
+    // A copy under a name no row carries, so a listed result is the only thing
+    // that can put "f0.jpg" in the output.
+    fs::path query = coll.dir / "query.jpg";
+    fs::copy_file(coll.dir / "f0.jpg", query);
+
+    PhigRun run = run_phig(phig_bin, coll.dir,
+                           "search --face '" + query.string() + "' --db '" + coll.db_path + "'");
+
+    EXPECT_EQ(run.exit_code, 1) << run.output;
+    EXPECT_NE(run.output.find(expected_detector_refusal()), std::string::npos) << run.output;
+    EXPECT_EQ(run.output.find("f0.jpg"), std::string::npos)
+        << "the search ran anyway: " << run.output;
 }

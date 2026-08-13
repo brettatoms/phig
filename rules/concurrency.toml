@@ -37,10 +37,11 @@ tests = [
     "LockfileTest.AcquiresAndReleases",
     "LockfileTest.NoWaitThrowsWhenHeldByAnotherFd",
     "LockfileTest.WaitBlocksThenAcquiresAfterRelease",
+    "LockfileTest.CliRefusesALockTakingWriteWhileAllowingReadsAndLocklessWrites",
 ]
-test_kind = "witness"
+test_kind = "subprocess"
 status = "holds"
-test_gap = "The three tests drive WriterLock directly, with a raw flock on a second descriptor standing in for the other process. Nothing pins which commands take it: the call sites are in cli/main.cpp, outside this anchor and outside every test, so 'no read takes it' was measured by running the binary rather than asserted anywhere."
+test_gap = "The first three drive WriterLock directly, with a raw flock on a second descriptor standing in for the other process, and pin the class rather than the rule. The fourth holds the lock the same way and drives the built binary against it: `tag add` is refused under --no-wait, `search --count` completes, and `face identify` — a command that mutates and takes no lock — labels its face while the lock is held. A control run after the release shows the refusal was the lock. The scratch database sits at the default path inside a redirected XDG_DATA_HOME so the child's lock_path() is the file the test holds; passing --db would put them on different files, which is R50. What is still unasserted is the ABI's side of the same two clauses — that a phig_query call on a context succeeds while a WriterLock is held, and that a Database::insert does — which needs no subprocess and is not written. Note that the earlier text here said the lock's call sites are all in cli/main.cpp: libphig/mutate.cpp has five of them, and R55 already cites two tests that drive them."
 
 [[rule]]
 id = "R50"

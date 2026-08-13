@@ -12,6 +12,7 @@
 
 #include "database.h"
 #include "fault_injection.h"
+#include "phig_binary.h"
 #include "temp_dir.h"
 #include "types.h"
 
@@ -1659,4 +1660,89 @@ TEST_F(DatabaseTest, EmbeddingQueriesSkipRowsWithAnOverLongBlob) {
     auto bobs = db->get_face_embeddings_for_person(person);
     ASSERT_EQ(bobs.size(), 1u) << "the over-long row for Bob must be skipped";
     EXPECT_EQ(bobs[0].face_id, good_id);
+}
+
+// ---- What the CLI's argv parser does with these writes (R74, R79) ----
+
+namespace {
+// The gallery recorded for `path`, or "<no row>" when the row is gone.
+std::string gallery_of(Database& db, const std::string& path) {
+    for (const auto& img : db.get_all_images()) {
+        if (img.path == path) return img.gallery;
+    }
+    return "<no row>";
+}
+}  // namespace
+
+// set_gallery takes no_overwrite as a bool and three tests pass it one directly.
+// Nothing reaches the parser branch that decides it, which has a second effect
+// no bool can show: the flag is accepted only on `set`, so `gallery clear
+// --no-overwrite` is an unknown option rather than a no-op. cli/main.cpp is not
+// linked into phig-tests, so this drives the built binary.
+TEST_F(DatabaseTest, CliGallerySetHonorsNoOverwriteAndClearRefusesTheFlag) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    const std::string a = (dir / "a.jpg").string();
+    db->insert(make_image(a, "sha-a"));
+    const std::string select = " --match '*a.jpg' --db '" + db_path + "'";
+
+    PhigRun first = run_phig(phig_bin, dir, "gallery set first" + select);
+    ASSERT_EQ(first.exit_code, 0) << first.output;
+    ASSERT_EQ(gallery_of(*db, a), "first") << first.output;
+
+    PhigRun declined = run_phig(phig_bin, dir, "gallery set second" + select + " --no-overwrite");
+    EXPECT_EQ(declined.exit_code, 0) << declined.output;
+    EXPECT_NE(declined.output.find("on 0 images"), std::string::npos)
+        << "the count is what tells a caller how many rows it declined to touch: "
+        << declined.output;
+    EXPECT_EQ(gallery_of(*db, a), "first") << "--no-overwrite replaced an assignment anyway";
+
+    // The control: the same command without the flag does replace it, so the
+    // assertion above pins the flag rather than a `gallery set` that never
+    // writes.
+    PhigRun replaced = run_phig(phig_bin, dir, "gallery set second" + select);
+    EXPECT_EQ(replaced.exit_code, 0) << replaced.output;
+    EXPECT_EQ(gallery_of(*db, a), "second") << replaced.output;
+
+    // Same flag, other subcommand: `&& is_set` in the parser makes it unknown,
+    // which stops the command before clear_gallery is reached.
+    PhigRun cleared = run_phig(phig_bin, dir, "gallery clear" + select + " --no-overwrite");
+    EXPECT_EQ(cleared.exit_code, 1) << cleared.output;
+    EXPECT_NE(cleared.output.find("Unknown option: --no-overwrite"), std::string::npos)
+        << cleared.output;
+    EXPECT_EQ(gallery_of(*db, a), "second") << "a rejected clear must clear nothing";
+}
+
+// The route tag, gallery and fav take into passes_selection is
+// cli/main.cpp:select_paths, which no test reaches. Everything else that binds
+// R74 selects inside core/; this one selects in argv-parsing code and hands
+// core a finished list of paths, so an --exclude dropped here would be invisible
+// to every other test of the rule.
+TEST_F(DatabaseTest, CliTagAddSkipsAnExcludedPath) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    const std::string kept = (dir / "kept.jpg").string();
+    const std::string spared = (dir / "spared.jpg").string();
+    db->insert(make_image(kept, "sha-kept"));
+    db->insert(make_image(spared, "sha-spared"));
+
+    PhigRun run =
+        run_phig(phig_bin, dir,
+                 "tag add holiday --match '*.jpg' --exclude '*spared*' --db '" + db_path + "'");
+
+    EXPECT_EQ(run.exit_code, 0) << run.output;
+    EXPECT_NE(run.output.find("Tagged 1 images"), std::string::npos) << run.output;
+
+    auto tagged = [&](const std::string& path) {
+        auto tags = db->get_tags_for_image(path);
+        return std::find(tags.begin(), tags.end(), "holiday") != tags.end();
+    };
+    EXPECT_TRUE(tagged(kept));
+    EXPECT_FALSE(tagged(spared)) << "--exclude did not reach the write";
 }

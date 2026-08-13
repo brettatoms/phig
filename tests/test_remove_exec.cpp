@@ -801,3 +801,31 @@ TEST_F(RemoveExecTest, RmOrphansNeverRemovesUnreadablePathsEvenWithIgnoreMountWa
     EXPECT_EQ(rc, 0);
     EXPECT_EQ(remaining, 1u) << "an unreadable path is never overridden";
 }
+
+TEST_F(RemoveExecTest, HardRemovalLeavesAnExcludedFileAndItsRowAlone) {
+    // R74's five FilterTest cases call passes_selection directly. This is the
+    // other half of the claim: that the removal executor routes its selection
+    // through that function rather than filtering some other way. A --hard run,
+    // because that is the mode with no trash behind it.
+    std::string doomed = (photos / "doomed.jpg").string();
+    std::string spared = (photos / "spared.jpg").string();
+    write_file(doomed, "x");
+    write_file(spared, "x");
+    insert_row(doomed);
+    insert_row(spared);
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*.jpg"};
+    opts.excludes = {"*spared*"};
+    opts.mode = RemoveMode::Hard;
+    opts.assume_yes = true;
+
+    EXPECT_EQ(cmd_rm(opts), 0);
+
+    EXPECT_FALSE(fs::exists(doomed)) << "the matched file was not removed";
+    EXPECT_TRUE(fs::exists(spared)) << "--exclude did not reach the delete";
+    auto rows = db->get_all_images();
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].path, spared);
+}

@@ -24,10 +24,14 @@ rationale = "Keeping the preview in core/ rather than in a CLI branch is what le
 enforced_at = ["core/organize_engine.cpp:OrganizeEngine::plan"]
 binds = ["organize.plan"]
 protects = ["original-file", "db-row", "activity-log"]
-tests = ["OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase"]
-test_kind = "witness"
+tests = [
+    "OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase",
+    "OrganizeEngineTest.CliDryRunOverAnAbsentDatabaseStillCreatesAndMigratesIt",
+    "OrganizeEngineTest.CliDryRunPreviewsEveryCopyAndWritesNothingElse",
+]
+test_kind = "subprocess"
 status = "holds"
-test_gap = "The listed test pins the first clause, at the engine. Nothing pins the second: no test drives cmd_organize, and the migration it performs on a dry run was measured by running the binary."
+test_gap = "Both clauses are now driven through the binary, cmd_organize included. One correction to what the previous gap implied: a dry run against a database that is not there exits 1, not 0 — cmd_organize refuses an empty database at cli/main.cpp:613 before it reaches the dry-run branch — and the file it leaves behind at the current schema version is created on the way to that refusal. What is still read off the code is which migration ran: the test opens an absent path, so it pins 'created and migrated', not 'an older file was upgraded'. The suite has no way to build a pre-v8 database, which is the same limit R20 records."
 
 [[rule]]
 id = "R22"
@@ -142,10 +146,15 @@ tests = [
     "FilterTest.MatchAndFilterTogether",
     "FilterTest.MatchesAgainstFullPath",
     "FilterTest.MultipleFilters",
+    "RemoveExecTest.HardRemovalLeavesAnExcludedFileAndItsRowAlone",
+    "OrganizeEngineTest.ApplyLeavesAnExcludedFileAndItsRowAlone",
+    "ThumbsEngineRun.AnExcludedRowGetsNoThumbnail",
+    "FacesEngineRun.AnExcludedImagesFacesAreLeftAlone",
+    "DatabaseTest.CliTagAddSkipsAnExcludedPath",
 ]
-test_kind = "witness"
+test_kind = "subprocess"
 status = "holds"
-test_gap = "Every listed test calls passes_selection directly, so what is pinned is the predicate. Nothing runs a mutating operation with an --exclude and checks that the excluded file survived it, and nothing checks that each of the ten bound operations routes its selection through this function rather than filtering some other way — cli/main.cpp:select_paths, the route tag, gallery and fav take, has no test of its own."
+test_gap = "The five FilterTest cases pin the predicate. The five below them run a mutating operation with an --exclude and assert the excluded file, its row and its metadata survived: a --hard rm, an OrganizeEngine::apply move, a thumbs run whose excluded sha gets no cache entry, a faces rebuild that leaves a named face where a re-detection would have deleted it, and `phig tag add` through cli/main.cpp:select_paths, the route tag, gallery and fav take and the only one that selects outside core/. Measured with the exclude loop in passes_selection short-circuited: all five fail, each on the file or row it was meant to spare. Two narrower things stay unpinned. The operation tests drive one member of each family — hard of remove's four modes, move of organize's two — which is the shared call site in each executor rather than the whole family, and organize.plan is covered by PlanHonorsMatchAndExclude instead. And FacesEngineRun.AnExcludedImagesFacesAreLeftAlone needs a detector, so it skips below the OpenCV floor and where the models are absent, which is the ubuntu-24.04 leg."
 
 [[rule]]
 id = "R77"

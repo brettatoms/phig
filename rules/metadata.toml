@@ -153,7 +153,8 @@ tests = [
     "DatabaseTest.GalleryOverwritesByDefault",
     "DatabaseTest.GalleryNoOverwriteSkips",
     "DatabaseTest.ClearGallery",
+    "DatabaseTest.CliGallerySetHonorsNoOverwriteAndClearRefusesTheFlag",
 ]
-test_kind = "witness"
+test_kind = "subprocess"
 status = "holds"
-test_gap = "All three call the Database methods directly with the flag as a bool. Nothing runs `phig gallery set --no-overwrite`, so the parser branch that sets it is unpinned — including its second effect, that the '&& is_set' on cli/main.cpp:1646 makes the same flag an unknown option on `gallery clear`, which exits 1."
+test_gap = "The parser branch is now driven through the binary, both of its effects: `gallery set --no-overwrite` reports 'on 0 images' and leaves the existing name, and `gallery clear --no-overwrite` exits 1 with 'Unknown option'. A control run without the flag replaces the name, so neither assertion can be satisfied by a `gallery set` that simply never writes. Measured with the branch changed to 'arg == \"--no-overwrite\"' setting no_overwrite = false: the declined run reports 'on 1 images' and the name becomes 'second', and the clear exits 0 having cleared the row. What remains is the other anchor's count. clear_gallery narrows to 'gallery IS NOT NULL' so a row that had no gallery is not reported as cleared, and DatabaseTest.ClearGallery only clears a row that has one — nothing shows that a selection of rows without galleries comes back 0 rather than counting them all."
