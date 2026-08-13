@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1115,6 +1117,19 @@ static void raw_exec(sqlite3* db, const char* sql) {
     }
 }
 
+// The recorded schema version as `db` sees it, or -1 when there is no meta
+// table. Database::get_schema_version() is private, like exec().
+static int schema_version_of(sqlite3* db) {
+    sqlite3_stmt* s = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key='schema_version'", -1, &s,
+                           nullptr) != SQLITE_OK)
+        return -1;
+    int v = -1;
+    if (sqlite3_step(s) == SQLITE_ROW) v = sqlite3_column_int(s, 0);
+    sqlite3_finalize(s);
+    return v;
+}
+
 // Reproduces the deferred-BEGIN hazard directly with raw SQL on two WAL
 // connections: A pins a read snapshot with a deferred BEGIN, B commits a write
 // that advances the DB past A's snapshot, then A's write fails with
@@ -1224,6 +1239,223 @@ TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
     // Read the expected version from the library rather than hardcoding it, so
     // adding a migration does not silently break an unrelated concurrency test.
     EXPECT_EQ(version, std::to_string(Database::expected_schema_version()));
+
+    fs::remove_all(dir);
+}
+
+// The same migration race as ConcurrentMigrationIsSafe with the interleave
+// forced instead of hoped for. There, one thread can finish before the other
+// starts, in which case the second reads the current version, runs no migration
+// and the re-check inside the transaction is never entered — the run passes
+// identically. Here a third connection holds the write lock, so both threads
+// read version 4 outside a transaction and then both block on the first
+// migration's BEGIN IMMEDIATE. When the lock is released one applies every step
+// and the other finds them applied, inside the transaction, and skips.
+//
+// The elapsed times are the witness that both entered that window: a thread
+// that had read the current version would have returned from init_schema
+// without opening a transaction at all, in no measurable time.
+TEST(DatabaseConcurrency, AMigrationStepAnotherThreadAppliedIsSkippedInsideTheTransaction) {
+    namespace fs = std::filesystem;
+    fs::path dir = make_temp_dir("db-migrate-forced");
+    std::string dbp = (dir / "m.db").string();
+    {
+        Database init(dbp);
+        init.init_schema();
+        raw_exec(init.db_ptr(),
+                 "DROP TABLE IF EXISTS operation_entries;"
+                 "DROP TABLE IF EXISTS operations;"
+                 "UPDATE meta SET value='4' WHERE key='schema_version'");
+    }
+
+    // Holds the write lock, so nothing either thread does can commit until it
+    // lets go.
+    Database blocker(dbp);
+    blocker.begin_transaction();
+
+    constexpr auto kHold = std::chrono::milliseconds(300);
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+    std::atomic<int> failures{0};
+    int seen[2] = {-1, -1};
+    std::chrono::steady_clock::duration took[2] = {};
+
+    auto run = [&](int i) {
+        Database d(dbp);
+        seen[i] = schema_version_of(d.db_ptr());
+        ready.fetch_add(1);
+        while (!go.load()) std::this_thread::yield();
+        auto t0 = std::chrono::steady_clock::now();
+        try {
+            d.init_schema();
+        } catch (...) {
+            failures.fetch_add(1);
+        }
+        took[i] = std::chrono::steady_clock::now() - t0;
+    };
+    std::thread t1(run, 0), t2(run, 1);
+    while (ready.load() < 2) std::this_thread::yield();
+    go.store(true);
+    std::this_thread::sleep_for(kHold);
+    blocker.rollback_transaction();
+    t1.join();
+    t2.join();
+
+    EXPECT_EQ(seen[0], 4);
+    EXPECT_EQ(seen[1], 4) << "both threads must start from the same stale version";
+    for (int i = 0; i < 2; i++) {
+        EXPECT_GE(took[i], kHold / 2)
+            << "thread " << i << " returned from init_schema after "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(took[i]).count()
+            << "ms, so it never blocked on a migration's write lock and the interleave this test "
+               "exists to force did not happen";
+    }
+    EXPECT_EQ(failures.load(), 0) << "re-running a step another thread applied throws: "
+                                     "ALTER TABLE ADD COLUMN is not idempotent";
+
+    Database check(dbp);
+    EXPECT_EQ(schema_version_of(check.db_ptr()), Database::expected_schema_version());
+    fs::remove_all(dir);
+}
+
+// The busy timeout is armed before the connection issues its first statement,
+// and that statement is the contendable one: PRAGMA journal_mode=WAL takes an
+// exclusive lock to rewrite the file header. The window is forced rather than
+// raced — a second connection holds an EXCLUSIVE transaction on a database that
+// is still in rollback-journal mode, so the constructor has no choice but to
+// wait for it. Having waited is the assertion: a construction that returned
+// immediately never contended and would pin nothing.
+TEST(DatabaseConcurrency, ConstructionWaitsForAFirstStatementAnotherConnectionIsBlocking) {
+    namespace fs = std::filesystem;
+    fs::path dir = make_temp_dir("db-busy-first");
+    std::string dbp = (dir / "j.db").string();
+
+    // A database with content and no WAL, so the constructor's first statement
+    // has a conversion to do and a lock to take for it.
+    sqlite3* seed = nullptr;
+    ASSERT_EQ(
+        sqlite3_open_v2(dbp.c_str(), &seed, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr),
+        SQLITE_OK);
+    raw_exec(seed, "CREATE TABLE t(x)");
+    sqlite3_close(seed);
+
+    sqlite3* holder = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(dbp.c_str(), &holder, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
+    raw_exec(holder, "BEGIN EXCLUSIVE");
+    raw_exec(holder, "INSERT INTO t VALUES(1)");
+
+    // The hold starts when the constructor does, so a slow thread start cannot
+    // shrink the window from under the assertion below.
+    constexpr auto kHold = std::chrono::milliseconds(300);
+    std::atomic<bool> go{false};
+    std::thread releaser([&] {
+        while (!go.load()) std::this_thread::yield();
+        std::this_thread::sleep_for(kHold);
+        sqlite3_exec(holder, "ROLLBACK", nullptr, nullptr, nullptr);
+    });
+
+    std::unique_ptr<Database> db;
+    go.store(true);
+    auto t0 = std::chrono::steady_clock::now();
+    std::string err = thrown_message([&] { db = std::make_unique<Database>(dbp); });
+    auto waited = std::chrono::steady_clock::now() - t0;
+    releaser.join();
+    auto waited_ms = std::chrono::duration_cast<std::chrono::milliseconds>(waited).count();
+
+    EXPECT_EQ(err, "") << "with no busy handler on the first statement the constructor fails "
+                          "outright instead of waiting";
+    EXPECT_GE(waited, kHold / 2) << "the constructor returned after " << waited_ms
+                                 << "ms, so it never contended and this test pinned nothing";
+    ASSERT_TRUE(db) << "nothing left to check";
+
+    // It waited and then did the work, rather than waiting and giving up.
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db->db_ptr(), "PRAGMA journal_mode", -1, &s, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
+    std::string mode = reinterpret_cast<const char*>(sqlite3_column_text(s, 0));
+    sqlite3_finalize(s);
+    EXPECT_EQ(mode, "wal") << "the statement that waited must also have succeeded";
+
+    db.reset();
+    sqlite3_close(holder);
+    fs::remove_all(dir);
+}
+
+// SQLITE_OPEN_FULLMUTEX only shows itself where the library's default is not
+// already serialized, so the test puts the library there and opens a control
+// connection without the flag. Apple's system SQLite is compiled
+// SQLITE_THREADSAFE=2 and defaults to multi-thread already; Debian's is
+// compiled 1 and defaults to serialized, where a connection is mutexed whatever
+// the flag says. The reconfiguration is what makes the assertion mean the same
+// thing on both, and the control connection is what proves it took.
+//
+// This mutates process-global SQLite state. ctest runs each gtest case as its
+// own process, so a parallel run is unaffected; within one process the shutdown
+// happens with no connection of this test's open, and the mode is restored to
+// the library's compile-time default on every exit path.
+TEST(DatabaseConcurrency, TheConnectionIsMutexedEvenWhereTheLibraryDefaultIsNot) {
+    namespace fs = std::filesystem;
+    const int compiled = sqlite3_threadsafe();
+    if (compiled == 0) {
+        GTEST_SKIP() << "system SQLite is compiled SQLITE_THREADSAFE=0 and has no mutexes to ask "
+                        "about";
+    }
+
+    // Restore the compile-time default rather than a fixed mode: 2 means the
+    // library starts multi-thread, 1 means it starts serialized.
+    struct ModeRestore {
+        int mode;
+        ~ModeRestore() {
+            sqlite3_shutdown();
+            sqlite3_config(mode);
+            sqlite3_initialize();
+        }
+    } restore{compiled == 2 ? SQLITE_CONFIG_MULTITHREAD : SQLITE_CONFIG_SERIALIZED};
+
+    int rc_down = sqlite3_shutdown();
+    int rc_cfg = sqlite3_config(SQLITE_CONFIG_MULTITHREAD);
+    int rc_up = sqlite3_initialize();
+    if (rc_down != SQLITE_OK || rc_cfg != SQLITE_OK || rc_up != SQLITE_OK) {
+        GTEST_SKIP() << "this SQLite refused multi-thread mode (shutdown=" << rc_down
+                     << " config=" << rc_cfg << " initialize=" << rc_up
+                     << "), so the flag cannot be told from the default here";
+    }
+
+    fs::path dir = make_temp_dir("db-fullmutex");
+    std::string dbp = (dir / "m.db").string();
+
+    // The control: the same file opened the way SQLite defaults to now. An
+    // unmutexed connection is the state the flag exists to refuse, and seeing
+    // one here is what says the reconfiguration took.
+    sqlite3* plain = nullptr;
+    ASSERT_EQ(
+        sqlite3_open_v2(dbp.c_str(), &plain, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr),
+        SQLITE_OK);
+    void* plain_mutex = sqlite3_db_mutex(plain);
+    sqlite3_close(plain);
+    ASSERT_EQ(plain_mutex, nullptr)
+        << "a connection opened without the flag came back mutexed, so multi-thread mode did not "
+           "take and nothing below distinguishes the flag from the default";
+
+    // The positive control, so a failure below reads as 'phig did not ask for
+    // the flag' rather than 'this platform ignores it'.
+    sqlite3* asked = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(dbp.c_str(), &asked,
+                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+                              nullptr),
+              SQLITE_OK);
+    void* asked_mutex = sqlite3_db_mutex(asked);
+    sqlite3_close(asked);
+    ASSERT_NE(asked_mutex, nullptr) << "this SQLite ignores SQLITE_OPEN_FULLMUTEX, so the flag "
+                                       "cannot deliver what R54 claims here";
+
+    {
+        Database db(dbp);
+        EXPECT_NE(sqlite3_db_mutex(db.db_ptr()), nullptr)
+            << "a phig connection must be serialized by SQLite whatever the library was compiled "
+               "or configured to default to — libphig promises one ctx may be called from several "
+               "threads";
+    }
 
     fs::remove_all(dir);
 }

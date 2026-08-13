@@ -286,6 +286,88 @@ TEST_F(IdentifyTest, ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch) {
     EXPECT_GT(r.labeled, 0u) << "the run labeled nothing, so it proved nothing";
 }
 
+// Two labelers racing for one candidate set, which is the case `person_id IS
+// NULL` exists for and the one nothing covered: the deletion clause is pinned
+// by ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch, and the compare-and-set
+// against another labeler only by AnUnchangedFaceIsStillLabeled, which makes two
+// calls in one thread with no gap and no second writer.
+//
+// The window is forced rather than raced. A third connection holds the write
+// lock, so both runs finish phase 1 — reading every candidate as unlabeled —
+// before either can open phase 2's transaction. Both then block on the busy
+// timeout until the lock is released, and whichever commits second finds the
+// contested faces already named.
+//
+// Both runs reading the full candidate set is the witness that the interleave
+// happened: a second run that started after the first committed would have seen
+// fewer candidates, and the sum below would be arithmetic about nothing.
+TEST_F(IdentifyTest, TwoLabelersRacingForOneCandidateSetLabelEachFaceOnce) {
+    // Alice at 0.00 and Bob at 0.08 are 0.905 apart — sqrt(128) * 0.08 — so each
+    // one's own candidates are out of the other's reach at a 0.6 threshold,
+    // while the contested group at 0.04 is 0.452 from both.
+    int64_t alice = db->get_or_create_person("Alice");
+    int64_t bob = db->get_or_create_person("Bob");
+    for (int i = 0; i < 2; i++) {
+        db->set_face_person(
+            add_face("/p/ra" + std::to_string(i) + ".jpg", "sha_ra" + std::to_string(i), 0.00f),
+            alice);
+        db->set_face_person(
+            add_face("/p/rb" + std::to_string(i) + ".jpg", "sha_rb" + std::to_string(i), 0.08f),
+            bob);
+    }
+    const size_t kAliceOnly = 3, kShared = 4, kBobOnly = 3;
+    for (size_t i = 0; i < kAliceOnly; i++)
+        add_face("/p/a" + std::to_string(i) + ".jpg", "sha_a" + std::to_string(i), 0.01f);
+    for (size_t i = 0; i < kShared; i++)
+        add_face("/p/s" + std::to_string(i) + ".jpg", "sha_s" + std::to_string(i), 0.04f);
+    for (size_t i = 0; i < kBobOnly; i++)
+        add_face("/p/b" + std::to_string(i) + ".jpg", "sha_b" + std::to_string(i), 0.07f);
+    const size_t kCandidates = kAliceOnly + kShared + kBobOnly;
+
+    // Holds the write lock for the whole of both phase 1s. Reads do not take
+    // it, so neither run is delayed until it reaches its write.
+    Database blocker(db_path);
+    blocker.begin_transaction();
+
+    Database ca(db_path), cb(db_path);
+    IdentifyResult ra, rb;
+    std::atomic<int> started{0};
+    auto run = [&](Database& c, const char* who, IdentifyResult& out) {
+        started.fetch_add(1);
+        out = identify_person(c, who, 0.6f);
+    };
+    std::thread ta(run, std::ref(ca), "Alice", std::ref(ra));
+    std::thread tb(run, std::ref(cb), "Bob", std::ref(rb));
+    while (started.load() < 2) std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    blocker.rollback_transaction();
+    ta.join();
+    tb.join();
+
+    ASSERT_TRUE(ra.person_found);
+    ASSERT_TRUE(rb.person_found);
+    EXPECT_EQ(ra.candidates, kCandidates)
+        << "Alice's run did not read the whole candidate set unlabeled, so the two runs did not "
+           "overlap and nothing below is about a race";
+    EXPECT_EQ(rb.candidates, kCandidates)
+        << "Bob's run did not read the whole candidate set unlabeled, so the two runs did not "
+           "overlap and nothing below is about a race";
+
+    EXPECT_EQ(ra.labeled + rb.labeled, kCandidates)
+        << "each face is labeled once: without the compare-and-set the loser relabels the "
+           "contested faces and the sum runs to "
+        << kCandidates + kShared;
+
+    // And nobody was given a face they never matched.
+    size_t wrong = 0;
+    for (const auto& row : db->get_face_embeddings_for_person(alice))
+        if (embedding_distance(make_face(0.00f).embedding, row.embedding) > 0.6f) ++wrong;
+    for (const auto& row : db->get_face_embeddings_for_person(bob))
+        if (embedding_distance(make_face(0.08f).embedding, row.embedding) > 0.6f) ++wrong;
+    EXPECT_EQ(wrong, 0u) << wrong << " face(s) were named by someone they are not near";
+    EXPECT_EQ(db->get_unlabeled_face_embeddings().size(), 0u) << "every candidate matched someone";
+}
+
 TEST_F(IdentifyTest, ConcurrentFaceWritesDoNotBlockOrCorruptLabeling) {
     // identify must not hold a write transaction across its comparison phase:
     // another writer has to be able to commit while identify is comparing. If

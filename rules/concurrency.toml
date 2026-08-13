@@ -13,10 +13,11 @@ protects = ["user-metadata"]
 tests = [
     "IdentifyTest.ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch",
     "IdentifyTest.AnUnchangedFaceIsStillLabeled",
+    "IdentifyTest.TwoLabelersRacingForOneCandidateSetLabelEachFaceOnce",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch is the only test that opens the phase-1-to-phase-2 window with another writer in it, and it passes on id retirement alone: measured in a scratch copy with `AND embedding = ?` deleted from set_face_person_if_unchanged, it stays green and the suite's only failure is AFaceWhoseEmbeddingChangedIsNotLabeled, so it does not discriminate between the clauses of the predicate it is cited for. AnUnchangedFaceIsStillLabeled does pin `person_id IS NULL` — deleting that clause fails it — but single-threaded, two calls in one thread with no gap and no second writer. Nothing pins two labelers racing for the same candidate."
+test_gap = "Each clause of the predicate is pinned by a different test and none of them pins all three. ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch is the only test that opens the phase-1-to-phase-2 window against a deleter, and it passes on id retirement alone: measured in a scratch copy with `AND embedding = ?` deleted from set_face_person_if_unchanged, it stays green and the suite's only failure is AFaceWhoseEmbeddingChangedIsNotLabeled, so it does not discriminate between the clauses of the predicate it is cited for. TwoLabelersRacingForOneCandidateSetLabelEachFaceOnce now covers the case nothing reached before — two runs whose phase 1s both read the same ten candidates as unlabeled, forced by a third connection holding the write lock across both, so whichever phase 2 commits second finds four contested faces already named. Measured with `AND person_id IS NULL` deleted: the two runs' labeled counts sum to 14 instead of 10, on three runs of three. What is left unpinned is `embedding = ?`, deliberately: no concurrent path in phig produces the state it refuses, which is R71."
 
 [[rule]]
 id = "R49"
@@ -109,27 +110,31 @@ binds = [
     "relink.transfer", "relink.demote", "relink.demote_live_photo",
 ]
 protects = ["db-row"]
-tests = ["DatabaseConcurrency.ConcurrentMigrationIsSafe"]
+tests = [
+    "DatabaseConcurrency.ConcurrentMigrationIsSafe",
+    "DatabaseConcurrency.ConstructionWaitsForAFirstStatementAnotherConnectionIsBlocking",
+]
 test_kind = "witness"
 status = "holds"
-test_gap = "The listed test races concurrent first-runs and would catch a regression only statistically — it is the test that flaked at about 10% when the ordering was wrong, so one green run is weak evidence. Nothing asserts the ordering itself."
+test_gap = "ConcurrentMigrationIsSafe races concurrent first-runs and would catch a regression only statistically — it is the test that flaked at about 10% when the ordering was wrong, so one green run is weak evidence. ConstructionWaitsForAFirstStatementAnotherConnectionIsBlocking replaces the race with a held lock: a second connection holds an EXCLUSIVE transaction on a database still in rollback-journal mode for 300ms, so the constructor's first statement has to wait for it, and the elapsed time is asserted rather than the outcome alone. Measured with sqlite3_busy_timeout moved below the WAL pragma, the construction throws `SQL error: database is locked` after 0ms instead of returning after 300. What that test cannot reach is a first statement other than journal_mode=WAL: the read-only constructor skips the pragma, so the ordering has no observable consequence there and nothing pins it."
 
 [[rule]]
 id = "R54"
 tier = "engine"
 concern = "concurrency"
 statement = "The connection is opened SQLITE_OPEN_FULLMUTEX explicitly, so one shared connection called from several threads is serialized by SQLite rather than by how the system SQLite was compiled."
-rationale = "libphig's header promises that a phig_ctx may be called concurrently from several threads, and a ctx holds one Database. A system SQLite compiled THREADSAFE=1 (serialized) mutexes every connection and the promise holds for free; one compiled THREADSAFE=2 (multi-thread) defaults to NOMUTEX, where sharing a connection is undefined and crashes rather than blocks. Asking for the flag means the ABI's promise does not depend on the packager's choice."
+rationale = "libphig's header promises that a phig_ctx may be called concurrently from several threads, and a ctx holds one Database. A system SQLite compiled THREADSAFE=1 (serialized) mutexes every connection and the promise holds for free; one compiled THREADSAFE=2 (multi-thread) defaults to NOMUTEX, where sharing a connection is undefined and crashes rather than blocks. Asking for the flag means the ABI's promise does not depend on the packager's choice. That choice is not hypothetical and phig already ships against both: measured, Apple's system SQLite 3.51.0 — the library phig links on macOS, and the one the macOS CI leg builds against — reports sqlite3_threadsafe() == 2, and a connection opened there without the flag has a null sqlite3_db_mutex with no reconfiguration of any kind. So on macOS this flag is the only thing holding the header's promise up, and it is the ubuntu legs that would pass without it."
 enforced_at = ["core/database.cpp:Database::Database"]
 binds = ["metadata.write"]
 protects = ["db-row", "user-metadata"]
 tests = [
     "AbiMutate.ConcurrentFailuresOnSharedCtxDoNotCorrupt",
     "AbiMutate.ConcurrentReadsOnSharedCtxReturnConsistentResults",
+    "DatabaseConcurrency.TheConnectionIsMutexedEvenWhereTheLibraryDefaultIsNot",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "Both tests would also pass with the flag removed on a THREADSAFE=1 build, because such a build mutexes the connection anyway. The flag earns its keep only on a THREADSAFE=2 build, which no CI job provides, so nothing here distinguishes the guarantee from the default it happens to match."
+test_gap = "The two AbiMutate tests would also pass with the flag removed on a serialized build, because such a build mutexes the connection anyway. TheConnectionIsMutexedEvenWhereTheLibraryDefaultIsNot removes that dependence by putting the library in multi-thread mode for the length of the test — sqlite3_shutdown, sqlite3_config(SQLITE_CONFIG_MULTITHREAD), sqlite3_initialize, restored to the compile-time default on every exit — and asserting a control connection opened without the flag comes back with a null sqlite3_db_mutex before asking anything of phig's. Measured with the flag removed from Database::Database: sqlite3_db_mutex on the phig connection is null and the test fails. Two limits. The reconfiguration is process-global; it is safe under ctest, which runs each case as its own process, and was measured not to disturb a full in-order run of the whole suite in one process, but it is a hazard any new fixture holding a connection open across tests would create. And where the library refuses to be reconfigured the test skips rather than failing, so on such a build this rule is back to the two AbiMutate witnesses and the gap above."
 
 [[rule]]
 id = "R55"

@@ -118,6 +118,53 @@ class RemoveExecTest : public ::testing::Test {
             &n, nullptr);
         return n;
     }
+
+    // id of the newest operation row, or 0 when there is none.
+    int64_t newest_operation_id() {
+        int64_t id = 0;
+        sqlite3_exec(
+            db->db_ptr(), "SELECT id FROM operations ORDER BY id DESC LIMIT 1",
+            [](void* out, int, char** v, char**) {
+                *static_cast<int64_t*>(out) = v[0] ? std::atoll(v[0]) : 0;
+                return 0;
+            },
+            &id, nullptr);
+        return id;
+    }
+
+    // The single column `col` of the (kind, src) entry under `op`, or "" when
+    // there is no such entry.
+    std::string entry_column(int64_t op, const std::string& kind, const std::string& src,
+                             const std::string& col) {
+        std::string sql = "SELECT " + col +
+                          " FROM operation_entries WHERE op_id=" + std::to_string(op) +
+                          " AND kind='" + kind + "' AND src='" + src + "'";
+        std::string out;
+        sqlite3_exec(
+            db->db_ptr(), sql.c_str(),
+            [](void* dst, int, char** v, char**) {
+                *static_cast<std::string*>(dst) = v[0] ? v[0] : "";
+                return 0;
+            },
+            &out, nullptr);
+        return out;
+    }
+
+    // How many (kind, src) entries belong to operation `op`.
+    int count_entries_in_op(int64_t op, const std::string& kind, const std::string& src) {
+        std::string sql =
+            "SELECT COUNT(*) FROM operation_entries WHERE op_id=" + std::to_string(op) +
+            " AND kind='" + kind + "' AND src='" + src + "'";
+        int n = 0;
+        sqlite3_exec(
+            db->db_ptr(), sql.c_str(),
+            [](void* out, int, char** v, char**) {
+                *static_cast<int*>(out) = std::atoi(v[0]);
+                return 0;
+            },
+            &n, nullptr);
+        return n;
+    }
 };
 
 TEST_F(RemoveExecTest, TrashMovesFileAndLogs) {
@@ -310,6 +357,53 @@ TEST_F(RemoveExecTest, RmTrashRemovesFileAndRow) {
     EXPECT_EQ(rc, 0);
     EXPECT_FALSE(fs::exists(p));                 // file trashed
     EXPECT_EQ(db->get_all_images().size(), 0u);  // row gone
+}
+
+// Trash is only reversible if the two halves of the removal are recorded
+// together: the entry saying where the bytes went, and the entry saying which
+// row went with them. The three execute_trash_action witnesses cannot show that
+// pairing — they are handed an op_id and write the trash entry alone, because
+// dropping the row is cmd_rm's job — so this drives the command end to end. A
+// trash entry with no purge_row beside it would mean a file in the trash that
+// the collection still claims is where it was; a purge_row with no trash entry
+// would mean a row deleted with no record of where to find the file again.
+TEST_F(RemoveExecTest, RmTrashLogsTheTrashAndThePurgeRowInOneOperation) {
+    std::string p = (photos / "keeper.jpg").string();
+    write_file(p, "x");
+    insert_row(p);
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*keeper.jpg"};
+    opts.mode = RemoveMode::Trash;
+    opts.assume_yes = true;
+    opts.log_enabled = true;
+    opts.argv_str = "phig rm --match *keeper.jpg";
+
+    ASSERT_EQ(cmd_rm(opts), 0);
+
+    int64_t op = newest_operation_id();
+    ASSERT_GT(op, 0) << "the run must have opened an operation";
+    EXPECT_EQ(count_table("operations"), 1) << "one operation, not one per half";
+    EXPECT_EQ(newest_operation_status(), "completed");
+    EXPECT_EQ(count_entries_in_op(op, "trash", p), 1)
+        << "the operation must record where the bytes went";
+    EXPECT_EQ(count_entries_in_op(op, "purge_row", p), 1)
+        << "and, in the same operation, that the row went with them";
+
+    // The trash entry names a path the file is actually at, so the pairing is
+    // usable rather than merely present.
+    std::string dst = entry_column(op, "trash", p, "dst");
+    EXPECT_FALSE(fs::exists(p)) << "the source is gone";
+    ASSERT_FALSE(dst.empty()) << "the trash entry must name its destination";
+    EXPECT_TRUE(fs::exists(dst)) << "the bytes are where the entry says: " << dst;
+    EXPECT_EQ(fs::path(dst).parent_path(), fs::path(trash_dir()));
+    EXPECT_EQ(db->count(), 0) << "the row is gone";
+
+    // And the purge_row entry carries the snapshot the row could be rebuilt
+    // from, which is what makes the pair a reversal rather than a note.
+    EXPECT_NE(entry_column(op, "purge_row", p, "restore_json").find(p), std::string::npos)
+        << "the purge_row entry must snapshot the row it deleted";
 }
 
 TEST_F(RemoveExecTest, RmDbOnlyKeepsFile) {

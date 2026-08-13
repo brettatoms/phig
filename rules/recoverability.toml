@@ -77,10 +77,10 @@ tests = [
     "RemoveExecTest.TrashMovesFileAndLogs",
     "RemoveExecTest.TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs",
     "RemoveExecTest.TrashManySameNameFilesAllSurviveDistinctly",
+    "RemoveExecTest.RmTrashLogsTheTrashAndThePurgeRowInOneOperation",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The tests cover filling the trash and its no-clobber retry under collision. Nothing asserts that a tracked file's trash entry is accompanied by the purge_row entry for its row — the pairing this rule's rationale measured by running the binary is not pinned by any test."
 
 [[rule]]
 id = "R25"

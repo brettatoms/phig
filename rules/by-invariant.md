@@ -272,8 +272,8 @@ The migrations are not idempotent — ALTER TABLE ADD COLUMN fails the second ti
 | Enforced at | `core/database.cpp:init_schema` |
 | Binds | `scan.walk`, `scan.reconcile`, `organize.plan`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `thumbs.rebuild`, `faces.rebuild`, `faces.identify`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo`, `metadata.write` |
 | Protects | db-row, user-metadata, activity-log |
-| Evidence | witness: `DatabaseConcurrency.ConcurrentMigrationIsSafe` |
-| Test gap | The listed test races two threads through init_schema on a rolled-back database and would catch a regression only statistically: nothing forces the interleave, so a run where one thread finishes before the other starts has the second read the current version and do nothing, never entering the re-check inside the IMMEDIATE transaction, and passing identically. Nothing asserts the re-read happens inside the transaction rather than before it, and nothing covers the two schema-creation paths' one-transaction shape. R53's gap describes the same weakness in the same test. |
+| Evidence | witness: `DatabaseConcurrency.ConcurrentMigrationIsSafe`, `DatabaseConcurrency.AMigrationStepAnotherThreadAppliedIsSkippedInsideTheTransaction` |
+| Test gap | ConcurrentMigrationIsSafe races two threads through init_schema on a rolled-back database and catches a regression only statistically: nothing forces the interleave, so a run where one thread finishes before the other starts has the second read the current version and do nothing, never entering the re-check inside the IMMEDIATE transaction, and passing identically. Measured with the re-check deleted from init_schema, it failed 0 of 20 runs. AMigrationStepAnotherThreadAppliedIsSkippedInsideTheTransaction forces what that one hopes for: a third connection holds the write lock while both threads read version 4 and then block on the first migration's BEGIN IMMEDIATE, so one applies every step and the other finds them applied from inside its own transaction. Each thread's init_schema is timed, because a thread that had read the current version would have returned without opening a transaction at all — that is the assertion which says the window was entered. With the same re-check deleted it failed 20 of 20. What is still uncovered is the two schema-creation paths' one-transaction shape, which neither test reaches. |
 
 ### R30 — holds (test gap)
 
@@ -471,7 +471,7 @@ A trail that can be edited in place records what someone wanted to have happened
 | Protects | activity-log |
 | Evidence | conformance: `DatabaseTest.LogPruneDropsOldestWholeOperations`, `DatabaseTest.LogPruneAlwaysKeepsNewestOperation`, `DatabaseTest.LogPruneUnlimitedIsNoOp`, `DatabaseTest.LogOperationRoundTrip` |
 
-### R23 — holds (test gap)
+### R23 — holds
 
 The default removal mode moves a file into phig's trash directory under a generated name, retrying with a fresh one if that name is taken, so the removal is reversible from disk and never destroys what is already in the trash.
 
@@ -482,8 +482,7 @@ Trash is what lets rm be the ordinary removal command: the row goes, the bytes s
 | Enforced at | `core/remove_exec.cpp:execute_trash_action`, `core/paths.cpp:trash_path_for` |
 | Binds | `remove.trash` |
 | Protects | original-file, attachment |
-| Evidence | witness: `RemoveExecTest.TrashMovesFileAndLogs`, `RemoveExecTest.TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs`, `RemoveExecTest.TrashManySameNameFilesAllSurviveDistinctly` |
-| Test gap | The tests cover filling the trash and its no-clobber retry under collision. Nothing asserts that a tracked file's trash entry is accompanied by the purge_row entry for its row — the pairing this rule's rationale measured by running the binary is not pinned by any test. |
+| Evidence | witness: `RemoveExecTest.TrashMovesFileAndLogs`, `RemoveExecTest.TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs`, `RemoveExecTest.TrashManySameNameFilesAllSurviveDistinctly`, `RemoveExecTest.RmTrashLogsTheTrashAndThePurgeRowInOneOperation` |
 
 ### R25 — partial (test gap)
 
@@ -759,8 +758,8 @@ The face subcommands and libphig's faces operation both run lock-free, so a lock
 | Enforced at | `core/faces_engine.cpp:identify_person`, `core/database.cpp:set_face_person_if_unchanged` |
 | Binds | `faces.identify` |
 | Protects | user-metadata |
-| Evidence | witness: `IdentifyTest.ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch`, `IdentifyTest.AnUnchangedFaceIsStillLabeled` |
-| Test gap | ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch is the only test that opens the phase-1-to-phase-2 window with another writer in it, and it passes on id retirement alone: measured in a scratch copy with `AND embedding = ?` deleted from set_face_person_if_unchanged, it stays green and the suite's only failure is AFaceWhoseEmbeddingChangedIsNotLabeled, so it does not discriminate between the clauses of the predicate it is cited for. AnUnchangedFaceIsStillLabeled does pin `person_id IS NULL` — deleting that clause fails it — but single-threaded, two calls in one thread with no gap and no second writer. Nothing pins two labelers racing for the same candidate. |
+| Evidence | witness: `IdentifyTest.ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch`, `IdentifyTest.AnUnchangedFaceIsStillLabeled`, `IdentifyTest.TwoLabelersRacingForOneCandidateSetLabelEachFaceOnce` |
+| Test gap | Each clause of the predicate is pinned by a different test and none of them pins all three. ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch is the only test that opens the phase-1-to-phase-2 window against a deleter, and it passes on id retirement alone: measured in a scratch copy with `AND embedding = ?` deleted from set_face_person_if_unchanged, it stays green and the suite's only failure is AFaceWhoseEmbeddingChangedIsNotLabeled, so it does not discriminate between the clauses of the predicate it is cited for. TwoLabelersRacingForOneCandidateSetLabelEachFaceOnce now covers the case nothing reached before — two runs whose phase 1s both read the same ten candidates as unlabeled, forced by a third connection holding the write lock across both, so whichever phase 2 commits second finds four contested faces already named. Measured with `AND person_id IS NULL` deleted: the two runs' labeled counts sum to 14 instead of 10, on three runs of three. What is left unpinned is `embedding = ?`, deliberately: no concurrent path in phig produces the state it refuses, which is R71. |
 
 ### R49 — holds (test gap)
 
@@ -828,22 +827,22 @@ PRAGMA journal_mode=WAL takes an exclusive lock to rewrite the file header, so t
 | Enforced at | `core/database.cpp:Database::Database` |
 | Binds | `scan.walk`, `scan.reconcile`, `organize.plan`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `thumbs.rebuild`, `faces.rebuild`, `faces.identify`, `metadata.write`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | db-row |
-| Evidence | witness: `DatabaseConcurrency.ConcurrentMigrationIsSafe` |
-| Test gap | The listed test races concurrent first-runs and would catch a regression only statistically — it is the test that flaked at about 10% when the ordering was wrong, so one green run is weak evidence. Nothing asserts the ordering itself. |
+| Evidence | witness: `DatabaseConcurrency.ConcurrentMigrationIsSafe`, `DatabaseConcurrency.ConstructionWaitsForAFirstStatementAnotherConnectionIsBlocking` |
+| Test gap | ConcurrentMigrationIsSafe races concurrent first-runs and would catch a regression only statistically — it is the test that flaked at about 10% when the ordering was wrong, so one green run is weak evidence. ConstructionWaitsForAFirstStatementAnotherConnectionIsBlocking replaces the race with a held lock: a second connection holds an EXCLUSIVE transaction on a database still in rollback-journal mode for 300ms, so the constructor's first statement has to wait for it, and the elapsed time is asserted rather than the outcome alone. Measured with sqlite3_busy_timeout moved below the WAL pragma, the construction throws `SQL error: database is locked` after 0ms instead of returning after 300. What that test cannot reach is a first statement other than journal_mode=WAL: the read-only constructor skips the pragma, so the ordering has no observable consequence there and nothing pins it. |
 
 ### R54 — holds (test gap)
 
 The connection is opened SQLITE_OPEN_FULLMUTEX explicitly, so one shared connection called from several threads is serialized by SQLite rather than by how the system SQLite was compiled.
 
-libphig's header promises that a phig_ctx may be called concurrently from several threads, and a ctx holds one Database. A system SQLite compiled THREADSAFE=1 (serialized) mutexes every connection and the promise holds for free; one compiled THREADSAFE=2 (multi-thread) defaults to NOMUTEX, where sharing a connection is undefined and crashes rather than blocks. Asking for the flag means the ABI's promise does not depend on the packager's choice.
+libphig's header promises that a phig_ctx may be called concurrently from several threads, and a ctx holds one Database. A system SQLite compiled THREADSAFE=1 (serialized) mutexes every connection and the promise holds for free; one compiled THREADSAFE=2 (multi-thread) defaults to NOMUTEX, where sharing a connection is undefined and crashes rather than blocks. Asking for the flag means the ABI's promise does not depend on the packager's choice. That choice is not hypothetical and phig already ships against both: measured, Apple's system SQLite 3.51.0 — the library phig links on macOS, and the one the macOS CI leg builds against — reports sqlite3_threadsafe() == 2, and a connection opened there without the flag has a null sqlite3_db_mutex with no reconfiguration of any kind. So on macOS this flag is the only thing holding the header's promise up, and it is the ubuntu legs that would pass without it.
 
 | | |
 |---|---|
 | Enforced at | `core/database.cpp:Database::Database` |
 | Binds | `metadata.write` |
 | Protects | db-row, user-metadata |
-| Evidence | witness: `AbiMutate.ConcurrentFailuresOnSharedCtxDoNotCorrupt`, `AbiMutate.ConcurrentReadsOnSharedCtxReturnConsistentResults` |
-| Test gap | Both tests would also pass with the flag removed on a THREADSAFE=1 build, because such a build mutexes the connection anyway. The flag earns its keep only on a THREADSAFE=2 build, which no CI job provides, so nothing here distinguishes the guarantee from the default it happens to match. |
+| Evidence | witness: `AbiMutate.ConcurrentFailuresOnSharedCtxDoNotCorrupt`, `AbiMutate.ConcurrentReadsOnSharedCtxReturnConsistentResults`, `DatabaseConcurrency.TheConnectionIsMutexedEvenWhereTheLibraryDefaultIsNot` |
+| Test gap | The two AbiMutate tests would also pass with the flag removed on a serialized build, because such a build mutexes the connection anyway. TheConnectionIsMutexedEvenWhereTheLibraryDefaultIsNot removes that dependence by putting the library in multi-thread mode for the length of the test — sqlite3_shutdown, sqlite3_config(SQLITE_CONFIG_MULTITHREAD), sqlite3_initialize, restored to the compile-time default on every exit — and asserting a control connection opened without the flag comes back with a null sqlite3_db_mutex before asking anything of phig's. Measured with the flag removed from Database::Database: sqlite3_db_mutex on the phig connection is null and the test fails. Two limits. The reconfiguration is process-global; it is safe under ctest, which runs each case as its own process, and was measured not to disturb a full in-order run of the whole suite in one process, but it is a hazard any new fixture holding a connection open across tests would create. And where the library refuses to be reconfigured the test skips rather than failing, so on such a build this rule is back to the two AbiMutate witnesses and the gap above. |
 
 ### R55 — holds
 
