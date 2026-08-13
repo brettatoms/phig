@@ -36,10 +36,11 @@ tests = [
     "RelinkTest.LogsRelinkEntryUnderOperation",
     "DatabaseTest.PurgeLogsRestorableSnapshot",
     "OrganizeExecTest.NoOpSelfMoveDoesNothingAndLogsNothing",
+    "DatabaseTest.PurgeEntryRollsBackWithTheDeleteItDescribes",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "Every listed test drives the success path and checks the entry is there. Nothing drives the rollback half — a database write that throws after the entry was added, leaving neither behind. OrganizeExecTest.CopyRestoresPriorFileOnDbFailureOverwrite comes closest and passes op_id = 0, so there is no entry for it to look for."
+test_gap = "The rollback half is covered on delete_paths_logged only: a BEFORE DELETE trigger aborts the DELETE with the purge_row entry already in the transaction, and the entry and its entry_count bump are both gone afterwards. The other four anchors — execute_organize_action and the three relink passes — still have success-path witnesses only, and each opens its own transaction, so the shape is shared but not tested. tests/fault_injection.h has the injector they would use."
 
 [[rule]]
 id = "R19"

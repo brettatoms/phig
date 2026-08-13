@@ -286,8 +286,8 @@ The two halves have different failure costs. A transfer copies two of its three 
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/relink.cpp:relink_moved_rows`, `core/relink.cpp:demote_jpeg_rows`, `core/relink.cpp:demote_live_photo_rows`, `core/database.cpp:delete_paths_logged` |
 | Binds | `scan.reconcile`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged` |
-| Test gap | The listed tests pin the ordering, not the boundaries. No test interrupts reconcile between the transfer passes and the delete, so the interrupted state in the statement is read off the transaction boundaries rather than observed by a test — R37 records the faces half being forced by hand and re-scanned to the same end state as an uninterrupted control — and the next scan's cleanup of that state is untested. |
+| Evidence | witness: `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged`, `ScanEngine.ReconcileInterruptedBeforeItsDeleteKeepsEveryTransferAndEveryStaleRow` |
+| Test gap | Covered on reconcile's logged branch: a BEFORE DELETE trigger scoped to the second collected path catches the run with both transfers committed and neither row deleted, and the resumed run is compared against an uninterrupted control. The unlogged branch — relink and demote calls with op_id = 0, then delete_paths rather than delete_paths_logged — is not interrupted by any test, and neither is an interruption inside a transfer pass rather than between the passes and the delete. |
 
 ### R31 — holds (test gap)
 
@@ -300,8 +300,8 @@ Opening the operation outside the work's transaction is what makes the row survi
 | Enforced at | `core/database.cpp:log_begin_operation`, `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/remove_exec.cpp:cmd_rm`, `core/organize_engine.cpp:OrganizeEngine::apply` |
 | Binds | `scan.reconcile`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans` |
 | Protects | activity-log |
-| Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted` |
-| Test gap | The listed test covers a cancelled run, which reaches log_finish_operation through the normal return rather than through a catch. Nothing drives the exception path in run_reconcile or cmd_rm, and nothing covers a killed process, which is the case that leaves in_progress forever. |
+| Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted`, `DatabaseTest.LogBeginOperationCommitsItsRowBeforeAnyEntry`, `ScanEngine.ReconcileMarksItsOperationInterruptedWhenTheDeleteThrows`, `RemoveExecTest.RmMarksItsOperationInterruptedWhenTheDeleteThrows` |
+| Test gap | A killed process is not covered and cannot be: no test stops one. What stands in for it is the committed-and-unfinished row a second connection can already read, which is the state a kill leaves; nothing pins that a signal specifically produces it. OrganizeEngine::apply's clause — the caller that writes completed whatever happened — is R27's finding and is untested here. |
 
 ### R32 — holds
 
@@ -327,8 +327,8 @@ A rename and a SQLite commit cannot be one transaction, so one of them goes firs
 | Enforced at | `core/remove_exec.cpp:execute_trash_action`, `core/remove_exec.cpp:execute_hard_delete_action`, `core/organize_exec.cpp:carry_sidecars` |
 | Binds | `remove.trash`, `remove.hard`, `organize.copy`, `organize.move` |
 | Protects | attachment, original-file, activity-log |
-| Evidence | witness: `RemoveExecTest.TrashMovesFileAndLogs`, `RemoveExecTest.HardDeleteRemovesAndLogs`, `OrganizeExecTest.CarryLogsSidecarEntryWithParentId` |
-| Test gap | The listed tests show the entry is written after a successful disk action. None covers the window itself, which needs a failure injected between the two calls, and none covers the absent compensation. |
+| Evidence | witness: `RemoveExecTest.TrashMovesFileAndLogs`, `RemoveExecTest.HardDeleteRemovesAndLogs`, `OrganizeExecTest.CarryLogsSidecarEntryWithParentId`, `RemoveExecTest.TrashLeavesTheFileMovedAndUnloggedWhenTheLogWriteFails`, `RemoveExecTest.HardDeleteLeavesTheFileGoneAndUnloggedWhenTheLogWriteFails`, `OrganizeExecTest.CarryLeavesTheSidecarMovedAndUnloggedWhenTheLogWriteFails` |
+| Test gap | The window and the absent compensation are covered at all three anchors: PRAGMA query_only fails the log write with the disk change already made, and each test asserts the file stayed where it was put and no entry names it. What the three do not cover is the carry of a Live Photo's video, which is the same code path further down carry_sidecars and logs the same way. |
 
 ### R34 — unenforced (test gap)
 
@@ -455,8 +455,8 @@ The log is the only account of what an operation did, and an account that disagr
 | Enforced at | `core/organize_exec.cpp:execute_organize_action`, `core/relink.cpp:relink_moved_rows`, `core/relink.cpp:demote_jpeg_rows`, `core/relink.cpp:demote_live_photo_rows`, `core/database.cpp:delete_paths_logged` |
 | Binds | `organize.copy`, `organize.move`, `scan.reconcile`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans` |
 | Protects | activity-log, db-row |
-| Evidence | witness: `OrganizeExecTest.LogsEntryWhenOpIdProvided`, `RelinkTest.LogsRelinkEntryUnderOperation`, `DatabaseTest.PurgeLogsRestorableSnapshot`, `OrganizeExecTest.NoOpSelfMoveDoesNothingAndLogsNothing` |
-| Test gap | Every listed test drives the success path and checks the entry is there. Nothing drives the rollback half — a database write that throws after the entry was added, leaving neither behind. OrganizeExecTest.CopyRestoresPriorFileOnDbFailureOverwrite comes closest and passes op_id = 0, so there is no entry for it to look for. |
+| Evidence | witness: `OrganizeExecTest.LogsEntryWhenOpIdProvided`, `RelinkTest.LogsRelinkEntryUnderOperation`, `DatabaseTest.PurgeLogsRestorableSnapshot`, `OrganizeExecTest.NoOpSelfMoveDoesNothingAndLogsNothing`, `DatabaseTest.PurgeEntryRollsBackWithTheDeleteItDescribes` |
+| Test gap | The rollback half is covered on delete_paths_logged only: a BEFORE DELETE trigger aborts the DELETE with the purge_row entry already in the transaction, and the entry and its entry_count bump are both gone afterwards. The other four anchors — execute_organize_action and the three relink passes — still have success-path witnesses only, and each opens its own transaction, so the shape is shared but not tested. tests/fault_injection.h has the injector they would use. |
 
 ### R19 — holds
 
@@ -579,8 +579,8 @@ The transfer reads the row it is about to lose, so the order is not a preference
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/relink.cpp:relink_moved_rows`, `core/relink.cpp:demote_jpeg_rows`, `core/relink.cpp:demote_live_photo_rows` |
 | Binds | `scan.reconcile`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged`, `ScanEngine.ReconcileDemotesALivePhotoVideoRow` |
-| Test gap | The listed tests drive run_reconcile end to end and show the metadata survives on the target, which is the ordering's effect. All three passes are now covered inside reconcile rather than by calling them directly — the Live Photo one by ScanEngine.ReconcileDemotesALivePhotoVideoRow, which transfers a tag off a paired video row and drops it. None of them asserts the deletion happened after the transfer rather than merely alongside it: that needs the delete blocked partway, so a run can be caught with every pass finished and nothing yet removed. |
+| Evidence | witness: `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged`, `ScanEngine.ReconcileDemotesALivePhotoVideoRow`, `ScanEngine.ReconcileFinishesEveryTransferPassBeforeItDeletesAnything` |
+| Test gap | The ordering is now caught rather than inferred: with every DELETE on images aborted, one run drives all three passes and is observed with each pass's tag transferred onto its target and not one of the five rows removed. That is the logged branch. The unlogged branch runs the same three passes and ends in delete_paths instead of delete_paths_logged, and no test blocks its delete. |
 
 ### R39 — holds
 

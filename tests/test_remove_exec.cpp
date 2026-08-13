@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "database.h"
+#include "fault_injection.h"
 #include "paths.h"
 #include "phig_binary.h"
 #include "remove_exec.h"
@@ -82,6 +83,27 @@ class RemoveExecTest : public ::testing::Test {
         return n;
     }
 
+    // Entries directly under `dir`, or 0 when it does not exist.
+    int count_files(const std::string& dir) {
+        if (!fs::exists(dir)) return 0;
+        int n = 0;
+        for (auto it = fs::directory_iterator(dir); it != fs::end(it); ++it) n++;
+        return n;
+    }
+
+    // status of the newest operation row, or "" when there is none.
+    std::string newest_operation_status() {
+        std::string status;
+        sqlite3_exec(
+            db->db_ptr(), "SELECT status FROM operations ORDER BY id DESC LIMIT 1",
+            [](void* out, int, char** v, char**) {
+                *static_cast<std::string*>(out) = v[0] ? v[0] : "";
+                return 0;
+            },
+            &status, nullptr);
+        return status;
+    }
+
     // Count operation_entries rows of a given kind for a src path.
     int count_entries(const std::string& kind, const std::string& src) {
         std::string sql = "SELECT COUNT(*) FROM operation_entries WHERE kind='" + kind +
@@ -109,6 +131,28 @@ TEST_F(RemoveExecTest, TrashMovesFileAndLogs) {
     EXPECT_TRUE(fs::exists(dst));
     EXPECT_EQ(fs::path(dst).parent_path(), fs::path(trash_dir()));
     EXPECT_EQ(count_entries("trash", src), 1);
+}
+
+// The window between the two, entered rather than reasoned about: the file is
+// moved first and logged afterwards, so a log write that fails leaves the move
+// done and unrecorded. Nothing compensates — the file is not moved back — and
+// for a trashed file that is the case where the name on disk does not say where
+// it came from.
+TEST_F(RemoveExecTest, TrashLeavesTheFileMovedAndUnloggedWhenTheLogWriteFails) {
+    std::string src = (photos / "IMG_5.jpg").string();
+    write_file(src, "data");
+    int64_t op = db->log_begin_operation("rm", "phig rm", "2026-07-12T00:00:00Z");
+
+    BlockedWrites blocked(db->db_ptr());
+    std::string err = thrown_message([&] { execute_trash_action(*db, src, op); });
+    blocked.release();
+
+    EXPECT_NE(err.find(BlockedWrites::kMessage), std::string::npos)
+        << "the log write must be what failed, or nothing below proves anything: [" << err << "]";
+    EXPECT_FALSE(fs::exists(src)) << "the move happened first and is not undone";
+    EXPECT_EQ(count_files(trash_dir()), 1)
+        << "one file in the trash: moved once, and not moved back";
+    EXPECT_EQ(count_entries("trash", src), 0) << "the change is done and the log does not know";
 }
 
 TEST_F(RemoveExecTest, TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs) {
@@ -177,6 +221,24 @@ TEST_F(RemoveExecTest, HardDeleteRemovesAndLogs) {
     EXPECT_FALSE(fs::exists(src));
     EXPECT_EQ(count_entries("delete_file", src), 1);
     EXPECT_FALSE(fs::exists(trash_dir() + "/IMG_2.jpg"));  // not trashed
+}
+
+// The same window on the path where it costs the most: a hard delete cannot be
+// compensated even in principle, so a failed log write leaves the file gone
+// with nothing recording that it ever existed.
+TEST_F(RemoveExecTest, HardDeleteLeavesTheFileGoneAndUnloggedWhenTheLogWriteFails) {
+    std::string src = (photos / "IMG_6.jpg").string();
+    write_file(src, "data");
+    int64_t op = db->log_begin_operation("rm", "phig rm --hard", "2026-07-12T00:00:00Z");
+
+    BlockedWrites blocked(db->db_ptr());
+    std::string err = thrown_message([&] { execute_hard_delete_action(*db, src, op); });
+    blocked.release();
+
+    EXPECT_NE(err.find(BlockedWrites::kMessage), std::string::npos)
+        << "the log write must be what failed, or nothing below proves anything: [" << err << "]";
+    EXPECT_FALSE(fs::exists(src)) << "the unlink happened first and cannot be undone";
+    EXPECT_EQ(count_entries("delete_file", src), 0) << "the file is gone and the log does not know";
 }
 
 TEST_F(RemoveExecTest, HardDeleteMissingFileStillLogs) {
@@ -265,6 +327,42 @@ TEST_F(RemoveExecTest, RmDbOnlyKeepsFile) {
     EXPECT_EQ(cmd_rm(opts), 0);
     EXPECT_TRUE(fs::exists(p));                  // file kept
     EXPECT_EQ(db->get_all_images().size(), 0u);  // row gone
+}
+
+// The exception path, which the cancellation witness does not reach: the
+// operation row was committed on its own by log_begin_operation, so a throw out
+// of the work leaves it behind, and cmd_rm's catch marks it interrupted rather
+// than letting it linger as in_progress forever.
+//
+// FaultWitness::StateOnly because cmd_rm opens its own connection: the witness
+// that the fault fired is that both rows are still there. A run that reached
+// the end would have deleted them and returned 0 instead of throwing, and the
+// second row's delete is the one blocked, so the first surviving is also what
+// pins the batch rolling back whole.
+TEST_F(RemoveExecTest, RmMarksItsOperationInterruptedWhenTheDeleteThrows) {
+    std::string first = (photos / "f.jpg").string();
+    std::string second = (photos / "g.jpg").string();
+    write_file(first, "x");
+    write_file(second, "x");
+    insert_row(first);
+    insert_row(second);
+
+    RemoveOptions opts;
+    opts.db_path = db_path;
+    opts.matches = {"*.jpg"};
+    opts.mode = RemoveMode::DbOnly;
+    opts.assume_yes = true;
+    opts.argv_str = "phig rm --db-only --match *.jpg";
+
+    BlockedImageDeletes blocked(db->db_ptr(), second, FaultWitness::StateOnly);
+    std::string err = thrown_message([&] { cmd_rm(opts); });
+    blocked.release();
+
+    EXPECT_NE(err.find("Failed to delete"), std::string::npos)
+        << "the run must have failed at the blocked delete: [" << err << "]";
+    EXPECT_EQ(db->count(), 2) << "the batch rolls back whole, so neither row went";
+    EXPECT_EQ(newest_operation_status(), "interrupted")
+        << "an operation abandoned by a throw must not stay in_progress";
 }
 
 TEST_F(RemoveExecTest, RmRequiresMatchExceptOrphans) {

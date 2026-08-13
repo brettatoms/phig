@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "database.h"
+#include "fault_injection.h"
 #include "temp_dir.h"
 #include "types.h"
 
@@ -903,6 +904,54 @@ TEST_F(DatabaseTest, PurgeLogsRestorableSnapshot) {
     EXPECT_NE(restore.find("shaA"), std::string::npos);
     EXPECT_NE(restore.find("/x/a.jpg"), std::string::npos);
     sqlite3_finalize(s);
+}
+
+// The rollback half: the purge_row entry goes in before the DELETE it
+// describes, inside one transaction, so a delete that fails takes the entry
+// with it and the log never names a row that is still there. The failure is
+// injected rather than raced — a BEFORE DELETE trigger aborts the statement
+// with the entry already in the transaction, which is the only way into that
+// window.
+TEST_F(DatabaseTest, PurgeEntryRollsBackWithTheDeleteItDescribes) {
+    db->insert(make_image("/x/a.jpg", "shaA"));
+    int64_t op = db->log_begin_operation("rm", "phig rm --db-only", "2026-07-06T00:00:00Z");
+
+    BlockedImageDeletes blocked(db->db_ptr());
+    std::string err = thrown_message([&] { db->delete_paths_logged({"/x/a.jpg"}, op); });
+    blocked.release();
+
+    EXPECT_EQ(blocked.fired(), 1) << "the fault must have fired, or nothing below proves anything";
+    EXPECT_NE(err.find("Failed to delete path '/x/a.jpg'"), std::string::npos)
+        << "the throw must come from the blocked delete, not somewhere earlier: [" << err << "]";
+    EXPECT_GE(db->get_image_id("/x/a.jpg"), 0) << "an aborted delete leaves the row";
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM operation_entries"), 0)
+        << "the entry was inserted before the delete and must roll back with it";
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM operations WHERE entry_count = 0"), 1)
+        << "the entry_count bump is in the same transaction and rolls back too";
+}
+
+// log_begin_operation writes its row on its own, before the first entry, so
+// another connection can already see it while the run is still going. That is
+// exactly what a killed process leaves: a committed operation nobody finished.
+TEST_F(DatabaseTest, LogBeginOperationCommitsItsRowBeforeAnyEntry) {
+    int64_t op = db->log_begin_operation("rm", "phig rm --db-only", "2026-07-06T00:00:00Z");
+
+    // Nothing has been finished, and nothing on this connection has committed
+    // since — a second connection sees the row only if it was committed alone.
+    Database other(db_path);
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(
+        sqlite3_prepare_v2(other.db_ptr(), "SELECT status, entry_count FROM operations WHERE id=?",
+                           -1, &s, nullptr),
+        SQLITE_OK);
+    sqlite3_bind_int64(s, 1, op);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW) << "the operation row must already be committed";
+    std::string status = reinterpret_cast<const char*>(sqlite3_column_text(s, 0));
+    int64_t entries = sqlite3_column_int64(s, 1);
+    sqlite3_finalize(s);
+
+    EXPECT_EQ(status, "in_progress") << "an unfinished operation stays in_progress";
+    EXPECT_EQ(entries, 0) << "the row is visible before any entry exists";
 }
 
 // The third of plan 041's three guards on the delete path: a path with no row

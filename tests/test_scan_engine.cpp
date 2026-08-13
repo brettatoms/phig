@@ -18,6 +18,7 @@
 #include "database.h"
 #include "face_path.h"
 #include "faces.h"
+#include "fault_injection.h"
 #include "models.h"
 #include "progress_queue.h"
 #include "scan_engine.h"
@@ -757,6 +758,231 @@ TEST(ScanEngine, ReconcileDemotesALivePhotoVideoRow) {
     EXPECT_NE(std::find(tags.begin(), tags.end(), "holiday"), tags.end())
         << "the transfer must finish before the row is deleted, or the tag goes with it";
     EXPECT_TRUE(fs::exists(dir / "motion.mov")) << "reconcile deletes rows, never files";
+}
+
+// ---- what an interruption between reconcile's passes and its delete leaves ----
+
+// status of the newest operations row, or "" when there is none.
+static std::string newest_operation_status(Database& db) {
+    std::string status;
+    sqlite3_exec(
+        db.db_ptr(), "SELECT status FROM operations ORDER BY id DESC LIMIT 1",
+        [](void* out, int, char** v, char**) {
+            *static_cast<std::string*>(out) = v[0] ? v[0] : "";
+            return 0;
+        },
+        &status, nullptr);
+    return status;
+}
+
+static ScanOptions reconcile_options(const fs::path& dir, const std::string& db_path) {
+    ScanOptions o;
+    o.directory = dir.string();
+    o.db_path = db_path;
+    o.log_enabled = true;
+    o.argv_str = "phig scan test";
+    return o;
+}
+
+// The relink/demote overlap the ordering tests use, with a face on the stale
+// row so the transfer's one moving field is observable too. Paths come back in
+// the order reconcile collects them for deletion: the moved row, then the
+// demoted JPEG.
+struct OverlapRows {
+    std::string raw_old;  // stale: file gone, carries tag, gallery and face
+    std::string raw_new;  // the surviving row both passes target
+    std::string jpeg;     // demoted: on disk beside raw_new
+};
+
+static OverlapRows build_overlap(Database& db, const fs::path& dir) {
+    OverlapRows r;
+    r.raw_old = insert_row(db, dir, "old/a.cr2", "rawSha", /*on_disk=*/false);
+    r.raw_new = insert_row(db, dir, "new/a.cr2", "rawSha", /*on_disk=*/true);
+    r.jpeg = insert_row(db, dir, "new/a.jpg", "jpegSha", /*on_disk=*/true);
+    db.set_tag({r.raw_old}, "favorite", true);
+    db.set_gallery({r.raw_old}, "trip1", false);
+    db.set_gallery({r.jpeg}, "trip2", false);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 1;
+    face.y = 2;
+    face.width = 10;
+    face.height = 10;
+    db.insert_face(db.get_image_id(r.raw_old), face);
+    return r;
+}
+
+// What reconcile leaves on the surviving row, for comparing a run that was
+// interrupted and re-run against one that never was.
+struct OverlapEndState {
+    int rows = 0;
+    std::vector<std::string> tags;
+    std::string gallery;
+    bool faces = false;
+};
+
+static OverlapEndState read_overlap_end_state(Database& db, const std::string& raw_new) {
+    OverlapEndState s;
+    s.rows = db.count();
+    s.tags = db.get_tags_for_image(raw_new);
+    std::sort(s.tags.begin(), s.tags.end());
+    for (const auto& img : db.get_all_images()) {
+        if (img.path == raw_new) s.gallery = img.gallery;
+    }
+    s.faces = db.has_faces(raw_new);
+    return s;
+}
+
+// One uninterrupted run over the same state, to compare the resumed run against.
+static OverlapEndState reconcile_overlap_uninterrupted() {
+    ReconcileOrderScratch scratch;
+    std::string db_path = (scratch.dir / "phig.db").string();
+    Database db(db_path);
+    db.init_schema();
+    OverlapRows rows = build_overlap(db, scratch.dir);
+
+    ScanResult r;
+    ScanEngine(reconcile_options(scratch.dir, db_path), db).run_reconcile(r);
+    return read_overlap_end_state(db, rows.raw_new);
+}
+
+TEST(ScanEngine, ReconcileMarksItsOperationInterruptedWhenTheDeleteThrows) {
+    // The exception path, which the cancellation witness does not reach: the
+    // operation row is committed by log_begin_operation on its own, so a throw
+    // out of the delete leaves it behind, and reconcile's catch marks it
+    // interrupted rather than letting it sit in_progress forever.
+    ReconcileOrderScratch scratch;
+    std::string db_path = (scratch.dir / "phig.db").string();
+    Database db(db_path);
+    db.init_schema();
+    insert_row(db, scratch.dir, "gone.jpg", "goneSha", /*on_disk=*/false);
+    insert_row(db, scratch.dir, "here.jpg", "hereSha", /*on_disk=*/true);  // not every row missing
+
+    BlockedImageDeletes blocked(db.db_ptr());
+    ScanResult r;
+    std::string err = thrown_message(
+        [&] { ScanEngine(reconcile_options(scratch.dir, db_path), db).run_reconcile(r); });
+    blocked.release();
+
+    EXPECT_EQ(blocked.fired(), 1) << "the fault must have fired, or nothing below proves anything";
+    EXPECT_NE(err.find("Failed to delete path"), std::string::npos)
+        << "the throw must come from the blocked delete: [" << err << "]";
+    EXPECT_EQ(db.count(), 2) << "the aborted batch rolled back";
+    EXPECT_EQ(newest_operation_status(db), "interrupted")
+        << "an operation abandoned by a throw must not stay in_progress";
+}
+
+TEST(ScanEngine, ReconcileInterruptedBeforeItsDeleteKeepsEveryTransferAndEveryStaleRow) {
+    // The state between the transfer passes and the delete, which no test could
+    // enter before: the passes commit one row at a time, so their work stands,
+    // while the deletes share one transaction, so none of them happened.
+    //
+    // The blocker is scoped to the *second* path reconcile collects. The first
+    // one surviving is what tells a single transaction from a per-row commit —
+    // under per-row commits it would already be gone.
+    OverlapEndState control = reconcile_overlap_uninterrupted();
+
+    ReconcileOrderScratch scratch;
+    std::string db_path = (scratch.dir / "phig.db").string();
+    Database db(db_path);
+    db.init_schema();
+    OverlapRows rows = build_overlap(db, scratch.dir);
+
+    BlockedImageDeletes blocked(db.db_ptr(), rows.jpeg);
+    ScanResult interrupted;
+    std::string err = thrown_message([&] {
+        ScanEngine(reconcile_options(scratch.dir, db_path), db).run_reconcile(interrupted);
+    });
+
+    EXPECT_EQ(blocked.fired(), 1) << "the fault must have fired, or nothing below proves anything";
+    EXPECT_NE(err.find("Failed to delete path"), std::string::npos)
+        << "the throw must come from the blocked delete: [" << err << "]";
+
+    EXPECT_EQ(db.count(), 3) << "the deletes share one transaction: all of them or none";
+    // Tags are copied, so the interruption leaves them on both rows.
+    EXPECT_EQ(db.get_tags_for_image(rows.raw_old), std::vector<std::string>{"favorite"})
+        << "a transferred tag is copied, not moved, so the stale row still has it";
+    EXPECT_EQ(db.get_tags_for_image(rows.raw_new), std::vector<std::string>{"favorite"});
+    // Gallery is copied into an empty target, so it too is on both.
+    std::string old_gallery, new_gallery;
+    for (const auto& img : db.get_all_images()) {
+        if (img.path == rows.raw_old) old_gallery = img.gallery;
+        if (img.path == rows.raw_new) new_gallery = img.gallery;
+    }
+    EXPECT_EQ(old_gallery, "trip1");
+    EXPECT_EQ(new_gallery, "trip1");
+    // Faces are the one field the transfer moves, so they are on the target alone.
+    EXPECT_TRUE(db.has_faces(rows.raw_new)) << "the transfer repoints faces rather than copying";
+    EXPECT_FALSE(db.has_faces(rows.raw_old));
+
+    // The next scan's cleanup: with nothing blocking it, the same reconcile
+    // finishes and lands on the state an uninterrupted run reaches.
+    blocked.release();
+    ScanResult resumed;
+    ScanEngine(reconcile_options(scratch.dir, db_path), db).run_reconcile(resumed);
+
+    OverlapEndState after = read_overlap_end_state(db, rows.raw_new);
+    EXPECT_EQ(after.rows, control.rows) << "the resumed run must reach the uninterrupted state";
+    EXPECT_EQ(after.tags, control.tags);
+    EXPECT_EQ(after.gallery, control.gallery);
+    EXPECT_EQ(after.faces, control.faces);
+}
+
+TEST(ScanEngine, ReconcileFinishesEveryTransferPassBeforeItDeletesAnything) {
+    // All three passes in one run — a moved RAW, a JPEG beside it, and a Live
+    // Photo's video — with every delete blocked. Interleaving a delete between
+    // the passes would leave the later ones undone, so the witness is that all
+    // three transfers landed while nothing was removed.
+    ReconcileOrderScratch scratch;
+    const fs::path& dir = scratch.dir;
+    fs::copy_file("tests/data/live_photo_still.jpg", dir / "shot.jpg");
+    fs::copy_file("tests/data/live_photo.mov", dir / "motion.mov");
+
+    std::string db_path = (dir / "phig.db").string();
+    Database db(db_path);
+    db.init_schema();
+
+    std::string raw_old = insert_row(db, dir, "old/a.cr2", "rawSha", /*on_disk=*/false);
+    std::string raw_new = insert_row(db, dir, "new/a.cr2", "rawSha", /*on_disk=*/true);
+    std::string jpeg = insert_row(db, dir, "new/a.jpg", "jpegSha", /*on_disk=*/true);
+    db.set_tag({raw_old}, "moved", true);
+    db.set_tag({jpeg}, "demoted", true);
+
+    ImageInfo still;
+    still.path = (dir / "shot.jpg").string();
+    still.filename = "shot.jpg";
+    still.extension = "jpg";
+    still.media_type = "image";
+    still.sha256 = "still-sha";
+    db.insert(still);
+
+    ImageInfo video;
+    video.path = (dir / "motion.mov").string();
+    video.filename = "motion.mov";
+    video.extension = "mov";
+    video.media_type = "video";
+    video.sha256 = "video-sha";
+    db.insert(video);
+    db.set_tag({video.path}, "lived", true);
+
+    BlockedImageDeletes blocked(db.db_ptr());
+    ScanResult r;
+    std::string err =
+        thrown_message([&] { ScanEngine(reconcile_options(dir, db_path), db).run_reconcile(r); });
+    blocked.release();
+
+    EXPECT_EQ(blocked.fired(), 1) << "only the first delete is reached, and it must have fired";
+    EXPECT_NE(err.find("Failed to delete path"), std::string::npos)
+        << "the throw must come from the blocked delete: [" << err << "]";
+    EXPECT_EQ(db.count(), 5) << "not one row may go before every pass has finished";
+
+    auto has = [&](const std::string& path, const std::string& tag) {
+        auto tags = db.get_tags_for_image(path);
+        return std::find(tags.begin(), tags.end(), tag) != tags.end();
+    };
+    EXPECT_TRUE(has(raw_new, "moved")) << "the relink pass must have finished";
+    EXPECT_TRUE(has(raw_new, "demoted")) << "the JPEG demote pass must have finished";
+    EXPECT_TRUE(has(still.path, "lived")) << "the Live Photo demote pass must have finished";
 }
 
 TEST(ScanEngine, MediaFilterExcludesTheOtherType) {

@@ -71,10 +71,11 @@ tests = [
     "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget",
     "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged",
     "ScanEngine.ReconcileDemotesALivePhotoVideoRow",
+    "ScanEngine.ReconcileFinishesEveryTransferPassBeforeItDeletesAnything",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The listed tests drive run_reconcile end to end and show the metadata survives on the target, which is the ordering's effect. All three passes are now covered inside reconcile rather than by calling them directly — the Live Photo one by ScanEngine.ReconcileDemotesALivePhotoVideoRow, which transfers a tag off a paired video row and drops it. None of them asserts the deletion happened after the transfer rather than merely alongside it: that needs the delete blocked partway, so a run can be caught with every pass finished and nothing yet removed."
+test_gap = "The ordering is now caught rather than inferred: with every DELETE on images aborted, one run drives all three passes and is observed with each pass's tag transferred onto its target and not one of the five rows removed. That is the logged branch. The unlogged branch runs the same three passes and ends in delete_paths instead of delete_paths_logged, and no test blocks its delete."
 
 [[rule]]
 id = "R39"
