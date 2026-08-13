@@ -131,26 +131,21 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-      # PHIG_BUILD_JOBS caps compiler parallelism where an unbounded
-      # `--parallel` exhausts the runner. On a cold ccache the ubuntu-26.04 leg
-      # died twice at the same point — 96%, where the largest translation units
-      # compile together — with no diagnostic, ~55s of silence, then every
-      # in-flight compile Terminated at once and exit 143. ubuntu-latest
-      # survived the same commit on a warm cache, compiling 123 of 255 TUs
-      # rather than all of them. The capacity line below is what makes a
-      # recurrence diagnosable rather than a guess.
+      # `--parallel` with no number passes a bare `-j` to GNU make, which means
+      # UNLIMITED jobs — not one per core. On a cold ccache that launches every
+      # translation unit at once: the ubuntu-26.04 leg died twice at the same
+      # point, 96%, no diagnostic, ~55s of silence, then every in-flight compile
+      # Terminated and exit 143. Measured, the runners are 2 cores and 7.8 GB,
+      # and the failing logs show 20 TUs starting inside 0.4s, which -j2 cannot
+      # do. ubuntu-latest survived only because a warm cache made 132 of 255
+      # compiles ccache hits; a cold cache there would fail the same way.
+      # So every `--parallel` that builds takes an explicit core count.
       - name: Build
-        env:
-          PHIG_BUILD_JOBS: ${{ matrix.os == 'ubuntu-26.04' && '2' || '0' }}
         run: |
           echo "cores: $(getconf _NPROCESSORS_ONLN)"
           free -h 2>/dev/null || true
           df -h . | tail -1
-          if [ "${PHIG_BUILD_JOBS}" != "0" ]; then
-            cmake --build build --parallel "${PHIG_BUILD_JOBS}"
-          else
-            cmake --build build --parallel
-          fi
+          cmake --build build --parallel "$(getconf _NPROCESSORS_ONLN)"
 
       # The hit rate is the only evidence that the cache above is doing anything.
       - name: ccache statistics
@@ -325,7 +320,7 @@ jobs:
       # Only what the Test step runs. CMake registers a failing placeholder for
       # the target that is skipped, which the -E below filters out.
       - name: Build
-        run: cmake --build build --parallel --target phig-tests
+        run: cmake --build build --parallel "$(getconf _NPROCESSORS_ONLN)" --target phig-tests
 
       # OMP_NUM_THREADS=1 is required, not tidiness. OpenCV's parallel backend
       # on Linux is OpenMP, libgomp is not TSan-instrumented, so TSan cannot see
@@ -414,7 +409,7 @@ jobs:
           cmake -B build -DPHIG_WERROR=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build --parallel --target phig_abi phig
+          cmake --build build --parallel "$(getconf _NPROCESSORS_ONLN)" --target phig_abi phig
           cmake --install build --prefix "$PWD/prefix"
           ccache --show-stats
 
@@ -423,7 +418,7 @@ jobs:
           PKG_CONFIG_PATH="$PWD/prefix/lib/pkgconfig" \
             cmake -S gtk -B gtk/build \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build gtk/build --parallel
+          cmake --build gtk/build --parallel "$(getconf _NPROCESSORS_ONLN)"
 
       - name: Test gtk client
         run: ctest --test-dir gtk/build --output-on-failure --parallel
