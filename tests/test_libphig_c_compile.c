@@ -180,10 +180,8 @@ void phig_c_compile_check(void) {
         topts.parallel = 0;
         (void)phig_op_thumbs_start(ctx, &topts, &op);
 
-        fopts.match = NULL;
-        fopts.match_count = 0;
-        fopts.exclude = NULL;
-        fopts.exclude_count = 0;
+        fopts.ids = op_ids;
+        fopts.id_count = 2;
         fopts.parallel = 0;
         (void)phig_op_faces_start(ctx, &fopts, &op);
 

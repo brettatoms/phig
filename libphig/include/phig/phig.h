@@ -542,10 +542,13 @@ typedef struct {
 } phig_thumbs_options;
 
 typedef struct {
-    const char* const* match;
-    size_t match_count;
-    const char* const* exclude;
-    size_t exclude_count;
+    /* The images to act on, as ids — resolve a set with phig_query_ids.
+       NULL/0 selects NOTHING, not everything. That matters more here than on
+       any other operation: a rebuild deletes every selected image's face rows,
+       including person labels, so an unset selection must not sweep the
+       collection. The array need only outlive the _start call. */
+    const int64_t* ids;
+    size_t id_count;
     /* Each worker loads its own detector (~150MB of model state, and the
        detector is not thread-safe), so this bounds memory as much as speed.
        0 or negative = auto, which is deliberately conservative. */

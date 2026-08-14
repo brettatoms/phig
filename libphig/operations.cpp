@@ -5,18 +5,6 @@
 
 namespace {
 
-// Copies a caller's glob array. The header promises the pointers need only
-// outlive the _start call, so nothing may reference them once this returns.
-std::vector<std::string> copy_globs(const char* const* items, size_t n) {
-    std::vector<std::string> out;
-    if (items == nullptr) return out;
-    out.reserve(n);
-    for (size_t i = 0; i < n; ++i) {
-        if (items[i] != nullptr) out.emplace_back(items[i]);
-    }
-    return out;
-}
-
 // Shared preamble for the three _start entry points: validate, build the
 // operation, and give it its own database connection.
 phig_status make_op(phig_ctx* ctx, phig_op::Kind kind, std::unique_ptr<phig_op>& op) {
@@ -184,8 +172,9 @@ phig_status phig_op_faces_start(phig_ctx* ctx, const phig_faces_options* opts, p
     if (st != PHIG_OK) return st;
 
     FacesRebuildOptions fopts;
-    fopts.matches = copy_globs(opts->match, opts->match_count);
-    fopts.excludes = copy_globs(opts->exclude, opts->exclude_count);
+    if (opts->ids != nullptr && opts->id_count > 0) {
+        fopts.ids.assign(opts->ids, opts->ids + opts->id_count);
+    }
     fopts.parallel = opts->parallel;
 
     phig_op* raw = op.get();

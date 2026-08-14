@@ -1424,13 +1424,14 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
     } else if (subcmd == "rebuild") {
         // Parse match/filter flags
         FacesRebuildOptions opts;
+        std::vector<std::string> matches, excludes;
         int parallel = default_parallel;
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
-                opts.matches.push_back(expand_tilde(argv[++i]));
+                matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--exclude" && i + 1 < argc) {
-                opts.excludes.push_back(expand_tilde(argv[++i]));
+                excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--parallel" && i + 1 < argc) {
                 parallel = std::stoi(argv[++i]);
             } else if (arg == "--db") {
@@ -1441,6 +1442,15 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
             }
         }
         opts.parallel = parallel;
+        // The engine takes ids, so the globs resolve here. No --match/--exclude
+        // means every row, which is what this command has always done — the
+        // engine's empty-selects-nothing rule is about a caller that named no
+        // subject, not about a user who asked for the whole collection.
+        Database::PageCriteria selection;
+        selection.filter.matches = matches;
+        selection.filter.excludes = excludes;
+        selection.limit = -1;
+        opts.ids = db.ids_matching(selection);
 
         CancelToken cancel;
         ScopedInterruptHandler interrupt_guard(cancel);
