@@ -13,6 +13,7 @@
 #define SQLITE_CORE
 #endif
 #include "dates.h"
+#include "selection.h"
 #include "sqlite-vec.h"
 
 namespace fs = std::filesystem;
@@ -306,6 +307,30 @@ Database::Database(const std::string& path, bool read_only) {
 
     // Initialize sqlite-vec extension
     sqlite3_vec_init(db_, nullptr, nullptr);
+
+    // phig's own glob, callable from SQL as phig_glob(pattern, path). Not
+    // SQLite's GLOB: that has [...] character classes and no backslash escape,
+    // where phig has the escape and treats brackets literally, so translating
+    // patterns would change which files an existing --match selects.
+    // Registering glob_match itself keeps one implementation. Deterministic and
+    // pure, so SQLITE_DETERMINISTIC lets the planner hoist it where it can.
+    sqlite3_create_function(
+        db_, "phig_glob", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr,
+        [](sqlite3_context* ctx, int argc, sqlite3_value** argv) {
+            if (argc != 2 || sqlite3_value_type(argv[0]) == SQLITE_NULL ||
+                sqlite3_value_type(argv[1]) == SQLITE_NULL) {
+                sqlite3_result_int(ctx, 0);
+                return;
+            }
+            const auto* pattern = reinterpret_cast<const char*>(sqlite3_value_text(argv[0]));
+            const auto* path = reinterpret_cast<const char*>(sqlite3_value_text(argv[1]));
+            if (pattern == nullptr || path == nullptr) {
+                sqlite3_result_int(ctx, 0);
+                return;
+            }
+            sqlite3_result_int(ctx, glob_match(pattern, path) ? 1 : 0);
+        },
+        nullptr, nullptr);
 }
 
 Database::~Database() {
@@ -2129,6 +2154,22 @@ void Database::build_filter_sql(const SearchCriteria& c, std::string& sql,
     }
     if (c.max_sharpness >= 0) {
         sql += " AND blur_score <= " + std::to_string(c.max_sharpness);
+    }
+    // Exclude first and unconditionally, mirroring passes_selection: an exclude
+    // wins over a match, and an exclude with no matches still narrows.
+    for (const auto& e : c.excludes) {
+        sql += " AND NOT phig_glob(?, path)";
+        binds.push_back({e, false});
+    }
+    // An empty match list selects everything, so the OR group is only emitted
+    // when there is something to match.
+    if (!c.matches.empty()) {
+        sql += " AND (";
+        for (size_t i = 0; i < c.matches.size(); i++) {
+            sql += (i == 0) ? "phig_glob(?, path)" : " OR phig_glob(?, path)";
+            binds.push_back({c.matches[i], false});
+        }
+        sql += ")";
     }
 }
 

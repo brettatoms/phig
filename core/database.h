@@ -144,9 +144,16 @@ class Database {
         int64_t min_duration_ms = -1;
         int64_t max_duration_ms = -1;
         std::vector<std::string> tags;  // image must have ALL of these tags
-        std::string gallery;            // exact gallery match
-        double min_sharpness = -1;      // blur_score >= this
-        double max_sharpness = -1;      // blur_score <= this
+        // Glob selection over the full path, with phig's glob semantics (see
+        // core/selection.h). An empty `matches` selects everything; an exclude
+        // wins where the two overlap. Applied in SQL through the phig_glob
+        // function registered in the constructor, because search_page applies
+        // LIMIT/OFFSET and filtering afterwards would return short pages.
+        std::vector<std::string> matches;
+        std::vector<std::string> excludes;
+        std::string gallery;        // exact gallery match
+        double min_sharpness = -1;  // blur_score >= this
+        double max_sharpness = -1;  // blur_score <= this
         int limit = -1;
     };
     std::vector<ImageInfo> search(const SearchCriteria& criteria);

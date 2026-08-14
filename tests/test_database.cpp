@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1952,4 +1953,99 @@ TEST_F(DatabaseTest, CliTagAddSkipsAnExcludedPath) {
     };
     EXPECT_TRUE(tagged(kept));
     EXPECT_FALSE(tagged(spared)) << "--exclude did not reach the write";
+}
+
+// ---- Glob selection, applied in SQL (plan 053 decision 2) ----
+
+TEST_F(DatabaseTest, SearchMatchesByGlobOnTheFullPath) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.cr2", "sha2"));
+    db->insert(make_image("/b/three.jpg", "sha3"));
+
+    Database::SearchCriteria c;
+    c.matches = {"/a/*"};
+    auto rows = db->search(c);
+    ASSERT_EQ(rows.size(), 2u);
+
+    c.matches = {"*.cr2"};
+    rows = db->search(c);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].path, "/a/two.cr2");
+}
+
+TEST_F(DatabaseTest, ExcludeBeatsMatchJustLikePassesSelection) {
+    db->insert(make_image("/a/keep.jpg", "sha1"));
+    db->insert(make_image("/a/skip.jpg", "sha2"));
+
+    Database::SearchCriteria c;
+    c.matches = {"/a/*"};
+    c.excludes = {"*skip*"};
+    auto rows = db->search(c);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].path, "/a/keep.jpg");
+}
+
+TEST_F(DatabaseTest, AnExcludeAloneSelectsEverythingElse) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+
+    Database::SearchCriteria c;
+    c.excludes = {"*two*"};
+    EXPECT_EQ(db->search(c).size(), 1u);
+}
+
+TEST_F(DatabaseTest, GlobMatchingUsesPhigSemanticsNotSqliteGlob) {
+    // A literal '[' in a filename. SQLite's GLOB would read it as the start of
+    // a character class and fail to match; phig's glob_match treats it as an
+    // ordinary character. This is the case that makes translating patterns
+    // wrong rather than merely different.
+    db->insert(make_image("/a/set[1].jpg", "sha1"));
+    db->insert(make_image("/a/plain.jpg", "sha2"));
+
+    Database::SearchCriteria c;
+    c.matches = {"/a/set[1].jpg"};
+    auto rows = db->search(c);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].path, "/a/set[1].jpg");
+}
+
+TEST_F(DatabaseTest, GlobFilteredPagesAreFullAndDoNotSkipRows) {
+    // The reason the predicate has to be in SQL. Ten matching rows among
+    // twenty; filtering after LIMIT/OFFSET would return short pages and skip
+    // rows entirely.
+    for (int i = 0; i < 20; i++) {
+        std::string dir = (i % 2 == 0) ? "/keep/" : "/drop/";
+        db->insert(make_image(dir + std::to_string(i) + ".jpg", "sha" + std::to_string(i)));
+    }
+
+    Database::PageCriteria pc;
+    pc.filter.matches = {"/keep/*"};
+    pc.sort = Database::SortKey::Path;
+    pc.descending = false;
+    pc.limit = 4;
+
+    std::vector<std::string> seen;
+    for (int64_t off = 0;; off += 4) {
+        pc.offset = off;
+        auto page = db->search_page(pc);
+        if (page.empty()) break;
+        for (const auto& r : page) seen.push_back(r.path);
+    }
+
+    EXPECT_EQ(seen.size(), 10u) << "paging under a glob lost or duplicated rows";
+    for (const auto& p : seen) {
+        EXPECT_EQ(p.rfind("/keep/", 0), 0u) << p << " should not have matched";
+    }
+    EXPECT_EQ(std::set<std::string>(seen.begin(), seen.end()).size(), seen.size())
+        << "a row appeared on two pages";
+}
+
+TEST_F(DatabaseTest, CountMatchingHonoursGlobs) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+    db->insert(make_image("/b/three.jpg", "sha3"));
+
+    Database::SearchCriteria c;
+    c.matches = {"/a/*"};
+    EXPECT_EQ(db->count_matching(c), 2);
 }
