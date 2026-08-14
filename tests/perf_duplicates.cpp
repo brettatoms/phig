@@ -68,9 +68,20 @@ TEST(DuplicatesPerf, HighThresholdDoesNotRegressAgainstBruteForce) {
 // wall-clock constant: a fixed ms ceiling sits close enough to the measured
 // time on a fast machine that CPU contention alone (e.g. a saturated CI
 // runner) pushes it over, with no actual regression. Timing the oracle in the
-// same process removes the machine-speed dependence and expresses the actual
-// invariant — the index must not be materially slower than the thing it
-// replaced — rather than a specific duration.
+// same process expresses the actual invariant — the index must not be
+// materially slower than the thing it replaced — rather than a specific
+// duration.
+//
+// That removes the dependence on how FAST the machine is. It does not remove
+// the dependence on how LOADED it is, which is why these tests are RUN_SERIAL
+// in the root CMakeLists: the index builds hash tables and is memory-bound
+// while the baseline is a tight loop over a contiguous vector and is
+// compute-bound, so concurrent work slows the two by different factors and
+// moves the ratio itself. On this corpus the index is no faster than brute
+// force to begin with — idle ratio 0.94-1.04 — so the 1.5x ceiling has only
+// half a turn of headroom, and shared-machine drift to 1.18-1.34 eats most of
+// it. Do not read a ratio near 1.0 as a regression: the guard exists to catch
+// the 3.13x below, not to assert the index wins here.
 TEST(DuplicatesPerf, ClusteredCorporaDoNotRegressAtTheDefaultThreshold) {
     // Few centers, small variations: the shape that defeats the banded index.
     {

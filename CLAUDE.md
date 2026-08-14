@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite, 851 tests
+./build/phig-tests        # fast suite, 871 tests
 ./build/phig-perf-tests   # performance suite (~2s), 4 tests
-ctest --test-dir build --parallel   # both — 855 (~15s; 48s without --parallel)
+ctest --test-dir build --parallel   # both — 875 (~19s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -82,6 +82,17 @@ parallel (`CTestConfig.cmake`'s `CTEST_PARALLEL_LEVEL` is ignored by a direct
 `ctest` invocation — measured, still 48s). Tests get a unique temp directory
 from `tests/temp_dir.h`, which is what makes parallel safe; a new fixture that
 hardcodes a temp path instead will pass alone and fail under `--parallel`.
+
+**The four `DuplicatesPerf` tests are `RUN_SERIAL`** (root `CMakeLists.txt`), so
+`--parallel` drains before them and starts nothing beside them. A timing
+assertion is only meaningful on an unshared machine: those tests compare the
+banded index against a brute-force baseline timed in the same process, which
+removes the dependence on how fast the machine is but not on how loaded it is —
+the index is memory-bound and the baseline compute-bound, so contention moves
+the ratio itself. Measured, `ClusteredCorporaDoNotRegressAtTheDefaultThreshold`
+failed 2 of 6 parallel runs before this and 0 of 10 after. It costs about 5s of
+a 19s run. **A new wall-clock or ratio assertion belongs in `phig-perf-tests`
+for this reason, not only for runtime.**
 
 `gtk/` has its own build (`cmake -B build && cmake --build build -j` from
 inside `gtk/`) and 13 tests across two binaries — see `gtk/CLAUDE.md`.

@@ -177,10 +177,10 @@ gtest_discover_tests(phig-tests
 
 # ---- Performance tests ----
 # Kept out of phig-tests: each of these times an O(n^2) brute-force baseline
-# alongside the code under test, which is what removed their flakiness (see
-# tests/perf_duplicates.cpp) but also makes them dominate phig-tests' runtime
-# if left in the default suite. Still built and run by ctest, so CI keeps
-# gating on them; just not part of the fast local loop.
+# alongside the code under test, which is what removed their dependence on
+# absolute machine speed (see tests/perf_duplicates.cpp) but also makes them
+# dominate phig-tests' runtime if left in the default suite. Still built and run
+# by ctest, so CI keeps gating on them; just not part of the fast local loop.
 add_executable(phig-perf-tests
     tests/perf_duplicates.cpp
 )
@@ -189,6 +189,21 @@ target_link_libraries(phig-perf-tests PRIVATE
     phig_abi
     GTest::gtest_main
 )
+# RUN_SERIAL because a timing assertion is only meaningful on a machine the test
+# is not sharing. Timing the oracle in the same process removes the dependence
+# on how fast the machine is, but not on how loaded it is: the banded index
+# builds hash tables and is memory-bound, the brute-force baseline is a tight
+# loop over a contiguous vector and is compute-bound, so concurrent work slows
+# them by different factors and moves the ratio the assertion is made against.
+# Measured on the 8-centre/12k-image corpus: idle the ratio sits at 0.94-1.04,
+# under `ctest --parallel` it drifts to 1.18-1.34, and an observed failure hit
+# 1.66 against a 1.50 ceiling — ClusteredCorporaDoNotRegressAtTheDefaultThreshold
+# failed 2 of 6 parallel runs and 0 of 15 sequential ones. Serial: 0 of 10.
+#
+# It is not free. `ctest --parallel` goes from ~14.4s to ~19.3s here, about 35%,
+# because ctest drains in-flight tests before a RUN_SERIAL one and starts
+# nothing else until it finishes — more than the perf suite's own ~2.2s.
 gtest_discover_tests(phig-perf-tests
     DISCOVERY_TIMEOUT 30
+    PROPERTIES RUN_SERIAL TRUE
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
