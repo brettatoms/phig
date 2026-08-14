@@ -1,7 +1,7 @@
 # libphig/
 
 The versioned C ABI (`libphig.so`) — the boundary for foreign callers
-(`gtk/`, and later Elixir). ABI 1.3, soname 1, 69 exported symbols. Hidden
+(`gtk/`, and later Elixir). ABI 1.4, soname 1, 73 exported symbols. Hidden
 visibility by default; the exported surface is declared explicitly by a
 linker version script (`libphig/phig.version` on Linux,
 `libphig/phig.exported_symbols` on macOS), not inferred from headers.
@@ -61,23 +61,30 @@ splits reconcile into a decision and an application the caller authorizes.
 | People and faces, read | `list_people`, `get_images_for_person`, `search_faces` | 053 |
 | Face labelling | `set_face_person`, `identify_person`, `auto_label_face` | 053 |
 | Person / face / similar search | `SearchEngine`'s other three `SearchMode`s | 053 |
-| Glob and path selection on queries | `SearchQuery::matches`/`excludes` | 053 |
 | One image's tags, read | `get_tags_for_image` | 053 |
 | Tag and gallery lists with counts | `get_tag_counts`, `get_gallery_counts` | 053 |
 | Face model download | `models.h`'s `download_face_models` | 053 |
 | `thumbs clean` | `is_thumbnail_filename`; the loop itself is in `cli/` | 053 |
 | Activity log, read | nothing — `Database` writes the log and never reads it | 053 |
 
-Two of those are more than a missing entry point. The activity log has no
-reader anywhere in `core/`, so it is core work before it is ABI work. And
-query selection is an inconsistency inside the ABI rather than only a
-shortfall: `phig_thumbs_options` and `phig_faces_options` take
-`match`/`exclude` while `phig_query` does not, so a client can restrict a
-thumbnail run by glob but cannot search for a filename.
+One of those is more than a missing entry point: the activity log has no reader
+anywhere in `core/`, so it is core work before it is ABI work.
 
-Writes and operations also disagree on how a caller names its subject — the
-metadata writes take image ids because a GUI holds a selection, the operations
-take globs. Anything added above has to pick one deliberately.
+**Selection is being unified on ids, and is half-converted.** Plan 053's
+decision 2 settles it: everything whose subject is existing rows takes ids, and
+globs survive only as query predicates, because a filename search cannot be
+asked for with ids — resolving it to ids *is* the search. `phig_query` now takes
+`phig_query_add_match`/`phig_query_add_exclude`, evaluated in SQL through a
+registered `phig_glob` calling phig's own `glob_match` (not SQLite's `GLOB`,
+which has character classes and no escape), and `phig_query_ids` resolves any
+query to the ids it selects.
+
+What has not moved yet is the operations: `phig_thumbs_options` and
+`phig_faces_options` still take `match`/`exclude`, and organize still takes
+them too. 053's step 3 converts those to ids and moves the glob resolution to
+the caller. Until it lands, the ABI has both conventions — queries on globs,
+metadata writes on ids, operations on globs. Do not read the operations' current
+shape as the intended one.
 
 `ScanOptions::thumbs`/`faces` is the deliberate exclusion and must never be
 exposed: the ABI models the three as independent operations, and those flags
@@ -157,14 +164,18 @@ rule is filed by tier and not by surface. Read the TOML for the record and this
 file for the practice, and change both together — CI resolves every
 `enforced_at` anchor against the source.
 
-**The symbol-bump bullet above is half checked, and the unchecked half is the
-one that bites.** CI compares the header's `PHIG_ABI_VERSION_MAJOR`/`MINOR`
-against `CMakeLists.txt`'s `VERSION` and `SOVERSION` and fails when the three
-disagree, so the two files cannot drift apart. Nothing counts exported symbols
-against the minor: adding a `phig_foo()` and touching neither file leaves every
-comparison agreeing, because the export lists match on the `phig_` prefix and
-need no edit. Bump `MINOR` and `VERSION` yourself — R64 is the record of that
-obligation, and it is still open.
+**The symbol-bump bullet above is checked, in two halves.** CI compares the
+header's `PHIG_ABI_VERSION_MAJOR`/`MINOR` against `CMakeLists.txt`'s `VERSION`
+and `SOVERSION` and fails when the three disagree, so those two files cannot
+drift apart. `Abi.ExportedSymbolCountMatchesTheRecordedAbiVersion` closes what
+used to be the open half: it counts the header's `PHIG_API` declarations against
+a row in `kAbiSymbolCounts` for the minor being claimed, so adding a
+`phig_foo()` and touching neither version fails the suite rather than passing
+every comparison. R64 records the obligation and holds.
+
+Adding a symbol therefore means three edits, not two: `MINOR`, the CMake
+`VERSION`, and a `kAbiSymbolCounts` row. Adding four symbols at ABI 1.4 needed
+`{1, 4, 73}`.
 
 An operation in `rules/operations.toml` with an empty `surfaces_abi` is an ABI
 gap the record set can name, and a sizeable fraction of the operations are in
