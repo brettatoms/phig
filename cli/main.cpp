@@ -1541,16 +1541,18 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
 
 // Resolve the images selected by an optional --path prefix plus match/filter
 // globs into a list of paths, reusing the shared filter logic.
-static std::vector<std::string> select_paths(Database& db, const std::string& path_prefix,
-                                             const std::vector<std::string>& matches,
-                                             const std::vector<std::string>& excludes) {
-    std::vector<std::string> paths;
-    for (const auto& img : db.get_all_images(path_prefix)) {
-        if (passes_selection(img.path, matches, excludes)) {
-            paths.push_back(img.path);
-        }
-    }
-    return paths;
+// Resolve, then operate. Every filter is applied in SQL — the globs through
+// phig_glob, --path as a range over the path index — and the write below takes
+// the ids, so nothing loads the collection to sift it in memory.
+static std::vector<int64_t> select_ids(Database& db, const std::string& path_prefix,
+                                       const std::vector<std::string>& matches,
+                                       const std::vector<std::string>& excludes) {
+    Database::PageCriteria selection;
+    selection.filter.path_prefix = path_prefix;
+    selection.filter.matches = matches;
+    selection.filter.excludes = excludes;
+    selection.limit = -1;
+    return db.ids_matching(selection);
 }
 
 int cmd_tag(int argc, char* argv[], const std::string& db_path, bool no_wait) {
@@ -1602,7 +1604,8 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path, bool no_wait) {
         auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
-        int n = db.set_tag(select_paths(db, path_prefix, matches, excludes), tag, subcmd == "add");
+        int n =
+            db.set_tag_by_ids(select_ids(db, path_prefix, matches, excludes), tag, subcmd == "add");
         std::cout << (subcmd == "add" ? "Tagged " : "Untagged ") << n << " images (" << tag
                   << ")\n";
         return 0;
@@ -1670,12 +1673,12 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path, bool no_wait
         auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
-        auto paths = select_paths(db, path_prefix, matches, excludes);
+        auto ids = select_ids(db, path_prefix, matches, excludes);
         if (is_set) {
-            int n = db.set_gallery(paths, gallery, no_overwrite);
+            int n = db.set_gallery_by_ids(ids, gallery, no_overwrite);
             std::cout << "Set gallery '" << gallery << "' on " << n << " images\n";
         } else {
-            int n = db.clear_gallery(paths);
+            int n = db.set_gallery_by_ids(ids, "");
             std::cout << "Cleared gallery on " << n << " images\n";
         }
         return 0;
@@ -1722,8 +1725,8 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path, bool no_wait) {
         auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
-        int n = db.set_tag(select_paths(db, path_prefix, matches, excludes), "favorite",
-                           subcmd == "add");
+        int n = db.set_tag_by_ids(select_ids(db, path_prefix, matches, excludes), "favorite",
+                                  subcmd == "add");
         std::cout << (subcmd == "add" ? "Favorited " : "Unfavorited ") << n << " images\n";
         return 0;
     }

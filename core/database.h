@@ -151,6 +151,11 @@ class Database {
         // LIMIT/OFFSET and filtering afterwards would return short pages.
         std::vector<std::string> matches;
         std::vector<std::string> excludes;
+        // Directory narrowing, as a literal string prefix rather than a glob:
+        // it compiles to a range scan over the path index, and a prefix
+        // containing `*`, `?` or `[` means itself. This is what `--path` on
+        // tag, gallery and fav selects with.
+        std::string path_prefix;
         std::string gallery;        // exact gallery match
         double min_sharpness = -1;  // blur_score >= this
         double max_sharpness = -1;  // blur_score <= this
@@ -219,8 +224,11 @@ class Database {
 
     // Id-based sibling of set_gallery/clear_gallery. Sets gallery on the given
     // ids; an empty string clears it (stores NULL). Unknown ids are skipped.
-    // Runs in one transaction. Returns the number of rows affected.
-    int set_gallery_by_ids(const std::vector<int64_t>& ids, const std::string& gallery);
+    // With no_overwrite, images that already have a gallery are left alone —
+    // expressed as a WHERE clause, so an image that gains one concurrently is
+    // not overwritten either. Runs in one transaction. Returns rows affected.
+    int set_gallery_by_ids(const std::vector<int64_t>& ids, const std::string& gallery,
+                           bool no_overwrite = false);
     std::vector<std::pair<std::string, int64_t>> get_gallery_counts();
 
     // Face operations

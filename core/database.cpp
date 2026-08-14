@@ -1660,12 +1660,17 @@ int Database::clear_gallery(const std::vector<std::string>& paths) {
     return affected;
 }
 
-int Database::set_gallery_by_ids(const std::vector<int64_t>& ids, const std::string& gallery) {
+int Database::set_gallery_by_ids(const std::vector<int64_t>& ids, const std::string& gallery,
+                                 bool no_overwrite) {
     if (ids.empty()) return 0;
     int affected = 0;
     begin_transaction();
     try {
-        const char* sql = "UPDATE images SET gallery = ? WHERE id = ?";
+        // no_overwrite is a clause rather than a read-then-write, so an image
+        // that gains a gallery between the two is not overwritten anyway.
+        const char* sql = no_overwrite
+                              ? "UPDATE images SET gallery = ? WHERE id = ? AND gallery IS NULL"
+                              : "UPDATE images SET gallery = ? WHERE id = ?";
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
             throw std::runtime_error("prepare gallery update: " + std::string(sqlite3_errmsg(db_)));
@@ -2155,6 +2160,18 @@ void Database::build_filter_sql(const SearchCriteria& c, std::string& sql,
     }
     if (c.max_sharpness >= 0) {
         sql += " AND blur_score <= " + std::to_string(c.max_sharpness);
+    }
+    // A range over the path index rather than a LIKE or a glob: LIKE would give
+    // '%' and '_' meaning inside the caller's prefix, and a glob would give it
+    // to '*', '?' and '['. A prefix means itself. Same bounds get_all_images
+    // uses, so --path selects the same rows however it is reached.
+    if (!c.path_prefix.empty()) {
+        sql += " AND path >= ?";
+        binds.push_back({c.path_prefix, false});
+        if (auto upper = prefix_upper_bound(c.path_prefix)) {
+            sql += " AND path < ?";
+            binds.push_back({*upper, false});
+        }
     }
     // Exclude first and unconditionally, mirroring passes_selection: an exclude
     // wins over a match, and an exclude with no matches still narrows.

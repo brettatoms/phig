@@ -2147,3 +2147,60 @@ TEST_F(DatabaseTest, GetImagesByIdsHandlesMoreIdsThanSqliteTakesParameters) {
     ASSERT_EQ(ids.size(), 1200u);
     EXPECT_EQ(db->get_images_by_ids(ids).size(), 1200u);
 }
+
+// ---- Path-prefix selection, and the id-based gallery write's no_overwrite ----
+
+TEST_F(DatabaseTest, IdsMatchingHonoursAPathPrefix) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+    db->insert(make_image("/b/three.jpg", "sha3"));
+
+    Database::PageCriteria pc;
+    pc.filter.path_prefix = "/a/";
+    pc.limit = -1;
+    EXPECT_EQ(db->ids_matching(pc).size(), 2u);
+}
+
+TEST_F(DatabaseTest, APathPrefixIsAPrefixNotAGlob) {
+    // A prefix is a range scan, so metacharacters in it are literal. Translating
+    // --path into a glob would make these two rows indistinguishable.
+    db->insert(make_image("/a[1]/one.jpg", "sha1"));
+    db->insert(make_image("/ax/two.jpg", "sha2"));
+
+    Database::PageCriteria pc;
+    pc.filter.path_prefix = "/a[1]/";
+    pc.limit = -1;
+    auto ids = db->ids_matching(pc);
+    ASSERT_EQ(ids.size(), 1u);
+    EXPECT_EQ(db->get_images_by_ids(ids)[0].path, "/a[1]/one.jpg");
+}
+
+TEST_F(DatabaseTest, PathPrefixCombinesWithGlobs) {
+    db->insert(make_image("/a/keep.jpg", "sha1"));
+    db->insert(make_image("/a/skip.jpg", "sha2"));
+    db->insert(make_image("/b/keep.jpg", "sha3"));
+
+    Database::PageCriteria pc;
+    pc.filter.path_prefix = "/a/";
+    pc.filter.matches = {"*keep*"};
+    pc.limit = -1;
+    auto ids = db->ids_matching(pc);
+    ASSERT_EQ(ids.size(), 1u);
+    EXPECT_EQ(db->get_images_by_ids(ids)[0].path, "/a/keep.jpg");
+}
+
+TEST_F(DatabaseTest, SetGalleryByIdsCanRefuseToOverwrite) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+    int64_t one = db->get_image_id("/a/one.jpg");
+    int64_t two = db->get_image_id("/a/two.jpg");
+    ASSERT_EQ(db->set_gallery_by_ids({one}, "first"), 1);
+
+    // no_overwrite skips the image that already has one, and takes the other.
+    EXPECT_EQ(db->set_gallery_by_ids({one, two}, "second", /*no_overwrite=*/true), 1);
+
+    for (const auto& r : db->get_images_by_ids({one, two})) {
+        if (r.path == "/a/one.jpg") EXPECT_EQ(r.gallery, "first");
+        if (r.path == "/a/two.jpg") EXPECT_EQ(r.gallery, "second");
+    }
+}
