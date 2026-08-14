@@ -658,10 +658,12 @@ typedef enum {
 typedef struct {
     const char* destination; /* root of the organized layout */
     const char* format;      /* e.g. "%Y/%m/%original"; NULL uses "%Y/%m/%original" */
-    const char* const* matches;
-    size_t match_count;
-    const char* const* excludes;
-    size_t exclude_count;
+    /* The images to act on, as ids — resolve a set with phig_query_ids.
+       NULL/0 selects NOTHING, not everything: a caller names its subject, and
+       an unset selection is a no-op rather than a whole-collection move. The
+       array need only outlive the _start call. */
+    const int64_t* ids;
+    size_t id_count;
     phig_conflict_resolution on_conflict; /* run-level default */
 } phig_organize_options;
 

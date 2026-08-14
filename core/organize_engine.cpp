@@ -8,7 +8,6 @@
 #include "organize_exec.h"
 #include "organize_plan.h"
 #include "paths.h"
-#include "selection.h"
 
 namespace fs = std::filesystem;
 
@@ -69,15 +68,7 @@ OrganizePlan OrganizeEngine::plan(const CancelToken& cancel,
                                   ProgressQueue<OrganizeProgress>* progress) {
     OrganizePlan out;
 
-    auto images = db_.get_all_images();
-    if (!opts_.matches.empty() || !opts_.excludes.empty()) {
-        images.erase(std::remove_if(images.begin(), images.end(),
-                                    [&](const ImageInfo& img) {
-                                        return !passes_selection(img.path, opts_.matches,
-                                                                 opts_.excludes);
-                                    }),
-                     images.end());
-    }
+    auto images = db_.get_images_by_ids(opts_.ids);
 
     for (const auto& img : images) out.batch_sources_.insert(img.path);
 

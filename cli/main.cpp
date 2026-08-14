@@ -605,8 +605,10 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
 // Argv-shaped extras the engine has no opinion about: which executor to run and
 // whether to stop after planning. Everything else lives in core's
 // OrganizeOptions, which this command fills directly.
-int cmd_organize(const OrganizeOptions& opts, bool is_move, bool dry_run) {
-    Database db(opts.db_path);
+int cmd_organize(const OrganizeOptions& opts_in, bool is_move, bool dry_run,
+                 const std::vector<std::string>& matches,
+                 const std::vector<std::string>& excludes) {
+    Database db(opts_in.db_path);
     db.init_schema();
 
     if (db.count() == 0) {
@@ -616,11 +618,22 @@ int cmd_organize(const OrganizeOptions& opts, bool is_move, bool dry_run) {
 
     std::cout << "Found " << db.count() << " images in database\n";
 
+    // The engine takes ids, and this is where the Database it needs lives, so
+    // the globs resolve here. No --match/--exclude means every row, which is
+    // what cp and mv have always done — the engine's empty-selects-nothing rule
+    // is about a caller that named no subject, not a user asking for all of it.
+    OrganizeOptions opts = opts_in;
+    Database::PageCriteria selection;
+    selection.filter.matches = matches;
+    selection.filter.excludes = excludes;
+    selection.limit = -1;
+    opts.ids = db.ids_matching(selection);
+
     OrganizeEngine engine(opts, db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
-    if (!opts.matches.empty() || !opts.excludes.empty()) {
+    if (!matches.empty() || !excludes.empty()) {
         std::cout << "After match/filter: " << plan.size() << " images\n";
     }
 
@@ -2029,6 +2042,9 @@ int main(int argc, char* argv[]) {
         }
 
         OrganizeOptions opts;
+        // Kept local rather than on the options struct: the engine takes ids,
+        // and cmd_organize resolves these against the database it opens.
+        std::vector<std::string> org_matches, org_excludes;
         opts.destination = argv[2];
         opts.format = "%Y/%m/%original";
         // The CLI's long-standing default, which differs from the engine's.
@@ -2047,9 +2063,9 @@ int main(int argc, char* argv[]) {
             if (arg == "--format" && i + 1 < argc) {
                 opts.format = argv[++i];
             } else if (arg == "--match" && i + 1 < argc) {
-                opts.matches.push_back(expand_tilde(argv[++i]));
+                org_matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--exclude" && i + 1 < argc) {
-                opts.excludes.push_back(expand_tilde(argv[++i]));
+                org_excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--dry-run") {
                 dry_run = true;
             } else if (arg == "--on-conflict" && i + 1 < argc) {
@@ -2075,7 +2091,7 @@ int main(int argc, char* argv[]) {
 
         try {
             auto lock = acquire_writer_lock(no_wait);
-            return cmd_organize(opts, is_move, dry_run);
+            return cmd_organize(opts, is_move, dry_run, org_matches, org_excludes);
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
             return 1;

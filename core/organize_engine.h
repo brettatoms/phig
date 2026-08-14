@@ -18,8 +18,11 @@ enum class ConflictResolution { Skip, Overwrite, Rename };
 struct OrganizeOptions {
     std::string destination;
     std::string format;
-    std::vector<std::string> matches;
-    std::vector<std::string> excludes;
+    // The rows to act on. Empty selects nothing — a caller names its subject,
+    // and forgetting to is a no-op rather than a whole-collection move. cli/
+    // resolves its --match/--exclude globs through Database::ids_matching
+    // before filling this.
+    std::vector<int64_t> ids;
     ConflictResolution on_conflict = ConflictResolution::Rename;
     std::string db_path;
     bool log_enabled = true;

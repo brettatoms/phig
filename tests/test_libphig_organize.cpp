@@ -67,12 +67,32 @@ class AbiOrganizeTest : public ::testing::Test {
         ctx = nullptr;
     }
 
+    // Every id in the collection. These tests predate id selection and meant
+    // "the whole collection" by setting no filter; NULL/0 now selects nothing,
+    // so what they meant has to be said. Going through phig_query_ids is also
+    // how a real client would do it.
+    struct AllIds {
+        phig_id_list* list = nullptr;
+        explicit AllIds(phig_ctx* c) {
+            phig_query* q = nullptr;
+            EXPECT_EQ(phig_query_new(c, &q), PHIG_OK);
+            EXPECT_EQ(phig_query_ids(c, q, &list), PHIG_OK);
+            phig_query_free(q);
+        }
+        ~AllIds() { phig_id_list_free(list); }
+        AllIds(const AllIds&) = delete;
+        AllIds& operator=(const AllIds&) = delete;
+    };
+
     // Plan against `fx`, waiting for the operation and taking the plan out.
     phig_organize_plan* make_plan(const OrganizeFixture& fx,
                                   phig_conflict_resolution policy = PHIG_CONFLICT_RENAME) {
+        AllIds all(ctx);
         phig_organize_options opts{};
         opts.destination = fx.out_dir.c_str();
         opts.format = "%Y/%original";
+        opts.ids = all.list->items;
+        opts.id_count = static_cast<size_t>(all.list->count);
         opts.on_conflict = policy;
 
         phig_op* op = nullptr;
@@ -228,9 +248,12 @@ TEST_F(AbiOrganizeTest, PlanMayBeFreedImmediatelyAfterApplyStarts) {
 TEST_F(AbiOrganizeTest, ResultIsRefusedForAPlanOperation) {
     OrganizeFixture fx(1);
     open(fx);
+    AllIds all(ctx);
     phig_organize_options opts{};
     opts.destination = fx.out_dir.c_str();
     opts.format = "%Y/%original";
+    opts.ids = all.list->items;
+    opts.id_count = static_cast<size_t>(all.list->count);
     opts.on_conflict = PHIG_CONFLICT_RENAME;
 
     phig_op* op = nullptr;
@@ -282,9 +305,12 @@ TEST_F(AbiOrganizeTest, PollReportsPlannedThenOneUpdatePerParent) {
     OrganizeFixture fx(3);
     open(fx);
 
+    AllIds all(ctx);
     phig_organize_options opts{};
     opts.destination = fx.out_dir.c_str();
     opts.format = "%Y/%original";
+    opts.ids = all.list->items;
+    opts.id_count = static_cast<size_t>(all.list->count);
     opts.on_conflict = PHIG_CONFLICT_RENAME;
 
     phig_op* op = nullptr;
