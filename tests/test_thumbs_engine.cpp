@@ -11,6 +11,7 @@
 #include "database.h"
 #include "progress_queue.h"
 #include "temp_dir.h"
+#include "thumbs.h"
 #include "thumbs_engine.h"
 #include "types.h"
 
@@ -310,4 +311,27 @@ TEST(ThumbsEngineRun, PublishesNothingWhenGivenANullQueue) {
     CancelToken tok;
 
     EXPECT_NO_THROW(engine.run(tok, nullptr));
+}
+
+TEST(ThumbsEngineRun, AnExcludedRowGetsNoThumbnail) {
+    // R74's predicate is pinned by FilterTest against passes_selection itself.
+    // What that cannot show is that this engine consults it: a thumbs run that
+    // read only the match list would pass every one of those tests and still
+    // write a thumbnail for a file the caller excluded.
+    ScratchThumbs coll(2);
+    ThumbsOptions opts;
+    opts.parallel = 2;
+    opts.excludes = {"*img1*"};
+    ThumbsEngine engine(opts, *coll.db);
+    CancelToken tok;
+
+    ThumbsResult r = engine.run(tok, nullptr);
+
+    EXPECT_EQ(r.total_selected, 1u);
+    EXPECT_EQ(r.generated, 1u);
+    const std::string included = std::string(63, '0') + "0";
+    const std::string excluded = std::string(63, '0') + "1";
+    EXPECT_TRUE(thumb_exists(included, PHIG_DEFAULT_THUMB_SIZE));
+    EXPECT_FALSE(thumb_exists(excluded, PHIG_DEFAULT_THUMB_SIZE))
+        << "--exclude did not reach the cache write";
 }

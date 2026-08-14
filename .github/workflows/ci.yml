@@ -48,12 +48,24 @@ jobs:
       fail-fast: false
       # The macOS leg joins only on the scheduled and manual runs — see the
       # schedule comment in `on:` above. An expression rather than a second job,
-      # so both legs keep one name and one set of steps.
+      # so all legs keep one name and one set of steps.
+      #
+      # Two ubuntu legs because OpenCV's version decides whether phig can detect
+      # a face at all. ubuntu-latest is 24.04 and ships libopencv-dev 4.6.0,
+      # which is below the 4.8.0 the YuNet model needs, so the face tests skip
+      # there and the version guard's failure path is what runs instead. 26.04
+      # ships 4.10.0 and is the leg that actually detects faces, so it is the one
+      # that installs the models. 24.04 stays because it is the current LTS.
+      #
+      # `ubuntu-26.04` is a GitHub **Preview** label: it can change behaviour or
+      # be withdrawn without a deprecation window, and when 26.04 becomes the
+      # default this leg and `ubuntu-latest` will be the same image — at which
+      # point pin the older one explicitly or drop it.
       matrix:
         os: >-
           ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-          && fromJSON('["ubuntu-latest", "macos-latest"]')
-          || fromJSON('["ubuntu-latest"]') }}
+          && fromJSON('["ubuntu-latest", "ubuntu-26.04", "macos-latest"]')
+          || fromJSON('["ubuntu-latest", "ubuntu-26.04"]') }}
     runs-on: ${{ matrix.os }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -88,18 +100,69 @@ jobs:
           key: ccache-test-${{ matrix.os }}-${{ github.sha }}
           restore-keys: ccache-test-${{ matrix.os }}-
 
+      # Ten tests need the YuNet and SFace models and skip without them, and one
+      # of those is the only witness for rules/concurrency.toml's R52 — a holds
+      # rule whose evidence never ran here. 37 MB of ONNX, so the cache carries
+      # it between runs; the model dates are in the filenames, so the key stays
+      # valid until a model is deliberately bumped. A miss costs a download, not
+      # a failure: the step below runs unconditionally and download_face_models()
+      # returns early for a file that is already present and hashes correctly, so
+      # a hit makes it a no-op. GitHub evicts an entry unused for seven days,
+      # which a quiet week reaches. actions/cache saves in a post step declared
+      # `post-if: success()`, so a red job never writes the cache back and the
+      # next run downloads again — a cost, not a correctness problem.
+      #
+      # 26.04 only, here and on the download below: it is the only leg whose
+      # OpenCV can run the detector. Putting them on 24.04 as well would install
+      # 37 MB so that ten tests could fail on a cv::Exception, and putting them
+      # on macOS would spend a 10x-billed weekly leg on the same coverage 26.04
+      # already gives. Leaving 24.04 models-less is also what lets
+      # ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor run without them.
+      - name: Restore face models
+        if: matrix.os == 'ubuntu-26.04'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/phig/models
+          key: face-models-yunet2023mar-sface2021dec
+
       - name: Configure
         run: |
           cmake -B build -DPHIG_WERROR=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
+      # `--parallel` with no number passes a bare `-j` to GNU make, which means
+      # UNLIMITED jobs — not one per core. On a cold ccache that launches every
+      # translation unit at once: the ubuntu-26.04 leg died twice at the same
+      # point, 96%, no diagnostic, ~55s of silence, then every in-flight compile
+      # Terminated and exit 143. Measured, the runners are 2 cores and 7.8 GB,
+      # and the failing logs show 20 TUs starting inside 0.4s, which -j2 cannot
+      # do. ubuntu-latest survived only because a warm cache made 132 of 255
+      # compiles ccache hits; a cold cache there would fail the same way.
+      # So every `--parallel` that builds takes an explicit core count.
       - name: Build
-        run: cmake --build build --parallel
+        run: |
+          echo "cores: $(getconf _NPROCESSORS_ONLN)"
+          free -h 2>/dev/null || true
+          df -h . | tail -1
+          cmake --build build --parallel "$(getconf _NPROCESSORS_ONLN)"
 
       # The hit rate is the only evidence that the cache above is doing anything.
       - name: ccache statistics
         run: ccache --show-stats
+
+      # After the build because the built binary is what downloads them, which
+      # keeps the two URLs in core/models.cpp and nowhere else.
+      #
+      # No checksum loop here: download_face_models() pins a sha256 beside each
+      # URL and exits 1 on a mismatch, whether the file arrived from the network
+      # or from the cache above. That covers everything a step here could — a
+      # file opencv_zoo replaced under the same name on `main`, a truncated or
+      # poisoned cache entry — and covers a developer's own `phig models
+      # download` besides, which a workflow step never could.
+      - name: Download face models
+        if: matrix.os == 'ubuntu-26.04'
+        run: ./build/phig models download
 
       # Runs both phig-tests and phig-perf-tests: gtest_discover_tests
       # registers each target's cases into the same ctest run, so this one
@@ -108,18 +171,73 @@ jobs:
         id: test
         run: ctest --test-dir build --output-on-failure --parallel
 
-      # Ubuntu only, on both steps below: the rule record describes the repo,
-      # not a platform, so running it on the macOS leg as well doubles the work
-      # for no extra coverage.
+      # R72 has two branches and the run above only reaches one of them. This
+      # reaches the other: models_dir() is cache_dir() + "/models" and cache_dir()
+      # reads XDG_CACHE_HOME (core/paths.cpp), so an empty one is all it takes to
+      # put the models out of reach for one process. Nothing is uninstalled and
+      # the cache restored above is untouched.
       #
-      # Both also run after a failing suite, which is what the explicit
-      # condition buys — a bare `if:` carries an implicit success(), and a red
-      # Test step would then skip the step that says which rule the failing test
-      # was pinning. The Test step above is what gates on the suite, so tolerating
-      # its failure here hides nothing.
+      # The XML check is not ceremony. A --gtest_filter that matches nothing
+      # prints a warning and exits 0 — measured — so a renamed test would turn
+      # this step into a silent no-op, and a skip (models somehow reachable)
+      # would too. result="completed" is what gtest writes for a case that ran;
+      # a skip is result="skipped".
+      #
+      # Its own step rather than folded into the gate's XML below: rules.py reads
+      # one results file, and that file has to be the models-present run, where
+      # R52's witness passes. Merging a second XML into it would be workflow
+      # machinery bought for one attribution line — check 2 still catches this
+      # test being renamed or deleted, because the models-present XML lists it
+      # (as a skip), and a failure here reddens the job on its own.
+      - name: Test the models-absent path
+        id: models_absent
+        if: matrix.os == 'ubuntu-26.04'
+        run: |
+          XDG_CACHE_HOME="$(mktemp -d)" ./build/phig-tests \
+            --gtest_filter='ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing' \
+            --gtest_output=xml:build/models-absent.xml
+          python3 - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          cases = [c for s in ET.parse("build/models-absent.xml").iter("testsuite")
+                   for c in s.iter("testcase")]
+          got = [(c.get("name"), c.get("result")) for c in cases]
+          if len(cases) != 1 or cases[0].get("result") != "completed":
+              sys.exit(f"::error::the models-absent case did not run and pass: {got}")
+          PY
+
+      # The rule record splits across the two ubuntu legs, because its two halves
+      # need different things.
+      #
+      # Everything except check 2 describes the repo — schema, anchors, closures,
+      # surface classification, the ABI version comparison, and whether the
+      # generated views match what was committed. None of it reads a test run, so
+      # it goes on ubuntu-latest, the stable label. ubuntu-26.04 is Preview: if it
+      # is withdrawn, the record's decay gate should not go with it.
+      #
+      # Check 2 — a `holds` rule's tests exist and pass — is the half that reads a
+      # gtest XML, and it needs the face models, so it stays on 26.04. A skipped
+      # test does not fail it: measured, gtest writes result="skipped" and
+      # rules.py buckets that as neither pass nor failure, so running it on a
+      # models-less leg would report OK for R52 with its only witness never having
+      # run. Green with no evidence is what this record exists to prevent.
+      #
+      # Every step below tolerates a red test step, which is what the explicit
+      # condition buys — a bare `if:` carries an implicit success(), and a failing
+      # suite would then skip the step that says which rule the failing test was
+      # pinning. The test steps above are what gate on the suite, so tolerating
+      # their failure here hides nothing.
       - name: Rules record — unit tests
-        if: ${{ runner.os == 'Linux' && (success() || steps.test.outcome == 'failure') }}
+        if: ${{ matrix.os == 'ubuntu-latest' && (success() || steps.test.outcome == 'failure') }}
         run: python3 -m unittest discover -s scripts -t scripts -p 'test_*.py'
+
+      - name: Rules record — check and regenerate
+        if: ${{ matrix.os == 'ubuntu-latest' && (success() || steps.test.outcome == 'failure') }}
+        run: |
+          python3 scripts/rules.py --check --emit
+          git diff --exit-code rules/ || {
+            echo "::error::rules/by-*.md are generated from rules/*.toml. Run 'python3 scripts/rules.py --emit' and commit the result — do not edit the views by hand."
+            exit 1
+          }
 
       # ctest registers one ctest test per gtest case (gtest_discover_tests), so
       # it produces no single gtest XML — hence invoking the binary directly for
@@ -127,15 +245,11 @@ jobs:
       # before writing results is still reported, because rules.py rejects an
       # unreadable or empty XML rather than reading it as every cited test
       # having been deleted.
-      - name: Rules record — check and regenerate
-        if: ${{ runner.os == 'Linux' && (success() || steps.test.outcome == 'failure') }}
+      - name: Rules record — tests cited by holds rules
+        if: ${{ matrix.os == 'ubuntu-26.04' && (success() || steps.test.outcome == 'failure' || steps.models_absent.outcome == 'failure') }}
         run: |
           ./build/phig-tests --gtest_output=xml:build/test-results.xml || true
-          python3 scripts/rules.py --check --emit --test-results build/test-results.xml
-          git diff --exit-code rules/ || {
-            echo "::error::rules/by-*.md are generated from rules/*.toml. Run 'python3 scripts/rules.py --emit' and commit the result — do not edit the views by hand."
-            exit 1
-          }
+          python3 scripts/rules.py --check --test-results build/test-results.xml
 
   # Sanitizers. Two configurations because ASan and TSan cannot be combined.
   #
@@ -206,7 +320,7 @@ jobs:
       # Only what the Test step runs. CMake registers a failing placeholder for
       # the target that is skipped, which the -E below filters out.
       - name: Build
-        run: cmake --build build --parallel --target phig-tests
+        run: cmake --build build --parallel "$(getconf _NPROCESSORS_ONLN)" --target phig-tests
 
       # OMP_NUM_THREADS=1 is required, not tidiness. OpenCV's parallel backend
       # on Linux is OpenMP, libgomp is not TSan-instrumented, so TSan cannot see
@@ -295,7 +409,7 @@ jobs:
           cmake -B build -DPHIG_WERROR=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build --parallel --target phig_abi phig
+          cmake --build build --parallel "$(getconf _NPROCESSORS_ONLN)" --target phig_abi phig
           cmake --install build --prefix "$PWD/prefix"
           ccache --show-stats
 
@@ -304,7 +418,7 @@ jobs:
           PKG_CONFIG_PATH="$PWD/prefix/lib/pkgconfig" \
             cmake -S gtk -B gtk/build \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build gtk/build --parallel
+          cmake --build gtk/build --parallel "$(getconf _NPROCESSORS_ONLN)"
 
       - name: Test gtk client
         run: ctest --test-dir gtk/build --output-on-failure --parallel

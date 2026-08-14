@@ -30,6 +30,60 @@ struct phig_op_abi_pin {
     int models : (PHIG_STAGE_LOADING_FACE_MODELS == 3) ? 1 : -1;
 };
 
+/* phig_op_progress is caller-allocated and phig_op_poll fills it, with no size
+ * and no version member. A field added to it makes a newer libphig write past
+ * the end of an older client's buffer — corruption the client cannot detect —
+ * so a new counter means a new struct and a new poll symbol, not a new field.
+ * This is what makes breaking that fail the build.
+ *
+ * Pinning sizeof alone would miss a field inserted between two existing ones,
+ * so every offset is pinned as well, each against the field before it. `done`
+ * is the one that cannot be stated that way: its offset is the enum's size
+ * rounded up to the alignment of uint64_t, and C99 has no _Alignof, so a probe
+ * struct supplies it. Together these fix the layout exactly, on any ABI. */
+struct phig_u64_align_probe {
+    char c;
+    uint64_t x;
+};
+#define PHIG_U64_ALIGN offsetof(struct phig_u64_align_probe, x)
+#define PHIG_ROUND_UP(n, a) ((((n) + (a) - 1) / (a)) * (a))
+
+struct phig_op_progress_abi_pin {
+    int stage : (offsetof(phig_op_progress, stage) == 0) ? 1 : -1;
+    int done
+        : (offsetof(phig_op_progress, done) == PHIG_ROUND_UP(sizeof(phig_op_stage), PHIG_U64_ALIGN))
+        ? 1
+        : -1;
+    int total
+        : (offsetof(phig_op_progress, total) == offsetof(phig_op_progress, done) + sizeof(uint64_t))
+        ? 1
+        : -1;
+    int processed : (offsetof(phig_op_progress, processed) ==
+                     offsetof(phig_op_progress, total) + sizeof(uint64_t))
+        ? 1
+        : -1;
+    int skipped : (offsetof(phig_op_progress, skipped) ==
+                   offsetof(phig_op_progress, processed) + sizeof(uint64_t))
+        ? 1
+        : -1;
+    int errors : (offsetof(phig_op_progress, errors) ==
+                  offsetof(phig_op_progress, skipped) + sizeof(uint64_t))
+        ? 1
+        : -1;
+    int path : (offsetof(phig_op_progress, path) ==
+                offsetof(phig_op_progress, errors) + sizeof(uint64_t))
+        ? 1
+        : -1;
+    int error : (offsetof(phig_op_progress, error) ==
+                 offsetof(phig_op_progress, path) + sizeof(const char*))
+        ? 1
+        : -1;
+    /* Nothing after `error`, and no trailing field of any width. */
+    int size : (sizeof(phig_op_progress) == offsetof(phig_op_progress, error) + sizeof(const char*))
+        ? 1
+        : -1;
+};
+
 void phig_c_compile_check(void) {
     phig_config cfg;
     phig_ctx* ctx = NULL;

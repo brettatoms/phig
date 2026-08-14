@@ -132,6 +132,9 @@ def _check_classification(model):
          set(config.get("read_only_abi", [])), "surfaces_abi", "read_only_abi"),
         ({s for o in model.operations for s in o.get("surfaces_cli", [])},
          set(config.get("read_only_cli", [])), "surfaces_cli", "read_only_cli"),
+        (set(config.get("mutating_cli_flags", [])),
+         set(config.get("read_only_cli_flags", [])),
+         "mutating_cli_flags", "read_only_cli_flags"),
     )
     for left, right, left_name, right_name in pairs:
         for name in sorted(left & right):
@@ -510,11 +513,21 @@ ABI_SYMBOL = re.compile(r"\b(phig_[a-z0-9_]+)\s*\(")
 # [a-z] first, so `command == "--help"` and `command == "-h"` — the same branch
 # as `help` — are not read as top-level commands needing classification.
 CLI_COMMAND = re.compile(r'command == "([a-z][a-z0-9-]*)"')
+# A standalone "--x" literal. Quoted on both sides on purpose: it finds the
+# strings a parser branch compares against and not the flags named inside a
+# longer usage line, which is why the help text's --size does not appear.
+CLI_FLAG = re.compile(r'"(--[a-z0-9-]+)"')
 
 
 def check_coverage(model):
     """Check 4: every phig_* symbol in phig.h and every CLI command is claimed
-    by an operation's surfaces or is on an explicit allowlist."""
+    by an operation's surfaces or is on an explicit allowlist. Every CLI flag
+    is on one of the two flag lists, which is the same question one level down.
+
+    The flag half checks only that somebody classified the name. Whether the
+    verdict is right has to be read off the file — see the comment above
+    mutating_cli_flags in rules/operations.toml for why a script cannot decide
+    it."""
     problems = []
 
     claimed_abi = {s for o in model.operations for s in o.get("surfaces_abi", [])}
@@ -531,11 +544,20 @@ def check_coverage(model):
     allowed_cli = set(model.config.get("read_only_cli", []))
     main = model.root / CLI_MAIN
     if main.is_file():
-        for command in sorted(set(CLI_COMMAND.findall(main.read_text()))):
+        text = main.read_text()
+        for command in sorted(set(CLI_COMMAND.findall(text))):
             if command not in claimed_cli and command not in allowed_cli:
                 problems.append(
                     f"CLI command '{command}' is claimed by no operation and is not in "
                     f"read_only_cli — classify it in rules/operations.toml")
+
+        classified_flags = (set(model.config.get("mutating_cli_flags", []))
+                            | set(model.config.get("read_only_cli_flags", [])))
+        for flag in sorted(set(CLI_FLAG.findall(text))):
+            if flag not in classified_flags:
+                problems.append(
+                    f"CLI flag '{flag}' is in neither mutating_cli_flags nor "
+                    f"read_only_cli_flags — classify it in rules/operations.toml")
 
     return problems
 

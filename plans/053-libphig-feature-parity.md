@@ -2,7 +2,7 @@
 name: libphig Feature Parity
 status: in-progress
 created: 2026-08-08
-closes_rules: [R62]
+closes_rules: [R62, R77, R78]
 description: >
   The gap between what phig can do and what a client can reach. Answers the
   five cross-cutting questions the inventory shares — how a caller names its
@@ -105,7 +105,7 @@ rather than translating patterns and silently changing what `--match` means.
 
 ### 3. `images.id` has to be stable first
 
-**Done — schema v9, R72 holds.** Decision 2 makes an id the way every caller
+**Done — schema v9, R84 holds.** Decision 2 makes an id the way every caller
 names a photo, and before v9 an id did not name one for long. `images.id` was
 `INTEGER PRIMARY KEY` with no `AUTOINCREMENT`, so SQLite reused it. Against the
 system SQLite 3.51.0 phig links:
@@ -168,7 +168,7 @@ the ABI returns boxes and a client crops.
 
 ## Scope
 
-1. **Schema v9 and R72** — `images.id` to `AUTOINCREMENT`, per decision 3.
+1. **Schema v9 and R84** — `images.id` to `AUTOINCREMENT`, per decision 3.
    Everything else depends on it.
 2. **Query selection** — `phig_query_add_match`, `phig_query_add_exclude`,
    `phig_query_ids`, and `glob_match` registered as a SQLite function so
@@ -203,8 +203,32 @@ the ABI returns boxes and a client crops.
    the ABI starts a faces operation that fails because ~150 MB of models are
    absent and offers no way to fetch them.
 7. **`thumbs clean`** — `is_thumbnail_filename` is in `core/`; the loop is in
-   `cli/main.cpp` and moves to `core/` first.
-8. **R62** — the entry points that return something other than `phig_status`
+   `cli/main.cpp` and moves to `core/` first. **R77** records what has to
+   survive that move: only files matching the thumbnail naming contract are
+   removed, only when no row claims their hash, and `--dry-run` removes nothing
+   including the empty-directory sweep. All three live in the `cli/` loop today,
+   so a client that grew its own cache cleaning would inherit none of them.
+   Plan 054's flag pass also added a `thumbs.clean` operation to
+   `rules/operations.toml` — `thumbs` was claimed by `thumbs.rebuild` alone, so
+   the clean subcommand's deletions had been accounted for by nothing.
+8. **R78 — a metadata write must name its subject.** `tag add|remove`,
+   `gallery set|clear` and `fav add|remove` each refuse to run without a
+   `--match` or a `--path`, because an empty match list selects every row (R74)
+   and the write would strip a tag, or empty a gallery, collection-wide with no
+   prompt and no log entry. The check is three copies in `cli/main.cpp`, while
+   `Database::set_tag`, `set_gallery` and `clear_gallery` act on whatever list
+   they are handed.
+
+   Decision 2 changes this rule's shape rather than inheriting it. R78 was
+   written expecting glob selection to arrive on the writes, where "everything"
+   is what you get by omission. Under decision 2 it never does: a write takes an
+   explicit id array, and the way to name every image is to resolve a query and
+   marshal every id, which is a thing a caller does rather than forgets. So the
+   ABI exposure R78 anticipated does not open. What remains is that the guard
+   sits in `cli/`, which makes it unreachable by libphig and `phigd` for the
+   same reason R68 is, and `core/` is where it belongs — item 3 is already
+   moving these paths onto ids, so the guard moves with them.
+9. **R62** — the entry points that return something other than `phig_status`
    have no handler, and the ten `phig_query_set_*` functions are named in the
    record. This plan adds more setters of exactly that shape, so it closes the
    hole it would otherwise widen.
@@ -219,13 +243,15 @@ entry point at all. Signatures are reshaped in place rather than accreting
 
 ## Work order
 
-1. Schema v9 + R72, with its real-behavior migration tests — done, executed via
-   `docs/plans/2026-08-14-053-schema-v9.md`. R72 holds.
+1. Schema v9 + R84, with its real-behavior migration tests — done, executed via
+   `docs/plans/2026-08-14-053-schema-v9.md`. R84 holds.
 2. `phig_query_ids` and the glob predicates, on the SQLite function.
 3. Operations converted to ids; `cli/` resolves ahead of them.
-4. Items 5, 6, 7 — small, independent, unblocked once 2 lands.
-5. The three search modes.
-6. R62's handlers and its gate.
+4. Items 5, 6, 7 — small, independent, unblocked once 2 lands. Item 7 carries
+   R77's three guarantees into `core/` with the loop.
+5. R78's guard moves into `core/` beside the writes, with item 3.
+6. The three search modes.
+7. R62's handlers and its gate.
 
 ## Not in scope
 

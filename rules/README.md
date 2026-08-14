@@ -89,6 +89,27 @@ because no `core/` primitive for `trash.empty` exists yet, and plan 053 owns
 creating one. When the code moves, the anchor updates to name the new location
 and `status` becomes `holds`.
 
+**A `cli/`-anchored rule must name a user asset that a command can actually
+destroy.** A `cli/` anchor is a record that enforcement sits in the wrong
+layer, so the rule's entire value is that some plan moves it into `core/` and
+every surface inherits it. A finding with no asset behind it has nothing to
+move and nothing to protect: it is an ordinary bug, and it belongs in a plan's
+body rather than here. Without this bar the record drifts into a bug tracker
+for `cli/`, which is the opposite of what it is for.
+
+R82 is the one that failed it, written and then removed. Nine numeric flags let
+`std::invalid_argument` escape `std::stoi` during argv parsing and abort the
+process at exit 134. Measured: every one of them converts before any `Database`
+is constructed, so `scan --parallel abc` creates no database file and corrupts
+nothing — no asset, and no `core/` home for a missing `try`/`catch`, because
+`core/` never sees argv. It lives in plan 043's body instead, with the measured
+list of flags. The `cli/` anchors that pass each name a capability or a guard
+that belongs in `core/` and is not there yet: R68 and R77 (no `core/` primitive
+for emptying the trash or cleaning the thumbnail cache), R78 (the selection
+guard sits beside one caller instead of beside the write), R69 and R81 (two
+truncating writes in `cmd_search` with no `core/` renderer behind them), R73
+(a parser that lets a destructive command run on a typo), R70 and R80.
+
 ## core_headers classification
 
 `operations.toml`'s `core_headers` lists the `core/` headers whose declared

@@ -11,14 +11,14 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R04 | recoverability | partial (test gap) | Deleting a row captures a restore snapshot sufficient to rebuild that row's user-authored metadata. |
 | R07 | concurrency | holds (test gap) | A read-then-write on a face row labels only the face it compared: an id whose face was deleted in the gap is out of circulation and matches nothing, and `person_id IS NULL` refuses a face another labeler named first. |
 | R12 | reconcile | holds | A tracked path is deletable only when its file is gone and its parent directory still exists; a missing parent and a failed existence check are reported apart from it and kept. |
-| R13 | reconcile | holds (test gap) | A path whose existence could not be determined is never deleted, under any flag. |
-| R14 | reconcile | holds (test gap) | --ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted. |
+| R13 | reconcile | holds | A path whose existence could not be determined is never deleted, under any flag. |
+| R14 | reconcile | holds | --ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted. |
 | R15 | reconcile | holds (test gap) | Scan skips its whole destructive phase when every tracked row under the scanned directory classifies as deletable. |
 | R16 | reconcile | holds | A stale row's user metadata transfers only when exactly one other tracked file with the same sha256 exists on disk; with none or several it transfers nowhere and the row is still deleted. |
 | R17 | reconcile | holds (test gap) | The has_sibling_raw and Live Photo peeks over indexed paths only decide whether to open a logged operation; the demote passes decide again, authoritatively, inside it. |
 | R25 | recoverability | partial (test gap) | Deleting a row captures its restore snapshot whether the activity log is enabled or not. |
 | R28 | atomicity | holds | Every write transaction opens with BEGIN IMMEDIATE, so a transaction that reads and then writes cannot fail with SQLITE_BUSY_SNAPSHOT. |
-| R29 | atomicity | holds | Each schema migration takes the write lock before it reads the version and re-reads the version inside that transaction, so a step another process already applied is skipped rather than re-run. |
+| R29 | atomicity | holds (test gap) | Each schema migration takes the write lock before it reads the version and re-reads the version inside that transaction, so a step another process already applied is skipped rather than re-run. |
 | R30 | atomicity | holds (test gap) | Reconcile's relink and demote passes commit one row at a time and its deletes commit as a single transaction, so an interruption between them leaves the copied fields on both rows — tags always, gallery when the target had none — the transferred faces on the target alone, and every stale row still present. |
 | R34 | atomicity | unenforced (test gap) | A committed transaction survives a process crash but not necessarily an operating-system crash or a power loss: the connection runs WAL with synchronous=NORMAL, which does not fsync the write-ahead log at every commit. |
 | R35 | metadata | holds | A re-scan of an already-indexed path updates that row in place rather than replacing it, so the row keeps its id and the tags, favorite and gallery attached to it. |
@@ -39,7 +39,14 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R61 | authorization | violated (test gap) | A destructive operation's preview is a value the caller can inspect, not text the engine prints. |
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R71 | concurrency | holds (test gap) | A face row's embedding is written only by the insert that creates the row, so identify's `embedding = ?` clause refuses no write that `id = ?` and `person_id IS NULL` have not already refused. |
-| R72 | concurrency | holds | An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
+| R73 | authorization | violated (test gap) | An unrecognized flag stops a command before it changes anything. |
+| R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
+| R75 | reconcile | holds (test gap) | Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk. |
+| R76 | metadata | holds (test gap) | No value of --force re-detects faces: a scan keeps a row's existing face data whatever it was told to force, and face rebuild is the only path that replaces it. |
+| R78 | authorization | violated (test gap) | A metadata write refuses to run unless the caller named which images it applies to. |
+| R79 | metadata | holds (test gap) | Assigning a gallery replaces the assignment already on a row unless the caller asked to fill only the empty ones. |
+| R80 | atomicity | violated (test gap) | A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish. |
+| R84 | concurrency | holds | An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
 
 ## original-file — rebuildable: backup-only
 
@@ -58,12 +65,12 @@ The bytes on disk.
 | R11 | conflict | holds | A file whose resolved destination is its own path is left alone: nothing is written and nothing is logged, a resolution only the overwrite policy produces. |
 | R20 | authorization | holds (test gap) | A dry-run removal takes no disk action, deletes no row and opens no logged operation, but it still creates the database file and applies any pending schema migration. |
 | R21 | authorization | holds (test gap) | The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, but the command that calls it has already opened the database read-write and migrated it, so the preview is side-effect-free only below cli/. |
-| R22 | authorization | holds | A hard delete, and any removal that takes at least half the collection and touches twenty rows or more, proceeds only on an explicit yes: assume_yes, or a confirmer that returns true, with a missing confirmer counted as a refusal. |
-| R23 | recoverability | holds (test gap) | The default removal mode moves a file into phig's trash directory under a generated name, retrying with a fresh one if that name is taken, so the removal is reversible from disk and never destroys what is already in the trash. |
+| R22 | authorization | holds (test gap) | A hard delete, and any removal that takes at least half the collection and touches twenty rows or more, proceeds only on an explicit yes: assume_yes, or a confirmer that returns true, with a missing confirmer counted as a refusal. |
+| R23 | recoverability | holds | The default removal mode moves a file into phig's trash directory under a generated name, retrying with a fresh one if that name is taken, so the removal is reversible from disk and never destroys what is already in the trash. |
 | R32 | atomicity | holds | OrganizeEngine::apply moves or copies one media file, then commits that file's path update and log entry in a single transaction and compensates if it fails, before starting the next — so a run that stops partway leaves every media file before the stop point moved and recorded and every one after it untouched. |
 | R33 | atomicity | holds (test gap) | A change that touches only the disk — trashing a file, hard-deleting it, carrying a sidecar or an attached JPEG — is written to disk first and logged afterwards in its own autocommit, so an interruption between the two leaves the change done and unrecorded. |
 | R44 | attachments | holds (test gap) | An attachment is carried only after its parent's own move or copy has returned and committed, so a parent that was skipped, or whose action failed, carries nothing. |
-| R46 | attachments | holds (test gap) | Removing a photo removes its metadata sidecars with it and leaves every other file beside it alone, including the attached JPEG and the Live Photo video that belong to it. |
+| R46 | attachments | holds | Removing a photo removes its metadata sidecars with it and leaves every other file beside it alone, including the attached JPEG and the Live Photo video that belong to it. |
 | R49 | concurrency | holds (test gap) | The advisory writer lock excludes only processes that construct one on the same file: no read takes it, and it never excludes a writer that takes none. |
 | R57 | cancellation | holds | Cancellation is polled only between whole items, so a run stopped by it leaves every item either fully done or untouched, and whatever committed before the stop stays committed. |
 | R59 | authorization | partial (test gap) | Whether a planned decision may be overridden is a property of the decision type: an organize conflict resolution may be changed by the caller before apply, and reconcile's deletions may not. |
@@ -71,6 +78,9 @@ The bytes on disk.
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R68 | authorization | violated (test gap) | Trash empty destroys its contents permanently and only after authorization: an empty trash returns without asking, --yes skips the prompt, and otherwise it refuses outright unless run at an interactive terminal where the operator types the literal string 'yes' in response to a prompt naming the item count and the trash directory. |
 | R69 | conflict | violated (test gap) | Writing a command's results to the path named by --output does not destroy what is already at that path. |
+| R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
+| R77 | authorization | violated (test gap) | Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all. |
+| R81 | conflict | violated (test gap) | Staging a stdin query image does not destroy anything already on disk. |
 
 ## attachment — rebuildable: backup-only
 
@@ -79,14 +89,14 @@ Sidecar, paired JPEG, Live Photo MOV. Easier to orphan than an original.
 | Rule | Concern | Status | Statement |
 |---|---|---|---|
 | R02 | conflict | holds | A move to an occupied destination fails rather than replacing what is there, whatever the conflict policy decided. |
-| R23 | recoverability | holds (test gap) | The default removal mode moves a file into phig's trash directory under a generated name, retrying with a fresh one if that name is taken, so the removal is reversible from disk and never destroys what is already in the trash. |
+| R23 | recoverability | holds | The default removal mode moves a file into phig's trash directory under a generated name, retrying with a fresh one if that name is taken, so the removal is reversible from disk and never destroys what is already in the trash. |
 | R33 | atomicity | holds (test gap) | A change that touches only the disk — trashing a file, hard-deleting it, carrying a sidecar or an attached JPEG — is written to disk first and logged afterwards in its own autocommit, so an interruption between the two leaves the change done and unrecorded. |
 | R41 | attachments | holds | A carried attachment never overwrites an occupied destination, on copy as well as on move. |
-| R42 | attachments | holds (test gap) | A metadata sidecar is never indexed as a photo of its own: the walk admits a file only when its extension is in the media allowlist, and no sidecar extension is in it. |
+| R42 | attachments | holds | A metadata sidecar is never indexed as a photo of its own: the walk admits a file only when its extension is in the media allowlist, and no sidecar extension is in it. |
 | R43 | attachments | holds (test gap) | A JPEG with a same-basename RAW file beside it is not a photo of its own: the walk skips it, and a row it acquired from an earlier scan has its metadata moved to the RAW's row before that row is dropped. |
 | R44 | attachments | holds (test gap) | An attachment is carried only after its parent's own move or copy has returned and committed, so a parent that was skipped, or whose action failed, carries nothing. |
 | R45 | attachments | holds | A carried attachment is renamed onto the parent's destination stem and keeps its own suffix, so an attachment stays attached to a parent that was renamed around a conflict. |
-| R46 | attachments | holds (test gap) | Removing a photo removes its metadata sidecars with it and leaves every other file beside it alone, including the attached JPEG and the Live Photo video that belong to it. |
+| R46 | attachments | holds | Removing a photo removes its metadata sidecars with it and leaves every other file beside it alone, including the attached JPEG and the Live Photo video that belong to it. |
 | R47 | attachments | holds | A Live Photo's video is carried only when its still actually changes directory and the video has no row of its own. |
 | R48 | atomicity | violated (test gap) | A copy or move counts each selected item once: an item is reported as applied or as failed, never as both. |
 | R68 | authorization | violated (test gap) | Trash empty destroys its contents permanently and only after authorization: an empty trash returns without asking, --yes skips the prompt, and otherwise it refuses outright unless run at an interactive terminal where the operator types the literal string 'yes' in response to a prompt naming the item count and the trash directory. |
@@ -99,25 +109,25 @@ Rebuilt by a rescan, except the user-metadata it carries.
 |---|---|---|---|
 | R04 | recoverability | partial (test gap) | Deleting a row captures a restore snapshot sufficient to rebuild that row's user-authored metadata. |
 | R12 | reconcile | holds | A tracked path is deletable only when its file is gone and its parent directory still exists; a missing parent and a failed existence check are reported apart from it and kept. |
-| R13 | reconcile | holds (test gap) | A path whose existence could not be determined is never deleted, under any flag. |
-| R14 | reconcile | holds (test gap) | --ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted. |
+| R13 | reconcile | holds | A path whose existence could not be determined is never deleted, under any flag. |
+| R14 | reconcile | holds | --ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted. |
 | R15 | reconcile | holds (test gap) | Scan skips its whole destructive phase when every tracked row under the scanned directory classifies as deletable. |
 | R17 | reconcile | holds (test gap) | The has_sibling_raw and Live Photo peeks over indexed paths only decide whether to open a logged operation; the demote passes decide again, authoritatively, inside it. |
 | R18 | recoverability | holds (test gap) | A log entry describing a database change is inserted inside the same transaction as that change, so the log never records a change that did not commit. |
 | R20 | authorization | holds (test gap) | A dry-run removal takes no disk action, deletes no row and opens no logged operation, but it still creates the database file and applies any pending schema migration. |
 | R21 | authorization | holds (test gap) | The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, but the command that calls it has already opened the database read-write and migrated it, so the preview is side-effect-free only below cli/. |
-| R22 | authorization | holds | A hard delete, and any removal that takes at least half the collection and touches twenty rows or more, proceeds only on an explicit yes: assume_yes, or a confirmer that returns true, with a missing confirmer counted as a refusal. |
+| R22 | authorization | holds (test gap) | A hard delete, and any removal that takes at least half the collection and touches twenty rows or more, proceeds only on an explicit yes: assume_yes, or a confirmer that returns true, with a missing confirmer counted as a refusal. |
 | R25 | recoverability | partial (test gap) | Deleting a row captures its restore snapshot whether the activity log is enabled or not. |
-| R26 | recoverability | holds (test gap) | delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns. |
+| R26 | recoverability | holds | delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns. |
 | R28 | atomicity | holds | Every write transaction opens with BEGIN IMMEDIATE, so a transaction that reads and then writes cannot fail with SQLITE_BUSY_SNAPSHOT. |
-| R29 | atomicity | holds | Each schema migration takes the write lock before it reads the version and re-reads the version inside that transaction, so a step another process already applied is skipped rather than re-run. |
+| R29 | atomicity | holds (test gap) | Each schema migration takes the write lock before it reads the version and re-reads the version inside that transaction, so a step another process already applied is skipped rather than re-run. |
 | R30 | atomicity | holds (test gap) | Reconcile's relink and demote passes commit one row at a time and its deletes commit as a single transaction, so an interruption between them leaves the copied fields on both rows — tags always, gallery when the target had none — the transferred faces on the target alone, and every stale row still present. |
 | R32 | atomicity | holds | OrganizeEngine::apply moves or copies one media file, then commits that file's path update and log entry in a single transaction and compensates if it fails, before starting the next — so a run that stops partway leaves every media file before the stop point moved and recorded and every one after it untouched. |
 | R34 | atomicity | unenforced (test gap) | A committed transaction survives a process crash but not necessarily an operating-system crash or a power loss: the connection runs WAL with synchronous=NORMAL, which does not fsync the write-ahead log at every commit. |
 | R35 | metadata | holds | A re-scan of an already-indexed path updates that row in place rather than replacing it, so the row keeps its id and the tags, favorite and gallery attached to it. |
 | R38 | metadata | holds (test gap) | Reconcile runs every transfer pass to completion before it deletes anything: the relink pass and both demote passes finish, and only then is the collected list of paths deleted. |
 | R40 | metadata | violated (test gap) | Dropping a row because a move or a copy has taken its path writes a restore snapshot for it, so the tags and gallery that row carried can still be named afterwards. |
-| R42 | attachments | holds (test gap) | A metadata sidecar is never indexed as a photo of its own: the walk admits a file only when its extension is in the media allowlist, and no sidecar extension is in it. |
+| R42 | attachments | holds | A metadata sidecar is never indexed as a photo of its own: the walk admits a file only when its extension is in the media allowlist, and no sidecar extension is in it. |
 | R43 | attachments | holds (test gap) | A JPEG with a same-basename RAW file beside it is not a photo of its own: the walk skips it, and a row it acquired from an earlier scan has its metadata moved to the RAW's row before that row is dropped. |
 | R47 | attachments | holds | A Live Photo's video is carried only when its still actually changes directory and the video has no row of its own. |
 | R49 | concurrency | holds (test gap) | The advisory writer lock excludes only processes that construct one on the same file: no read takes it, and it never excludes a writer that takes none. |
@@ -135,7 +145,11 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R67 | cancellation | holds | phig_op_free joins the operation's worker rather than detaching it, so no engine thread outlives the handle or the Database it writes through. |
 | R70 | authorization | violated (test gap) | A command that only reads a collection neither creates its database nor migrates its schema. |
-| R72 | concurrency | holds | An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
+| R72 | atomicity | holds (test gap) | A run that will detect faces establishes that it can detect before it writes anything: the OpenCV it was built against must be able to run the detection model, and both model files must be present. |
+| R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
+| R75 | reconcile | holds (test gap) | Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk. |
+| R80 | atomicity | violated (test gap) | A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish. |
+| R84 | concurrency | holds | An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
 
 ## activity-log — rebuildable: no
 
@@ -149,10 +163,10 @@ The record of what happened.
 | R20 | authorization | holds (test gap) | A dry-run removal takes no disk action, deletes no row and opens no logged operation, but it still creates the database file and applies any pending schema migration. |
 | R21 | authorization | holds (test gap) | The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, but the command that calls it has already opened the database read-write and migrated it, so the preview is side-effect-free only below cli/. |
 | R25 | recoverability | partial (test gap) | Deleting a row captures its restore snapshot whether the activity log is enabled or not. |
-| R26 | recoverability | holds (test gap) | delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns. |
+| R26 | recoverability | holds | delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns. |
 | R27 | recoverability | violated (test gap) | An operation that did not do everything it was asked to do is recorded with a terminal status that says so. |
 | R28 | atomicity | holds | Every write transaction opens with BEGIN IMMEDIATE, so a transaction that reads and then writes cannot fail with SQLITE_BUSY_SNAPSHOT. |
-| R29 | atomicity | holds | Each schema migration takes the write lock before it reads the version and re-reads the version inside that transaction, so a step another process already applied is skipped rather than re-run. |
+| R29 | atomicity | holds (test gap) | Each schema migration takes the write lock before it reads the version and re-reads the version inside that transaction, so a step another process already applied is skipped rather than re-run. |
 | R31 | atomicity | holds (test gap) | log_begin_operation commits its operation row on its own before the first entry, so an interrupted run leaves an operation behind — marked interrupted by rm and by reconcile when the failure is an exception, and left in_progress when the process dies. |
 | R32 | atomicity | holds | OrganizeEngine::apply moves or copies one media file, then commits that file's path update and log entry in a single transaction and compensates if it fails, before starting the next — so a run that stops partway leaves every media file before the stop point moved and recorded and every one after it untouched. |
 | R33 | atomicity | holds (test gap) | A change that touches only the disk — trashing a file, hard-deleting it, carrying a sidecar or an attached JPEG — is written to disk first and logged afterwards in its own autocommit, so an interruption between the two leaves the change done and unrecorded. |
@@ -161,6 +175,7 @@ The record of what happened.
 | R48 | atomicity | violated (test gap) | A copy or move counts each selected item once: an item is reported as applied or as failed, never as both. |
 | R56 | cancellation | holds (test gap) | Reconcile is not cancellable: run_reconcile takes no CancelToken, so a scan interrupted during its worker phase still relinks, demotes and deletes. |
 | R58 | cancellation | partial (test gap) | A run whose token is already cancelled does no work and reports itself incomplete. |
+| R83 | recoverability | violated (test gap) | An operation that fails against the database reports the cause: the message it raises names what SQLite refused, not the state of the connection after the rollback that followed. |
 
 ## thumb-cache — rebuildable: yes
 
@@ -169,6 +184,7 @@ Present so its rules are visibly cheap, not to guard it.
 | Rule | Concern | Status | Statement |
 |---|---|---|---|
 | R57 | cancellation | holds | Cancellation is polled only between whole items, so a run stopped by it leaves every item either fully done or untouched, and whatever committed before the stop stays committed. |
+| R77 | authorization | violated (test gap) | Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all. |
 
 ## client-process — rebuildable: no
 
@@ -179,4 +195,4 @@ A foreign caller's address space and its ability to keep running against this li
 | R62 | atomicity | partial (test gap) | No C++ exception crosses an ABI entry point. |
 | R63 | concurrency | holds | phig_last_error returns the calling thread's own last message, and only until that thread's next ABI call. |
 | R64 | atomicity | holds (test gap) | Adding a symbol bumps PHIG_ABI_VERSION_MINOR and the CMake VERSION, and never SOVERSION. |
-| R65 | atomicity | unenforced (test gap) | phig_op_progress gains no field: a new counter means a new struct and a new poll symbol. |
+| R65 | atomicity | holds (test gap) | phig_op_progress gains no field: a new counter means a new struct and a new poll symbol. |

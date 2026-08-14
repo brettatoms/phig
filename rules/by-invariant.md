@@ -136,6 +136,20 @@ It does. cmd_search and cmd_duplicates hand the path to a default std::ofstream:
 | Evidence | subprocess: none |
 | Test gap | Nothing tests --output at all: no test in tests/ passes the flag, and none calls cmd_search or cmd_duplicates, which are cli/ functions no fixture drives. Every fact above was measured by running the built binary. Only a subprocess test could pin it, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes. |
 
+### R81 — violated (test gap)
+
+Staging a stdin query image does not destroy anything already on disk.
+
+It destroys two different things for two independent reasons. `search --similar -` and `search --face -` both call read_stdin_to_temp (cli/main.cpp:821), which opens fs::temp_directory_path() / 'phig-stdin-image' with a default std::ofstream — truncating — and hands the path back for the query. The first property is the fixed name: there is no PID, no randomization and no mkstemp, so the path is predictable and phig claims it unconditionally. Whatever regular file sits there is truncated, and TempCleanup's destructor (cli/main.cpp:879-884) then removes it, so the file is gone rather than merely overwritten — measured, a 31-byte file at that path was not there afterwards. Two concurrent stdin searches also share the one path, and nothing serializes them: search takes no writer lock, and R49 records that reads never do. The second property is independent of the first: std::ofstream opens through a symlink, so if that path is a link the write lands wherever it points, outside the temp directory entirely, and the fs::remove afterwards unlinks only the link — which leaves the victim holding phig's bytes and deletes the evidence. Measured with the built binary against a two-image collection, with the temp path symlinked to a 24-byte file reading IRREPLACEABLE USER DATA: `cat faces_small.jpg | phig search --similar - ` printed one result and exited 0, and the 24-byte file was a 27070-byte JPEG afterwards, 320x320, with the symlink gone. `--face -` did the same to another file. A third case destroys on a run that reports failure: the ofstream truncates before file_size is consulted, so empty stdin leaves the target at 0 bytes and then prints 'No data received on stdin' and exits 1 — measured, a 26-byte file came back empty on a run that reported an error and printed no results. One thing narrows it: cmd_search's empty-database guard returns at cli/main.cpp:858, above the stdin read, so a collection with no rows exits first and the file survives — measured at its original 7 bytes. This is R69's sibling and strictly worse. R69 names four ofstream sites and read_stdin_to_temp is not among them, so nothing in this record covered it; --output at least names the path it destroys, while here the operator names nothing and the destroyed path is not in the command line at all. Anchored in cli/ because that is where it lives: no core/ primitive stages a query image, and libphig's face and phash entry points take embeddings and hashes rather than files, so no other surface has this to inherit or to fix. Plan 060 owns it.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:read_stdin_to_temp`, `cli/main.cpp:cmd_search` |
+| Binds | `cli` |
+| Protects | original-file |
+| Evidence | subprocess: none |
+| Test gap | Nothing in tests/ passes '-' to either flag, and nothing calls read_stdin_to_temp or cmd_search, which are cli/ functions no fixture drives. Every measurement above came from running the binary. Only a subprocess test could pin any of the three properties, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes; the symlink one additionally needs a temp directory the test controls, which fs::temp_directory_path reads from the environment. |
+
 ## reconcile
 
 ### R12 — holds
@@ -151,7 +165,7 @@ A missing file alone does not say what happened. A missing parent directory usua
 | Protects | user-metadata, db-row |
 | Evidence | conformance: `SafeToDeleteTest.PresentFilesAreNotDeletable`, `SafeToDeleteTest.GenuinelyMissingFileWithPresentParentIsDeletable`, `SafeToDeleteTest.MissingFileUnderAbsentParentIsKept`, `SafeToDeleteTest.PartialUnmountKeepsUnmountedSubtreeDeletesRealMissing`, `SafeToDeleteTest.UnreadableParentIsCheckFailedNotParentMissing` |
 
-### R13 — holds (test gap)
+### R13 — holds
 
 A path whose existence could not be determined is never deleted, under any flag.
 
@@ -162,10 +176,9 @@ An EACCES or EIO on the existence check is an unknown state, not a heuristic jud
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/remove_exec.cpp:cmd_rm` |
 | Binds | `scan.reconcile`, `remove.orphans` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `RemoveExecTest.RmOrphansNeverRemovesUnreadablePathsEvenWithIgnoreMountWarning`, `SafeToDeleteTest.UnreadableParentIsCheckFailedNotParentMissing` |
-| Test gap | Only rm's half is driven end to end. No test runs scan's reconcile over an unreadable path, with or without the flag, so scan's refusal to delete a check_failed row rests on reading run_reconcile rather than on a test. |
+| Evidence | witness: `RemoveExecTest.RmOrphansNeverRemovesUnreadablePathsEvenWithIgnoreMountWarning`, `SafeToDeleteTest.UnreadableParentIsCheckFailedNotParentMissing`, `ScanEngine.ReconcileNeverDeletesARowWhoseExistenceCouldNotBeChecked` |
 
-### R14 — holds (test gap)
+### R14 — holds
 
 --ignore-mount-warning means one thing wherever it appears: proceed past the mount heuristic, so a row whose parent directory is missing is deleted.
 
@@ -176,8 +189,7 @@ One flag with two meanings is how a user learns a destructive command's behavior
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/remove_exec.cpp:cmd_rm` |
 | Binds | `scan.reconcile`, `remove.orphans` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `RemoveExecTest.RmOrphansSkipsRowsWhoseParentIsMissingByDefault`, `RemoveExecTest.RmOrphansRemovesMissingParentRowsWithIgnoreMountWarning`, `RemoveExecTest.RmOrphansNeverRemovesPresentFilesEvenWithIgnoreMountWarning` |
-| Test gap | Every listed test drives rm. ScanEngine.IgnoreMountWarningOverridesTheGuard exercises scan's coarse all-rows-missing warning, whose parent directories still exist, so no test covers scan's reconcile deleting a missing-parent row — which is the behaviour plan 032 changed for existing users of the flag. |
+| Evidence | witness: `RemoveExecTest.RmOrphansSkipsRowsWhoseParentIsMissingByDefault`, `RemoveExecTest.RmOrphansRemovesMissingParentRowsWithIgnoreMountWarning`, `RemoveExecTest.RmOrphansNeverRemovesPresentFilesEvenWithIgnoreMountWarning`, `ScanEngine.IgnoreMountWarningDeletesRowsUnderAMissingParentOnScanToo` |
 
 ### R15 — holds (test gap)
 
@@ -190,8 +202,8 @@ An unmounted drive is indistinguishable from a deleted collection at the point r
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile` |
 | Binds | `scan.reconcile` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `ScanEngine.MountLossGuardKeepsRowsWhenEveryFileVanishes`, `ScanEngine.IgnoreMountWarningOverridesTheGuard`, `ScanEngine.RemovesRowsForFilesThatDisappeared` |
-| Test gap | The listed tests cover all rows deletable (the guard fires), the flag override, and some files still present (it does not). None drives run_reconcile with a mixed set — some rows deletable, others parent_missing — which is the case where every tracked file is gone, the guard still does not fire, and the deletable rows are deleted. |
+| Evidence | witness: `ScanEngine.MountLossGuardKeepsRowsWhenEveryFileVanishes`, `ScanEngine.IgnoreMountWarningOverridesTheGuard`, `ScanEngine.RemovesRowsForFilesThatDisappeared`, `ScanEngine.MountLossGuardDoesNotFireWhenSomeRowsAreOnlyParentMissing` |
+| Test gap | The mixed set now covered is deletable plus parent_missing: every tracked file is gone from disk, the guard does not fire, and the two deletable rows are deleted while the third survives. The rationale's other mixed shape is not covered — deletable rows alongside a check_failed one. ScanEngine.ReconcileNeverDeletesARowWhoseExistenceCouldNotBeChecked has nothing deletable, so it short-circuits on the guard's first condition instead of reaching the size comparison. |
 
 ### R16 — holds
 
@@ -217,8 +229,22 @@ A peek is a read-only disk check made outside any transaction and from a path al
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/relink.cpp:demote_jpeg_rows`, `core/relink.cpp:demote_live_photo_rows` |
 | Binds | `scan.reconcile`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `RelinkTest.DemotesJpegToSameBasenameRaw`, `RelinkTest.LoneJpegNotDemoted`, `RelinkTest.JpegWithRawRowMissingNotDemoted`, `RelinkTest.DeletedJpegWithIndexedRawNotDemoted`, `LivePhotoDemotion.MovesTheVideoRowsMetadataToItsStillAndDropsTheRow`, `LivePhotoDemotion.LeavesAnOrdinaryVideoRowAlone`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged` |
-| Test gap | Only the authoritative half is pinned. The six demote tests call demote_jpeg_rows and demote_live_photo_rows directly, and the two run_reconcile tests both have a non-empty removed_paths, so the block is entered whatever the peek answers. No test covers the case the peek exists for: removed_paths empty and the only work demotable. |
+| Evidence | witness: `RelinkTest.DemotesJpegToSameBasenameRaw`, `RelinkTest.LoneJpegNotDemoted`, `RelinkTest.JpegWithRawRowMissingNotDemoted`, `RelinkTest.DeletedJpegWithIndexedRawNotDemoted`, `LivePhotoDemotion.MovesTheVideoRowsMetadataToItsStillAndDropsTheRow`, `LivePhotoDemotion.LeavesAnOrdinaryVideoRowAlone`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged`, `ScanEngine.ReconcileOpensItsOperationForDemotableWorkAlone`, `ScanEngine.ReconcileDemotesALivePhotoVideoRow` |
+| Test gap | Both peeks are now driven with removed_paths empty and the only work demotable — the has_sibling_raw one over a JPEG beside an indexed RAW, the Live Photo one over a paired video row — so the block is no longer entered regardless of what they answer. What remains is the false positive the rationale names: a peek that says yes over work the demote pass then declines, a JPEG whose sibling RAW is on disk but not indexed. RelinkTest.JpegWithRawRowMissingNotDemoted pins the pass's refusal directly; nothing shows the empty operation row reconcile is left holding. |
+
+### R75 — holds (test gap)
+
+Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk.
+
+run_reconcile takes its candidate set from db_.get_paths_with_prefix(scan_prefix) — every tracked row under the scanned directory — and classifies it with paths_safe_to_delete, which asks the filesystem. --recursive, --media and --hidden filter the walk instead (core/scan_engine.cpp:131-146) and reach none of that, so narrowing a scan cannot turn a row into a deletion candidate. That is worth stating because the opposite is the natural reading of the flags: a scan told to look at images only, in one directory only, still leaves every video and every subdirectory row alone. Measured with the built binary against a three-file collection (an image, a video, and an image in a subdirectory) scanned recursively: a following non-recursive `--media image` scan of the same directory reported Removed: 0 and left all three rows. The converse holds too, because the candidate set is the prefix rather than the walk — with the subdirectory's image then deleted from disk, a non-recursive `--media video` scan of the same directory reported Removed: 1 and dropped that row, a file the walk neither entered the directory for nor would have admitted. The prefix is where the containment argument sits: scanning a subdirectory reconciles that subtree and nothing above it.
+
+| | |
+|---|---|
+| Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/paths.cpp:paths_safe_to_delete` |
+| Binds | `scan.reconcile` |
+| Protects | db-row, user-metadata |
+| Evidence | witness: `ScanEngine.MediaFilterExcludesTheOtherType`, `ScanEngine.AMediaFilteredRescanKeepsTheOtherTypesRow`, `ScanEngine.ANonRecursiveRescanKeepsASubdirectoryRow`, `ScanEngine.ARescanWithoutHiddenKeepsAHiddenFilesRow` |
+| Test gap | All three flags now have a test that indexes a file, rescans with a flag that would have excluded it from the walk, and asserts the row is still there with removed at 0. Two clauses of the rationale are still untested, both of them measured by running the binary rather than pinned. The converse: a row the walk never admitted is still deleted once its file is gone, because the candidate set is the prefix and not the walk. And the containment half: scanning a subdirectory reconciles that subtree and leaves every row above it alone. |
 
 ## atomicity
 
@@ -235,7 +261,7 @@ SQLite in WAL mode pins a read snapshot at the first read of a deferred transact
 | Protects | db-row, user-metadata, activity-log |
 | Evidence | witness: `DatabaseConcurrency.BeginTransactionTakesWriteLockImmediately`, `DatabaseConcurrency.DeferredBeginCanBusySnapshotOnReadThenWrite` |
 
-### R29 — holds
+### R29 — holds (test gap)
 
 Each schema migration takes the write lock before it reads the version and re-reads the version inside that transaction, so a step another process already applied is skipped rather than re-run.
 
@@ -246,7 +272,8 @@ The migrations are not idempotent — ALTER TABLE ADD COLUMN fails the second ti
 | Enforced at | `core/database.cpp:init_schema` |
 | Binds | `scan.walk`, `scan.reconcile`, `organize.plan`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `thumbs.rebuild`, `faces.rebuild`, `faces.identify`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo`, `metadata.write` |
 | Protects | db-row, user-metadata, activity-log |
-| Evidence | witness: `DatabaseConcurrency.ConcurrentMigrationIsSafe` |
+| Evidence | witness: `DatabaseConcurrency.ConcurrentMigrationIsSafe`, `DatabaseConcurrency.AMigrationStepAnotherThreadAppliedIsSkippedInsideTheTransaction` |
+| Test gap | ConcurrentMigrationIsSafe races two threads through init_schema on a rolled-back database and catches a regression only statistically: nothing forces the interleave, so a run where one thread finishes before the other starts has the second read the current version and do nothing, never entering the re-check inside the IMMEDIATE transaction, and passing identically. Measured with the re-check deleted from init_schema, it failed 0 of 20 runs. AMigrationStepAnotherThreadAppliedIsSkippedInsideTheTransaction forces what that one hopes for: a third connection holds the write lock while both threads read version 4 and then block on the first migration's BEGIN IMMEDIATE, so one applies every step and the other finds them applied from inside its own transaction. Each thread's init_schema is timed, because a thread that had read the current version would have returned without opening a transaction at all — that is the assertion which says the window was entered. With the same re-check deleted it failed 20 of 20. What is still uncovered is the two schema-creation paths' one-transaction shape, which neither test reaches. |
 
 ### R30 — holds (test gap)
 
@@ -259,8 +286,8 @@ The two halves have different failure costs. A transfer copies two of its three 
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/relink.cpp:relink_moved_rows`, `core/relink.cpp:demote_jpeg_rows`, `core/relink.cpp:demote_live_photo_rows`, `core/database.cpp:delete_paths_logged` |
 | Binds | `scan.reconcile`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged` |
-| Test gap | The listed tests pin the ordering, not the boundaries. No test interrupts reconcile between the transfer passes and the delete, so the interrupted state in the statement is read off the transaction boundaries rather than observed by a test — R37 records the faces half being forced by hand and re-scanned to the same end state as an uninterrupted control — and the next scan's cleanup of that state is untested. |
+| Evidence | witness: `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged`, `ScanEngine.ReconcileInterruptedBeforeItsDeleteKeepsEveryTransferAndEveryStaleRow` |
+| Test gap | Covered on reconcile's logged branch: a BEFORE DELETE trigger scoped to the second collected path catches the run with both transfers committed and neither row deleted, and the resumed run is compared against an uninterrupted control. The unlogged branch — relink and demote calls with op_id = 0, then delete_paths rather than delete_paths_logged — is not interrupted by any test, and neither is an interruption inside a transfer pass rather than between the passes and the delete. |
 
 ### R31 — holds (test gap)
 
@@ -273,8 +300,8 @@ Opening the operation outside the work's transaction is what makes the row survi
 | Enforced at | `core/database.cpp:log_begin_operation`, `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/remove_exec.cpp:cmd_rm`, `core/organize_engine.cpp:OrganizeEngine::apply` |
 | Binds | `scan.reconcile`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans` |
 | Protects | activity-log |
-| Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted` |
-| Test gap | The listed test covers a cancelled run, which reaches log_finish_operation through the normal return rather than through a catch. Nothing drives the exception path in run_reconcile or cmd_rm, and nothing covers a killed process, which is the case that leaves in_progress forever. |
+| Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted`, `DatabaseTest.LogBeginOperationCommitsItsRowBeforeAnyEntry`, `ScanEngine.ReconcileMarksItsOperationInterruptedWhenTheDeleteThrows`, `RemoveExecTest.RmMarksItsOperationInterruptedWhenTheDeleteThrows` |
+| Test gap | A killed process is not covered and cannot be: no test stops one. What stands in for it is the committed-and-unfinished row a second connection can already read, which is the state a kill leaves; nothing pins that a signal specifically produces it. OrganizeEngine::apply's clause — the caller that writes completed whatever happened — is R27's finding and is untested here. |
 
 ### R32 — holds
 
@@ -300,8 +327,8 @@ A rename and a SQLite commit cannot be one transaction, so one of them goes firs
 | Enforced at | `core/remove_exec.cpp:execute_trash_action`, `core/remove_exec.cpp:execute_hard_delete_action`, `core/organize_exec.cpp:carry_sidecars` |
 | Binds | `remove.trash`, `remove.hard`, `organize.copy`, `organize.move` |
 | Protects | attachment, original-file, activity-log |
-| Evidence | witness: `RemoveExecTest.TrashMovesFileAndLogs`, `RemoveExecTest.HardDeleteRemovesAndLogs`, `OrganizeExecTest.CarryLogsSidecarEntryWithParentId` |
-| Test gap | The listed tests show the entry is written after a successful disk action. None covers the window itself, which needs a failure injected between the two calls, and none covers the absent compensation. |
+| Evidence | witness: `RemoveExecTest.TrashMovesFileAndLogs`, `RemoveExecTest.HardDeleteRemovesAndLogs`, `OrganizeExecTest.CarryLogsSidecarEntryWithParentId`, `RemoveExecTest.TrashLeavesTheFileMovedAndUnloggedWhenTheLogWriteFails`, `RemoveExecTest.HardDeleteLeavesTheFileGoneAndUnloggedWhenTheLogWriteFails`, `OrganizeExecTest.CarryLeavesTheSidecarMovedAndUnloggedWhenTheLogWriteFails` |
+| Test gap | The window and the absent compensation are covered at all three anchors: PRAGMA query_only fails the log write with the disk change already made, and each test asserts the file stayed where it was put and no entry names it. What the three do not cover is the carry of a Live Photo's video, which is the same code path further down carry_sidecars and logs the same way. |
 
 ### R34 — unenforced (test gap)
 
@@ -356,10 +383,10 @@ SOVERSION is the major alone, so an additive, backward-compatible change keeps t
 | Enforced at | `libphig/include/phig/phig.h:PHIG_ABI_VERSION_MINOR`, `libphig/CMakeLists.txt:SOVERSION` |
 | Binds | `abi` |
 | Protects | client-process |
-| Evidence | conformance: `Abi.VersionMajorMatchesHeader` |
-| Test gap | The listed test checks that phig_abi_version()'s high half equals PHIG_ABI_VERSION_MAJOR, a property of one expression that would still pass with the CMake VERSION and SOVERSION set to anything at all. scripts/rules.py's check_abi_version closes the half that test could not reach — the header against libphig/CMakeLists.txt — and runs in CI on every push. Nothing counts exported symbols against the minor, so the other half still rests on whoever remembers. Adding a phig_foo() to the header and bumping nothing does trip check 4 — measured against a mirror of the tree — but it stops the author once and sends them somewhere else: 'ABI symbol phig_foo is claimed by no operation and is not in read_only_abi — classify it in rules/operations.toml'. Classify it, as that message asks, and every check passes with MINOR still 3 and VERSION still 1.3.0. No path through CI asks for the bump. That is why this record outlived the check written to replace it — the check is stronger than the test, not than the statement. Filed as holds rather than unenforced because the code satisfies the rule today and a check plus a test each pin a piece of it, which is what R49, R53 and R54 do in the same position; R65 is the clean unenforced next door, with no test and nothing that could be written short of a new pin. |
+| Evidence | conformance: `Abi.VersionMajorMatchesHeader`, `Abi.ExportedSymbolCountMatchesTheRecordedAbiVersion` |
+| Test gap | The trigger is now asked for. ExportedSymbolCountMatchesTheRecordedAbiVersion parses the header for its lines beginning PHIG_API, counts the phig_-prefixed names declared on them, and compares that to the row kAbiSymbolCounts records for the version the header currently claims. Measured by adding a PHIG_API void phig_break_the_pin(void); to the header: '70 exported symbols and ABI 1.3 was recorded with 69'. What stays open is that a count is not a set. Removing one symbol in the same commit that adds another leaves it at 69 and passes, which is a MAJOR break slipping through a test written for the MINOR one. And the test says only that the header and the table agree, so falsifying the row for the current version satisfies it as surely as bumping does — nothing can distinguish those two edits, which is the same limit check_abi_version has against VERSION and SOVERSION. VersionMajorMatchesHeader remains what it was: phig_abi_version()'s high half against PHIG_ABI_VERSION_MAJOR, a property of one expression that would pass with the CMake numbers set to anything at all. |
 
-### R65 — unenforced (test gap)
+### R65 — holds (test gap)
 
 phig_op_progress gains no field: a new counter means a new struct and a new poll symbol.
 
@@ -370,8 +397,36 @@ The struct is caller-allocated and filled by phig_op_poll, with no size and no v
 | Enforced at | `libphig/include/phig/phig.h:phig_op_progress` |
 | Binds | `abi` |
 | Protects | client-process |
-| Evidence | conformance: none |
-| Test gap | A sizeof pin in tests/test_libphig_c_compile.c would catch a field added to this struct the same way the existing bitfield pins catch a renumbered enum, and none is written. Until one is, the rule is prose in libphig/CLAUDE.md and nothing more. |
+| Evidence | conformance: `Abi.OpProgressGainsNoField` |
+| Test gap | The struct now has the pin the rationale says it lacks, in two places. tests/test_libphig_c_compile.c fixes the whole layout with negative-width bitfields — every field's offset against the one before it, `done`'s against the enum size rounded up to alignof(uint64_t), and sizeof against the last field's offset — so a field added anywhere fails the build as C99. Measured: appending a uint64_t gives "bit-field 'size' has negative width (-1)", and inserting one before `processed` gives the same on 'processed'. Abi.OpProgressGainsNoField asserts the same layout at runtime, which is what gives the rule a name check 2 can see pass. One field can still be added without either noticing: a uint32_t between `stage` and `done` lands in the padding, so it changes no offset and no size. Measured — both pins pass with it in place. It is also the one addition the rationale's harm does not reach, since an older client's buffer is still the right size and every field it reads is where it was; a fifth counter, which is what the statement is about, cannot fit there. |
+
+### R72 — holds (test gap)
+
+A run that will detect faces establishes that it can detect before it writes anything: the OpenCV it was built against must be able to run the detection model, and both model files must be present.
+
+Both engines build every FaceDetector up front — ScanEngine::run_workers before the first file, FacesEngine::run after selection and before the first worker — so a constructor that throws costs the run and nothing else. Deferring either check to the first detection would not: the workers are already committing batches by then, and parallel_for_each stops every worker on the first exception, so the failure would arrive on top of a partly written scan. The OpenCV half is the one that was missing. YuNet 2023mar's ONNX graph imports on older OpenCV and cannot run: FaceDetectorYN::create succeeds and the first detect() throws '(-204:Requested object was not found) Layer with requested id=-1 not found in function getLayerData'. Measured against the model file phig downloads — 4.6.0 and 4.7.0 both throw, 4.8.0 and 4.10.0 both run it clean, and FaceRecognizerSF::create works on all four, so the detector alone sets the 4.8.0 floor. Ubuntu 24.04 ships 4.6.0, which is why the guard exists rather than being a theoretical case. The check is compile-time because the linked OpenCV is fixed when phig is built, and it runs ahead of the models check because below the floor the models are beside the point: telling that user to download them would send them the wrong way.
+
+| | |
+|---|---|
+| Enforced at | `core/faces.cpp:FaceDetector::Impl` |
+| Binds | `scan.walk`, `faces.rebuild` |
+| Protects | db-row |
+| Evidence | subprocess: `ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor`, `ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing`, `FacesEngineRun.RefusesTheRunWhenNoDetectorCanBeBuiltAndWritesNothing`, `FacesEngineRun.CliFaceNameRefusesWhenNoDetectorCanBeBuilt`, `FacesEngineRun.CliSearchByFaceRefusesWhenNoDetectorCanBeBuilt` |
+| Test gap | The other three entry points are covered now: FacesEngine::run over a non-empty selection, and `phig face name` and `search --face` as subprocess cases. None of them skips. They create the missing-models condition instead of waiting for a machine that has it — the in-process one points models_dir() at an empty directory through set_path_overrides, the two subprocess ones inherit an empty XDG_CACHE_HOME — and each asserts the reason that applies on the leg it runs on, the models below the OpenCV floor and the version below it. Each also asserts nothing was written: the rebuild's existing face row is still there, `face name` created no person, and the search listed no image. Measured with both checks in FaceDetector::Impl short-circuited: all three fail, and what arrives instead is OpenCV's own 'Can't read ONNX file', which is the opaque failure the guard exists to replace. The two scan-path witnesses still skip in the models-present run that check 2 reads, so a failure in either surfaces as a red step rather than as this rule's name. The 4.8.0 floor itself is pinned by no test at all — it came from running the shipped model against four OpenCV builds by hand, and a future model swap would not re-derive it. |
+
+### R80 — violated (test gap)
+
+A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish.
+
+Reconcile deletes rows whose files it could not find, so running it after a walk that aborted partway would delete rows for files that were simply never reached. --on-error fail is the flag that makes that reachable: an unreadable file makes run_workers flush what completed and rethrow, and cmd_scan catches the exception, prints it and returns 1 at cli/main.cpp:324-334, above the run_reconcile call at :340. ScanEngine::run composes the two the same way, run_workers then run_reconcile with a throw from the first propagating past the second (core/scan_engine.cpp:110-114), but it has no production caller — cli/ and libphig/ both call the split phases — so the sequencing has to be re-stated by every caller, and that is why this is recorded as violated rather than as a property of the engine. Cancellation is the other side of the same decision and goes the other way deliberately: an interrupted walk returns completed = false rather than throwing, and cmd_scan reconciles anyway, which is safe for the same reason the statement is needed — a file the walk never reached is still on disk, so it is not a deletion candidate (R75) — and R56 records that reconcile polls no token once it starts.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:cmd_scan`, `core/scan_engine.cpp:ScanEngine::run` |
+| Binds | `scan.walk`, `scan.reconcile` |
+| Protects | db-row, user-metadata |
+| Evidence | witness: `ScanEngine.FailOnErrorThrowsAndCommitsWhatCompleted` |
+| Test gap | The listed test drives ScanEngine::run with fail_on_error and an undecodable file and checks that what completed before the throw was flushed. It asserts nothing about reconcile: it neither indexes a file, deletes it from disk and checks the row survives the failed rescan, nor covers cmd_scan, which is the sequencing the CLI actually runs and which no fixture calls. The engine and the CLI stating the same order twice is the defect, and no test compares them. |
 
 ## recoverability
 
@@ -400,8 +455,8 @@ The log is the only account of what an operation did, and an account that disagr
 | Enforced at | `core/organize_exec.cpp:execute_organize_action`, `core/relink.cpp:relink_moved_rows`, `core/relink.cpp:demote_jpeg_rows`, `core/relink.cpp:demote_live_photo_rows`, `core/database.cpp:delete_paths_logged` |
 | Binds | `organize.copy`, `organize.move`, `scan.reconcile`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans` |
 | Protects | activity-log, db-row |
-| Evidence | witness: `OrganizeExecTest.LogsEntryWhenOpIdProvided`, `RelinkTest.LogsRelinkEntryUnderOperation`, `DatabaseTest.PurgeLogsRestorableSnapshot`, `OrganizeExecTest.NoOpSelfMoveDoesNothingAndLogsNothing` |
-| Test gap | Every listed test drives the success path and checks the entry is there. Nothing drives the rollback half — a database write that throws after the entry was added, leaving neither behind. OrganizeExecTest.CopyRestoresPriorFileOnDbFailureOverwrite comes closest and passes op_id = 0, so there is no entry for it to look for. |
+| Evidence | witness: `OrganizeExecTest.LogsEntryWhenOpIdProvided`, `RelinkTest.LogsRelinkEntryUnderOperation`, `DatabaseTest.PurgeLogsRestorableSnapshot`, `OrganizeExecTest.NoOpSelfMoveDoesNothingAndLogsNothing`, `DatabaseTest.PurgeEntryRollsBackWithTheDeleteItDescribes` |
+| Test gap | The rollback half is covered on delete_paths_logged only: a BEFORE DELETE trigger aborts the DELETE with the purge_row entry already in the transaction, and the entry and its entry_count bump are both gone afterwards. The other four anchors — execute_organize_action and the three relink passes — still have success-path witnesses only, and each opens its own transaction, so the shape is shared but not tested. tests/fault_injection.h has the injector they would use. |
 
 ### R19 — holds
 
@@ -416,7 +471,7 @@ A trail that can be edited in place records what someone wanted to have happened
 | Protects | activity-log |
 | Evidence | conformance: `DatabaseTest.LogPruneDropsOldestWholeOperations`, `DatabaseTest.LogPruneAlwaysKeepsNewestOperation`, `DatabaseTest.LogPruneUnlimitedIsNoOp`, `DatabaseTest.LogOperationRoundTrip` |
 
-### R23 — holds (test gap)
+### R23 — holds
 
 The default removal mode moves a file into phig's trash directory under a generated name, retrying with a fresh one if that name is taken, so the removal is reversible from disk and never destroys what is already in the trash.
 
@@ -427,8 +482,7 @@ Trash is what lets rm be the ordinary removal command: the row goes, the bytes s
 | Enforced at | `core/remove_exec.cpp:execute_trash_action`, `core/paths.cpp:trash_path_for` |
 | Binds | `remove.trash` |
 | Protects | original-file, attachment |
-| Evidence | witness: `RemoveExecTest.TrashMovesFileAndLogs`, `RemoveExecTest.TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs`, `RemoveExecTest.TrashManySameNameFilesAllSurviveDistinctly` |
-| Test gap | The tests cover filling the trash and its no-clobber retry under collision. Nothing asserts that a tracked file's trash entry is accompanied by the purge_row entry for its row — the pairing this rule's rationale measured by running the binary is not pinned by any test. |
+| Evidence | witness: `RemoveExecTest.TrashMovesFileAndLogs`, `RemoveExecTest.TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs`, `RemoveExecTest.TrashManySameNameFilesAllSurviveDistinctly`, `RemoveExecTest.RmTrashLogsTheTrashAndThePurgeRowInOneOperation` |
 
 ### R25 — partial (test gap)
 
@@ -444,19 +498,18 @@ The snapshot lives in operation_entries.restore_json, so the switch that turns o
 | Evidence | witness: `ScanEngine.RemovesRowsForFilesThatDisappeared` |
 | Test gap | The unlogged branch is well covered for deletion and not at all for the snapshot's absence. ScratchCollection::options() sets log_enabled = false for every ScanEngine test in tests/test_scan_engine.cpp, and three of them delete files and rescan through delete_paths — the listed one, ScanEngine.ReconcileStillRunsAfterCancellation and ScanEngine.IgnoreMountWarningOverridesTheGuard. All three assert the rows are gone; none asserts that no operation and no entry were written, which is the clause this rule turns on and which came from running the binary. |
 
-### R26 — holds (test gap)
+### R26 — holds
 
 delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns.
 
-Plan 041's guard inventory names this as the third of three guards on the delete path, so that once reconcile is split into a plan and an apply, a plan entry that has gone stale deletes nothing rather than something else. The guard is correct; nothing pins it yet — one call with an unknown path would. Filed as holds rather than unenforced, per the holds-plus-test_gap shape for a rule the code satisfies but no test fully pins, which R49, R53, R54 and R64 also use; unenforced stays reserved for a rule nothing could pin even in principle, which this is not. The skip is silent a second way: both callers discard the returned count. cmd_rm prints rows_to_delete.size() at remove_exec.cpp:198 and run_reconcile sets removed_count = removed_paths.size() at scan_engine.cpp:588, so a skipped path is still reported as removed.
+Plan 041's guard inventory names this as the third of three guards on the delete path, so that once reconcile is split into a plan and an apply, a plan entry that has gone stale deletes nothing rather than something else. One call with an unknown path beside a real one pins all three of its clauses at once. Filed as holds rather than unenforced, per the holds-plus-test_gap shape for a rule the code satisfies but no test fully pins, which R49, R53, R54 and R64 also use; unenforced stays reserved for a rule nothing could pin even in principle, which this is not. The skip is silent a second way: both callers discard the returned count. cmd_rm prints rows_to_delete.size() at remove_exec.cpp:198 and run_reconcile sets removed_count = removed_paths.size() at scan_engine.cpp:588, so a skipped path is still reported as removed.
 
 | | |
 |---|---|
 | Enforced at | `core/database.cpp:delete_paths_logged` |
 | Binds | `scan.reconcile`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans` |
 | Protects | db-row, activity-log |
-| Evidence | conformance: none |
-| Test gap | Nothing calls delete_paths_logged with a path that has no row, so neither the skip nor the returned count is pinned. Both callers build their list from rows they have just read, so today the branch is reachable only when another writer removes one in between; plan 041's plan/apply split is what makes it reachable in ordinary use, which is why the guard is there. |
+| Evidence | witness: `DatabaseTest.DeletePathsLoggedSkipsAPathWithNoRow` |
 
 ### R27 — violated (test gap)
 
@@ -471,6 +524,20 @@ cmd_rm counts its per-file failures and writes interrupted when there were any. 
 | Protects | activity-log |
 | Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted` |
 | Test gap | The listed test pins the cancellation case, where organize does write interrupted. Nothing covers a run with per-file errors, which is where the two commands disagree, and nothing pins either command's exit code on that path. |
+
+### R83 — violated (test gap)
+
+An operation that fails against the database reports the cause: the message it raises names what SQLite refused, not the state of the connection after the rollback that followed.
+
+It does not, at three sites in core/database.cpp, all of them on the delete path. delete_paths_logged and log_prune each open a transaction and then define a `fail` lambda that runs exec('ROLLBACK') first and reads sqlite3_errmsg(db_) second; delete_paths inlines that order twice, at its prepare guard and inside its delete loop. sqlite3_errmsg reports the connection's most recent result, and a ROLLBACK that succeeds is the most recent thing that happened on it, so the cause is overwritten before the message is built and the connection answers 'not an error'. Measured with a BEFORE DELETE trigger raising ABORT (tests/fault_injection.h's BlockedImageDeletes, and the same shape on operations for log_prune): delete_paths_logged threw `Failed to delete path '/x/a.jpg': not an error`, delete_paths threw the identical string, and log_prune threw `Failed to prune operations: not an error`. The abort text the trigger raised reached nobody in any of the three. What is lost is the diagnosis, not the data — the ROLLBACK is correct and discards the transaction whole (R18, R30) — but it is lost from every place phig keeps a reason, at once. That string is what cmd_rm's and run_reconcile's callers print and what the diagnostic log records, and the activity log has no reason field: both catch handlers close the operation as 'interrupted' (R27) and write nothing else. So a removal that failed on a full disk, on a busy timeout that expired, on a foreign-key constraint or on an I/O error produces one sentence in all four cases, and the operator cannot tell a failure worth retrying from one that will never succeed. The same file has the right shape in two forms: step_write_or_throw builds its message from sqlite3_errmsg immediately after the step that failed, and init_schema's three migration blocks, insert_batch and update_path all use `catch (...) { exec('ROLLBACK'); throw; }`, which rolls back and rethrows the original exception with its text intact. Reading the message into a local before the rollback is the whole of what the statement asks for. Two throws from inside these same transactions do keep their text, because they never reach `fail`: delete_faces_for_image's step_write_or_throw and log_add_entry both throw directly. Read from the code rather than measured here, that is why the erasure has gone unnoticed — `Failed to delete face vectors: SQL logic error`, the one database failure phig actually sees in the field (plan 046), takes the other route, and it does not reproduce on this machine. Plan 060 owns it. R27 is the sibling that decides the routing: it is already 060's, it protects the same asset, and it is the same kind of defect one branch over — R27 is a failed run recorded with the wrong terminal status, this is a failed run recorded with no reason at all. The fit is imperfect and the imperfection is the plan's title: 060's runs report success, and this one reports failure. That strain is the one 060 already accepted for R81, whose third case also exits 1, and the plan's unifying sentence is about the signal the user is given rather than about the exit code. Plan 041 was the alternative considered — it rewrites delete_paths and delete_paths_logged for R25 and R40, so it will have two of these three anchors open in front of it — and was rejected because log_prune is not among its files and because a plan about splitting reconcile into decide and apply would be closing this one in passing.
+
+| | |
+|---|---|
+| Enforced at | `core/database.cpp:delete_paths`, `core/database.cpp:delete_paths_logged`, `core/database.cpp:log_prune` |
+| Binds | `scan.reconcile`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `organize.copy`, `organize.move` |
+| Protects | activity-log |
+| Evidence | witness: none |
+| Test gap | Nothing asserts what a failed database operation reports. DatabaseTest.PurgeEntryRollsBackWithTheDeleteItDescribes injects the very abort this rule was measured with and then checks the message only for `Failed to delete path '/x/a.jpg'`, the half delete_paths_logged builds itself, so it passes with the cause erased — which is how the erasure survived the test written against that window. tests/fault_injection.h records it in the header comment on BlockedImageDeletes, as the reason that helper's witness is a counter in C++ rather than the abort text. A test asserting this statement fails today at all three sites, so none is written. |
 
 ## metadata
 
@@ -491,7 +558,7 @@ INSERT OR REPLACE deletes the row before inserting the new one, and with foreign
 
 A re-scan clears a row's face data when the file's sha256 differs from the one recorded, or none was recorded, and keeps it — boxes, embeddings and person labels — when the two match.
 
-A face box and its embedding describe pixels, so once the bytes change they describe pixels that no longer exist and repositioning them is not possible; dropping them is the only honest option and a later `face rebuild` or a `--force faces` scan replaces them. The other half matters more: a person label is user-authored and nothing can reconstruct it, so an unchanged file must not lose one to an ordinary re-scan, and `--force hash` alone must not either — the test is the hash, not the flag. run_workers depends on that: it re-adds this run's detections only when db_.has_faces is false, so a row that kept its faces does not also collect a duplicate set.
+A face box and its embedding describe pixels, so once the bytes change they describe pixels that no longer exist and repositioning them is not possible; dropping them is the only honest option and a later `face rebuild` replaces them — only that, because no `--force` value reaches face data (R76). The other half matters more: a person label is user-authored and nothing can reconstruct it, so an unchanged file must not lose one to an ordinary re-scan, and `--force hash` alone must not either — the test is the hash, not the flag. run_workers depends on that: it re-adds this run's detections only when db_.has_faces is false, so a row that kept its faces does not also collect a duplicate set.
 
 | | |
 |---|---|
@@ -499,7 +566,7 @@ A face box and its embedding describe pixels, so once the bytes change they desc
 | Binds | `scan.walk` |
 | Protects | user-metadata |
 | Evidence | witness: `DatabaseTest.ReinsertSameContentKeepsFaces`, `DatabaseTest.ReinsertChangedContentClearsFacesAndVecFaces` |
-| Test gap | Both tests call Database::insert directly and assert on the faces and vec_faces tables. Neither carries a person label, so the clause that matters most — an unchanged file keeps the name someone typed — is inferred from the label living on the same row rather than asserted, and nothing drives the pair through ScanEngine, where the has_faces guard against a duplicate second set lives. |
+| Test gap | Both tests now label their face and assert the name is still on the row after an unchanged re-insert and gone after a changed one, so the clause that matters most is asserted rather than inferred. Both still call Database::insert directly: nothing drives the pair through ScanEngine, where the has_faces guard against a duplicate second set lives, and that half needs a real detection run, so it gates on face_path_blocker() like the other face tests. |
 
 ### R37 — holds
 
@@ -525,8 +592,8 @@ The transfer reads the row it is about to lose, so the order is not a preference
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_reconcile`, `core/relink.cpp:relink_moved_rows`, `core/relink.cpp:demote_jpeg_rows`, `core/relink.cpp:demote_live_photo_rows` |
 | Binds | `scan.reconcile`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | user-metadata, db-row |
-| Evidence | witness: `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged` |
-| Test gap | The two listed tests drive run_reconcile end to end and show the metadata survives on the target, which is the ordering's effect. Neither asserts the deletion happened after the transfer rather than merely alongside it, and no test covers a Live Photo demotion inside run_reconcile at all — the two that exercise demote_live_photo_rows call it directly. |
+| Evidence | witness: `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget`, `ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged`, `ScanEngine.ReconcileDemotesALivePhotoVideoRow`, `ScanEngine.ReconcileFinishesEveryTransferPassBeforeItDeletesAnything` |
+| Test gap | The ordering is now caught rather than inferred: with every DELETE on images aborted, one run drives all three passes and is observed with each pass's tag transferred onto its target and not one of the five rows removed. That is the logged branch. The unlogged branch runs the same three passes and ends in delete_paths instead of delete_paths_logged, and no test blocks its delete. |
 
 ### R39 — holds
 
@@ -555,6 +622,34 @@ Both organize branches drop a row that already names the destination: update_pat
 | Evidence | witness: `DatabaseTest.UpdatePathOntoStaleDestClearsItsFaces`, `DatabaseTest.InsertCopyOntoStaleDestClearsItsFaces` |
 | Test gap | Both listed tests pin today's contrary behaviour — the occupant row and its faces go — which is what plan 022 asked for. Nothing tests the statement, because no code path implements it, and neither test puts a tag or a gallery on the row it destroys, so the loss those two carry is only visible by running the binary. UpdatePathOntoStaleDestClearsItsFaces is also one of the three DatabaseTest cases plan 046 records as failing on Linux, so on that platform this rule's only witness is InsertCopyOntoStaleDestClearsItsFaces. Plan 041's decision 6 now names update_path_in_txn and insert_copy explicitly and its Testing section specifies the two tests this rule needs — a tracked destination carrying a tag and a gallery, moved or copied onto under the default --on-conflict skip, produces a purge_row entry naming both — but neither test is written yet, so the gap is that the work is undone, not that 041's scope excludes it. |
 
+### R76 — holds (test gap)
+
+No value of --force re-detects faces: a scan keeps a row's existing face data whatever it was told to force, and face rebuild is the only path that replaces it.
+
+ForceOptions carries hash, thumbs and faces, and core/ reads the first two only. A grep for force.faces over core/ and libphig/ returns the declaration at core/scan_engine.h:18 and nothing else: the field is written by cli/main.cpp:1904 and by set_all(), and read only by ForceOptions::any(), which nothing calls. --force hash does bypass the mtime skip and reprocess the file, but run_workers re-adds this run's detections only when db_.has_faces is false, and insert() clears faces only when the sha256 changed (R36), so an unchanged file keeps what it had however it was reprocessed. Measured with the built binary on a one-image collection: `scan --faces` reported Faces: 1; a plain repeat reported Processed: 0, Faces: 0; `scan --faces --force faces` reported Processed: 0, Skipped: 1, Faces: 0, identical to the plain repeat; and `scan --faces --force all` reported Processed: 1 — the file was decoded and its faces detected again — with Faces: 0, the detections discarded. The effect is protective, since a person label is the one thing a rescan cannot rebuild, but it is not what the flag says: the help text reads 'Re-process: hash,thumbs,faces,all' and one third of that is inert.
+
+| | |
+|---|---|
+| Enforced at | `core/scan_engine.cpp:ScanEngine::run_workers`, `core/database.cpp:Database::insert` |
+| Binds | `scan.walk` |
+| Protects | user-metadata |
+| Evidence | witness: `DatabaseTest.ReinsertSameContentKeepsFaces`, `ScanEngine.NoForceValueDropsAFacesPersonLabel`, `ScanEngine.ForceFacesAloneDoesNotEvenReprocessTheFile` |
+| Test gap | Two tests now build a ScanOptions with force.faces set and drive ScanEngine rather than Database::insert: a labelled face survives a --force all rescan of an unchanged file, and force.faces alone leaves result.processed at 0 because nothing reads the field. The faces-mode half is not covered — run_workers re-adds this run's detections only when db_.has_faces is false, so the discarded detections a `--force all --faces` scan produces need a real detector and gate on face_path_blocker() like the other face tests. R36's rationale asserted that a '--force faces' scan replaces face data; it was corrected in the commit that added this record. |
+
+### R79 — holds (test gap)
+
+Assigning a gallery replaces the assignment already on a row unless the caller asked to fill only the empty ones.
+
+set_gallery picks between two statements on its no_overwrite argument: 'UPDATE images SET gallery = ? WHERE path = ?' and the same with 'AND gallery IS NULL'. The default replaces, so a second `phig gallery set` over an overlapping selection discards the first name, and a gallery is user-authored metadata that nothing rebuilds. There is no prompt, no backup and no record: metadata.write opens no logged operation, so unlike a move or a removal this leaves nothing in the activity log and no restore snapshot to read the old name out of. --no-overwrite is the only way to ask for the safe order, and the count it returns is what tells the caller how many rows it declined to touch. clear_gallery is the opposite corner and needs no flag, narrowing to 'gallery IS NOT NULL' so a row without one is not counted as cleared. This is the same fill-only-when-empty rule reconcile applies to a transferred gallery (R37), with the difference that reconcile applies it always and this applies it on request.
+
+| | |
+|---|---|
+| Enforced at | `core/database.cpp:set_gallery`, `core/database.cpp:clear_gallery` |
+| Binds | `metadata.write` |
+| Protects | user-metadata |
+| Evidence | subprocess: `DatabaseTest.GalleryOverwritesByDefault`, `DatabaseTest.GalleryNoOverwriteSkips`, `DatabaseTest.ClearGallery`, `DatabaseTest.CliGallerySetHonorsNoOverwriteAndClearRefusesTheFlag` |
+| Test gap | The parser branch is now driven through the binary, both of its effects: `gallery set --no-overwrite` reports 'on 0 images' and leaves the existing name, and `gallery clear --no-overwrite` exits 1 with 'Unknown option'. A control run without the flag replaces the name, so neither assertion can be satisfied by a `gallery set` that simply never writes. Measured with the branch changed to 'arg == "--no-overwrite"' setting no_overwrite = false: the declined run reports 'on 1 images' and the name becomes 'second', and the clear exits 0 having cleared the row. What remains is the other anchor's count. clear_gallery narrows to 'gallery IS NOT NULL' so a row that had no gallery is not reported as cleared, and DatabaseTest.ClearGallery only clears a row that has one — nothing shows that a selection of rows without galleries comes back 0 rather than counting them all. |
+
 ## attachments
 
 ### R41 — holds
@@ -570,7 +665,7 @@ move_file declines and throws, but atomic_copy_file ends in a rename that replac
 | Protects | attachment |
 | Evidence | witness: `OrganizeCarryNoClobber.CopyRefusesToClobberAnExistingSidecar`, `OrganizeCarryNoClobber.CopyRefusesToClobberAnExistingSiblingJpeg`, `OrganizeCarryNoClobber.StillCarriesWhenTheDestinationIsFree`, `OrganizeLivePhotoSafety.CopyRefusesToClobberAnExistingVideoAtTheDestination` |
 
-### R42 — holds (test gap)
+### R42 — holds
 
 A metadata sidecar is never indexed as a photo of its own: the walk admits a file only when its extension is in the media allowlist, and no sidecar extension is in it.
 
@@ -581,8 +676,7 @@ A sidecar describes a photo; indexing it would give one shot two rows, double ev
 | Enforced at | `core/scanner.cpp:scan_directory`, `core/scanner.cpp:is_known_media_extension`, `core/sidecar.cpp:is_known_sidecar_extension` |
 | Binds | `scan.walk` |
 | Protects | db-row, attachment |
-| Evidence | witness: `ScannerTest.SkipsUnknownExtensions` |
-| Test gap | The listed test pins the allowlist with .pdf, .db, .txt and .DS_Store; no test in the suite puts a real sidecar extension in front of scan_directory, so the disjointness the statement turns on is read off the two extension sets rather than asserted. One scan over a directory holding a photo and its .xmp would close it. |
+| Evidence | witness: `ScannerTest.SkipsUnknownExtensions`, `ScannerTest.SkipsEverySidecarExtensionBesideAPhoto` |
 
 ### R43 — holds (test gap)
 
@@ -595,8 +689,8 @@ The RAW and the JPEG are one shot, and the RAW is the one that keeps the pixels,
 | Enforced at | `core/scan_engine.cpp:ScanEngine::run_workers`, `core/scanner.cpp:has_sibling_raw`, `core/relink.cpp:demote_jpeg_rows` |
 | Binds | `scan.walk`, `scan.reconcile`, `relink.demote` |
 | Protects | db-row, user-metadata, attachment |
-| Evidence | witness: `ScannerTest.HasSiblingRawTrueWhenRawBeside`, `ScannerTest.HasSiblingRawFalseWhenLoneJpeg`, `RelinkTest.DemotesJpegToSameBasenameRaw`, `RelinkTest.LoneJpegNotDemoted`, `RelinkTest.JpegWithRawRowMissingNotDemoted` |
-| Test gap | The demotion half is well covered and the predicate has six tests of its own. The skip is not tested at any level: nothing runs ScanEngine over a directory holding a RAW and its JPEG to assert one row comes out, which is the RAW analogue of ScanEngineLivePhoto.IndexesTheStillAndNotItsPairedVideo. It was measured by running the binary instead. |
+| Evidence | witness: `ScannerTest.HasSiblingRawTrueWhenRawBeside`, `ScannerTest.HasSiblingRawFalseWhenLoneJpeg`, `RelinkTest.DemotesJpegToSameBasenameRaw`, `RelinkTest.LoneJpegNotDemoted`, `RelinkTest.JpegWithRawRowMissingNotDemoted`, `ScanEngine.AJpegBesideARawGetsNoRowOfItsOwn` |
+| Test gap | The skip now runs through ScanEngine, but a row count is not what shows it and a later test of this rule that checks only the surviving row would be vacuous. The two halves overlap: with has_sibling_raw removed the JPEG is indexed and then demoted away by the same run, so the collection ends at one row either way. What separates them is the walk counters, which ScanEngine.AJpegBesideARawGetsNoRowOfItsOwn asserts at skipped 1, processed 1, demoted 0. |
 
 ### R44 — holds (test gap)
 
@@ -609,8 +703,8 @@ Three kinds of file have no row and so cannot move themselves: a metadata sideca
 | Enforced at | `core/organize_engine.cpp:OrganizeEngine::apply` |
 | Binds | `organize.copy`, `organize.move` |
 | Protects | attachment, original-file |
-| Evidence | witness: `OrganizeEngineTest.SidecarsCountInFilesWrittenNotInApplied`, `OrganizeEngineTest.AttachedJpegForARawCountsInFilesWritten`, `OrganizeExecTest.CarryLogsSidecarEntryWithParentId` |
-| Test gap | Every listed test drives the success path: the parent moves and the attachment follows. The negative half is untested — neither OrganizeEngineTest.ApplySkipsItemsWithNoDestination nor ApplySkipsAnItemWhoseDestinationBecameOccupied puts a sidecar next to the source, so nothing asserts that a skipped parent leaves its attachment where it is. |
+| Evidence | witness: `OrganizeEngineTest.SidecarsCountInFilesWrittenNotInApplied`, `OrganizeEngineTest.AttachedJpegForARawCountsInFilesWritten`, `OrganizeExecTest.CarryLogsSidecarEntryWithParentId`, `OrganizeEngineTest.ApplySkipsItemsWithNoDestination`, `OrganizeEngineTest.ApplySkipsAnItemWhoseDestinationBecameOccupied` |
+| Test gap | Both skip branches now carry a sidecar beside the source and assert it stays there with files_written at 0. The third arm of the statement is still untested: no test drives an item whose own move or copy throws, so 'a parent whose action failed carries nothing' rests on the carry sitting inside the try block after execute_organize_action rather than on a test. |
 
 ### R45 — holds
 
@@ -625,7 +719,7 @@ A sidecar is found by name, so a parent filed as IMG_1-1.CR2 with its sidecar st
 | Protects | attachment |
 | Evidence | witness: `OrganizeExecTest.CarryRenamesSidecarToMatchRenamedParent`, `OrganizeExecTest.CarryHandlesAppendStyleRawSidecar`, `OrganizeExecTest.CarryRenamesAttachedJpegToMatchRenamedRaw`, `OrganizeLivePhotoSafety.CarriesAnUnindexedPairedVideo` |
 
-### R46 — holds (test gap)
+### R46 — holds
 
 Removing a photo removes its metadata sidecars with it and leaves every other file beside it alone, including the attached JPEG and the Live Photo video that belong to it.
 
@@ -636,8 +730,7 @@ The set removed is exactly find_sidecars' output, whose allowlist holds no media
 | Enforced at | `core/remove_exec.cpp:remove_media_with_sidecars`, `core/sidecar.cpp:find_sidecars` |
 | Binds | `remove.trash`, `remove.hard` |
 | Protects | attachment, original-file |
-| Evidence | witness: `RemoveExecTest.RemoveMediaCarriesSidecarsNotSiblings` |
-| Test gap | The listed test covers a RAW with an append-style sidecar and a same-stem JPEG. Nothing covers a Live Photo's video, which is not same-stem in general and is excluded for the same reason — the sidecar allowlist — so that half of the statement rests on reading find_sidecars rather than on a test. |
+| Evidence | witness: `RemoveExecTest.RemoveMediaCarriesSidecarsNotSiblings`, `RemoveExecTest.RemoveMediaLeavesAPairedLivePhotoVideoAlone` |
 
 ### R47 — holds
 
@@ -665,8 +758,8 @@ The face subcommands and libphig's faces operation both run lock-free, so a lock
 | Enforced at | `core/faces_engine.cpp:identify_person`, `core/database.cpp:set_face_person_if_unchanged` |
 | Binds | `faces.identify` |
 | Protects | user-metadata |
-| Evidence | witness: `IdentifyTest.ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch`, `IdentifyTest.AnUnchangedFaceIsStillLabeled` |
-| Test gap | ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch is the only test that opens the phase-1-to-phase-2 window with another writer in it, and it passes on id retirement alone: measured in a scratch copy with `AND embedding = ?` deleted from set_face_person_if_unchanged, it stays green and the suite's only failure is AFaceWhoseEmbeddingChangedIsNotLabeled, so it does not discriminate between the clauses of the predicate it is cited for. AnUnchangedFaceIsStillLabeled does pin `person_id IS NULL` — deleting that clause fails it — but single-threaded, two calls in one thread with no gap and no second writer. Nothing pins two labelers racing for the same candidate. |
+| Evidence | witness: `IdentifyTest.ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch`, `IdentifyTest.AnUnchangedFaceIsStillLabeled`, `IdentifyTest.TwoLabelersRacingForOneCandidateSetLabelEachFaceOnce` |
+| Test gap | Each clause of the predicate is pinned by a different test and none of them pins all three. ConcurrentRebuildNeverGetsAFaceLabeledItDidNotMatch is the only test that opens the phase-1-to-phase-2 window against a deleter, and it passes on id retirement alone: measured in a scratch copy with `AND embedding = ?` deleted from set_face_person_if_unchanged, it stays green and the suite's only failure is AFaceWhoseEmbeddingChangedIsNotLabeled, so it does not discriminate between the clauses of the predicate it is cited for. TwoLabelersRacingForOneCandidateSetLabelEachFaceOnce now covers the case nothing reached before — two runs whose phase 1s both read the same ten candidates as unlabeled, forced by a third connection holding the write lock across both, so whichever phase 2 commits second finds four contested faces already named. Measured with `AND person_id IS NULL` deleted: the two runs' labeled counts sum to 14 instead of 10, on three runs of three. What is left unpinned is `embedding = ?`, deliberately: no concurrent path in phig produces the state it refuses, which is R71. |
 
 ### R49 — holds (test gap)
 
@@ -679,8 +772,8 @@ WriterLock is an flock(2) on a sidecar file, held for the object's lifetime and 
 | Enforced at | `core/lockfile.cpp:WriterLock` |
 | Binds | `scan.walk`, `scan.reconcile`, `organize.plan`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `trash.empty`, `thumbs.rebuild`, `metadata.write`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | db-row, original-file |
-| Evidence | witness: `LockfileTest.AcquiresAndReleases`, `LockfileTest.NoWaitThrowsWhenHeldByAnotherFd`, `LockfileTest.WaitBlocksThenAcquiresAfterRelease` |
-| Test gap | The three tests drive WriterLock directly, with a raw flock on a second descriptor standing in for the other process. Nothing pins which commands take it: the call sites are in cli/main.cpp, outside this anchor and outside every test, so 'no read takes it' was measured by running the binary rather than asserted anywhere. |
+| Evidence | subprocess: `LockfileTest.AcquiresAndReleases`, `LockfileTest.NoWaitThrowsWhenHeldByAnotherFd`, `LockfileTest.WaitBlocksThenAcquiresAfterRelease`, `LockfileTest.CliRefusesALockTakingWriteWhileAllowingReadsAndLocklessWrites` |
+| Test gap | The first three drive WriterLock directly, with a raw flock on a second descriptor standing in for the other process, and pin the class rather than the rule. The fourth holds the lock the same way and drives the built binary against it: `tag add` is refused under --no-wait, `search --count` completes, and `face identify` — a command that mutates and takes no lock — labels its face while the lock is held. A control run after the release shows the refusal was the lock. The scratch database sits at the default path inside a redirected XDG_DATA_HOME so the child's lock_path() is the file the test holds; passing --db would put them on different files, which is R50. What is still unasserted is the ABI's side of the same two clauses — that a phig_query call on a context succeeds while a WriterLock is held, and that a Database::insert does — which needs no subprocess and is not written. Note that the earlier text here said the lock's call sites are all in cli/main.cpp: libphig/mutate.cpp has five of them, and R55 already cites two tests that drive them. |
 
 ### R50 — violated (test gap)
 
@@ -721,7 +814,7 @@ The gap between reading an id and opening the write transaction is two statement
 | Binds | `faces.rebuild` |
 | Protects | db-row, user-metadata |
 | Evidence | witness: `FacesEngineRun.ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun` |
-| Test gap | The single witness calls models_or_skip() and skips wherever the YuNet and SFace models are absent, which includes CI — .github/workflows/ci.yml downloads no models — so the gate that guards this branch has no evidence for it. It passed locally against models in ~/.cache/phig/models. |
+| Test gap | The witness now asserts the window was entered: result.errors above zero and at least one progress line reading 'image no longer in the database', both of which the engine produces only on this branch, so a run whose timing misses the race fails instead of passing identically. What it still does not pin is the 'rather than the whole run' half — its deleter removes every row, so no image survives to have its faces written, and the run's completion is evidenced by the absence of a throw rather than by other files finishing. The models are no longer the gap: the ubuntu-26.04 leg caches ~/.cache/phig/models and downloads on a miss, and that is the leg scripts/rules.py reads its results from, so check 2 sees this witness pass rather than skip on every push. It skips on the ubuntu-24.04 leg, whose OpenCV is below the 4.8.0 the detector needs (R84), so on that leg the rule has no evidence at all. |
 
 ### R53 — holds (test gap)
 
@@ -734,22 +827,22 @@ PRAGMA journal_mode=WAL takes an exclusive lock to rewrite the file header, so t
 | Enforced at | `core/database.cpp:Database::Database` |
 | Binds | `scan.walk`, `scan.reconcile`, `organize.plan`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `thumbs.rebuild`, `faces.rebuild`, `faces.identify`, `metadata.write`, `relink.transfer`, `relink.demote`, `relink.demote_live_photo` |
 | Protects | db-row |
-| Evidence | witness: `DatabaseConcurrency.ConcurrentMigrationIsSafe` |
-| Test gap | The listed test races concurrent first-runs and would catch a regression only statistically — it is the test that flaked at about 10% when the ordering was wrong, so one green run is weak evidence. Nothing asserts the ordering itself. |
+| Evidence | witness: `DatabaseConcurrency.ConcurrentMigrationIsSafe`, `DatabaseConcurrency.ConstructionWaitsForAFirstStatementAnotherConnectionIsBlocking` |
+| Test gap | ConcurrentMigrationIsSafe races concurrent first-runs and would catch a regression only statistically — it is the test that flaked at about 10% when the ordering was wrong, so one green run is weak evidence. ConstructionWaitsForAFirstStatementAnotherConnectionIsBlocking replaces the race with a held lock: a second connection holds an EXCLUSIVE transaction on a database still in rollback-journal mode for 300ms, so the constructor's first statement has to wait for it, and the elapsed time is asserted rather than the outcome alone. Measured with sqlite3_busy_timeout moved below the WAL pragma, the construction throws `SQL error: database is locked` after 0ms instead of returning after 300. What that test cannot reach is a first statement other than journal_mode=WAL: the read-only constructor skips the pragma, so the ordering has no observable consequence there and nothing pins it. |
 
 ### R54 — holds (test gap)
 
 The connection is opened SQLITE_OPEN_FULLMUTEX explicitly, so one shared connection called from several threads is serialized by SQLite rather than by how the system SQLite was compiled.
 
-libphig's header promises that a phig_ctx may be called concurrently from several threads, and a ctx holds one Database. A system SQLite compiled THREADSAFE=1 (serialized) mutexes every connection and the promise holds for free; one compiled THREADSAFE=2 (multi-thread) defaults to NOMUTEX, where sharing a connection is undefined and crashes rather than blocks. Asking for the flag means the ABI's promise does not depend on the packager's choice.
+libphig's header promises that a phig_ctx may be called concurrently from several threads, and a ctx holds one Database. A system SQLite compiled THREADSAFE=1 (serialized) mutexes every connection and the promise holds for free; one compiled THREADSAFE=2 (multi-thread) defaults to NOMUTEX, where sharing a connection is undefined and crashes rather than blocks. Asking for the flag means the ABI's promise does not depend on the packager's choice. That choice is not hypothetical and phig already ships against both: measured, Apple's system SQLite 3.51.0 — the library phig links on macOS, and the one the macOS CI leg builds against — reports sqlite3_threadsafe() == 2, and a connection opened there without the flag has a null sqlite3_db_mutex with no reconfiguration of any kind. So on macOS this flag is the only thing holding the header's promise up, and it is the ubuntu legs that would pass without it.
 
 | | |
 |---|---|
 | Enforced at | `core/database.cpp:Database::Database` |
 | Binds | `metadata.write` |
 | Protects | db-row, user-metadata |
-| Evidence | witness: `AbiMutate.ConcurrentFailuresOnSharedCtxDoNotCorrupt`, `AbiMutate.ConcurrentReadsOnSharedCtxReturnConsistentResults` |
-| Test gap | Both tests would also pass with the flag removed on a THREADSAFE=1 build, because such a build mutexes the connection anyway. The flag earns its keep only on a THREADSAFE=2 build, which no CI job provides, so nothing here distinguishes the guarantee from the default it happens to match. |
+| Evidence | witness: `AbiMutate.ConcurrentFailuresOnSharedCtxDoNotCorrupt`, `AbiMutate.ConcurrentReadsOnSharedCtxReturnConsistentResults`, `DatabaseConcurrency.TheConnectionIsMutexedEvenWhereTheLibraryDefaultIsNot` |
+| Test gap | The two AbiMutate tests would also pass with the flag removed on a serialized build, because such a build mutexes the connection anyway. TheConnectionIsMutexedEvenWhereTheLibraryDefaultIsNot removes that dependence by putting the library in multi-thread mode for the length of the test — sqlite3_shutdown, sqlite3_config(SQLITE_CONFIG_MULTITHREAD), sqlite3_initialize, restored to the compile-time default on every exit — and asserting a control connection opened without the flag comes back with a null sqlite3_db_mutex before asking anything of phig's. Measured with the flag removed from Database::Database: sqlite3_db_mutex on the phig connection is null and the test fails. Two limits. The reconfiguration is process-global; it is safe under ctest, which runs each case as its own process, and was measured not to disturb a full in-order run of the whole suite in one process, but it is a hazard any new fixture holding a connection open across tests would create. And where the library refuses to be reconfigured the test skips rather than failing, so on such a build this rule is back to the two AbiMutate witnesses and the gap above. |
 
 ### R55 — holds
 
@@ -791,7 +884,7 @@ Across core/, libphig/ and cli/ three statements update the faces table — `UPD
 | Evidence | witness: `IdentifyTest.AFaceWhoseEmbeddingChangedIsNotLabeled` |
 | Test gap | That test is the clause's only cover, and it writes the changed embedding by hand through a raw sqlite3 UPDATE because no concurrent path produces one — the test says so itself. Measured in a scratch copy with `AND embedding = ?` deleted: 806 tests ran and it was the only failure. So nothing covers this clause against a state phig can reach, and nothing can until some path rewrites an embedding in place. |
 
-### R72 — holds
+### R84 — holds
 
 An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert.
 
@@ -845,7 +938,7 @@ The four cancellable engines answer this differently. ThumbsEngine and FacesEngi
 | Binds | `scan.walk`, `thumbs.rebuild`, `faces.rebuild`, `organize.copy`, `organize.move` |
 | Protects | db-row, activity-log |
 | Evidence | witness: `Parallel.ReturnsFalseWhenAlreadyCancelled`, `ThumbsEngineRun.AlreadyCancelledGeneratesNothingAndReportsIncomplete`, `ThumbsEngineRun.AlreadyCancelledOverAnEmptySelectionReportsIncomplete`, `FacesEngineRun.AlreadyCancelledOverAnEmptySelectionReportsIncomplete`, `ScanEngine.AnAlreadyCancelledTokenProcessesNothing`, `OrganizeEngineTest.AlreadyCancelledAppliesNothingAndReportsIncomplete`, `AbiOperations.CancelBeforeAnyWorkReportsCancelledAndIncomplete` |
-| Test gap | The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls models_or_skip() and skips without face models, including in CI, while its empty-selection sibling needs none and is listed instead. |
+| Test gap | The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls face_path_blocker() and skips wherever the face path cannot run — no models, or an OpenCV below the 4.8.0 floor (R72) — which is every machine but the ubuntu-26.04 CI leg and one that has downloaded them. Its empty-selection sibling needs neither and is listed instead. |
 
 ### R67 — holds
 
@@ -873,8 +966,8 @@ The preview returns before the confirmation guard and before log_begin_operation
 | Enforced at | `core/remove_exec.cpp:cmd_rm` |
 | Binds | `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans` |
 | Protects | original-file, db-row, activity-log |
-| Evidence | witness: `RemoveExecTest.RmDryRunTouchesNothing` |
-| Test gap | The test checks the file and the row survive; it does not check that no operation row was opened, and nothing pins the second clause at all. Both were measured by running the binary: a dry-run rm against a path with no database left a 120 KB v8 database there, and a dry-run rm against a populated one left the operations table exactly as it found it. |
+| Evidence | witness: `RemoveExecTest.RmDryRunTouchesNothing`, `RemoveExecTest.RmDryRunCreatesAndMigratesADatabaseThatWasNotThere` |
+| Test gap | The two listed tests pin the file, the row, the empty operations and operation_entries tables, and that a preview against a path with no database leaves one there at the current schema version. What is still read off the code rather than asserted is the migration half of the second clause: no test opens an older database and checks a dry run left it upgraded, because the suite has no way to build a pre-v8 file — it was measured by running the binary against a database pinned at schema_version 7, which came back at 8. |
 
 ### R21 — holds (test gap)
 
@@ -887,10 +980,10 @@ Keeping the preview in core/ rather than in a CLI branch is what lets every surf
 | Enforced at | `core/organize_engine.cpp:OrganizeEngine::plan` |
 | Binds | `organize.plan` |
 | Protects | original-file, db-row, activity-log |
-| Evidence | witness: `OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase` |
-| Test gap | The listed test pins the first clause, at the engine. Nothing pins the second: no test drives cmd_organize, and the migration it performs on a dry run was measured by running the binary. |
+| Evidence | subprocess: `OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase`, `OrganizeEngineTest.CliDryRunOverAnAbsentDatabaseStillCreatesAndMigratesIt`, `OrganizeEngineTest.CliDryRunPreviewsEveryCopyAndWritesNothingElse` |
+| Test gap | Both clauses are now driven through the binary, cmd_organize included. One correction to what the previous gap implied: a dry run against a database that is not there exits 1, not 0 — cmd_organize refuses an empty database at cli/main.cpp:613 before it reaches the dry-run branch — and the file it leaves behind at the current schema version is created on the way to that refusal. What is still read off the code is which migration ran: the test opens an absent path, so it pins 'created and migrated', not 'an older file was upgraded'. The suite has no way to build a pre-v8 database, which is the same limit R20 records. |
 
-### R22 — holds
+### R22 — holds (test gap)
 
 A hard delete, and any removal that takes at least half the collection and touches twenty rows or more, proceeds only on an explicit yes: assume_yes, or a confirmer that returns true, with a missing confirmer counted as a refusal.
 
@@ -902,6 +995,7 @@ Hard delete is the one removal mode with no trash behind it, so there is nothing
 | Binds | `remove.hard`, `remove.trash`, `remove.db-only`, `remove.orphans` |
 | Protects | original-file, db-row |
 | Evidence | witness: `RemoveExecTest.ConfirmCallbackRefusalCancelsTheOperation`, `RemoveExecTest.ConfirmCallbackNullRefusesWithoutAsking`, `RemoveExecTest.ConfirmCallbackAcceptanceProceeds`, `RemoveExecTest.ConfirmCallbackBroadRemovalWarningTextIsExact` |
+| Test gap | Three of the four listed tests drive the --hard arm and the fourth drives the broad arm at 20 of 20 rows, so every one of them is a removal the guard is supposed to stop. Nothing pins the negative side of the threshold: every other cmd_rm test in the suite sets assume_yes, so no test shows a removal below either bound — under half the collection, or fewer than twenty rows — proceeding with no confirmer supplied at all. A threshold that had drifted to 'always broad' would pass all four. |
 
 ### R59 — partial (test gap)
 
@@ -929,7 +1023,7 @@ rm asks (R22), organize publishes a plan the caller applies, and reconcile trans
 | Binds | `faces.rebuild` |
 | Protects | user-metadata |
 | Evidence | subprocess: none |
-| Test gap | FacesEngineRun.RerunReplacesRatherThanAccumulatesFaceRows covers the delete-and-reinsert and asserts nothing about labels, and every FacesEngineRun case skips wherever the face models are absent, which includes CI — .github/workflows/ci.yml downloads none. The loss was measured by running the binary; no test asserts it either way. |
+| Test gap | FacesEngineRun.RerunReplacesRatherThanAccumulatesFaceRows covers the delete-and-reinsert and asserts nothing about labels, and every FacesEngineRun case skips wherever the face path cannot run — the models absent, or an OpenCV below the 4.8.0 floor (R72). The ubuntu-26.04 leg is the only CI leg where it can; a bare machine has neither. The loss was measured by running the binary; no test asserts it either way. |
 
 ### R61 — violated (test gap)
 
@@ -986,3 +1080,59 @@ Every cli/ command that opens a collection opens it read-write. All twelve Datab
 | Protects | db-row |
 | Evidence | subprocess: none |
 | Test gap | No test drives cmd_search or cmd_duplicates, so neither the creation nor the migration is pinned on the commands this rule is about; both were measured by running the binary. Nothing in tests/ asserts that a read leaves no file behind on either surface — Abi.InitFailsOnUnopenableDatabase is the nearest and only shows that a read-only context fails on a path inside a directory that does not exist. |
+
+### R73 — violated (test gap)
+
+An unrecognized flag stops a command before it changes anything.
+
+All thirteen of cli/main.cpp's flag loops end in an else that prints 'Unknown option: <arg>' and returns 1 — thumbs rebuild (:1140), thumbs clean (:1242), face rebuild (:1432), tag (:1586), gallery (:1654), fav add/remove (:1706), fav list (:1749), scan (:1941), duplicates (:1995), cp/mv (:2053), rm (:2098), trash (:2142) and search (:2306). `face rebuild`'s was the last to get one, and it was the one destructive command where the omission mattered: an argument the loop did not recognize was stepped over, its value with it, and the run proceeded. opts.matches then stays empty, which selects every image (R74), and a rebuild deletes every selected image's face rows including the person_id somebody typed, re-deriving only what auto_label_face can match (R60). Measured with the built binary against a two-image scratch collection holding one named face: before the else branch, `phig face rebuild --mtach '*a.jpg'` printed 'Rebuilding face data for 2 images...' and exited 0 where `--match` printed 'Rebuilding face data for 1 images...', and the named face was gone afterwards; with it, the same typo prints 'Unknown option: --mtach', exits 1, and the face row and its label are untouched. The behaviour is now uniform across the thirteen loops. What keeps this violated is where it lives: argv validation is cli/'s alone, so libphig and a future phigd inherit none of these guards and each needs its own check that input it does not recognize stops an operation before it deletes anything. The record moves to holds when such a check exists outside cli/, not when the last parser loop gets its else. Plan 060 owns it.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:cmd_face` |
+| Binds | `cli` |
+| Protects | user-metadata |
+| Evidence | subprocess: `FacesEngineRun.CliRejectsAnUnknownFlagWithoutTouchingFaceData` |
+| Test gap | One loop, one flag. The test runs the built binary as `face rebuild --mtach <glob>` against a collection holding one named face and asserts exit 1, the 'Unknown option: --mtach' line, and that the labeled face row is still there under the id it was given — faces.id is AUTOINCREMENT, so a re-detected row cannot pose as it. It skips when the binary is not beside phig-tests or at ./build/phig. The other twelve loops are pinned by nothing: no fixture calls cmd_scan, cmd_search or the rest, which are cli/ functions, so their else branches rest on measurement alone. Nothing pins the part that is still outstanding either, because no surface outside cli/ has an equivalent check to test. |
+
+### R74 — holds (test gap)
+
+An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything.
+
+One function decides this for every command: passes_selection checks the excludes first and returns false on the first hit, so exclude wins wherever the two overlap and an excluded path cannot be moved, deleted, re-detected or relabelled by the run that excluded it. The second half is the one that surprises. With an empty match list the function returns true for every path, so `phig rm --exclude '*.png'` selects the whole collection minus the PNGs rather than nothing, and `phig face rebuild` with no flags selects every image. Both are deliberate and both have a guard elsewhere rather than here: rm's broad-selection confirmation covers the first (R22), and tag, gallery and fav refuse an unnamed selection outright (R78). The comparison is against the whole path, not the basename — callers pass img.path — so an exclude may name a directory. Seven call sites in all: five in core/ (faces_engine.cpp:81, organize_engine.cpp:76, remove_exec.cpp:82, thumbs_engine.cpp:28, search_engine.cpp:100) and two in cli/ (main.cpp:489 and :1538, the second being select_paths, which is how tag, gallery and fav reach it).
+
+| | |
+|---|---|
+| Enforced at | `core/selection.cpp:passes_selection` |
+| Binds | `organize.plan`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `thumbs.rebuild`, `faces.rebuild`, `metadata.write` |
+| Protects | original-file, db-row, user-metadata |
+| Evidence | subprocess: `FilterTest.NoFiltersPassesAll`, `FilterTest.FilterWinsOverMatch`, `FilterTest.MatchAndFilterTogether`, `FilterTest.MatchesAgainstFullPath`, `FilterTest.MultipleFilters`, `RemoveExecTest.HardRemovalLeavesAnExcludedFileAndItsRowAlone`, `OrganizeEngineTest.ApplyLeavesAnExcludedFileAndItsRowAlone`, `ThumbsEngineRun.AnExcludedRowGetsNoThumbnail`, `FacesEngineRun.AnExcludedImagesFacesAreLeftAlone`, `DatabaseTest.CliTagAddSkipsAnExcludedPath` |
+| Test gap | The five FilterTest cases pin the predicate. The five below them run a mutating operation with an --exclude and assert the excluded file, its row and its metadata survived: a --hard rm, an OrganizeEngine::apply move, a thumbs run whose excluded sha gets no cache entry, a faces rebuild that leaves a named face where a re-detection would have deleted it, and `phig tag add` through cli/main.cpp:select_paths, the route tag, gallery and fav take and the only one that selects outside core/. Measured with the exclude loop in passes_selection short-circuited: all five fail, each on the file or row it was meant to spare. Two narrower things stay unpinned. The operation tests drive one member of each family — hard of remove's four modes, move of organize's two — which is the shared call site in each executor rather than the whole family, and organize.plan is covered by PlanHonorsMatchAndExclude instead. And FacesEngineRun.AnExcludedImagesFacesAreLeftAlone needs a detector, so it skips below the OpenCV floor and where the models are absent, which is the ubuntu-24.04 leg. |
+
+### R77 — violated (test gap)
+
+Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all.
+
+The cache directory is not phig's private space: thumbs_dir() follows XDG_CACHE_HOME and a config key can point it anywhere, so a recursive delete over it could take files phig never wrote. Every regular file under it is tested with is_thumbnail_filename — a 64-hex stem and a .jpg suffix — and anything else is counted as foreign and left, then a thumbnail whose stem is in db.get_all_sha256s() is kept and the rest are removed. --dry-run prints the same list and removes nothing, including the sweep of emptied subdirectories, which is skipped as a whole rather than per entry. Measured with the built binary against a scratch XDG_CACHE_HOME holding one orphaned thumbnail and one notes.txt: `thumbs clean --dry-run` printed 'Would remove 1 orphaned thumbnails' and 'Left untouched 1 non-thumbnail files in the cache directory' and left both files where they were; the same command without the flag removed the thumbnail and left notes.txt with its bytes intact. Recorded as violated for where the guard lives, not for what it does. is_thumbnail_filename is a core/ predicate, but the loop that consults it, the dry-run branch and the directory sweep are all in cli/main.cpp, and no core/ primitive cleans a thumbnail cache — libphig/CLAUDE.md lists `thumbs clean` among what the ABI cannot reach, noting that the loop itself is in cli/, and 053 owns closing that. A client that grew its own cache cleaning would inherit none of this.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:cmd_thumbs`, `core/thumbs.cpp:is_thumbnail_filename` |
+| Binds | `thumbs.clean` |
+| Protects | thumb-cache, original-file |
+| Evidence | witness: `ThumbsTest.ThumbnailNameAcceptsValidSha256Jpg`, `ThumbsTest.ThumbnailNameRejectsForeignFiles` |
+| Test gap | Both listed tests call is_thumbnail_filename directly; tests/test_thumbs.cpp:117 says so in a comment, that the predicate 'gates thumbs clean deletion'. Nothing drives cmd_thumbs, which is a cli/ function no fixture calls, so the loop that consults the predicate, the --dry-run branch and the empty-directory sweep are all unpinned and were measured by running the binary. |
+
+### R78 — violated (test gap)
+
+A metadata write refuses to run unless the caller named which images it applies to.
+
+tag add, tag remove, gallery set, gallery clear, fav add and fav remove each require at least one --match or a --path and exit 1 otherwise (cli/main.cpp:1587, :1655, :1707). Without that check select_paths would hand the write every row in the collection, since passes_selection returns true for everything when the match list is empty (R74): `phig tag remove holiday` would strip that tag collection-wide and `phig gallery clear` would empty every gallery, both silently, both destroying user-authored metadata nothing can rebuild, and neither leaving a trace — metadata.write opens no logged operation, so there is no restore snapshot and no activity-log entry to read afterwards. Measured with the built binary: all three refused, with 'Error: tag remove requires --match or --path', 'Error: gallery clear requires --match or --path' and 'Error: fav remove requires --match or --path', each exiting 1. Recorded as violated for the guard's location: it is three copies in cli/, and Database::set_tag, set_gallery and clear_gallery act on whatever path list they are handed. The ABI is not exposed today, because phig_tag_add and its five neighbours take an explicit array of image ids and a client cannot ask for everything by omission — but the guard belongs with the write rather than with one caller of it, and 053 owns bringing glob selection to the ABI, which is the change that would otherwise reintroduce the hole.
+
+| | |
+|---|---|
+| Enforced at | `cli/main.cpp:cmd_tag`, `cli/main.cpp:cmd_gallery`, `cli/main.cpp:cmd_fav` |
+| Binds | `metadata.write` |
+| Protects | user-metadata |
+| Evidence | subprocess: none |
+| Test gap | Nothing in tests/ drives cmd_tag, cmd_gallery or cmd_fav — all three are cli/ functions no fixture calls — so every refusal above was measured by running the binary. Only a subprocess test could pin them, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes. |

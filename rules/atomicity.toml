@@ -39,9 +39,13 @@ binds = [
     "relink.transfer", "relink.demote", "relink.demote_live_photo", "metadata.write",
 ]
 protects = ["db-row", "user-metadata", "activity-log"]
-tests = ["DatabaseConcurrency.ConcurrentMigrationIsSafe"]
+tests = [
+    "DatabaseConcurrency.ConcurrentMigrationIsSafe",
+    "DatabaseConcurrency.AMigrationStepAnotherThreadAppliedIsSkippedInsideTheTransaction",
+]
 test_kind = "witness"
 status = "holds"
+test_gap = "ConcurrentMigrationIsSafe races two threads through init_schema on a rolled-back database and catches a regression only statistically: nothing forces the interleave, so a run where one thread finishes before the other starts has the second read the current version and do nothing, never entering the re-check inside the IMMEDIATE transaction, and passing identically. Measured with the re-check deleted from init_schema, it failed 0 of 20 runs. AMigrationStepAnotherThreadAppliedIsSkippedInsideTheTransaction forces what that one hopes for: a third connection holds the write lock while both threads read version 4 and then block on the first migration's BEGIN IMMEDIATE, so one applies every step and the other finds them applied from inside its own transaction. Each thread's init_schema is timed, because a thread that had read the current version would have returned without opening a transaction at all — that is the assertion which says the window was entered. With the same re-check deleted it failed 20 of 20. What is still uncovered is the two schema-creation paths' one-transaction shape, which neither test reaches."
 
 [[rule]]
 id = "R30"
@@ -61,10 +65,11 @@ protects = ["user-metadata", "db-row"]
 tests = [
     "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTarget",
     "ScanEngine.ReconcileRunsRelinkBeforeDemoteOnSharedTargetUnlogged",
+    "ScanEngine.ReconcileInterruptedBeforeItsDeleteKeepsEveryTransferAndEveryStaleRow",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The listed tests pin the ordering, not the boundaries. No test interrupts reconcile between the transfer passes and the delete, so the interrupted state in the statement is read off the transaction boundaries rather than observed by a test — R37 records the faces half being forced by hand and re-scanned to the same end state as an uninterrupted control — and the next scan's cleanup of that state is untested."
+test_gap = "Covered on reconcile's logged branch: a BEFORE DELETE trigger scoped to the second collected path catches the run with both transfers committed and neither row deleted, and the resumed run is compared against an uninterrupted control. The unlogged branch — relink and demote calls with op_id = 0, then delete_paths rather than delete_paths_logged — is not interrupted by any test, and neither is an interruption inside a transfer pass rather than between the passes and the delete."
 
 [[rule]]
 id = "R31"
@@ -83,10 +88,15 @@ binds = [
     "remove.trash", "remove.hard", "remove.db-only", "remove.orphans",
 ]
 protects = ["activity-log"]
-tests = ["OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted"]
+tests = [
+    "OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted",
+    "DatabaseTest.LogBeginOperationCommitsItsRowBeforeAnyEntry",
+    "ScanEngine.ReconcileMarksItsOperationInterruptedWhenTheDeleteThrows",
+    "RemoveExecTest.RmMarksItsOperationInterruptedWhenTheDeleteThrows",
+]
 test_kind = "witness"
 status = "holds"
-test_gap = "The listed test covers a cancelled run, which reaches log_finish_operation through the normal return rather than through a catch. Nothing drives the exception path in run_reconcile or cmd_rm, and nothing covers a killed process, which is the case that leaves in_progress forever."
+test_gap = "A killed process is not covered and cannot be: no test stops one. What stands in for it is the committed-and-unfinished row a second connection can already read, which is the state a kill leaves; nothing pins that a signal specifically produces it. OrganizeEngine::apply's clause — the caller that writes completed whatever happened — is R27's finding and is untested here."
 
 [[rule]]
 id = "R32"
@@ -125,10 +135,13 @@ tests = [
     "RemoveExecTest.TrashMovesFileAndLogs",
     "RemoveExecTest.HardDeleteRemovesAndLogs",
     "OrganizeExecTest.CarryLogsSidecarEntryWithParentId",
+    "RemoveExecTest.TrashLeavesTheFileMovedAndUnloggedWhenTheLogWriteFails",
+    "RemoveExecTest.HardDeleteLeavesTheFileGoneAndUnloggedWhenTheLogWriteFails",
+    "OrganizeExecTest.CarryLeavesTheSidecarMovedAndUnloggedWhenTheLogWriteFails",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The listed tests show the entry is written after a successful disk action. None covers the window itself, which needs a failure injected between the two calls, and none covers the absent compensation."
+test_gap = "The window and the absent compensation are covered at all three anchors: PRAGMA query_only fails the log write with the disk change already made, and each test asserts the file stayed where it was put and no entry names it. What the three do not cover is the carry of a Live Photo's video, which is the same code path further down carry_sidecars and logs the same way."
 
 [[rule]]
 id = "R34"
@@ -162,3 +175,40 @@ tests = []
 test_kind = "witness"
 status = "violated"
 test_gap = "Nothing drives apply with a carry that fails. The three OrganizeCarryNoClobber tests call carry_sidecars directly and assert the occupant survives, so the throw is covered and its effect on the counters is not. No test anywhere asserts a non-zero organize error count — OrganizeEngineTest and tests/test_libphig_organize.cpp both only ever assert errors == 0 — so the double count was measured by running the binary."
+
+[[rule]]
+id = "R72"
+tier = "engine"
+concern = "atomicity"
+statement = "A run that will detect faces establishes that it can detect before it writes anything: the OpenCV it was built against must be able to run the detection model, and both model files must be present."
+rationale = "Both engines build every FaceDetector up front — ScanEngine::run_workers before the first file, FacesEngine::run after selection and before the first worker — so a constructor that throws costs the run and nothing else. Deferring either check to the first detection would not: the workers are already committing batches by then, and parallel_for_each stops every worker on the first exception, so the failure would arrive on top of a partly written scan. The OpenCV half is the one that was missing. YuNet 2023mar's ONNX graph imports on older OpenCV and cannot run: FaceDetectorYN::create succeeds and the first detect() throws '(-204:Requested object was not found) Layer with requested id=-1 not found in function getLayerData'. Measured against the model file phig downloads — 4.6.0 and 4.7.0 both throw, 4.8.0 and 4.10.0 both run it clean, and FaceRecognizerSF::create works on all four, so the detector alone sets the 4.8.0 floor. Ubuntu 24.04 ships 4.6.0, which is why the guard exists rather than being a theoretical case. The check is compile-time because the linked OpenCV is fixed when phig is built, and it runs ahead of the models check because below the floor the models are beside the point: telling that user to download them would send them the wrong way."
+enforced_at = ["core/faces.cpp:FaceDetector::Impl"]
+binds = ["scan.walk", "faces.rebuild"]
+protects = ["db-row"]
+tests = [
+    "ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor",
+    "ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing",
+    "FacesEngineRun.RefusesTheRunWhenNoDetectorCanBeBuiltAndWritesNothing",
+    "FacesEngineRun.CliFaceNameRefusesWhenNoDetectorCanBeBuilt",
+    "FacesEngineRun.CliSearchByFaceRefusesWhenNoDetectorCanBeBuilt",
+]
+test_kind = "subprocess"
+status = "holds"
+test_gap = "The other three entry points are covered now: FacesEngine::run over a non-empty selection, and `phig face name` and `search --face` as subprocess cases. None of them skips. They create the missing-models condition instead of waiting for a machine that has it — the in-process one points models_dir() at an empty directory through set_path_overrides, the two subprocess ones inherit an empty XDG_CACHE_HOME — and each asserts the reason that applies on the leg it runs on, the models below the OpenCV floor and the version below it. Each also asserts nothing was written: the rebuild's existing face row is still there, `face name` created no person, and the search listed no image. Measured with both checks in FaceDetector::Impl short-circuited: all three fail, and what arrives instead is OpenCV's own 'Can't read ONNX file', which is the opaque failure the guard exists to replace. The two scan-path witnesses still skip in the models-present run that check 2 reads, so a failure in either surfaces as a red step rather than as this rule's name. The 4.8.0 floor itself is pinned by no test at all — it came from running the shipped model against four OpenCV builds by hand, and a future model swap would not re-derive it."
+
+[[rule]]
+id = "R80"
+tier = "engine"
+concern = "atomicity"
+statement = "A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish."
+rationale = "Reconcile deletes rows whose files it could not find, so running it after a walk that aborted partway would delete rows for files that were simply never reached. --on-error fail is the flag that makes that reachable: an unreadable file makes run_workers flush what completed and rethrow, and cmd_scan catches the exception, prints it and returns 1 at cli/main.cpp:324-334, above the run_reconcile call at :340. ScanEngine::run composes the two the same way, run_workers then run_reconcile with a throw from the first propagating past the second (core/scan_engine.cpp:110-114), but it has no production caller — cli/ and libphig/ both call the split phases — so the sequencing has to be re-stated by every caller, and that is why this is recorded as violated rather than as a property of the engine. Cancellation is the other side of the same decision and goes the other way deliberately: an interrupted walk returns completed = false rather than throwing, and cmd_scan reconciles anyway, which is safe for the same reason the statement is needed — a file the walk never reached is still on disk, so it is not a deletion candidate (R75) — and R56 records that reconcile polls no token once it starts."
+enforced_at = [
+    "cli/main.cpp:cmd_scan",
+    "core/scan_engine.cpp:ScanEngine::run",
+]
+binds = ["scan.walk", "scan.reconcile"]
+protects = ["db-row", "user-metadata"]
+tests = ["ScanEngine.FailOnErrorThrowsAndCommitsWhatCompleted"]
+test_kind = "witness"
+status = "violated"
+test_gap = "The listed test drives ScanEngine::run with fail_on_error and an undecodable file and checks that what completed before the throw was flushed. It asserts nothing about reconcile: it neither indexes a file, deletes it from disk and checks the row survives the failed rescan, nor covers cmd_scan, which is the sequencing the CLI actually runs and which no fixture calls. The engine and the CLI stating the same order twice is the defect, and no test compares them."

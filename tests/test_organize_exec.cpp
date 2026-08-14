@@ -7,6 +7,7 @@
 #include <string>
 
 #include "database.h"
+#include "fault_injection.h"
 #include "organize_exec.h"
 #include "temp_dir.h"
 #include "types.h"
@@ -67,6 +68,20 @@ class OrganizeExecTest : public ::testing::Test {
     void set_readonly(bool on) {
         sqlite3_exec(db->db_ptr(), on ? "PRAGMA query_only=ON" : "PRAGMA query_only=OFF", nullptr,
                      nullptr, nullptr);
+    }
+
+    // Rows in operation_entries of a given kind.
+    int count_entries(const std::string& kind) {
+        std::string sql = "SELECT COUNT(*) FROM operation_entries WHERE kind='" + kind + "'";
+        int n = -1;
+        sqlite3_exec(
+            db->db_ptr(), sql.c_str(),
+            [](void* out, int, char** v, char**) {
+                *static_cast<int*>(out) = std::atoi(v[0]);
+                return 0;
+            },
+            &n, nullptr);
+        return n;
     }
 };
 
@@ -322,6 +337,32 @@ TEST_F(OrganizeExecTest, CarryLogsSidecarEntryWithParentId) {
     EXPECT_EQ(kind, "move_sidecar");
     EXPECT_EQ(edst, (dir / "dest" / "IMG_1.xmp").string());
     EXPECT_NE(rj.find("parent_image_id"), std::string::npos);
+}
+
+// The window on the carry path. Unlike execute_organize_action, which moves the
+// media file back when its database write fails, carry_sidecars has no
+// compensator: the attachment stays at the destination and the log does not
+// mention it.
+TEST_F(OrganizeExecTest, CarryLeavesTheSidecarMovedAndUnloggedWhenTheLogWriteFails) {
+    fs::path src = dir / "src" / "IMG_1.JPG";
+    fs::path dst = dir / "dest" / "IMG_1.JPG";
+    write_file(src, "AAA");
+    write_file(dir / "src" / "IMG_1.xmp", "<xmp/>");
+    insert_row(src.string());
+
+    int64_t op = db->log_begin_operation("mv", "argv", "2026-07-11T00:00:00Z");
+    execute_organize_action(*db, src.string(), dst.string(), /*is_move=*/true, op);
+
+    BlockedWrites blocked(db->db_ptr());
+    std::string err =
+        thrown_message([&] { carry_sidecars(*db, src.string(), dst.string(), true, op); });
+    blocked.release();
+
+    EXPECT_NE(err.find(BlockedWrites::kMessage), std::string::npos)
+        << "the log write must be what failed, or nothing below proves anything: [" << err << "]";
+    EXPECT_TRUE(fs::exists(dir / "dest" / "IMG_1.xmp")) << "the carry happened and is not undone";
+    EXPECT_FALSE(fs::exists(dir / "src" / "IMG_1.xmp"));
+    EXPECT_EQ(count_entries("move_sidecar"), 0) << "the file moved and the log does not know";
 }
 
 // ---- carry_sidecars: RAW's attached JPEG ----

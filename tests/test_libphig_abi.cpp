@@ -1,7 +1,13 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 
+#include <cctype>
+#include <cstddef>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -60,6 +66,117 @@ struct PathOverrideGuard {
 
 TEST(Abi, VersionMajorMatchesHeader) {
     EXPECT_EQ(phig_abi_version() >> 16, PHIG_ABI_VERSION_MAJOR);
+}
+
+namespace {
+// How many entry points the header exported when a given ABI version was
+// current. Appended to, never edited: a row is a statement about a version that
+// has already been published.
+struct AbiSymbolCount {
+    unsigned major;
+    unsigned minor;
+    size_t symbols;
+};
+constexpr AbiSymbolCount kAbiSymbolCounts[] = {
+    {1, 3, 69},
+};
+
+// Every exported entry point declared in the public header.
+//
+// An exported declaration is a line beginning `PHIG_API`; the name is the
+// phig_-prefixed identifier on it that is followed by `(`. Deliberately not the
+// looser "any phig_foo( anywhere in the file" that scripts/rules.py's coverage
+// check uses, which also matches the prose in the doc comments.
+std::set<std::string> exported_symbols(const std::string& header_text) {
+    std::set<std::string> names;
+    std::istringstream lines(header_text);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (line.rfind("PHIG_API", 0) != 0) continue;
+        for (size_t i = 0; i + 5 < line.size(); ++i) {
+            if (line.compare(i, 5, "phig_") != 0) continue;
+            if (i > 0 &&
+                (std::isalnum(static_cast<unsigned char>(line[i - 1])) || line[i - 1] == '_')) {
+                continue;
+            }
+            size_t end = i;
+            while (end < line.size() &&
+                   (std::isalnum(static_cast<unsigned char>(line[end])) || line[end] == '_')) {
+                ++end;
+            }
+            if (end < line.size() && line[end] == '(') names.insert(line.substr(i, end - i));
+        }
+    }
+    return names;
+}
+}  // namespace
+
+// Adding a symbol has to bump PHIG_ABI_VERSION_MINOR and the CMake VERSION, and
+// nothing in the build makes that happen. The export lists match on the phig_
+// prefix, so a new entry point ships exported with both numbers untouched, and
+// scripts/rules.py's version check only compares the header against
+// libphig/CMakeLists.txt — three numbers that still agree with each other.
+//
+// This is the missing trigger: the header's own exported declarations, counted
+// against what was recorded for the minor it claims to be. Add a symbol and
+// this fails until either the version moves and kAbiSymbolCounts gains a row,
+// or somebody deliberately falsifies the row for the current one.
+TEST(Abi, ExportedSymbolCountMatchesTheRecordedAbiVersion) {
+    const std::filesystem::path header = "libphig/include/phig/phig.h";
+    ASSERT_TRUE(std::filesystem::exists(header))
+        << "run the suite from the source root (ctest does); cwd is "
+        << std::filesystem::current_path();
+    std::ifstream in(header);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const AbiSymbolCount* row = nullptr;
+    for (const auto& candidate : kAbiSymbolCounts) {
+        if (candidate.major == PHIG_ABI_VERSION_MAJOR &&
+            candidate.minor == PHIG_ABI_VERSION_MINOR) {
+            row = &candidate;
+        }
+    }
+    ASSERT_NE(row, nullptr) << "ABI " << PHIG_ABI_VERSION_MAJOR << "." << PHIG_ABI_VERSION_MINOR
+                            << " has no row in kAbiSymbolCounts — add one saying how many "
+                               "symbols it exports";
+
+    std::set<std::string> names = exported_symbols(text);
+    EXPECT_EQ(names.size(), row->symbols)
+        << "the header declares " << names.size() << " exported symbols and ABI "
+        << PHIG_ABI_VERSION_MAJOR << "." << PHIG_ABI_VERSION_MINOR << " was recorded with "
+        << row->symbols << ". Adding one bumps PHIG_ABI_VERSION_MINOR and "
+        << "libphig/CMakeLists.txt's VERSION — never SOVERSION — and then gets a row here.";
+}
+
+// phig_op_progress is caller-allocated and phig_op_poll fills it, with no size
+// and no version member, so a field added to it makes a newer libphig write
+// past the end of an older client's buffer. tests/test_libphig_c_compile.c
+// carries the same layout pin as negative-width bitfields, which fails the
+// build rather than a run; this is the half the record can name and check 2 can
+// see pass, and it is C++'s view of the same struct the C translation unit
+// pins.
+TEST(Abi, OpProgressGainsNoField) {
+    EXPECT_EQ(offsetof(phig_op_progress, stage), 0u);
+    EXPECT_EQ(offsetof(phig_op_progress, total),
+              offsetof(phig_op_progress, done) + sizeof(uint64_t));
+    EXPECT_EQ(offsetof(phig_op_progress, processed),
+              offsetof(phig_op_progress, total) + sizeof(uint64_t));
+    EXPECT_EQ(offsetof(phig_op_progress, skipped),
+              offsetof(phig_op_progress, processed) + sizeof(uint64_t));
+    EXPECT_EQ(offsetof(phig_op_progress, errors),
+              offsetof(phig_op_progress, skipped) + sizeof(uint64_t));
+    EXPECT_EQ(offsetof(phig_op_progress, path),
+              offsetof(phig_op_progress, errors) + sizeof(uint64_t));
+    EXPECT_EQ(offsetof(phig_op_progress, error),
+              offsetof(phig_op_progress, path) + sizeof(const char*));
+    EXPECT_EQ(sizeof(phig_op_progress), offsetof(phig_op_progress, error) + sizeof(const char*))
+        << "phig_op_progress grew: a new counter is a new struct and a new poll symbol";
+    // `done` is the only field whose offset no predecessor fixes: it sits at
+    // the enum's size rounded up to alignof(uint64_t).
+    EXPECT_EQ(
+        offsetof(phig_op_progress, done),
+        ((sizeof(phig_op_stage) + alignof(uint64_t) - 1) / alignof(uint64_t)) * alignof(uint64_t));
 }
 
 TEST(Abi, InitRejectsNullConfig) {

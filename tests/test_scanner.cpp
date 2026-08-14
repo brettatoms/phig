@@ -2,8 +2,10 @@
 
 #include <filesystem>
 #include <fstream>
+#include <string>
 
 #include "scanner.h"
+#include "sidecar.h"
 #include "temp_dir.h"
 
 namespace fs = std::filesystem;
@@ -54,6 +56,24 @@ TEST_F(ScannerTest, SkipsUnknownExtensions) {
     create_file("notes.txt");
     auto files = scan_directory(test_dir, false);
     EXPECT_EQ(files.size(), 1);
+}
+
+// A sidecar describes a photo, so indexing one would give a single shot two
+// rows. The exclusion is structural rather than a check: the walk admits a file
+// only when its extension is in the media allowlist, and no sidecar extension is
+// in it. Every sidecar extension goes in front of the walk here, so the
+// disjointness of the two sets is asserted rather than read off them.
+TEST_F(ScannerTest, SkipsEverySidecarExtensionBesideAPhoto) {
+    create_file("photo.jpg");
+    for (const char* ext : {"xmp", "pp3", "dop", "on1", "aae", "json", "thm", "lrv"}) {
+        EXPECT_TRUE(is_known_sidecar_extension(ext)) << ext << " is not a sidecar extension";
+        create_file(std::string("photo.") + ext);
+    }
+
+    auto files = scan_directory(test_dir, false);
+
+    ASSERT_EQ(files.size(), 1u);
+    EXPECT_EQ(files[0].filename(), "photo.jpg");
 }
 
 TEST_F(ScannerTest, SkipsMacResourceForks) {

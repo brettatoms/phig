@@ -134,7 +134,7 @@ static const std::vector<std::string>& migrations() {
        ALTER TABLE faces_new RENAME TO faces;
        CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id);)",
         // v9: images.id to AUTOINCREMENT so a deleted id is never reissued
-        // (R72). A plain INTEGER PRIMARY KEY is the rowid and is assigned
+        // (R84). A plain INTEGER PRIMARY KEY is the rowid and is assigned
         // max(rowid)+1, so deleting the highest image hands its id to the next
         // insert — and the ABI gives ids to clients that come back to write
         // against them.

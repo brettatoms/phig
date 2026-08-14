@@ -2,7 +2,7 @@
 name: Silent Loss on a Successful Run
 status: designing
 created: 2026-08-10
-closes_rules: [R27, R48, R60, R66, R69]
+closes_rules: [R27, R48, R60, R66, R69, R73, R81, R83]
 description: >
   Four measured defects that share one shape: the operation finishes, reports
   success, exits 0, and something that mattered is gone or wrongly counted.
@@ -172,6 +172,120 @@ it, and phig was given the path only as somewhere to write. R69 records it under
 that is the one place this plan's shape strains the taxonomy.
 
 The fix lands in `cli/` and is the same scoping question as open question 3.
+
+## R81 — staging a stdin query image destroys a file nobody named
+
+R69's sibling, found in 054's flag fix round and claimed here for the same
+reasons: same file, same function, same asset, and open question 6 has to be
+answered for it at the same time as for the four `ofstream` sites. It is worse
+than R69 on every axis. `--output` at least names the path it destroys; here
+the operator names nothing, and the destroyed path is not in the command line.
+
+`search --similar -` and `search --face -` both call `read_stdin_to_temp`
+(`cli/main.cpp:821`). Three properties, independent of each other:
+
+1. **The name is fixed.** `fs::temp_directory_path() / "phig-stdin-image"` —
+   no PID, no randomization, no `mkstemp`. A regular file there is truncated
+   and then removed by `TempCleanup` (`:879-884`), so it is gone rather than
+   overwritten. Two concurrent stdin searches share the path, and nothing
+   serializes them: `search` takes no writer lock (R49).
+2. **The open follows a symlink.** `std::ofstream` writes through it, so the
+   bytes land outside the temp directory entirely, and the `fs::remove`
+   afterwards unlinks only the link — the victim keeps phig's bytes and the
+   evidence is deleted.
+3. **It destroys on a run that reports failure.** The stream truncates before
+   `file_size` is consulted, so empty stdin leaves the target at 0 bytes, then
+   prints `No data received on stdin` and exits 1.
+
+Measured with the built binary against a two-image collection, the temp path
+symlinked to a 24-byte file reading `IRREPLACEABLE USER DATA`: `cat
+faces_small.jpg | phig search --similar -` printed one result, exited 0, and
+left a 27070-byte 320x320 JPEG in its place with the symlink gone. `--face -`
+did the same to another file. Empty stdin left a 26-byte file empty on an
+exit-1 run. `cmd_search`'s empty-database guard (`:858`) returns above the
+stdin read, so a collection with no rows exits first and the file survives —
+which is why a first attempt at reproducing this can show nothing.
+
+This one is not "silent loss on a *successful* run" in every branch — case 3
+exits 1 — so it stretches the plan's title. It is kept here anyway because the
+plan's subject is the shape, and cases 1 and 2 are the shape exactly.
+
+## R73 — an unrecognized flag is rejected in `cli/` only
+
+Added by plan 054's flag pass, claimed here because it was R60's loss with a
+cheaper trigger, and still claimed because only half of it is closed.
+
+The behaviour is fixed. All thirteen of `cli/main.cpp`'s flag loops now end in
+an else that prints `Unknown option:` and returns 1; `face rebuild`'s
+(`:1421-1435`) was the last to get one. Until it did, an argument that loop did
+not recognize was stepped over along with its value and the run proceeded, which
+left `opts.matches` empty — that selects every image (R74), and the rebuild
+deletes every selected image's face rows, labels included. Measured with the
+built binary against a two-image scratch collection holding one named face:
+`--mtach '*a.jpg'` printed `Rebuilding face data for 2 images...`, exited 0 and
+left the person with no faces attached, where `--match '*a.jpg'` printed
+`Rebuilding face data for 1 images...`. With the else branch the same typo
+prints `Unknown option: --mtach` and exits 1 with the labeled face row
+untouched, pinned by
+`FacesEngineRun.CliRejectsAnUnknownFlagWithoutTouchingFaceData`.
+
+What is left is the layer. All thirteen guards are argv validation in `cli/`, so
+libphig and a future `phigd` inherit none of them and each has to refuse input
+it does not recognize on its own. That is why the record stays `violated` in
+`rules/boundary.toml` and why this plan still claims it: the work remaining is
+moving the guard, not writing it.
+
+It does not gate R60, and the two are still worth deciding together — an
+authorization step in front of a rebuild blunts a typo as well, and a parser
+that refuses unknown flags does not make an unprompted rebuild safe.
+
+## R83 — a failed delete reports no reason
+
+Added by plan 054's phase 3, and the one finding here about a run that *fails*.
+`delete_paths_logged` and `log_prune` (`core/database.cpp:972` and `:729`) each
+define a `fail` lambda that runs `exec("ROLLBACK")` and then reads
+`sqlite3_errmsg(db_)`; `delete_paths` inlines the same order twice, at `:944`
+and `:959`. A ROLLBACK that succeeds is the connection's most recent result, so
+by the time the message is built the cause is gone. Measured with a
+`BEFORE DELETE` trigger raising `ABORT`: `Failed to delete path '/x/a.jpg': not
+an error` from both delete functions, `Failed to prune operations: not an error`
+from the prune. The abort's own text reached nobody.
+
+Nothing is lost from disk or from the database — the rollback is correct. What
+is lost is the only account of the failure phig produces: that string is what
+the caller prints and what the diagnostic log records, and the activity log has
+no reason field, so R27's `interrupted` is the whole of the record. A full disk,
+an expired busy timeout, a constraint and an I/O error all read the same, and
+the operator cannot tell a retry worth making from one that never will be.
+
+The fix is to read the message into a local before the rollback, at three sites.
+`step_write_or_throw` in the same file already has the right shape, and so do
+the five `catch (...) { exec("ROLLBACK"); throw; }` blocks that rethrow the
+original exception untouched.
+
+It is here because R27 is its sibling: same asset, same file for one of the
+three anchors, and the same kind of defect one branch over — R27 is a failed run
+recorded with the wrong terminal status, this is a failed run recorded with no
+reason at all. It strains the title in the same direction R81 does, and further:
+every branch of it reports failure. The plan's subject is the signal the user is
+given, and here the signal carries nothing. Plan 041 was the alternative — it
+rewrites `delete_paths` and `delete_paths_logged` for R25 and R40, so two of the
+three anchors are already open in front of it — and was rejected because
+`log_prune` is not among its files and because closing this in passing is how a
+three-line fix acquires the schedule of a reconcile redesign.
+
+Independent of the fix and not claimed by this rule: a throw from
+`delete_faces_for_image` or `log_add_entry` inside `delete_paths_logged` reaches
+no `fail` at all, so the transaction it opened is never rolled back. That is why
+the erasure went unnoticed — the one database failure phig sees in the field
+(plan 046) takes that route and keeps its text — but it leaves the transaction
+open. Measured with a `BEFORE INSERT ON operation_entries` trigger raising
+`ABORT`: `delete_paths_logged` threw `Failed to insert operation entry:
+phig-test-fault: entry blocked` and left `sqlite3_get_autocommit` at 0, and the
+caller's `log_finish_operation(op_id, "interrupted")` then succeeded inside that
+same open transaction, so the `interrupted` status is never committed. Neither
+`run_reconcile` nor `cmd_rm` rolls back on this path; the connection's close
+does.
 
 ## Ordering: R60 does not wait for the others
 

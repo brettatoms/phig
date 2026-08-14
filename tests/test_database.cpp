@@ -4,10 +4,16 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
+#include <memory>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "database.h"
+#include "fault_injection.h"
+#include "phig_binary.h"
 #include "temp_dir.h"
 #include "types.h"
 
@@ -127,6 +133,10 @@ TEST_F(DatabaseTest, ReinsertPreservesGallery) {
     EXPECT_TRUE(found);
 }
 
+// A person label is user-authored and nothing can reconstruct it, so an
+// unchanged file must not lose one to an ordinary re-scan. The boxes and
+// embeddings are re-derivable; the name is not, which is why it is asserted
+// here rather than inferred from the face row surviving.
 TEST_F(DatabaseTest, ReinsertSameContentKeepsFaces) {
     db->insert(make_image("/test/a.jpg", "sha1"));
     int64_t id = db->get_image_id("/test/a.jpg");
@@ -136,11 +146,14 @@ TEST_F(DatabaseTest, ReinsertSameContentKeepsFaces) {
     face.y = 2;
     face.width = 10;
     face.height = 10;
-    db->insert_face(id, face);
+    int64_t face_id = db->insert_face(id, face);
+    ASSERT_TRUE(db->set_face_person(face_id, db->get_or_create_person("alice")));
 
     db->insert(make_image("/test/a.jpg", "sha1"));  // same bytes (e.g. --force)
     EXPECT_TRUE(db->has_faces("/test/a.jpg"));
     EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 1);
+    EXPECT_EQ(db->get_images_for_person("alice"), std::vector<std::string>{"/test/a.jpg"})
+        << "an unchanged file must keep the name someone typed";
 }
 
 TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
@@ -152,12 +165,15 @@ TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
     face.y = 2;
     face.width = 10;
     face.height = 10;
-    db->insert_face(id, face);
+    int64_t face_id = db->insert_face(id, face);
+    ASSERT_TRUE(db->set_face_person(face_id, db->get_or_create_person("alice")));
 
     db->insert(make_image("/test/a.jpg", "sha2"));  // content changed
     EXPECT_FALSE(db->has_faces("/test/a.jpg"));
     EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM faces"), 0);
     EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 0);
+    // The label describes a box over pixels that are gone, so it goes with it.
+    EXPECT_TRUE(db->get_images_for_person("alice").empty());
 }
 
 TEST_F(DatabaseTest, InsertFaceReturnsTheNewRowid) {
@@ -894,6 +910,85 @@ TEST_F(DatabaseTest, PurgeLogsRestorableSnapshot) {
     sqlite3_finalize(s);
 }
 
+// The rollback half: the purge_row entry goes in before the DELETE it
+// describes, inside one transaction, so a delete that fails takes the entry
+// with it and the log never names a row that is still there. The failure is
+// injected rather than raced — a BEFORE DELETE trigger aborts the statement
+// with the entry already in the transaction, which is the only way into that
+// window.
+TEST_F(DatabaseTest, PurgeEntryRollsBackWithTheDeleteItDescribes) {
+    db->insert(make_image("/x/a.jpg", "shaA"));
+    int64_t op = db->log_begin_operation("rm", "phig rm --db-only", "2026-07-06T00:00:00Z");
+
+    BlockedImageDeletes blocked(db->db_ptr());
+    std::string err = thrown_message([&] { db->delete_paths_logged({"/x/a.jpg"}, op); });
+    blocked.release();
+
+    EXPECT_EQ(blocked.fired(), 1) << "the fault must have fired, or nothing below proves anything";
+    EXPECT_NE(err.find("Failed to delete path '/x/a.jpg'"), std::string::npos)
+        << "the throw must come from the blocked delete, not somewhere earlier: [" << err << "]";
+    EXPECT_GE(db->get_image_id("/x/a.jpg"), 0) << "an aborted delete leaves the row";
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM operation_entries"), 0)
+        << "the entry was inserted before the delete and must roll back with it";
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM operations WHERE entry_count = 0"), 1)
+        << "the entry_count bump is in the same transaction and rolls back too";
+}
+
+// log_begin_operation writes its row on its own, before the first entry, so
+// another connection can already see it while the run is still going. That is
+// exactly what a killed process leaves: a committed operation nobody finished.
+TEST_F(DatabaseTest, LogBeginOperationCommitsItsRowBeforeAnyEntry) {
+    int64_t op = db->log_begin_operation("rm", "phig rm --db-only", "2026-07-06T00:00:00Z");
+
+    // Nothing has been finished, and nothing on this connection has committed
+    // since — a second connection sees the row only if it was committed alone.
+    Database other(db_path);
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(
+        sqlite3_prepare_v2(other.db_ptr(), "SELECT status, entry_count FROM operations WHERE id=?",
+                           -1, &s, nullptr),
+        SQLITE_OK);
+    sqlite3_bind_int64(s, 1, op);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW) << "the operation row must already be committed";
+    std::string status = reinterpret_cast<const char*>(sqlite3_column_text(s, 0));
+    int64_t entries = sqlite3_column_int64(s, 1);
+    sqlite3_finalize(s);
+
+    EXPECT_EQ(status, "in_progress") << "an unfinished operation stays in_progress";
+    EXPECT_EQ(entries, 0) << "the row is visible before any entry exists";
+}
+
+// The third of plan 041's three guards on the delete path: a path with no row
+// deletes nothing, logs nothing and is not counted. Both callers build their
+// list from rows they have just read, so today the branch is reachable only
+// when another writer removes one in between — the call itself needs no
+// concurrency to exercise it.
+TEST_F(DatabaseTest, DeletePathsLoggedSkipsAPathWithNoRow) {
+    db->insert(make_image("/x/present.jpg", "shaA"));
+    int64_t op = db->log_begin_operation("rm", "phig rm --db-only", "2026-07-06T00:00:00Z");
+
+    int n = db->delete_paths_logged({"/x/present.jpg", "/x/absent.jpg"}, op);
+    db->log_finish_operation(op, "completed");
+
+    EXPECT_EQ(n, 1) << "a path with no row must not be counted as removed";
+    EXPECT_LT(db->get_image_id("/x/present.jpg"), 0) << "the row that existed was still deleted";
+
+    std::vector<std::string> logged_srcs;
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db->db_ptr(),
+                                 "SELECT src FROM operation_entries WHERE op_id=? AND "
+                                 "kind='purge_row' ORDER BY src",
+                                 -1, &s, nullptr),
+              SQLITE_OK);
+    sqlite3_bind_int64(s, 1, op);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        logged_srcs.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)));
+    }
+    sqlite3_finalize(s);
+    EXPECT_EQ(logged_srcs, std::vector<std::string>{"/x/present.jpg"})
+        << "the absent path must produce no entry";
+}
+
 TEST_F(DatabaseTest, LogPruneAlwaysKeepsNewestOperation) {
     // A single operation larger than the cap must not delete itself — the
     // just-recorded run must remain rollback-able (review [2]).
@@ -1024,6 +1119,19 @@ static void raw_exec(sqlite3* db, const char* sql) {
     }
 }
 
+// The recorded schema version as `db` sees it, or -1 when there is no meta
+// table. Database::get_schema_version() is private, like exec().
+static int schema_version_of(sqlite3* db) {
+    sqlite3_stmt* s = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key='schema_version'", -1, &s,
+                           nullptr) != SQLITE_OK)
+        return -1;
+    int v = -1;
+    if (sqlite3_step(s) == SQLITE_ROW) v = sqlite3_column_int(s, 0);
+    sqlite3_finalize(s);
+    return v;
+}
+
 // Reproduces the deferred-BEGIN hazard directly with raw SQL on two WAL
 // connections: A pins a read snapshot with a deferred BEGIN, B commits a write
 // that advances the DB past A's snapshot, then A's write fails with
@@ -1133,6 +1241,223 @@ TEST(DatabaseConcurrency, ConcurrentMigrationIsSafe) {
     // Read the expected version from the library rather than hardcoding it, so
     // adding a migration does not silently break an unrelated concurrency test.
     EXPECT_EQ(version, std::to_string(Database::expected_schema_version()));
+
+    fs::remove_all(dir);
+}
+
+// The same migration race as ConcurrentMigrationIsSafe with the interleave
+// forced instead of hoped for. There, one thread can finish before the other
+// starts, in which case the second reads the current version, runs no migration
+// and the re-check inside the transaction is never entered — the run passes
+// identically. Here a third connection holds the write lock, so both threads
+// read version 4 outside a transaction and then both block on the first
+// migration's BEGIN IMMEDIATE. When the lock is released one applies every step
+// and the other finds them applied, inside the transaction, and skips.
+//
+// The elapsed times are the witness that both entered that window: a thread
+// that had read the current version would have returned from init_schema
+// without opening a transaction at all, in no measurable time.
+TEST(DatabaseConcurrency, AMigrationStepAnotherThreadAppliedIsSkippedInsideTheTransaction) {
+    namespace fs = std::filesystem;
+    fs::path dir = make_temp_dir("db-migrate-forced");
+    std::string dbp = (dir / "m.db").string();
+    {
+        Database init(dbp);
+        init.init_schema();
+        raw_exec(init.db_ptr(),
+                 "DROP TABLE IF EXISTS operation_entries;"
+                 "DROP TABLE IF EXISTS operations;"
+                 "UPDATE meta SET value='4' WHERE key='schema_version'");
+    }
+
+    // Holds the write lock, so nothing either thread does can commit until it
+    // lets go.
+    Database blocker(dbp);
+    blocker.begin_transaction();
+
+    constexpr auto kHold = std::chrono::milliseconds(300);
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+    std::atomic<int> failures{0};
+    int seen[2] = {-1, -1};
+    std::chrono::steady_clock::duration took[2] = {};
+
+    auto run = [&](int i) {
+        Database d(dbp);
+        seen[i] = schema_version_of(d.db_ptr());
+        ready.fetch_add(1);
+        while (!go.load()) std::this_thread::yield();
+        auto t0 = std::chrono::steady_clock::now();
+        try {
+            d.init_schema();
+        } catch (...) {
+            failures.fetch_add(1);
+        }
+        took[i] = std::chrono::steady_clock::now() - t0;
+    };
+    std::thread t1(run, 0), t2(run, 1);
+    while (ready.load() < 2) std::this_thread::yield();
+    go.store(true);
+    std::this_thread::sleep_for(kHold);
+    blocker.rollback_transaction();
+    t1.join();
+    t2.join();
+
+    EXPECT_EQ(seen[0], 4);
+    EXPECT_EQ(seen[1], 4) << "both threads must start from the same stale version";
+    for (int i = 0; i < 2; i++) {
+        EXPECT_GE(took[i], kHold / 2)
+            << "thread " << i << " returned from init_schema after "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(took[i]).count()
+            << "ms, so it never blocked on a migration's write lock and the interleave this test "
+               "exists to force did not happen";
+    }
+    EXPECT_EQ(failures.load(), 0) << "re-running a step another thread applied throws: "
+                                     "ALTER TABLE ADD COLUMN is not idempotent";
+
+    Database check(dbp);
+    EXPECT_EQ(schema_version_of(check.db_ptr()), Database::expected_schema_version());
+    fs::remove_all(dir);
+}
+
+// The busy timeout is armed before the connection issues its first statement,
+// and that statement is the contendable one: PRAGMA journal_mode=WAL takes an
+// exclusive lock to rewrite the file header. The window is forced rather than
+// raced — a second connection holds an EXCLUSIVE transaction on a database that
+// is still in rollback-journal mode, so the constructor has no choice but to
+// wait for it. Having waited is the assertion: a construction that returned
+// immediately never contended and would pin nothing.
+TEST(DatabaseConcurrency, ConstructionWaitsForAFirstStatementAnotherConnectionIsBlocking) {
+    namespace fs = std::filesystem;
+    fs::path dir = make_temp_dir("db-busy-first");
+    std::string dbp = (dir / "j.db").string();
+
+    // A database with content and no WAL, so the constructor's first statement
+    // has a conversion to do and a lock to take for it.
+    sqlite3* seed = nullptr;
+    ASSERT_EQ(
+        sqlite3_open_v2(dbp.c_str(), &seed, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr),
+        SQLITE_OK);
+    raw_exec(seed, "CREATE TABLE t(x)");
+    sqlite3_close(seed);
+
+    sqlite3* holder = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(dbp.c_str(), &holder, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
+    raw_exec(holder, "BEGIN EXCLUSIVE");
+    raw_exec(holder, "INSERT INTO t VALUES(1)");
+
+    // The hold starts when the constructor does, so a slow thread start cannot
+    // shrink the window from under the assertion below.
+    constexpr auto kHold = std::chrono::milliseconds(300);
+    std::atomic<bool> go{false};
+    std::thread releaser([&] {
+        while (!go.load()) std::this_thread::yield();
+        std::this_thread::sleep_for(kHold);
+        sqlite3_exec(holder, "ROLLBACK", nullptr, nullptr, nullptr);
+    });
+
+    std::unique_ptr<Database> db;
+    go.store(true);
+    auto t0 = std::chrono::steady_clock::now();
+    std::string err = thrown_message([&] { db = std::make_unique<Database>(dbp); });
+    auto waited = std::chrono::steady_clock::now() - t0;
+    releaser.join();
+    auto waited_ms = std::chrono::duration_cast<std::chrono::milliseconds>(waited).count();
+
+    EXPECT_EQ(err, "") << "with no busy handler on the first statement the constructor fails "
+                          "outright instead of waiting";
+    EXPECT_GE(waited, kHold / 2) << "the constructor returned after " << waited_ms
+                                 << "ms, so it never contended and this test pinned nothing";
+    ASSERT_TRUE(db) << "nothing left to check";
+
+    // It waited and then did the work, rather than waiting and giving up.
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db->db_ptr(), "PRAGMA journal_mode", -1, &s, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(s), SQLITE_ROW);
+    std::string mode = reinterpret_cast<const char*>(sqlite3_column_text(s, 0));
+    sqlite3_finalize(s);
+    EXPECT_EQ(mode, "wal") << "the statement that waited must also have succeeded";
+
+    db.reset();
+    sqlite3_close(holder);
+    fs::remove_all(dir);
+}
+
+// SQLITE_OPEN_FULLMUTEX only shows itself where the library's default is not
+// already serialized, so the test puts the library there and opens a control
+// connection without the flag. Apple's system SQLite is compiled
+// SQLITE_THREADSAFE=2 and defaults to multi-thread already; Debian's is
+// compiled 1 and defaults to serialized, where a connection is mutexed whatever
+// the flag says. The reconfiguration is what makes the assertion mean the same
+// thing on both, and the control connection is what proves it took.
+//
+// This mutates process-global SQLite state. ctest runs each gtest case as its
+// own process, so a parallel run is unaffected; within one process the shutdown
+// happens with no connection of this test's open, and the mode is restored to
+// the library's compile-time default on every exit path.
+TEST(DatabaseConcurrency, TheConnectionIsMutexedEvenWhereTheLibraryDefaultIsNot) {
+    namespace fs = std::filesystem;
+    const int compiled = sqlite3_threadsafe();
+    if (compiled == 0) {
+        GTEST_SKIP() << "system SQLite is compiled SQLITE_THREADSAFE=0 and has no mutexes to ask "
+                        "about";
+    }
+
+    // Restore the compile-time default rather than a fixed mode: 2 means the
+    // library starts multi-thread, 1 means it starts serialized.
+    struct ModeRestore {
+        int mode;
+        ~ModeRestore() {
+            sqlite3_shutdown();
+            sqlite3_config(mode);
+            sqlite3_initialize();
+        }
+    } restore{compiled == 2 ? SQLITE_CONFIG_MULTITHREAD : SQLITE_CONFIG_SERIALIZED};
+
+    int rc_down = sqlite3_shutdown();
+    int rc_cfg = sqlite3_config(SQLITE_CONFIG_MULTITHREAD);
+    int rc_up = sqlite3_initialize();
+    if (rc_down != SQLITE_OK || rc_cfg != SQLITE_OK || rc_up != SQLITE_OK) {
+        GTEST_SKIP() << "this SQLite refused multi-thread mode (shutdown=" << rc_down
+                     << " config=" << rc_cfg << " initialize=" << rc_up
+                     << "), so the flag cannot be told from the default here";
+    }
+
+    fs::path dir = make_temp_dir("db-fullmutex");
+    std::string dbp = (dir / "m.db").string();
+
+    // The control: the same file opened the way SQLite defaults to now. An
+    // unmutexed connection is the state the flag exists to refuse, and seeing
+    // one here is what says the reconfiguration took.
+    sqlite3* plain = nullptr;
+    ASSERT_EQ(
+        sqlite3_open_v2(dbp.c_str(), &plain, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr),
+        SQLITE_OK);
+    void* plain_mutex = sqlite3_db_mutex(plain);
+    sqlite3_close(plain);
+    ASSERT_EQ(plain_mutex, nullptr)
+        << "a connection opened without the flag came back mutexed, so multi-thread mode did not "
+           "take and nothing below distinguishes the flag from the default";
+
+    // The positive control, so a failure below reads as 'phig did not ask for
+    // the flag' rather than 'this platform ignores it'.
+    sqlite3* asked = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(dbp.c_str(), &asked,
+                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+                              nullptr),
+              SQLITE_OK);
+    void* asked_mutex = sqlite3_db_mutex(asked);
+    sqlite3_close(asked);
+    ASSERT_NE(asked_mutex, nullptr) << "this SQLite ignores SQLITE_OPEN_FULLMUTEX, so the flag "
+                                       "cannot deliver what R54 claims here";
+
+    {
+        Database db(dbp);
+        EXPECT_NE(sqlite3_db_mutex(db.db_ptr()), nullptr)
+            << "a phig connection must be serialized by SQLite whatever the library was compiled "
+               "or configured to default to — libphig promises one ctx may be called from several "
+               "threads";
+    }
 
     fs::remove_all(dir);
 }
@@ -1368,7 +1693,7 @@ TEST_F(DatabaseTest, ForeignKeyViolationsCountsAnOrphanedChildRow) {
     EXPECT_GT(db->foreign_key_violations(), 0);
 }
 
-// R72: an image id names the same image for as long as that image exists.
+// R84: an image id names the same image for as long as that image exists.
 // Schema v9 made images.id AUTOINCREMENT; before it, deleting the highest row
 // handed its id straight to the next insert.
 TEST_F(DatabaseTest, ImageIdIsNotReusedAfterTheHighestRowIsDeleted) {
@@ -1542,4 +1867,89 @@ TEST(ImagesMigrationV9, PreservesRowsIdsTagsFavoritesFacesAndLabels) {
     db.delete_paths({"/p/again.jpg"});
     EXPECT_GT(add_image(db, "/p/last.jpg", "sha_last"), top)
         << "the migrated table still reuses ids";
+}
+
+// ---- What the CLI's argv parser does with these writes (R74, R79) ----
+
+namespace {
+// The gallery recorded for `path`, or "<no row>" when the row is gone.
+std::string gallery_of(Database& db, const std::string& path) {
+    for (const auto& img : db.get_all_images()) {
+        if (img.path == path) return img.gallery;
+    }
+    return "<no row>";
+}
+}  // namespace
+
+// set_gallery takes no_overwrite as a bool and three tests pass it one directly.
+// Nothing reaches the parser branch that decides it, which has a second effect
+// no bool can show: the flag is accepted only on `set`, so `gallery clear
+// --no-overwrite` is an unknown option rather than a no-op. cli/main.cpp is not
+// linked into phig-tests, so this drives the built binary.
+TEST_F(DatabaseTest, CliGallerySetHonorsNoOverwriteAndClearRefusesTheFlag) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    const std::string a = (dir / "a.jpg").string();
+    db->insert(make_image(a, "sha-a"));
+    const std::string select = " --match '*a.jpg' --db '" + db_path + "'";
+
+    PhigRun first = run_phig(phig_bin, dir, "gallery set first" + select);
+    ASSERT_EQ(first.exit_code, 0) << first.output;
+    ASSERT_EQ(gallery_of(*db, a), "first") << first.output;
+
+    PhigRun declined = run_phig(phig_bin, dir, "gallery set second" + select + " --no-overwrite");
+    EXPECT_EQ(declined.exit_code, 0) << declined.output;
+    EXPECT_NE(declined.output.find("on 0 images"), std::string::npos)
+        << "the count is what tells a caller how many rows it declined to touch: "
+        << declined.output;
+    EXPECT_EQ(gallery_of(*db, a), "first") << "--no-overwrite replaced an assignment anyway";
+
+    // The control: the same command without the flag does replace it, so the
+    // assertion above pins the flag rather than a `gallery set` that never
+    // writes.
+    PhigRun replaced = run_phig(phig_bin, dir, "gallery set second" + select);
+    EXPECT_EQ(replaced.exit_code, 0) << replaced.output;
+    EXPECT_EQ(gallery_of(*db, a), "second") << replaced.output;
+
+    // Same flag, other subcommand: `&& is_set` in the parser makes it unknown,
+    // which stops the command before clear_gallery is reached.
+    PhigRun cleared = run_phig(phig_bin, dir, "gallery clear" + select + " --no-overwrite");
+    EXPECT_EQ(cleared.exit_code, 1) << cleared.output;
+    EXPECT_NE(cleared.output.find("Unknown option: --no-overwrite"), std::string::npos)
+        << cleared.output;
+    EXPECT_EQ(gallery_of(*db, a), "second") << "a rejected clear must clear nothing";
+}
+
+// The route tag, gallery and fav take into passes_selection is
+// cli/main.cpp:select_paths, which no test reaches. Everything else that binds
+// R74 selects inside core/; this one selects in argv-parsing code and hands
+// core a finished list of paths, so an --exclude dropped here would be invisible
+// to every other test of the rule.
+TEST_F(DatabaseTest, CliTagAddSkipsAnExcludedPath) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    const std::string kept = (dir / "kept.jpg").string();
+    const std::string spared = (dir / "spared.jpg").string();
+    db->insert(make_image(kept, "sha-kept"));
+    db->insert(make_image(spared, "sha-spared"));
+
+    PhigRun run =
+        run_phig(phig_bin, dir,
+                 "tag add holiday --match '*.jpg' --exclude '*spared*' --db '" + db_path + "'");
+
+    EXPECT_EQ(run.exit_code, 0) << run.output;
+    EXPECT_NE(run.output.find("Tagged 1 images"), std::string::npos) << run.output;
+
+    auto tagged = [&](const std::string& path) {
+        auto tags = db->get_tags_for_image(path);
+        return std::find(tags.begin(), tags.end(), "holiday") != tags.end();
+    };
+    EXPECT_TRUE(tagged(kept));
+    EXPECT_FALSE(tagged(spared)) << "--exclude did not reach the write";
 }
