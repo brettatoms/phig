@@ -267,7 +267,14 @@ entry point at all. Signatures are reshaped in place rather than accreting
    `docs/plans/2026-08-14-053-schema-v9.md`. R84 holds.
 2. `phig_query_ids` and the glob predicates, on the SQLite function — done,
    executed via `docs/plans/2026-08-14-053-query-selection.md`.
-3. Operations converted to ids; `cli/` resolves ahead of them.
+3. Operations converted to ids; `cli/` resolves ahead of them — done, executed
+   via `docs/plans/2026-08-14-053-operations-take-ids.md`. This unblocks
+   062-065. Note for whoever plans the rest: the empty-selects-nothing
+   inversion cost 56 test updates across the three engines and their ABI
+   suites, against the 6 that plan estimated. The estimate came from grepping
+   for `matches`/`excludes`, which finds the tests that used globs and misses
+   the far larger set that set no filter and relied on empty meaning
+   everything. Steps 5 and 6 touch the same kind of default.
 4. Items 5, 6, 7 — small, independent, unblocked once 2 lands. Item 7 carries
    R77's three guarantees into `core/` with the loop.
 5. R78's guard moves into `core/` beside the writes, with item 3.

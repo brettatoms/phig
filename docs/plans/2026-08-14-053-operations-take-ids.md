@@ -59,7 +59,7 @@ green with no edit. Do not bump anything; both gates already pass.
   — the rows for those ids, in ascending id order, silently skipping ids with no
   row. An empty input yields an empty vector. Tasks 2, 3 and 4 all call it.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```cpp
 TEST_F(DatabaseTest, GetImagesByIdsReturnsOnlyThoseRows) {
@@ -110,7 +110,7 @@ TEST_F(DatabaseTest, GetImagesByIdsHandlesMoreIdsThanSqliteTakesParameters) {
 }
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 ```bash
 cmake --build build -j && ./build/phig-tests --gtest_filter='DatabaseTest.GetImagesByIds*'
@@ -118,7 +118,7 @@ cmake --build build -j && ./build/phig-tests --gtest_filter='DatabaseTest.GetIma
 
 Expected: compile error — `no member named 'get_images_by_ids' in 'Database'`.
 
-- [ ] **Step 3: Declare it**
+- [x] **Step 3: Declare it**
 
 In `core/database.h`, after `ids_matching`:
 
@@ -131,7 +131,7 @@ In `core/database.h`, after `ids_matching`:
     std::vector<ImageInfo> get_images_by_ids(const std::vector<int64_t>& ids);
 ```
 
-- [ ] **Step 4: Define it**
+- [x] **Step 4: Define it**
 
 In `core/database.cpp`, after `ids_matching`. One prepared statement stepped per
 id, matching `set_gallery_by_ids` (`core/database.cpp:1547`), so there is no
@@ -181,7 +181,7 @@ std::vector<ImageInfo> Database::get_images_by_ids(const std::vector<int64_t>& i
 `<algorithm>` is needed for `sort`/`unique`; check the includes at the top of
 `core/database.cpp` and add it if absent.
 
-- [ ] **Step 5: Run to verify they pass, then the whole suite**
+- [x] **Step 5: Run to verify they pass, then the whole suite**
 
 ```bash
 cmake --build build -j && ./build/phig-tests --gtest_filter='DatabaseTest.GetImagesByIds*'
@@ -190,7 +190,7 @@ ctest --test-dir build --parallel
 
 Expected: 4 new tests PASS, whole suite PASS.
 
-- [ ] **Step 6: Format and commit**
+- [x] **Step 6: Format and commit**
 
 ```bash
 CF=/Users/brett/.local/share/mise/installs/pipx-clang-format/21.1.8/bin/clang-format
@@ -223,7 +223,7 @@ v9 means the gap names nothing rather than a later photo."
 - Produces: `ThumbsOptions::ids` (`std::vector<int64_t>`) replacing
   `matches`/`excludes`. Task 5 maps the ABI struct onto it.
 
-- [ ] **Step 1: Convert the two existing glob tests**
+- [x] **Step 1: Convert the two existing glob tests**
 
 Exactly two tests use globs, both plain `TEST` in the `ThumbsEngineRun` suite
 (not the `ThumbsEngineTest` fixture, which is a different set):
@@ -257,7 +257,7 @@ and for the exclude case:
 
 Do not delete either test; their assertions are unchanged.
 
-- [ ] **Step 2: Add the empty-selection test**
+- [x] **Step 2: Add the empty-selection test**
 
 The inversion is the risky part of this plan, so it gets its own test:
 
@@ -278,7 +278,7 @@ TEST(ThumbsEngineRun, AnEmptySelectionGeneratesNothing) {
 }
 ```
 
-- [ ] **Step 3: Run to verify they fail**
+- [x] **Step 3: Run to verify they fail**
 
 ```bash
 cmake --build build -j && ./build/phig-tests --gtest_filter='ThumbsEngine*'
@@ -286,7 +286,7 @@ cmake --build build -j && ./build/phig-tests --gtest_filter='ThumbsEngine*'
 
 Expected: compile error — `no member named 'ids' in 'ThumbsOptions'`.
 
-- [ ] **Step 4: Change the options struct**
+- [x] **Step 4: Change the options struct**
 
 `core/thumbs_engine.h`:
 
@@ -305,7 +305,7 @@ struct ThumbsOptions {
 
 `<cstdint>` and `<vector>` are needed; check the header's includes.
 
-- [ ] **Step 5: Change the engine**
+- [x] **Step 5: Change the engine**
 
 `core/thumbs_engine.cpp`, replacing the `get_all_images()` call and the
 `passes_selection` filter:
@@ -317,7 +317,7 @@ struct ThumbsOptions {
 Remove the now-unused `#include "selection.h"` if nothing else in the file uses
 it.
 
-- [ ] **Step 6: Resolve in the CLI**
+- [x] **Step 6: Resolve in the CLI**
 
 `cli/main.cpp`, where `ThumbsOptions` is filled (~line 1160). The globs were
 being handed to the engine; now they resolve first:
@@ -333,7 +333,7 @@ being handed to the engine; now they resolve first:
 This needs a `Database` in scope at that point. If the command opens one later,
 move the open earlier rather than opening a second connection.
 
-- [ ] **Step 7: Verify**
+- [x] **Step 7: Verify**
 
 ```bash
 cmake --build build -j && ./build/phig-tests --gtest_filter='ThumbsEngine*'
@@ -342,7 +342,7 @@ ctest --test-dir build --parallel
 
 Expected: PASS.
 
-- [ ] **Step 8: Check the CLI end to end**
+- [x] **Step 8: Check the CLI end to end**
 
 A unit test does not exercise argv. Confirm the command still restricts:
 
@@ -354,7 +354,7 @@ rm -f /tmp/t.db*
 
 Expected: no crash, no error, and a report of nothing to do.
 
-- [ ] **Step 9: Format and commit**
+- [x] **Step 9: Format and commit**
 
 ```bash
 CF=/Users/brett/.local/share/mise/installs/pipx-clang-format/21.1.8/bin/clang-format
@@ -387,7 +387,7 @@ Identical in shape to Task 2, on `core/faces_engine.h:13-17`,
 - Consumes: `Database::get_images_by_ids` from Task 1.
 - Produces: `FacesRebuildOptions::ids` replacing `matches`/`excludes`.
 
-- [ ] **Step 1: Update the two existing glob references and add the empty test**
+- [x] **Step 1: Update the two existing glob references and add the empty test**
 
 Exactly two tests use globs, both plain `TEST` in the `FacesEngineRun` suite:
 
@@ -415,7 +415,7 @@ Several `FacesEngineRun` tests skip when the face models are absent. This one
 must not need them: an empty selection never reaches a detector, so do not copy
 whatever model guard the neighbours use.
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 ```bash
 cmake --build build -j && ./build/phig-tests --gtest_filter='*Faces*'
@@ -423,7 +423,7 @@ cmake --build build -j && ./build/phig-tests --gtest_filter='*Faces*'
 
 Expected: compile error — `no member named 'ids' in 'FacesRebuildOptions'`.
 
-- [ ] **Step 3: Change the struct**
+- [x] **Step 3: Change the struct**
 
 ```cpp
 struct FacesRebuildOptions {
@@ -436,7 +436,7 @@ struct FacesRebuildOptions {
 };
 ```
 
-- [ ] **Step 4: Change the engine**
+- [x] **Step 4: Change the engine**
 
 `core/faces_engine.cpp`, replacing the `get_all_images()` + `passes_selection`
 loop:
@@ -445,7 +445,7 @@ loop:
     std::vector<ImageInfo> images = db_.get_images_by_ids(opts_.ids);
 ```
 
-- [ ] **Step 5: Resolve in the CLI, then verify**
+- [x] **Step 5: Resolve in the CLI, then verify**
 
 `cli/main.cpp:1419`, same pattern as Task 2.
 
@@ -455,7 +455,7 @@ cmake --build build -j && ctest --test-dir build --parallel
 
 Expected: PASS, with the usual faces skips if models are absent.
 
-- [ ] **Step 6: Format and commit**
+- [x] **Step 6: Format and commit**
 
 ```bash
 CF=/Users/brett/.local/share/mise/installs/pipx-clang-format/21.1.8/bin/clang-format
@@ -482,7 +482,7 @@ person labels R60 records as unrecoverable. Empty now selects nothing."
 - Consumes: `Database::get_images_by_ids` from Task 1.
 - Produces: `OrganizeOptions::ids` replacing `matches`/`excludes`.
 
-- [ ] **Step 1: Update the two glob references and add the empty test**
+- [x] **Step 1: Update the two glob references and add the empty test**
 
 Exactly two tests use globs, both `TEST_F` on the `OrganizeEngineTest` fixture,
 which supplies `add_image(db, name, exif_date)` and `base_opts()`:
@@ -513,7 +513,7 @@ TEST_F(OrganizeEngineTest, AnEmptySelectionPlansNothing) {
 Note `base_opts()` is the fixture's helper — check whether it sets globs, and
 have it set no ids so each test opts in explicitly.
 
-- [ ] **Step 2: Run to verify it fails, then change the struct**
+- [x] **Step 2: Run to verify it fails, then change the struct**
 
 ```cpp
 struct OrganizeOptions {
@@ -530,7 +530,7 @@ struct OrganizeOptions {
 };
 ```
 
-- [ ] **Step 3: Change the engine**
+- [x] **Step 3: Change the engine**
 
 `core/organize_engine.cpp`:
 
@@ -541,7 +541,7 @@ struct OrganizeOptions {
 `batch_sources_` is built from the same `images` vector immediately below and
 needs no change.
 
-- [ ] **Step 4: Resolve in the CLI, then verify**
+- [x] **Step 4: Resolve in the CLI, then verify**
 
 `cli/main.cpp:2014`, same pattern. Note `cmd_organize` receives a filled
 `OrganizeOptions`, so the resolution happens where the struct is built.
@@ -550,7 +550,7 @@ needs no change.
 cmake --build build -j && ctest --test-dir build --parallel
 ```
 
-- [ ] **Step 5: Check cp and mv end to end**
+- [x] **Step 5: Check cp and mv end to end**
 
 Organize moves real files, so argv coverage matters more here than anywhere:
 
@@ -566,7 +566,7 @@ rm -f /tmp/org/db*
 Expected: the first dry run lists every scanned file, the second lists none.
 That is the whole conversion, observed from outside.
 
-- [ ] **Step 6: Format and commit**
+- [x] **Step 6: Format and commit**
 
 ```bash
 CF=/Users/brett/.local/share/mise/installs/pipx-clang-format/21.1.8/bin/clang-format
@@ -582,6 +582,13 @@ what it was given. cp and mv resolve their globs to ids first."
 
 ### Task 5: The ABI's three option structs take ids
 
+> **Executed inside Tasks 2-4, not after them.** `libphig/operations.cpp` and
+> `libphig/organize.cpp` translate the ABI structs into the `core/` ones, so
+> they stop compiling the moment an engine's options change. Each ABI struct had
+> to move with its engine. The steps below were done in that order; the split
+> here was wrong.
+
+
 **Files:**
 - Modify: `libphig/include/phig/phig.h` (`phig_thumbs_options`,
   `phig_faces_options`, `phig_organize_options`)
@@ -594,7 +601,7 @@ what it was given. cp and mv resolve their globs to ids first."
 - Consumes: the three `core/` structs from Tasks 2-4.
 - Produces: the ABI's id-based selection. Plans 062-065 build on it.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `tests/test_libphig_operations.cpp`, matching its existing fixture style:
 
@@ -630,7 +637,7 @@ TEST(AbiOperations, ThumbsWithNoIdsSelectsNothing) {
 Read the file's existing operation tests first and match how they build a
 context and wait — the sketch above names the calls, not the fixture.
 
-- [ ] **Step 2: Change the header**
+- [x] **Step 2: Change the header**
 
 Replace the glob members in all three structs. For thumbs:
 
@@ -654,7 +661,7 @@ typedef struct {
 `phig_faces_options` and `phig_organize_options` take the same two members in
 place of theirs, keeping their remaining fields unchanged.
 
-- [ ] **Step 3: Change the three entry points**
+- [x] **Step 3: Change the three entry points**
 
 In `libphig/operations.cpp`, `phig_op_thumbs_start` currently does:
 
@@ -675,7 +682,7 @@ only outlive the `_start` call while the engine runs on a worker:
 Do the same in `phig_op_faces_start` and in `organize.cpp`'s plan start. If
 `copy_globs` is left with no callers, remove it.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 ```bash
 cmake --build build -j && ./build/phig-tests --gtest_filter='Abi*'
@@ -686,7 +693,7 @@ python3 scripts/rules.py --check
 Expected: PASS, and the rules gate green — no symbol was added or removed, so
 `kAbiSymbolCounts` and the version macros need no edit.
 
-- [ ] **Step 5: Format and commit**
+- [x] **Step 5: Format and commit**
 
 ```bash
 CF=/Users/brett/.local/share/mise/installs/pipx-clang-format/21.1.8/bin/clang-format
@@ -715,7 +722,7 @@ and the version macros are untouched."
 - Consumes: Tasks 1-5.
 - Produces: nothing later tasks depend on.
 
-- [ ] **Step 1: Correct `libphig/CLAUDE.md`**
+- [x] **Step 1: Correct `libphig/CLAUDE.md`**
 
 Its selection paragraph currently ends by saying the operations still take
 globs and that 053's step 3 will convert them. That is now done. Rewrite it to
@@ -725,14 +732,14 @@ directory because its subject is files with no row yet. Delete the sentence
 warning not to read the operations' shape as intended — there is no longer a
 gap to warn about.
 
-- [ ] **Step 2: Mark the work-order step done**
+- [x] **Step 2: Mark the work-order step done**
 
 ```markdown
 3. Operations converted to ids; `cli/` resolves ahead of them — done, executed
    via `docs/plans/2026-08-14-053-operations-take-ids.md`.
 ```
 
-- [ ] **Step 3: Full gate and commit**
+- [x] **Step 3: Full gate and commit**
 
 ```bash
 ctest --test-dir build --parallel
