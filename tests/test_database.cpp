@@ -1386,3 +1386,160 @@ TEST_F(DatabaseTest, ImageIdIsNotReusedAfterTheHighestRowIsDeleted) {
     EXPECT_NE(next, top) << "a deleted image id was reissued to a different file";
     EXPECT_GT(next, top);
 }
+
+// The v9 migration rebuilds images, which image_tags and faces reference with
+// ON DELETE CASCADE. SQLite's DROP TABLE deletes every row before dropping, so
+// a rebuild that ran with foreign keys enabled would empty both child tables
+// and report success. Nothing else would catch that: cascaded children leave
+// no orphans, so PRAGMA foreign_key_check reports zero violations against the
+// emptied database. This test is the only thing standing between that failure
+// and a released binary.
+TEST(ImagesMigrationV9, PreservesRowsIdsTagsFavoritesFacesAndLabels) {
+    auto dir = make_temp_dir("images-v9");
+    auto db_path = (dir / "test.db").string();
+
+    auto add_image = [](Database& db, const std::string& path, const std::string& sha) {
+        ImageInfo info;
+        info.path = path;
+        info.filename = fs::path(path).filename().string();
+        info.extension = "jpg";
+        info.file_size = 1000;
+        info.sha256 = sha;
+        info.metadata_json = R"({"Make":"Canon"})";
+        db.insert(info);
+        return db.get_image_id(path);
+    };
+
+    std::vector<int64_t> ids;
+    {
+        Database db(db_path);
+        db.init_schema();
+
+        // Rewind to a genuine v8 images table: plain INTEGER PRIMARY KEY, with
+        // the five indexes a v8 database carries. Built by hand rather than by
+        // rolling the version back alone, because a fresh database already has
+        // AUTOINCREMENT and would make the migration a no-op that proves
+        // nothing. The child tables are left in place so the migration has real
+        // cascade targets to protect.
+        const char* rewind = R"(
+            PRAGMA foreign_keys=OFF;
+            CREATE TABLE images_old (
+                id          INTEGER PRIMARY KEY,
+                path        TEXT NOT NULL UNIQUE,
+                filename    TEXT NOT NULL,
+                extension   TEXT NOT NULL,
+                file_size   INTEGER NOT NULL,
+                created_at  TEXT,
+                modified_at TEXT,
+                sha256      TEXT NOT NULL,
+                phash       INTEGER NOT NULL,
+                width       INTEGER,
+                height      INTEGER,
+                metadata    TEXT,
+                media_type  TEXT NOT NULL DEFAULT 'image',
+                duration_ms INTEGER,
+                gallery     TEXT,
+                blur_score  REAL,
+                effective_date TEXT
+            );
+            DROP TABLE images;
+            ALTER TABLE images_old RENAME TO images;
+            CREATE INDEX IF NOT EXISTS idx_phash ON images(phash);
+            CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256);
+            CREATE INDEX IF NOT EXISTS idx_path ON images(path);
+            CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery);
+            CREATE INDEX IF NOT EXISTS idx_effective_date ON images(effective_date DESC, id DESC);
+            PRAGMA foreign_keys=ON;
+            UPDATE meta SET value = '8' WHERE key = 'schema_version';
+        )";
+        ASSERT_EQ(sqlite3_exec(db.db_ptr(), rewind, nullptr, nullptr, nullptr), SQLITE_OK)
+            << sqlite3_errmsg(db.db_ptr());
+
+        for (int i = 0; i < 3; i++) {
+            ids.push_back(
+                add_image(db, "/p/" + std::to_string(i) + ".jpg", "sha" + std::to_string(i)));
+        }
+        db.set_tag({"/p/0.jpg"}, "keep", true);
+        db.set_tag({"/p/1.jpg"}, "favorite", true);
+        // Not via ImageInfo::gallery: insert's upsert deliberately never writes
+        // that column, so setting it on the struct would assert nothing.
+        ASSERT_EQ(db.set_gallery_by_ids({ids[0]}, "trip"), 1);
+
+        // Alice goes on /p/0.jpg, which survives. Putting her on the image
+        // deleted below to demonstrate id reuse would cascade her face away
+        // before the migration ever ran, and the test would be asserting
+        // against a label that was already gone.
+        FaceInfo fi;
+        fi.embedding.fill(0.25f);
+        fi.x = fi.y = fi.width = fi.height = 4;
+        int64_t face = db.insert_face(ids[0], fi);
+        ASSERT_TRUE(db.set_face_person(face, db.get_or_create_person("Alice")));
+
+        // The rewind is real: on this table a deleted id comes back.
+        int64_t top = ids.back();
+        db.delete_paths({"/p/2.jpg"});
+        ASSERT_EQ(add_image(db, "/p/again.jpg", "sha_again"), top)
+            << "the v8 rewind did not produce a reusing table";
+
+        // Give the reused id a full set of children of its own.
+        db.set_tag({"/p/again.jpg"}, "keep", true);
+        FaceInfo fi2;
+        fi2.embedding.fill(0.75f);
+        fi2.x = fi2.y = fi2.width = fi2.height = 8;
+        db.insert_face(top, fi2);
+    }
+
+    // Reopening runs the v9 migration.
+    Database db(db_path);
+    db.init_schema();
+    EXPECT_EQ(db.schema_version(), Database::expected_schema_version());
+    EXPECT_EQ(db.foreign_key_violations(), 0);
+
+    // Every row and every id survived.
+    std::vector<int64_t> after;
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db.db_ptr(), "SELECT id FROM images ORDER BY id", -1, &s, nullptr),
+              SQLITE_OK);
+    while (sqlite3_step(s) == SQLITE_ROW) after.push_back(sqlite3_column_int64(s, 0));
+    sqlite3_finalize(s);
+    std::sort(ids.begin(), ids.end());
+    EXPECT_EQ(after, ids) << "image ids changed, so every tag and face now points elsewhere";
+
+    // The cascade did not fire: tag and favorite assignments are intact.
+    EXPECT_EQ(db.get_tags_for_image("/p/0.jpg"), std::vector<std::string>{"keep"});
+    EXPECT_EQ(db.get_tags_for_image("/p/again.jpg"), std::vector<std::string>{"keep"});
+    auto favs = db.get_tags_for_image("/p/1.jpg");
+    EXPECT_NE(std::find(favs.begin(), favs.end(), "favorite"), favs.end())
+        << "the favorite assignment did not survive the rebuild";
+
+    // Faces are not an association but the data itself, and they carry labels.
+    auto people = db.list_people();
+    ASSERT_EQ(people.size(), 1u);
+    EXPECT_EQ(people[0].name, "Alice");
+    EXPECT_EQ(people[0].face_count, 1) << "the person label did not survive the rebuild";
+
+    int64_t face_rows = -1;
+    ASSERT_EQ(sqlite3_prepare_v2(db.db_ptr(), "SELECT COUNT(*) FROM faces", -1, &s, nullptr),
+              SQLITE_OK);
+    if (sqlite3_step(s) == SQLITE_ROW) face_rows = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    EXPECT_EQ(face_rows, 2) << "face rows were cascaded away by the rebuild";
+
+    // Ordinary columns came across unchanged.
+    bool saw = false;
+    for (const auto& r : db.get_all_images()) {
+        if (r.path != "/p/0.jpg") continue;
+        saw = true;
+        EXPECT_EQ(r.sha256, "sha0");
+        EXPECT_EQ(r.file_size, 1000);
+        EXPECT_EQ(r.gallery, "trip");
+        EXPECT_EQ(r.metadata_json, R"({"Make":"Canon"})");
+    }
+    EXPECT_TRUE(saw) << "/p/0.jpg is missing from the migrated table";
+
+    // And the property the migration exists for now holds.
+    int64_t top = ids.back();
+    db.delete_paths({"/p/again.jpg"});
+    EXPECT_GT(add_image(db, "/p/last.jpg", "sha_last"), top)
+        << "the migrated table still reuses ids";
+}
