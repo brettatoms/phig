@@ -1,5 +1,6 @@
 #include "database.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -2377,6 +2378,48 @@ std::vector<int64_t> Database::ids_matching(const PageCriteria& c) {
     if (rc != SQLITE_DONE) {
         throw std::runtime_error("Failed to read ids: " + std::string(sqlite3_errmsg(db_)));
     }
+    return out;
+}
+
+std::vector<ImageInfo> Database::get_images_by_ids(const std::vector<int64_t>& ids) {
+    std::vector<ImageInfo> out;
+    if (ids.empty()) return out;
+
+    // Same column list and order as search_page's, so row_to_image_info reads
+    // it correctly — the two must not drift.
+    const char* sql =
+        "SELECT id, path, filename, extension, file_size, created_at, modified_at, "
+        "effective_date, sha256, phash, width, height, metadata, media_type, "
+        "duration_ms, gallery, blur_score, "
+        "EXISTS(SELECT 1 FROM image_tags it JOIN tags t ON t.id = it.tag_id "
+        "WHERE it.image_id = images.id AND t.name = 'favorite') "
+        "FROM images WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare id fetch: " + std::string(sqlite3_errmsg(db_)));
+    }
+
+    // One statement stepped per id rather than an IN (...) list, matching
+    // set_gallery_by_ids: a selection can be the whole collection, and SQLite's
+    // bound-parameter ceiling is not a limit a caller should have to know about.
+    std::vector<int64_t> sorted = ids;
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+
+    out.reserve(sorted.size());
+    for (int64_t id : sorted) {
+        sqlite3_reset(stmt);
+        sqlite3_bind_int64(stmt, 1, id);
+        int rc = sqlite3_step(stmt);
+        if (rc == SQLITE_ROW) {
+            out.push_back(row_to_image_info(stmt));
+        } else if (rc != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            throw std::runtime_error("Failed to read row by id: " +
+                                     std::string(sqlite3_errmsg(db_)));
+        }
+    }
+    sqlite3_finalize(stmt);
     return out;
 }
 

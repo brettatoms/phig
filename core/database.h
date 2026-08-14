@@ -178,6 +178,13 @@ class Database {
     // page size would silently truncate it.
     std::vector<int64_t> ids_matching(const PageCriteria& c);
 
+    // The rows for `ids`, ascending by id, skipping any id with no row — a
+    // caller that resolved ids and then acted may find one deleted in between,
+    // and schema v9 means a missing id names nothing rather than some later
+    // photo (R84). An empty `ids` returns nothing: a selection says what it
+    // means, and the engines that call this treat empty as "no work".
+    std::vector<ImageInfo> get_images_by_ids(const std::vector<int64_t>& ids);
+
     // Reads images.metadata for one id. Returns false if no such row.
     bool get_metadata_json(int64_t id, std::string& out);
 

@@ -2098,3 +2098,52 @@ TEST_F(DatabaseTest, IdsMatchingWithNoLimitReturnsEveryMatchNotAPage) {
     pc.limit = -1;
     EXPECT_EQ(db->ids_matching(pc).size(), 250u);
 }
+
+// ---- Loading rows by id (plan 053 step 3) ----
+
+TEST_F(DatabaseTest, GetImagesByIdsReturnsOnlyThoseRows) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+    db->insert(make_image("/a/three.jpg", "sha3"));
+
+    int64_t one = db->get_image_id("/a/one.jpg");
+    int64_t three = db->get_image_id("/a/three.jpg");
+
+    auto rows = db->get_images_by_ids({one, three});
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0].path, "/a/one.jpg");
+    EXPECT_EQ(rows[1].path, "/a/three.jpg");
+    EXPECT_EQ(rows[0].sha256, "sha1");
+}
+
+TEST_F(DatabaseTest, GetImagesByIdsOnAnEmptyListReturnsNothing) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    EXPECT_TRUE(db->get_images_by_ids({}).empty())
+        << "an empty selection must select nothing, not everything";
+}
+
+TEST_F(DatabaseTest, GetImagesByIdsSkipsIdsWithNoRow) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    int64_t one = db->get_image_id("/a/one.jpg");
+
+    // A caller resolved ids, something deleted a row, then the caller acted.
+    // Schema v9 means the missing id names nothing rather than a later photo
+    // (R84), so the right behaviour is to skip it, not to fail the whole run.
+    auto rows = db->get_images_by_ids({one, one + 99999});
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].path, "/a/one.jpg");
+}
+
+TEST_F(DatabaseTest, GetImagesByIdsHandlesMoreIdsThanSqliteTakesParameters) {
+    // set_gallery_by_ids steps one statement per id rather than building an
+    // IN (...) list, and this must scale the same way: SQLite's bound-parameter
+    // ceiling is not a limit a caller should have to know about.
+    for (int i = 0; i < 1200; i++) {
+        db->insert(make_image("/a/" + std::to_string(i) + ".jpg", "sha" + std::to_string(i)));
+    }
+    Database::PageCriteria pc;
+    pc.limit = -1;
+    auto ids = db->ids_matching(pc);
+    ASSERT_EQ(ids.size(), 1200u);
+    EXPECT_EQ(db->get_images_by_ids(ids).size(), 1200u);
+}
