@@ -46,6 +46,7 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R78 | authorization | violated (test gap) | A metadata write refuses to run unless the caller named which images it applies to. |
 | R79 | metadata | holds (test gap) | Assigning a gallery replaces the assignment already on a row unless the caller asked to fill only the empty ones. |
 | R80 | atomicity | violated (test gap) | A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish. |
+| R84 | concurrency | holds | An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
 
 ## original-file — rebuildable: backup-only
 
@@ -148,6 +149,7 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
 | R75 | reconcile | holds (test gap) | Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk. |
 | R80 | atomicity | violated (test gap) | A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish. |
+| R84 | concurrency | holds | An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
 
 ## activity-log — rebuildable: no
 

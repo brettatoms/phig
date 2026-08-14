@@ -814,7 +814,7 @@ The gap between reading an id and opening the write transaction is two statement
 | Binds | `faces.rebuild` |
 | Protects | db-row, user-metadata |
 | Evidence | witness: `FacesEngineRun.ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun` |
-| Test gap | The witness now asserts the window was entered: result.errors above zero and at least one progress line reading 'image no longer in the database', both of which the engine produces only on this branch, so a run whose timing misses the race fails instead of passing identically. What it still does not pin is the 'rather than the whole run' half — its deleter removes every row, so no image survives to have its faces written, and the run's completion is evidenced by the absence of a throw rather than by other files finishing. The models are no longer the gap: the ubuntu-26.04 leg caches ~/.cache/phig/models and downloads on a miss, and that is the leg scripts/rules.py reads its results from, so check 2 sees this witness pass rather than skip on every push. It skips on the ubuntu-24.04 leg, whose OpenCV is below the 4.8.0 the detector needs (R72), so on that leg the rule has no evidence at all. |
+| Test gap | The witness now asserts the window was entered: result.errors above zero and at least one progress line reading 'image no longer in the database', both of which the engine produces only on this branch, so a run whose timing misses the race fails instead of passing identically. What it still does not pin is the 'rather than the whole run' half — its deleter removes every row, so no image survives to have its faces written, and the run's completion is evidenced by the absence of a throw rather than by other files finishing. The models are no longer the gap: the ubuntu-26.04 leg caches ~/.cache/phig/models and downloads on a miss, and that is the leg scripts/rules.py reads its results from, so check 2 sees this witness pass rather than skip on every push. It skips on the ubuntu-24.04 leg, whose OpenCV is below the 4.8.0 the detector needs (R84), so on that leg the rule has no evidence at all. |
 
 ### R53 — holds (test gap)
 
@@ -883,6 +883,19 @@ Across core/, libphig/ and cli/ three statements update the faces table — `UPD
 | Protects | user-metadata |
 | Evidence | witness: `IdentifyTest.AFaceWhoseEmbeddingChangedIsNotLabeled` |
 | Test gap | That test is the clause's only cover, and it writes the changed embedding by hand through a raw sqlite3 UPDATE because no concurrent path produces one — the test says so itself. Measured in a scratch copy with `AND embedding = ?` deleted: 806 tests ran and it was the only failure. So nothing covers this clause against a state phig can reach, and nothing can until some path rewrites an embedding in place. |
+
+### R84 — holds
+
+An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert.
+
+This is R51's property, for images instead of faces. Schema v9 declares images.id INTEGER PRIMARY KEY AUTOINCREMENT at core/database.cpp:453 and migrates an existing table by copying rows into images_new with their ids preserved, which seeds sqlite_sequence to the maximum so later inserts continue above it. Before v9 the column was a plain INTEGER PRIMARY KEY, which is the rowid and is assigned max(rowid)+1: measured against the system SQLite 3.51.0 phig links, three rows at ids 1-3 with the row at id 3 deleted gave id 3 to an unrelated path on the next insert. The ABI depends on this property — phig_query_page hands ids to a client and phig_tag_add, phig_gallery_set, phig_gallery_clear and phig_favorite_set take them back, with nothing between the read and the write to confirm the id still names the photo the caller saw — and reuse needed only a deletion at the tail of the table, which scan.reconcile and all four remove modes produce as ordinary operation. Plan 053's decision 2 makes an id the way every caller names a photo and 064 puts remove behind one, which is what raises the exposure from user-metadata to original-file. The migration could not reuse the v8 recipe: core/database.cpp:121 records that the faces rebuild is safe with foreign_keys=ON only because faces is a pure FK child, while image_tags.image_id and faces.image_id both reference images(id) ON DELETE CASCADE and the pragma is set on every open. SQLite's DROP TABLE deletes every row before dropping, so the rebuild would take every image_tags row and every faces row with it — measured, the tags and people tables survive intact but all tag and favorite assignments are gone and all face rows are gone, with their embeddings, boxes and person labels. No tag or person is destroyed; every association to one is. init_schema therefore runs every migration with foreign keys disabled rather than conditioning it on the version number, and calls foreign_key_violations inside each migration's transaction before the commit. That check does not cover the cascade case, which leaves no orphans and so reports zero violations; ImagesMigrationV9.PreservesRowsIdsTagsFavoritesFacesAndLabels is what covers it, and it was confirmed to fail with the pragma re-enabled.
+
+| | |
+|---|---|
+| Enforced at | `core/database.cpp:init_schema`, `core/database.cpp:foreign_key_violations` |
+| Binds | `scan.reconcile`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `metadata.write` |
+| Protects | user-metadata, db-row |
+| Evidence | conformance: `DatabaseTest.ImageIdIsNotReusedAfterTheHighestRowIsDeleted`, `ImagesMigrationV9.PreservesRowsIdsTagsFavoritesFacesAndLabels`, `DatabaseTest.ForeignKeyViolationsCountsAnOrphanedChildRow` |
 
 ## cancellation
 

@@ -462,10 +462,12 @@ TEST(FacesMigrationV8, PreservesIdsLabelsAndVectorsAndStopsReuse) {
         ASSERT_EQ(ids.back(), top) << "the v7 rewind did not produce a reusing table";
     }
 
-    // Reopening runs the v8 migration.
+    // Reopening runs the v8 migration, and every later one — the assertion is
+    // against the current version rather than 8 so that adding a migration
+    // does not fail a test about faces.
     Database db(db_path);
     db.init_schema();
-    EXPECT_EQ(db.schema_version(), 8);
+    EXPECT_EQ(db.schema_version(), Database::expected_schema_version());
 
     std::vector<int64_t> after;
     sqlite3_stmt* s = nullptr;
