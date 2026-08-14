@@ -2345,6 +2345,41 @@ int64_t Database::count_matching(const SearchCriteria& filter) {
     return n;
 }
 
+std::vector<int64_t> Database::ids_matching(const PageCriteria& c) {
+    std::string sql = "SELECT id FROM images WHERE 1=1";
+    std::vector<std::pair<std::string, bool>> binds;
+    build_filter_sql(c.filter, sql, binds);
+
+    const char* dir = c.descending ? "DESC" : "ASC";
+    sql += std::string(" ORDER BY ") + sort_column(c.sort) + " " + dir + ", id " + dir;
+    if (c.limit >= 0) sql += " LIMIT ? OFFSET ?";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare id query: " + std::string(sqlite3_errmsg(db_)));
+    }
+    int idx = 1;
+    bind_filter_values(stmt, binds, idx);
+    if (c.limit >= 0) {
+        sqlite3_bind_int(stmt, idx++, c.limit);
+        sqlite3_bind_int64(stmt, idx++, c.offset);
+    }
+
+    std::vector<int64_t> out;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        out.push_back(sqlite3_column_int64(stmt, 0));
+    }
+    sqlite3_finalize(stmt);
+    // A mid-iteration error would otherwise return a short list as if it were
+    // the whole selection — the failure that matters most here, because a
+    // caller acts on this list rather than displaying it.
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error("Failed to read ids: " + std::string(sqlite3_errmsg(db_)));
+    }
+    return out;
+}
+
 bool Database::get_metadata_json(int64_t id, std::string& out) {
     const char* sql = "SELECT metadata FROM images WHERE id = ?";
     sqlite3_stmt* stmt = nullptr;

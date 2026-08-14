@@ -2049,3 +2049,52 @@ TEST_F(DatabaseTest, CountMatchingHonoursGlobs) {
     c.matches = {"/a/*"};
     EXPECT_EQ(db->count_matching(c), 2);
 }
+
+TEST_F(DatabaseTest, IdsMatchingReturnsIdsInSortOrder) {
+    db->insert(make_image("/a/c.jpg", "sha3"));
+    db->insert(make_image("/a/a.jpg", "sha1"));
+    db->insert(make_image("/a/b.jpg", "sha2"));
+
+    Database::PageCriteria pc;
+    pc.sort = Database::SortKey::Path;
+    pc.descending = false;
+    pc.limit = -1;
+
+    auto ids = db->ids_matching(pc);
+    ASSERT_EQ(ids.size(), 3u);
+    EXPECT_EQ(ids[0], db->get_image_id("/a/a.jpg"));
+    EXPECT_EQ(ids[1], db->get_image_id("/a/b.jpg"));
+    EXPECT_EQ(ids[2], db->get_image_id("/a/c.jpg"));
+}
+
+TEST_F(DatabaseTest, IdsMatchingHonoursFiltersAndGlobs) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    // make_image hardcodes extension "jpg" from the fixture, so the extension
+    // filter below needs it set to match the path.
+    auto raw = make_image("/a/two.cr2", "sha2");
+    raw.extension = "cr2";
+    db->insert(raw);
+    db->insert(make_image("/b/three.jpg", "sha3"));
+
+    Database::PageCriteria pc;
+    pc.filter.matches = {"/a/*"};
+    pc.limit = -1;
+    EXPECT_EQ(db->ids_matching(pc).size(), 2u);
+
+    pc.filter.extension = "cr2";
+    auto ids = db->ids_matching(pc);
+    ASSERT_EQ(ids.size(), 1u);
+    EXPECT_EQ(ids[0], db->get_image_id("/a/two.cr2"));
+}
+
+TEST_F(DatabaseTest, IdsMatchingWithNoLimitReturnsEveryMatchNotAPage) {
+    // The default PageCriteria::limit is 200. Resolving a selection must not
+    // silently stop there, which is the whole difference between this and
+    // paging.
+    for (int i = 0; i < 250; i++) {
+        db->insert(make_image("/a/" + std::to_string(i) + ".jpg", "sha" + std::to_string(i)));
+    }
+    Database::PageCriteria pc;
+    pc.limit = -1;
+    EXPECT_EQ(db->ids_matching(pc).size(), 250u);
+}

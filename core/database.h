@@ -172,6 +172,12 @@ class Database {
     std::vector<ImageInfo> search_page(const PageCriteria& c);
     int64_t count_matching(const SearchCriteria& filter);
 
+    // The ids a query selects, in the same order search_page would return them,
+    // without materializing rows. `c.limit < 0` means every match rather than a
+    // page — resolving a selection is not paging, and stopping at the default
+    // page size would silently truncate it.
+    std::vector<int64_t> ids_matching(const PageCriteria& c);
+
     // Reads images.metadata for one id. Returns false if no such row.
     bool get_metadata_json(int64_t id, std::string& out);
 
