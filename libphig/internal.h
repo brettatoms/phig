@@ -223,6 +223,10 @@ struct phig_op {
 // Defined in records.cpp.
 phig_image_list* phig_make_image_list(const std::vector<ImageInfo>& rows);
 
+// Wraps ids in a caller-freeable phig_id_list. Takes the vector by value and
+// moves it, so the returned items pointer refers to storage the list owns.
+phig_id_list* phig_make_id_list(std::vector<int64_t> ids);
+
 // Acquires phig's process-wide advisory writer lock for one ABI mutation.
 // Non-blocking: a GUI must not freeze behind a long-running CLI job, so a
 // contended lock is reported as an error the caller can surface instead.

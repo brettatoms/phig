@@ -100,6 +100,40 @@ void phig_query_set_sort(phig_query* q, phig_sort_key key, bool descending) {
     q->criteria.descending = descending;
 }
 
+// Both glob setters allocate, which is the shape R62 names as the hole in the
+// no-exception rule: a void entry point has no way to report a failure, so the
+// throw would cross into a C caller. Nothing useful can be done with
+// std::bad_alloc here, but it must not escape.
+void phig_query_add_match(phig_query* q, const char* glob) {
+    if (q == nullptr || glob == nullptr || *glob == '\0') return;
+    try {
+        q->criteria.filter.matches.push_back(glob);
+    } catch (...) {
+    }
+}
+
+void phig_query_add_exclude(phig_query* q, const char* glob) {
+    if (q == nullptr || glob == nullptr || *glob == '\0') return;
+    try {
+        q->criteria.filter.excludes.push_back(glob);
+    } catch (...) {
+    }
+}
+
+phig_status phig_query_ids(phig_ctx* ctx, const phig_query* q, phig_id_list** out) {
+    if (out == nullptr) return PHIG_ERR_INVALID_ARG;
+    *out = nullptr;
+    if (q == nullptr) return PHIG_ERR_INVALID_ARG;
+    PHIG_TRY(ctx)
+    Database::PageCriteria c = q->criteria;
+    // Resolving a selection is not paging it: take every match, from the start.
+    c.limit = -1;
+    c.offset = 0;
+    *out = phig_make_id_list(ctx->db->ids_matching(c));
+    return PHIG_OK;
+    PHIG_CATCH(ctx)
+}
+
 phig_status phig_query_count(phig_ctx* ctx, const phig_query* q, int64_t* out) {
     if (q == nullptr || out == nullptr) return PHIG_ERR_INVALID_ARG;
     PHIG_TRY(ctx)

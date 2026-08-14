@@ -951,3 +951,179 @@ TEST(AbiQuery, FavoriteIsPopulated) {
     phig_query_free(q);
     phig_shutdown(ctx);
 }
+
+// ---- Glob predicates and id resolution (plan 053 decision 2) ----
+
+namespace {
+// Inserts one row per path, with the path's own extension rather than a fixed
+// one, so an extension filter and a glob can be combined in a test.
+void seed_paths(Database& db, const std::vector<std::string>& paths) {
+    int i = 0;
+    for (const auto& p : paths) {
+        ImageInfo info;
+        info.path = p;
+        auto slash = p.find_last_of('/');
+        info.filename = (slash == std::string::npos) ? p : p.substr(slash + 1);
+        auto dot = info.filename.find_last_of('.');
+        info.extension = (dot == std::string::npos) ? "" : info.filename.substr(dot + 1);
+        info.file_size = 1000 + i;
+        info.modified_at = "2020-01-01T00:00:00Z";
+        info.sha256 = std::string(63, '0') + std::to_string(i % 10);
+        db.insert(info);
+        i++;
+    }
+}
+}  // namespace
+
+TEST(AbiQuery, AddMatchFiltersByGlob) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed_paths(db, {"/a/one.jpg", "/a/two.cr2", "/b/three.jpg"});
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    phig_query_add_match(q, "/a/*");
+
+    int64_t n = 0;
+    ASSERT_EQ(phig_query_count(ctx, q, &n), PHIG_OK);
+    EXPECT_EQ(n, 2) << "the ABI had no filename search before this";
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, QueryIdsReturnsEveryMatchingId) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed_paths(db, {"/a/one.jpg", "/a/two.cr2", "/b/three.jpg"});
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    phig_query_add_match(q, "/a/*");
+
+    phig_id_list* ids = nullptr;
+    ASSERT_EQ(phig_query_ids(ctx, q, &ids), PHIG_OK);
+    ASSERT_NE(ids, nullptr);
+    ASSERT_EQ(ids->count, 2);
+    ASSERT_NE(ids->items, nullptr);
+    EXPECT_GT(ids->items[0], 0);
+    EXPECT_NE(ids->items[0], ids->items[1]);
+    phig_id_list_free(ids);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, QueryIdsIgnoresPaginationAndReturnsTheWholeSelection) {
+    // PageCriteria defaults limit to 200. Resolving a selection through the
+    // paging path would stop there and say nothing, which is the difference
+    // between naming a set and reading a page of one.
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed(db, 250);
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+
+    phig_id_list* ids = nullptr;
+    ASSERT_EQ(phig_query_ids(ctx, q, &ids), PHIG_OK);
+    ASSERT_NE(ids, nullptr);
+    EXPECT_EQ(ids->count, 250) << "the selection was truncated at the default page size";
+    phig_id_list_free(ids);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, QueryIdsOnAnEmptyResultIsAnEmptyListNotAnError) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed_paths(db, {"/a/one.jpg"});
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    phig_query_add_match(q, "/nothing/*");
+
+    phig_id_list* ids = nullptr;
+    ASSERT_EQ(phig_query_ids(ctx, q, &ids), PHIG_OK);
+    ASSERT_NE(ids, nullptr);
+    EXPECT_EQ(ids->count, 0);
+    phig_id_list_free(ids);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, ExcludeWinsOverMatch) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed_paths(db, {"/a/one.jpg", "/a/two.cr2", "/b/three.jpg"});
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    phig_query_add_match(q, "/a/*");
+    phig_query_add_exclude(q, "*.cr2");
+
+    phig_id_list* ids = nullptr;
+    ASSERT_EQ(phig_query_ids(ctx, q, &ids), PHIG_OK);
+    EXPECT_EQ(ids->count, 1);
+    phig_id_list_free(ids);
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, GlobSettersIgnoreNullsLikeTheirNeighbours) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed_paths(db, {"/a/one.jpg", "/a/two.cr2", "/b/three.jpg"});
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+    phig_query_add_match(nullptr, "/a/*");  // must not crash
+    phig_query_add_match(q, nullptr);       // must not narrow
+    phig_query_add_match(q, "");            // must not narrow
+    phig_query_add_exclude(q, nullptr);
+    phig_query_add_exclude(q, "");
+
+    int64_t n = 0;
+    ASSERT_EQ(phig_query_count(ctx, q, &n), PHIG_OK);
+    EXPECT_EQ(n, 3) << "a NULL or empty pattern must not narrow the query";
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiQuery, QueryIdsRejectsNullArgumentsAndFreeToleratesNull) {
+    TempDb tmp;
+    {
+        Database db(tmp.path);
+        db.init_schema();
+        seed_paths(db, {"/a/one.jpg"});
+    }
+    phig_ctx* ctx = open_ro(tmp.path);
+    phig_query* q = nullptr;
+    ASSERT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+
+    phig_id_list* ids = nullptr;
+    EXPECT_EQ(phig_query_ids(ctx, nullptr, &ids), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(ids, nullptr);
+    EXPECT_EQ(phig_query_ids(ctx, q, nullptr), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(phig_query_ids(nullptr, q, &ids), PHIG_ERR_INVALID_ARG);
+    phig_id_list_free(nullptr);  // must not crash
+
+    phig_query_free(q);
+    phig_shutdown(ctx);
+}

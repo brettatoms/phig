@@ -8,6 +8,11 @@ read_only_abi = [
     "phig_query_set_gallery", "phig_query_set_make", "phig_query_set_media",
     "phig_query_set_sharpness", "phig_query_set_size_range",
     "phig_query_set_sort", "phig_thumb_lookup",
+    # Glob predicates and id resolution (plan 053 decision 2). The two setters
+    # mutate only the caller's query object, phig_query_ids is a read, and the
+    # free releases what that read returned — none of them touches a collection.
+    "phig_query_add_match", "phig_query_add_exclude",
+    "phig_query_ids", "phig_id_list_free",
     "phig_op_cancel", "phig_op_free", "phig_op_poll", "phig_op_status",
     "phig_op_wait", "phig_op_error", "phig_op_error_at", "phig_op_error_count",
     "phig_op_index_result", "phig_op_thumbs_result", "phig_op_faces_result",

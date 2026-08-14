@@ -47,7 +47,7 @@ extern "C" {
  * Start versioning honestly the first time something outside this repo links
  * against libphig. */
 #define PHIG_ABI_VERSION_MAJOR 1u
-#define PHIG_ABI_VERSION_MINOR 3u
+#define PHIG_ABI_VERSION_MINOR 4u
 
 /* Values are published ABI: append only, never renumber. */
 typedef enum {
@@ -184,6 +184,33 @@ PHIG_API void phig_query_add_tag(phig_query* q, const char* tag); /* AND semanti
 PHIG_API void phig_query_set_gallery(phig_query* q, const char* gallery);
 PHIG_API void phig_query_set_sharpness(phig_query* q, double min_score, double max_score);
 PHIG_API void phig_query_set_sort(phig_query* q, phig_sort_key key, bool descending);
+
+/* Glob selection over the full path, with phig's glob semantics: `*` and `?`
+ * are wildcards, a backslash escapes the next character, and brackets are
+ * literal. This is NOT SQLite's GLOB, which has [...] character classes and no
+ * escape — a pattern means here exactly what it means to the CLI's --match.
+ *
+ * Repeatable. An image passes when it matches at least one match pattern (or
+ * when none was added) and no exclude pattern; an exclude wins where the two
+ * overlap. NULL or "" adds nothing rather than matching everything. */
+PHIG_API void phig_query_add_match(phig_query* q, const char* glob);
+PHIG_API void phig_query_add_exclude(phig_query* q, const char* glob);
+
+/* The ids a query selects. Strings are not involved: this is how a caller names
+ * a set of images for an operation that acts on them. */
+typedef struct {
+    const int64_t* items;
+    int64_t count;
+} phig_id_list;
+
+/* Resolves a query to every id it selects, in the query's sort order. This
+ * resolves a selection rather than paging one, so it ignores pagination
+ * entirely — a caller naming a set wants the set, not its first page.
+ *
+ * *out receives a list the caller must release with phig_id_list_free. A query
+ * that matches nothing yields a list with count 0, not an error. */
+PHIG_API phig_status phig_query_ids(phig_ctx* ctx, const phig_query* q, phig_id_list** out);
+PHIG_API void phig_id_list_free(phig_id_list* list);
 
 /* Total matching rows, ignoring pagination. Needed to size a scrollbar before
  * any page has been fetched. */
