@@ -1,8 +1,8 @@
 ---
 name: libphig Feature Parity
-status: planned
+status: in-progress
 created: 2026-08-08
-closes_rules: [R62, R72]
+closes_rules: [R62]
 description: >
   The gap between what phig can do and what a client can reach. Answers the
   five cross-cutting questions the inventory shares — how a caller names its
@@ -105,9 +105,9 @@ rather than translating patterns and silently changing what `--match` means.
 
 ### 3. `images.id` has to be stable first
 
-Decision 2 makes an id the way every caller names a photo, and an id does not
-currently name one for long. `images.id` is `INTEGER PRIMARY KEY` with no
-`AUTOINCREMENT` (`core/database.cpp:388`), so SQLite reuses it. Against the
+**Done — schema v9, R72 holds.** Decision 2 makes an id the way every caller
+names a photo, and before v9 an id did not name one for long. `images.id` was
+`INTEGER PRIMARY KEY` with no `AUTOINCREMENT`, so SQLite reused it. Against the
 system SQLite 3.51.0 phig links:
 
 ```
@@ -117,26 +117,29 @@ after:  1 /a.jpg   2 /b.jpg   3 /NEW-DIFFERENT-FILE.jpg
 ```
 
 R51 gives `faces.id` this property and plan 045 migrated the column to get it.
-Nothing gives it to `images.id`, so today's ABI already hands ids out through
-`phig_query_page` and takes them back in `phig_tag_add`, `phig_favorite_set`
-and `phig_gallery_set` with nothing guaranteeing they still name the same
-photo. Recorded as R72, `status = "violated"`, claimed here.
+Nothing gave it to `images.id`, so the ABI was handing ids out through
+`phig_query_page` and taking them back in `phig_tag_add`, `phig_favorite_set`
+and `phig_gallery_set` with nothing guaranteeing they still named the same
+photo.
 
-Schema v9 migrates the column. **It cannot reuse 045's recipe**, and 045 said
-so at the time (`core/database.cpp:118`): that rebuild is safe with
+Schema v9 migrates the column. **It could not reuse 045's recipe**, and 045
+said so at the time (`core/database.cpp:121`): that rebuild is safe with
 `foreign_keys=ON` only because `faces` is a pure FK child. `image_tags.image_id`
 and `faces.image_id` are both `REFERENCES images(id) ON DELETE CASCADE` and
-`PRAGMA foreign_keys=ON` is set on every open (`core/database.cpp:252`), so
-dropping `images` would cascade away every tag, favorite, face and person
-label in the collection.
+`PRAGMA foreign_keys=ON` is set on every open, and SQLite's `DROP TABLE`
+deletes every row before dropping — so the rebuild would have taken every
+`image_tags` row and every `faces` row with it. Measured: `tags` and `people`
+survive, every assignment to them does not, and the face rows go with their
+embeddings, boxes and person labels.
 
-The migration therefore needs the standard SQLite table-rebuild procedure —
-`foreign_keys=OFF` outside the transaction, rebuild, commit, re-enable, then
-`PRAGMA foreign_key_check` — which means the migration loop has to let one
-migration toggle the pragma around itself, because inside a transaction the
-pragma is a no-op. This is a data-safety change and ships with real-behavior
-tests per root `CLAUDE.md`: a database carrying tags, favorites, faces and
-person labels survives with every row and every id intact.
+`init_schema` therefore runs **every** migration with foreign keys off rather
+than conditioning it on the version number, and calls `foreign_key_violations`
+inside each migration's transaction before the commit. That check does not
+cover the cascade case — deleted children leave no orphans, so it reports zero
+violations against an emptied database — which is why the real-behavior test
+required by root `CLAUDE.md` is the guard:
+`ImagesMigrationV9.PreservesRowsIdsTagsFavoritesFacesAndLabels`, confirmed to
+fail with the pragma re-enabled.
 
 ### 4. A destructive operation is authorized by plan/apply
 
@@ -216,7 +219,8 @@ entry point at all. Signatures are reshaped in place rather than accreting
 
 ## Work order
 
-1. Schema v9 + R72, with its real-behavior migration tests.
+1. Schema v9 + R72, with its real-behavior migration tests — done, executed via
+   `docs/plans/2026-08-14-053-schema-v9.md`. R72 holds.
 2. `phig_query_ids` and the glob predicates, on the SQLite function.
 3. Operations converted to ids; `cli/` resolves ahead of them.
 4. Items 5, 6, 7 — small, independent, unblocked once 2 lands.
