@@ -791,6 +791,20 @@ Across core/, libphig/ and cli/ three statements update the faces table — `UPD
 | Evidence | witness: `IdentifyTest.AFaceWhoseEmbeddingChangedIsNotLabeled` |
 | Test gap | That test is the clause's only cover, and it writes the changed embedding by hand through a raw sqlite3 UPDATE because no concurrent path produces one — the test says so itself. Measured in a scratch copy with `AND embedding = ?` deleted: 806 tests ran and it was the only failure. So nothing covers this clause against a state phig can reach, and nothing can until some path rewrites an embedding in place. |
 
+### R72 — violated (test gap)
+
+An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert.
+
+This is R51's property, for images instead of faces, and images does not have it. images.id is declared `INTEGER PRIMARY KEY` at core/database.cpp:388, which is the rowid and is assigned max(rowid)+1, so deleting the highest image gives its id to the next insert. Demonstrated against the system SQLite 3.51.0 phig links: three rows at ids 1-3, DELETE the row at id 3, INSERT an unrelated path, and the new row is issued id 3. The ABI already depends on the property it does not have — phig_query_page hands ids to a client and phig_tag_add, phig_gallery_set, phig_gallery_clear and phig_favorite_set take them back, with nothing between the read and the write guaranteeing the id still names the photo the caller saw. The faces paths carry an explicit compare-and-set for exactly this hazard (R51, R52); the image paths carry nothing, because the property was assumed rather than established. Reuse needs a deletion at the tail of the table, which scan.reconcile and all four remove modes produce as ordinary operation, not as a corner case. Today's exposure is user-metadata: a tag, gallery or favorite landing on a photo the caller never selected. Plan 053's decision 2 makes an id the way every caller names a photo and 064 puts remove behind one, at which point the exposure becomes original-file. Fixed by schema v9, which cannot reuse the v8 recipe: core/database.cpp:118 records that the faces rebuild is safe with foreign_keys=ON only because faces is a pure FK child, and image_tags.image_id and faces.image_id both reference images(id) ON DELETE CASCADE while core/database.cpp:252 sets the pragma on every open, so dropping images would delete every image_tags row and every faces row. Measured on that schema: the tags and people tables survive intact, but all tag and favorite assignments are gone and all face rows are gone, taking their embeddings, boxes and the person labels on them with them. No tag or person is destroyed; every association to one is.
+
+| | |
+|---|---|
+| Enforced at | `core/database.cpp:init_schema` |
+| Binds | `scan.reconcile`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `metadata.write` |
+| Protects | user-metadata, db-row |
+| Evidence | conformance: none |
+| Test gap | Nothing tests image id stability at all. The faces equivalent has three tests — IdentifyTest.RowidsAreNotReusedAfterADelete, FacesMigrationV8.PreservesIdsLabelsAndVectorsAndStopsReuse and IdentifyTest.NameDoesNotLabelAFaceItDidNotMatchWhenARebuildRecyclesIds — and images has no counterpart to any of them. The migration test in particular has to cover what the v8 one could not: that tags, favorites, faces and person labels all survive a rebuild of a table with FK children. |
+
 ## cancellation
 
 ### R56 — holds (test gap)

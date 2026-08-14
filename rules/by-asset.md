@@ -39,6 +39,7 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R61 | authorization | violated (test gap) | A destructive operation's preview is a value the caller can inspect, not text the engine prints. |
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R71 | concurrency | holds (test gap) | A face row's embedding is written only by the insert that creates the row, so identify's `embedding = ?` clause refuses no write that `id = ?` and `person_id IS NULL` have not already refused. |
+| R72 | concurrency | violated (test gap) | An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
 
 ## original-file — rebuildable: backup-only
 
@@ -134,6 +135,7 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R67 | cancellation | holds | phig_op_free joins the operation's worker rather than detaching it, so no engine thread outlives the handle or the Database it writes through. |
 | R70 | authorization | violated (test gap) | A command that only reads a collection neither creates its database nor migrates its schema. |
+| R72 | concurrency | violated (test gap) | An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
 
 ## activity-log — rebuildable: no
 

@@ -1,22 +1,15 @@
 ---
 name: libphig Feature Parity
-status: designing
+status: planned
 created: 2026-08-08
-closes_rules: [R61, R62, R66, R68]
+closes_rules: [R62, R72]
 description: >
-  The gap between what phig can do and what a client can reach. `libphig`
-  covers paged queries, per-image metadata, thumbnails, settings,
-  tag/gallery/favorite writes and the three long-running operations; phig also
-  has duplicates, people and faces, remove, four search modes, glob selection,
-  tag/gallery listings, model download and an activity log, none of which a
-  client can touch. Organize and reconcile are already owned by 042 and 041;
-  this plan is the remainder, ordered by what plan 047's nine screens need.
-  Three of those screens have no data source today and two have no action.
-  Held as one plan because the inventory and its cross-cutting decisions —
-  how a caller names its subject, whether a read that scans the collection is
-  a request or an operation, how confirmation crosses a boundary that forbids
-  callbacks — are the design work; individual items get their own number when
-  one turns out to be large.
+  The gap between what phig can do and what a client can reach. Answers the
+  five cross-cutting questions the inventory shares — how a caller names its
+  subject, whether a collection-wide read is a request or an operation, how a
+  destructive operation is authorized, what a face is to a client, where a
+  similarity query's phash comes from — then builds the selection surface those
+  answers imply and closes the small gaps. The four large items are 062-065.
 ---
 
 # 053 — libphig Feature Parity
@@ -25,157 +18,238 @@ description: >
 
 Make `libphig` reach all of phig's features. Root `CLAUDE.md`'s Interface
 discipline states the rule: a capability that exists only in `core/` and `cli/`
-is a gap with a schedule, not a boundary on what a client may do. This plan is
-the inventory behind that sentence and the order the gaps get closed in.
+is a gap with a schedule, not a boundary on what a client may do.
 
 It is not a demand that every `core/` function become an entry point. The test
 is whether a client can accomplish what phig can accomplish, through a surface
 shaped for a client rather than for argv.
 
-## Why one plan
+## Decisions
 
-The individual items are mostly small — a people list is a query and a struct.
-What is not small is the set of decisions they share, and answering those once
-is the point of holding them together:
+Five questions this plan held open while it was `designing`. Each is answered
+below with what settled it. The reasoning lives here rather than in the plans
+that consume it because 052 has to answer the same questions the same way, or
+S2 learns two vocabularies.
 
-- **How a caller names its subject.** The metadata writes take image ids
-  because a GUI holds a selection; the operations take `match`/`exclude` globs
-  because a bulk job describes a set. `phig_query` takes neither, which is why
-  there is no filename search. Every item below has to pick one, and picking
-  per-item is how an ABI ends up with three conventions.
-- **Request or operation.** `phig duplicates` compares the whole collection.
-  Anything that scans rather than pages has to be either a call that blocks for
-  seconds or a `phig_op*` with progress. Plan 052 has the identical question
-  for `GET /duplicates` and both interfaces must answer it the same way, or S2
-  learns two models.
-- **Confirmation across a boundary that forbids callbacks.** `cmd_rm` takes a
-  `ConfirmFn`. Plan 031 ruled out running client code on an engine thread, so
-  remove needs either a decide/apply split like 041's or a pre-authorized
-  request. This is the same shape as 042's per-file conflict resolution.
-- **Not repeating 044's mistake.** 044 measured `get_all_images` loading
-  111.6 MB of EXIF that no caller reads. A new read surface that returns rows
-  should carry what its screen draws and nothing else.
+### 1. A collection-wide read is an operation, not a request
 
-## Inventory
+`find_near_duplicates` compiled standalone against a synthetic corpus, threshold
+5, on an M-series Mac:
 
-Ordered by what plan 047 needs. "Own plan" marks items likely to outgrow this
-one.
+| images | ms |
+|---|---|
+| 30,000 | 72 |
+| 100,000 | 532 |
+| 250,000 | 3,821 |
+| 500,000 | 16,614 |
+| 1,000,000 | 69,406 |
 
-### 1. Duplicates — Screen 3 has no data source
+Above 100k it is roughly 4x per doubling. Measured twice — once on a corpus with
+10% near-identical bursts, once all-unique — and the two agreed within 5%, so
+this is the algorithm at these sizes rather than a property of the corpus. The
+banded index splits a 64-bit phash into six bands at threshold 5, so around
+10 bits per band; above ~100k images the buckets saturate and it degrades
+toward all-pairs.
 
-`core/duplicates.h` (`find_near_duplicates`, `hamming_distance`) and
-`Database::get_exact_duplicates` exist and the CLI renders them. A client gets
-nothing. Needs a group-shaped result rather than a flat page, exact and near
-in one surface, and the request-or-operation decision above. Measure with
-`perf_duplicates` against the real collection before choosing. **Own plan.**
+69 s cannot be a blocking ABI call or an HTTP request. Duplicates is a
+`phig_op*` with progress and cancellation. It reads like a request today only
+because 30k lands at 72 ms.
 
-### 2. People and faces — Screen 4 has no data source
+This also answers 052's open question 1 and gives 044's finding 8 the
+measurement it asked for. Note what it does not do: an operation makes 69 s
+tolerable, not fast. The algorithm's behaviour above 100k is 044's to fix.
 
-Read: `list_people`, `get_images_for_person`, `search_faces`, and the face rows
-for one image. Write: `set_face_person`, `identify_person`, `auto_label_face`.
-Plan 045 made `faces.id` stable specifically so a GUI could hold face ids
-across human-scale time, so the prerequisite is done. Open: whether the ABI
-returns bounding boxes and lets the client crop, or generates face thumbnails
-itself — the latter reopens the pixel-decode question this directory
-deliberately leaves unresolved. **Own plan.**
+### 2. Selection is ids everywhere; globs are query predicates
 
-### 3. An image's tags, and the tag and gallery lists
+The ABI had three conventions: writes took `int64_t*` ids, operations took
+`match`/`exclude`, and `phig_query` took neither, which is why there is no
+filename search.
 
-`get_tags_for_image`, `get_tag_counts`, `get_gallery_counts`. The sharpest of
-the small gaps: a client can add and remove tags through
-`phig_tag_add`/`phig_tag_remove` but cannot read back what an image has, and
-`phig_image` carries `favorite` and `gallery` and no tag list. 047's sidebar
-sections and the viewer's tag chips both need this. Small, and everything above
-it in 047 depends on it.
+Globs earn a place in queries and nowhere else. A filename search cannot be
+expressed as ids — resolving it to ids *is* the search. Everything whose
+subject is existing rows takes ids:
 
-### 4. Query selection and the other three search modes
+```c
+void        phig_query_add_match(phig_query* q, const char* glob);
+void        phig_query_add_exclude(phig_query* q, const char* glob);
+phig_status phig_query_ids(phig_ctx* ctx, const phig_query* q,
+                           int64_t** out, size_t* n);
+```
 
-`phig_query` covers `Database::SearchCriteria` completely and stops there.
-Missing: `SearchQuery::matches`/`excludes` and the path prefix — so no filename
-search — plus `SearchMode::Similar` (phash), `::Face` and `::Person`.
-`SearchEngine` holds no OpenCV dependency and takes embeddings and phashes the
-caller computed, which was a deliberate choice for exactly this boundary: the
-engine cannot be crashed by a malformed query file. It also means the ABI has
-to decide whether a client computes a phash itself or phig grows an entry point
-that does.
+`phig_query_ids` resolves any query, not just a glob, so "every RAW from 2021
+tagged keep" is one call and a glob joins the eleven filter setters already on
+`phig_query` rather than becoming a parallel selection language.
 
-### 5. Remove — the Remove dialog has no action
+Three things that were assumed and turn out not to hold:
 
-`remove_exec.h`'s `cmd_rm` already takes a `RemoveOptions` and a `ConfirmFn`,
-so the engine work is done; what is missing is a boundary shape for
-confirmation and for the four modes (trash, `--hard`, `--db-only`,
-`--orphans`), plus `trash empty`. Destructive, so it ships with real-behavior
-tests per the root `CLAUDE.md` convention. Pairs naturally with 042 — a GUI
-that can organize but not remove is half a library manager. **Own plan.**
+- **Globs are not evaluated late.** `ThumbsEngine::run`
+  (`core/thumbs_engine.cpp:24-32`) calls `get_all_images()` and filters in
+  application memory — 044's finding 6. Ids and globs resolve at the same
+  moment.
+- **Ids are cheaper, not dearer.** 1M ids is 8 MB against the 111.6 MB 044
+  measured `get_all_images()` already paying at 3.8 KB/row. An id list lets an
+  engine load only selected rows, which moves toward 044's findings 5 and 6
+  rather than against them.
+- **A large id list needs no `IN (...)`.** `set_gallery_by_ids`
+  (`core/database.cpp:1547`) steps one prepared statement per id inside a
+  transaction, so SQLite's bound-parameter ceiling is not a constraint.
 
-### 6. Face model download
+Index is the one surface that keeps a directory: it walks the filesystem, and
+its subject is files that have no row yet.
 
-`models.h`'s `download_face_models`. Today the ABI will happily start a faces
-operation that fails because ~150 MB of models are absent, and offers no way to
-fetch them; 047's Settings→Faces section is the screen that needs it. Small,
-but it is what makes the faces operation usable on a fresh machine rather than
-merely present.
+Globs must be evaluated **in SQL**. `search_page` applies `LIMIT`/`OFFSET`, so
+filtering afterwards returns short pages and skips rows. phig's `glob_match`
+and SQLite's `GLOB` disagree — phig has backslash escapes, SQLite has `[...]`
+character classes — so `glob_match` is registered as a custom SQLite function
+rather than translating patterns and silently changing what `--match` means.
 
-### 7. `thumbs clean`
+### 3. `images.id` has to be stable first
 
-Orphaned thumbnail cleanup. `is_thumbnail_filename` is in `core/`; the loop is
-in `cli/main.cpp` and moves to `core/` first. Smallest item here, and nothing
-depends on it.
+Decision 2 makes an id the way every caller names a photo, and an id does not
+currently name one for long. `images.id` is `INTEGER PRIMARY KEY` with no
+`AUTOINCREMENT` (`core/database.cpp:388`), so SQLite reuses it. Against the
+system SQLite 3.51.0 phig links:
 
-### 8. Activity log — Screen 7 has no data source, in `core/` first
+```
+before: 1 /a.jpg   2 /b.jpg   3 /c.jpg
+DELETE /c.jpg, INSERT a different file
+after:  1 /a.jpg   2 /b.jpg   3 /NEW-DIFFERENT-FILE.jpg
+```
 
-`Database` has `log_begin_operation`, `log_add_entry`, `log_finish_operation`
-and `log_prune` — and no reader at all. Plan 020 deferred both the `phig log`
-viewer and undo, so this is core work before it is ABI work, and the CLI has
-the same gap. Sequencing it last is deliberate: a reader designed alongside
-undo is better than one designed twice. **Own plan, and it is 020's successor
-rather than only an ABI item.**
+R51 gives `faces.id` this property and plan 045 migrated the column to get it.
+Nothing gives it to `images.id`, so today's ABI already hands ids out through
+`phig_query_page` and takes them back in `phig_tag_add`, `phig_favorite_set`
+and `phig_gallery_set` with nothing guaranteeing they still name the same
+photo. Recorded as R72, `status = "violated"`, claimed here.
+
+Schema v9 migrates the column. **It cannot reuse 045's recipe**, and 045 said
+so at the time (`core/database.cpp:118`): that rebuild is safe with
+`foreign_keys=ON` only because `faces` is a pure FK child. `image_tags.image_id`
+and `faces.image_id` are both `REFERENCES images(id) ON DELETE CASCADE` and
+`PRAGMA foreign_keys=ON` is set on every open (`core/database.cpp:252`), so
+dropping `images` would cascade away every tag, favorite, face and person
+label in the collection.
+
+The migration therefore needs the standard SQLite table-rebuild procedure —
+`foreign_keys=OFF` outside the transaction, rebuild, commit, re-enable, then
+`PRAGMA foreign_key_check` — which means the migration loop has to let one
+migration toggle the pragma around itself, because inside a transaction the
+pragma is a no-op. This is a data-safety change and ships with real-behavior
+tests per root `CLAUDE.md`: a database carrying tags, favorites, faces and
+person labels survives with every row and every id intact.
+
+### 4. A destructive operation is authorized by plan/apply
+
+Already settled by R66 and `libphig/CLAUDE.md`, with organize as the worked
+example since 042. No entry point takes a confirmation callback: none may run
+on an engine thread under handle-plus-poll, and none has meaning over 052's
+wire protocol. `cmd_rm`'s `ConfirmFn` is a `cli/` affordance, not a model.
+
+What blocks remove is not the shape but R61 — `cmd_rm` writes its preview to
+`std::cout` as prose and returns an `int`, so there is nothing for a caller to
+inspect. Turning that preview into a value is 064's first task.
+
+### 5. A face is a box, and a phash comes from phig
+
+The premise that these reopen the pixel-decode question does not hold.
+`phig_thumb_generate` already decodes — its header says so: "Decodes pixels, so
+this is slow relative to every other call in this header: hundreds of
+milliseconds for a large RAW." What libphig lacks is any entry point that hands
+back a *pixel buffer*; it decodes internally and delivers results as cache
+files or values.
+
+So a phash computed from a file fits the existing pattern, and no client is
+asked to reimplement phig's phash bit-for-bit. Face crops fit it too, but boxes
+are cheaper and `Database::FaceSearchResult` already carries `face_x/y/w/h`, so
+the ABI returns boxes and a client crops.
+
+## Scope
+
+1. **Schema v9 and R72** — `images.id` to `AUTOINCREMENT`, per decision 3.
+   Everything else depends on it.
+2. **Query selection** — `phig_query_add_match`, `phig_query_add_exclude`,
+   `phig_query_ids`, and `glob_match` registered as a SQLite function so
+   selection is applied before `LIMIT`.
+3. **Operations take ids** — `phig_thumbs_options` and `phig_faces_options`
+   drop `match`/`exclude` for an id list, as does organize. The engines change
+   with them, and `cli/` resolves globs to ids before calling in, which is the
+   same work it does today with the resolution no longer hidden inside each
+   engine.
+4. **The other three search modes, paged natively.** Person, Similar and Face
+   live in `SearchEngine`, which returns whole result sets, while `phig_query`
+   pages through `search_page`. All three page in SQL rather than materializing:
+   - **Person** — `get_images_for_person` gains a paged form with a stable
+     `ORDER BY`.
+   - **Similar** — `hamming` registered as a SQLite function, then
+     `WHERE hamming(phash, ?) <= ? ORDER BY hamming(phash, ?), id`. This also
+     removes the `get_all_images()` load at `core/search_engine.cpp:56`.
+   - **Face** — the hard one. `dedupe_face_matches` keeps the smallest distance
+     per path across per-face batches, so a rank cannot be computed from one
+     page. Native paging means expressing dedup and rank in SQL: the per-face
+     queries `UNION ALL`, then `GROUP BY image_id`, `MIN(distance)`,
+     `ORDER BY`, `LIMIT`/`OFFSET`. Two candidates for the per-face part, and
+     the choice is measured, not reasoned: `vec_faces` KNN with a `k`, which
+     keeps 044's direction but retains the truncation weakness
+     `core/search_engine.h:62-72` documents, or a full scan over the face rows,
+     which is exact and removes it — 4,147 faces at 29,925 images, per 044.
+5. **An image's tags, and the tag and gallery lists** — `get_tags_for_image`,
+   `get_tag_counts`, `get_gallery_counts`. 047's sidebar sections and the
+   viewer's tag chips need these, and everything above them in 047 depends on
+   them.
+6. **Face model download** — `models.h`'s `download_face_models`. Without it
+   the ABI starts a faces operation that fails because ~150 MB of models are
+   absent and offers no way to fetch them.
+7. **`thumbs clean`** — `is_thumbnail_filename` is in `core/`; the loop is in
+   `cli/main.cpp` and moves to `core/` first.
+8. **R62** — the entry points that return something other than `phig_status`
+   have no handler, and the ten `phig_query_set_*` functions are named in the
+   record. This plan adds more setters of exactly that shape, so it closes the
+   hole it would otherwise widen.
+
+ABI versioning is not a design constraint: nothing outside the repo links
+libphig, and `gtk/` — the only in-repo client — uses `phig_init`,
+`phig_shutdown`, `phig_last_error`, `phig_query_{new,free,count,page,set_sort}`,
+`phig_image*`, `phig_thumb_lookup` and `phig_thumb_generate`, and no operation
+entry point at all. Signatures are reshaped in place rather than accreting
+`_ids` variants. The version macros still have to agree with CMake's
+`VERSION`/`SOVERSION`, because the rules gate checks that.
+
+## Work order
+
+1. Schema v9 + R72, with its real-behavior migration tests.
+2. `phig_query_ids` and the glob predicates, on the SQLite function.
+3. Operations converted to ids; `cli/` resolves ahead of them.
+4. Items 5, 6, 7 — small, independent, unblocked once 2 lands.
+5. The three search modes.
+6. R62's handlers and its gate.
 
 ## Not in scope
 
-- **Organize (cp/mv)** — plan 042, including its conflict-resolution question.
+- **Duplicates, people and faces, remove, the activity log** — 062, 063, 064,
+  065. All four block on this plan's selection surface.
+- **Organize (cp/mv)** — plan 042, shipped.
 - **Scan's reconcile phase** — plan 041.
 - **`ScanOptions::thumbs`/`faces`** — the standing exclusion. The ABI models
   index, thumbs and faces as independent operations and those flags refuse
   that.
-- **Pixel decoding.** Unresolved for its own reasons (see `libphig/CLAUDE.md`
-  and `gtk/CLAUDE.md`); item 2 must not be the thing that decides it by
-  accident.
+- **Duplicate detection above 100k images** — decision 1 measured it; 044 owns
+  the algorithm.
+- **Handing a client a pixel buffer** — still unresolved, and decision 5 does
+  not decide it.
 - **Features phig does not have yet.** 009 (watch), 013 (geo search), 021
-  (import) and 028 (`.phigignore`) each need ABI exposure when built, and each
-  owns that as part of its own plan rather than accruing here.
-
-## Open questions
-
-1. **Request or operation, for duplicates.** Same question as 052's. Decide
-   from measurement, and decide once for both interfaces.
-2. **One selection model or two.** Ids, globs, or both on every surface. The
-   present split is defensible per surface and indefensible as a whole.
-3. **Confirmation shape for remove.** Decide/apply like 041, or a request that
-   carries its own authorization. A callback is excluded by 031.
-4. **Face representation.** Bounding boxes to the client, or face thumbnails
-   from phig. Coupled to the pixel-decode question.
-5. **Where the phash for a similarity search comes from.** The client, or a new
-   entry point that hashes a file.
+  (import) and 028 (`.phigignore`) each own their ABI exposure.
 
 ## Relationship to other plans
 
-- **047** — the demand side. Three of its nine screens (Duplicates, People,
-  Activity Log) have no data source through the ABI and two (Organize, Remove)
-  have no action. 052 counts two, reading only the screens whose data does not
-  exist at the ABI; Activity Log is blocked in `core/` first, which is the
-  difference.
-- **052** — states the same rule from the other side ("`libphig` should
-  eventually expose every phig feature, so today's gaps are a schedule fact")
-  and needs the same capabilities over the wire. Every item here is also a
-  `phigd` endpoint; deciding them once is what keeps the two interfaces one
-  vocabulary.
+- **047** — the demand side, and the reason for the order above.
+- **052** — needs every capability here over the wire and must answer the five
+  decisions identically. Decision 1 answers its open question 1.
 - **041, 042** — the two ABI-surface gaps already owned.
-- **044** — what a new read surface must not do, and it owns pagination at
-  scale.
-- **045** — stable `faces.id`, the prerequisite item 2 was waiting on.
-- **046** — the `vec_faces` delete failure sits under the faces operation on
-  the affected machine; item 2's write paths touch the same code.
+- **044** — owns pagination at scale, the `get_all_images` column trim that
+  decision 2 leans on, and duplicate detection above 100k.
+- **045** — the worked example decision 3 mirrors, and the record of why its
+  recipe does not transfer to `images`.
 - **031, 034** — the operation lifecycle, progress convention, and the
-  ctx/error/threading rules everything here has to follow.
-- **020** — deferred the activity log's reader and undo; item 8 picks that up.
+  ctx/error/threading rules everything here follows.
+- **060** — owns what a faces rebuild may destroy, and R66's remaining gap.
+- **062-065** — the four items this plan hands off.

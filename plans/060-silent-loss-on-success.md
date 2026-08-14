@@ -2,7 +2,7 @@
 name: Silent Loss on a Successful Run
 status: designing
 created: 2026-08-10
-closes_rules: [R27, R48, R60, R69]
+closes_rules: [R27, R48, R60, R66, R69]
 description: >
   Four measured defects that share one shape: the operation finishes, reports
   success, exits 0, and something that mattered is gone or wrongly counted.
