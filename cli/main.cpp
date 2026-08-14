@@ -602,27 +602,18 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
 
 // ---- Organize command ----
 
+// Runs an already-resolved organize. Selection is the caller's job: `opts.ids`
+// names the images, resolved from whatever the caller has — globs at the SQL
+// level for cp and mv, but equally a saved search or a GUI selection. This
+// mirrors the ABI, where a client calls phig_query_ids and then hands the ids
+// to phig_op_organize_plan_start, and it is why this takes no glob of its own.
+//
 // Argv-shaped extras the engine has no opinion about: which executor to run and
-// whether to stop after planning. Everything else lives in core's
-// OrganizeOptions, which this command fills directly.
-int cmd_organize(const OrganizeOptions& opts, bool is_move, bool dry_run) {
-    Database db(opts.db_path);
-    db.init_schema();
-
-    if (db.count() == 0) {
-        std::cerr << "Database is empty. Run 'phig scan <directory>' first.\n";
-        return 1;
-    }
-
-    std::cout << "Found " << db.count() << " images in database\n";
-
+// whether to stop after planning.
+int cmd_organize(Database& db, const OrganizeOptions& opts, bool is_move, bool dry_run) {
     OrganizeEngine engine(opts, db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
-
-    if (!opts.matches.empty() || !opts.excludes.empty()) {
-        std::cout << "After match/filter: " << plan.size() << " images\n";
-    }
 
     size_t to_process = 0, to_skip = 0;
     for (size_t i = 0; i < plan.size(); i++) {
@@ -1158,8 +1149,15 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
         ScopedInterruptHandler interrupt_guard(cancel);
 
         ThumbsOptions opts;
-        opts.matches = matches;
-        opts.excludes = excludes;
+        // The engine takes ids, so the globs resolve here. No --match/--exclude
+        // means every row, which is what this command has always done — the
+        // engine's empty-selects-nothing rule is about a caller that named no
+        // subject, not about a user who asked for the whole collection.
+        Database::PageCriteria selection;
+        selection.filter.matches = matches;
+        selection.filter.excludes = excludes;
+        selection.limit = -1;
+        opts.ids = db.ids_matching(selection);
         opts.force = force;
         opts.parallel = parallel;
 
@@ -1417,13 +1415,14 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
     } else if (subcmd == "rebuild") {
         // Parse match/filter flags
         FacesRebuildOptions opts;
+        std::vector<std::string> matches, excludes;
         int parallel = default_parallel;
         for (int i = 3; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--match" && i + 1 < argc) {
-                opts.matches.push_back(expand_tilde(argv[++i]));
+                matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--exclude" && i + 1 < argc) {
-                opts.excludes.push_back(expand_tilde(argv[++i]));
+                excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--parallel" && i + 1 < argc) {
                 parallel = std::stoi(argv[++i]);
             } else if (arg == "--db") {
@@ -1434,6 +1433,15 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
             }
         }
         opts.parallel = parallel;
+        // The engine takes ids, so the globs resolve here. No --match/--exclude
+        // means every row, which is what this command has always done — the
+        // engine's empty-selects-nothing rule is about a caller that named no
+        // subject, not about a user who asked for the whole collection.
+        Database::PageCriteria selection;
+        selection.filter.matches = matches;
+        selection.filter.excludes = excludes;
+        selection.limit = -1;
+        opts.ids = db.ids_matching(selection);
 
         CancelToken cancel;
         ScopedInterruptHandler interrupt_guard(cancel);
@@ -1533,16 +1541,21 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
 
 // Resolve the images selected by an optional --path prefix plus match/filter
 // globs into a list of paths, reusing the shared filter logic.
-static std::vector<std::string> select_paths(Database& db, const std::string& path_prefix,
-                                             const std::vector<std::string>& matches,
-                                             const std::vector<std::string>& excludes) {
-    std::vector<std::string> paths;
-    for (const auto& img : db.get_all_images(path_prefix)) {
-        if (passes_selection(img.path, matches, excludes)) {
-            paths.push_back(img.path);
-        }
+// Resolve a metadata write's selection, rendering core's refusal of an unnamed
+// subject (R78) as the CLI's error. The check lives in core/ so phigd inherits
+// it; this only supplies the wording, which is cli/'s job.
+static bool resolve_write_selection(Database& db, const std::string& what,
+                                    const std::string& path_prefix,
+                                    const std::vector<std::string>& matches,
+                                    const std::vector<std::string>& excludes,
+                                    std::vector<int64_t>& out) {
+    auto ids = resolve_named_selection(db, path_prefix, matches, excludes);
+    if (!ids) {
+        std::cerr << "Error: " << what << " requires --match or --path\n";
+        return false;
     }
-    return paths;
+    out = std::move(*ids);
+    return true;
 }
 
 int cmd_tag(int argc, char* argv[], const std::string& db_path, bool no_wait) {
@@ -1587,14 +1600,14 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path, bool no_wait) {
                 return 1;
             }
         }
-        if (matches.empty() && path_prefix.empty()) {
-            std::cerr << "Error: tag " << subcmd << " requires --match or --path\n";
-            return 1;
-        }
         auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
-        int n = db.set_tag(select_paths(db, path_prefix, matches, excludes), tag, subcmd == "add");
+        std::vector<int64_t> ids;
+        if (!resolve_write_selection(db, "tag " + subcmd, path_prefix, matches, excludes, ids)) {
+            return 1;
+        }
+        int n = db.set_tag_by_ids(ids, tag, subcmd == "add");
         std::cout << (subcmd == "add" ? "Tagged " : "Untagged ") << n << " images (" << tag
                   << ")\n";
         return 0;
@@ -1655,19 +1668,19 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path, bool no_wait
                 return 1;
             }
         }
-        if (matches.empty() && path_prefix.empty()) {
-            std::cerr << "Error: gallery " << subcmd << " requires --match or --path\n";
-            return 1;
-        }
         auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
-        auto paths = select_paths(db, path_prefix, matches, excludes);
+        std::vector<int64_t> ids;
+        if (!resolve_write_selection(db, "gallery " + subcmd, path_prefix, matches, excludes,
+                                     ids)) {
+            return 1;
+        }
         if (is_set) {
-            int n = db.set_gallery(paths, gallery, no_overwrite);
+            int n = db.set_gallery_by_ids(ids, gallery, no_overwrite);
             std::cout << "Set gallery '" << gallery << "' on " << n << " images\n";
         } else {
-            int n = db.clear_gallery(paths);
+            int n = db.set_gallery_by_ids(ids, "");
             std::cout << "Cleared gallery on " << n << " images\n";
         }
         return 0;
@@ -1707,15 +1720,14 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path, bool no_wait) {
                 return 1;
             }
         }
-        if (matches.empty() && path_prefix.empty()) {
-            std::cerr << "Error: fav " << subcmd << " requires --match or --path\n";
-            return 1;
-        }
         auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
-        int n = db.set_tag(select_paths(db, path_prefix, matches, excludes), "favorite",
-                           subcmd == "add");
+        std::vector<int64_t> ids;
+        if (!resolve_write_selection(db, "fav " + subcmd, path_prefix, matches, excludes, ids)) {
+            return 1;
+        }
+        int n = db.set_tag_by_ids(ids, "favorite", subcmd == "add");
         std::cout << (subcmd == "add" ? "Favorited " : "Unfavorited ") << n << " images\n";
         return 0;
     }
@@ -2012,6 +2024,9 @@ int main(int argc, char* argv[]) {
         }
 
         OrganizeOptions opts;
+        // Kept local rather than on the options struct: they are resolved to
+        // ids below, and neither the engine nor cmd_organize ever sees a glob.
+        std::vector<std::string> org_matches, org_excludes;
         opts.destination = argv[2];
         opts.format = "%Y/%m/%original";
         // The CLI's long-standing default, which differs from the engine's.
@@ -2030,9 +2045,9 @@ int main(int argc, char* argv[]) {
             if (arg == "--format" && i + 1 < argc) {
                 opts.format = argv[++i];
             } else if (arg == "--match" && i + 1 < argc) {
-                opts.matches.push_back(expand_tilde(argv[++i]));
+                org_matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--exclude" && i + 1 < argc) {
-                opts.excludes.push_back(expand_tilde(argv[++i]));
+                org_excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--dry-run") {
                 dry_run = true;
             } else if (arg == "--on-conflict" && i + 1 < argc) {
@@ -2058,7 +2073,30 @@ int main(int argc, char* argv[]) {
 
         try {
             auto lock = acquire_writer_lock(no_wait);
-            return cmd_organize(opts, is_move, dry_run);
+
+            Database db(opts.db_path);
+            db.init_schema();
+            if (db.count() == 0) {
+                std::cerr << "Database is empty. Run 'phig scan <directory>' first.\n";
+                return 1;
+            }
+            std::cout << "Found " << db.count() << " images in database\n";
+
+            // Resolve, then operate. The globs are applied in SQL by
+            // ids_matching; the engine never sees them. No --match/--exclude
+            // means every row, which is what cp and mv have always done — the
+            // engine's empty-selects-nothing rule is about a caller that named
+            // no subject, not a user asking for the whole collection.
+            Database::PageCriteria selection;
+            selection.filter.matches = org_matches;
+            selection.filter.excludes = org_excludes;
+            selection.limit = -1;
+            opts.ids = db.ids_matching(selection);
+            if (!org_matches.empty() || !org_excludes.empty()) {
+                std::cout << "After match/filter: " << opts.ids.size() << " images\n";
+            }
+
+            return cmd_organize(db, opts, is_move, dry_run);
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
             return 1;

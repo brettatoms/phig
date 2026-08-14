@@ -49,6 +49,24 @@ class OrganizeEngineTest : public ::testing::Test {
         db.insert(info);
     }
 
+    // Every row. These tests predate id selection and meant "the whole
+    // collection" by setting no filter; an empty selection now means nothing,
+    // so what they meant has to be said.
+    std::vector<int64_t> all_ids(Database& db) {
+        Database::PageCriteria pc;
+        pc.limit = -1;
+        return db.ids_matching(pc);
+    }
+
+    // base_opts() with every row selected. Tests that construct an engine
+    // straight from base_opts() meant the whole collection, which an empty
+    // selection no longer means.
+    OrganizeOptions base_opts(Database& db) {
+        OrganizeOptions o = base_opts();
+        o.ids = all_ids(db);
+        return o;
+    }
+
     OrganizeOptions base_opts() {
         OrganizeOptions o;
         o.destination = (dir / "out").string();
@@ -66,7 +84,7 @@ TEST_F(OrganizeEngineTest, PlanProducesOneActionPerSelectedImage) {
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
     add_image(db, "b.jpg", "2020:01:02 10:00:00");
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
@@ -82,7 +100,7 @@ TEST_F(OrganizeEngineTest, PlanWritesNothingToDiskOrDatabase) {
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
     const int64_t rows_before = db.count();
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
@@ -92,14 +110,19 @@ TEST_F(OrganizeEngineTest, PlanWritesNothingToDiskOrDatabase) {
     EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg")) << "plan must not move sources";
 }
 
-TEST_F(OrganizeEngineTest, PlanHonorsMatchAndExclude) {
+TEST_F(OrganizeEngineTest, PlanHonorsItsIdSelection) {
     Database db(db_path);
     db.init_schema();
     add_image(db, "keep.jpg", "2019:07:04 10:00:00");
     add_image(db, "drop.jpg", "2019:07:04 10:00:00");
 
     OrganizeOptions o = base_opts();
-    o.excludes.push_back("*drop*");
+    // The engine takes ids; the glob is resolved by whoever calls it, which for
+    // cp and mv is cmd_organize via Database::ids_matching.
+    Database::PageCriteria pc;
+    pc.filter.excludes = {"*drop*"};
+    pc.limit = -1;
+    o.ids = db.ids_matching(pc);
     OrganizeEngine engine(o, db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
@@ -118,7 +141,7 @@ TEST_F(OrganizeEngineTest, PlanFlagsAnOccupiedDestinationAsConflicting) {
         f << "occupant";
     }
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
@@ -132,7 +155,7 @@ TEST_F(OrganizeEngineTest, SetResolutionRejectsANonConflictingItem) {
     db.init_schema();
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
@@ -166,7 +189,7 @@ TEST_F(OrganizeEngineTest, OverridingToOverwriteTargetsTheOccupiedPath) {
         f << "occupant";
     }
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
@@ -187,7 +210,7 @@ TEST_F(OrganizeEngineTest, OverridingToSkipEmptiesTheDestination) {
         f << "occupant";
     }
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
@@ -216,7 +239,7 @@ TEST_F(OrganizeEngineTest, SetResolutionRefusesToTargetABatchSource) {
     b.metadata_json = R"({"DateTimeOriginal":"2021:05:05 10:00:00"})";
     db.insert(b);
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
@@ -237,7 +260,7 @@ TEST_F(OrganizeEngineTest, ApplyMovesFilesAndUpdatesRows) {
     db.init_schema();
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
     OrganizeResult result = engine.apply(plan, /*is_move=*/true, cancel, nullptr);
@@ -255,7 +278,7 @@ TEST_F(OrganizeEngineTest, ApplyCopyLeavesTheSourceInPlace) {
     db.init_schema();
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
     OrganizeResult result = engine.apply(plan, /*is_move=*/false, cancel, nullptr);
@@ -281,6 +304,7 @@ TEST_F(OrganizeEngineTest, ApplySkipsItemsWithNoDestination) {
 
     OrganizeOptions o = base_opts();
     o.on_conflict = ConflictResolution::Skip;
+    o.ids = all_ids(db);
     OrganizeEngine engine(o, db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
@@ -306,7 +330,7 @@ TEST_F(OrganizeEngineTest, SidecarsCountInFilesWrittenNotInApplied) {
         f << "sidecar";
     }
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
     OrganizeResult result = engine.apply(plan, true, cancel, nullptr);
@@ -321,7 +345,7 @@ TEST_F(OrganizeEngineTest, AlreadyCancelledAppliesNothingAndReportsIncomplete) {
     db.init_schema();
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
     cancel.cancel();
@@ -338,7 +362,7 @@ TEST_F(OrganizeEngineTest, ApplyPublishesPlannedThenOneUpdatePerFile) {
     add_image(db, "a.jpg", "2019:07:04 10:00:00");
     add_image(db, "b.jpg", "2019:07:04 10:00:00");
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     ProgressQueue<OrganizeProgress> q;
     OrganizePlan plan = engine.plan(cancel, &q);
@@ -393,7 +417,7 @@ TEST_F(OrganizeEngineTest, ApplySkipsAnItemWhoseDestinationBecameOccupied) {
         f << "sidecar";
     }
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
     ASSERT_FALSE(plan.at(0).conflicts);
@@ -434,7 +458,7 @@ TEST_F(OrganizeEngineTest, ApplyHonorsAnOverrideAgainstAFileThatStillExists) {
         f << "occupant";
     }
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
     ASSERT_TRUE(plan.set_resolution(0, ConflictResolution::Overwrite));
@@ -458,7 +482,7 @@ TEST_F(OrganizeEngineTest, CopyHonorsAPerItemOverrideToo) {
         f << "occupant";
     }
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
     ASSERT_TRUE(plan.set_resolution(0, ConflictResolution::Overwrite));
@@ -495,7 +519,7 @@ TEST_F(OrganizeEngineTest, AttachedJpegForARawCountsInFilesWritten) {
     raw.metadata_json = R"({"DateTimeOriginal":"2019:07:04 10:00:00"})";
     db.insert(raw);
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
     OrganizeResult result = engine.apply(plan, true, cancel, nullptr);
@@ -518,7 +542,7 @@ TEST_F(OrganizeEngineTest, ADestinationThatBecameFreeIsSimplyWritten) {
         f << "occupant";
     }
 
-    OrganizeEngine engine(base_opts(), db);
+    OrganizeEngine engine(base_opts(db), db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
     // Planning renamed around the occupant. It then goes away on its own.
@@ -548,6 +572,7 @@ TEST_F(OrganizeEngineTest, CancellationPartwayMarksTheOperationInterrupted) {
 
     OrganizeOptions o = base_opts();
     o.log_enabled = true;
+    o.ids = all_ids(db);
     OrganizeEngine engine(o, db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
@@ -711,7 +736,10 @@ TEST_F(OrganizeEngineTest, ApplyLeavesAnExcludedFileAndItsRowAlone) {
     add_image(db, "spared.jpg", "2019:07:04 10:00:00");
 
     OrganizeOptions o = base_opts();
-    o.excludes.push_back("*spared*");
+    Database::PageCriteria pc;
+    pc.filter.excludes = {"*spared*"};
+    pc.limit = -1;
+    o.ids = db.ids_matching(pc);
     OrganizeEngine engine(o, db);
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
@@ -728,4 +756,21 @@ TEST_F(OrganizeEngineTest, ApplyLeavesAnExcludedFileAndItsRowAlone) {
         if (img.path == spared) row_still_at_source = true;
     }
     EXPECT_TRUE(row_still_at_source) << "the excluded row was rewritten to a destination";
+}
+
+TEST_F(OrganizeEngineTest, AnEmptySelectionPlansNothing) {
+    // Empty means nothing, not everything. cp and mv move real files, so a
+    // caller that named no subject getting a whole-collection move is the
+    // failure this rule exists to prevent.
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+
+    OrganizeOptions o = base_opts();
+    o.ids = {};
+    OrganizeEngine engine(o, db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+
+    EXPECT_EQ(plan.size(), 0u);
 }

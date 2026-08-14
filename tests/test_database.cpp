@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <set>
 #include <string>
@@ -15,6 +17,7 @@
 #include "database.h"
 #include "fault_injection.h"
 #include "phig_binary.h"
+#include "selection.h"
 #include "temp_dir.h"
 #include "types.h"
 
@@ -2097,4 +2100,227 @@ TEST_F(DatabaseTest, IdsMatchingWithNoLimitReturnsEveryMatchNotAPage) {
     Database::PageCriteria pc;
     pc.limit = -1;
     EXPECT_EQ(db->ids_matching(pc).size(), 250u);
+}
+
+// ---- Loading rows by id (plan 053 step 3) ----
+
+TEST_F(DatabaseTest, GetImagesByIdsReturnsOnlyThoseRows) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+    db->insert(make_image("/a/three.jpg", "sha3"));
+
+    int64_t one = db->get_image_id("/a/one.jpg");
+    int64_t three = db->get_image_id("/a/three.jpg");
+
+    auto rows = db->get_images_by_ids({one, three});
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0].path, "/a/one.jpg");
+    EXPECT_EQ(rows[1].path, "/a/three.jpg");
+    EXPECT_EQ(rows[0].sha256, "sha1");
+}
+
+TEST_F(DatabaseTest, GetImagesByIdsOnAnEmptyListReturnsNothing) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    EXPECT_TRUE(db->get_images_by_ids({}).empty())
+        << "an empty selection must select nothing, not everything";
+}
+
+TEST_F(DatabaseTest, GetImagesByIdsSkipsIdsWithNoRow) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    int64_t one = db->get_image_id("/a/one.jpg");
+
+    // A caller resolved ids, something deleted a row, then the caller acted.
+    // Schema v9 means the missing id names nothing rather than a later photo
+    // (R84), so the right behaviour is to skip it, not to fail the whole run.
+    auto rows = db->get_images_by_ids({one, one + 99999});
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].path, "/a/one.jpg");
+}
+
+TEST_F(DatabaseTest, GetImagesByIdsHandlesMoreIdsThanSqliteTakesParameters) {
+    // set_gallery_by_ids steps one statement per id rather than building an
+    // IN (...) list, and this must scale the same way: SQLite's bound-parameter
+    // ceiling is not a limit a caller should have to know about.
+    for (int i = 0; i < 1200; i++) {
+        db->insert(make_image("/a/" + std::to_string(i) + ".jpg", "sha" + std::to_string(i)));
+    }
+    Database::PageCriteria pc;
+    pc.limit = -1;
+    auto ids = db->ids_matching(pc);
+    ASSERT_EQ(ids.size(), 1200u);
+    EXPECT_EQ(db->get_images_by_ids(ids).size(), 1200u);
+}
+
+// ---- Path-prefix selection, and the id-based gallery write's no_overwrite ----
+
+TEST_F(DatabaseTest, IdsMatchingHonoursAPathPrefix) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+    db->insert(make_image("/b/three.jpg", "sha3"));
+
+    Database::PageCriteria pc;
+    pc.filter.path_prefix = "/a/";
+    pc.limit = -1;
+    EXPECT_EQ(db->ids_matching(pc).size(), 2u);
+}
+
+TEST_F(DatabaseTest, APathPrefixIsAPrefixNotAGlob) {
+    // A prefix is a range scan, so metacharacters in it are literal. Translating
+    // --path into a glob would make these two rows indistinguishable.
+    db->insert(make_image("/a[1]/one.jpg", "sha1"));
+    db->insert(make_image("/ax/two.jpg", "sha2"));
+
+    Database::PageCriteria pc;
+    pc.filter.path_prefix = "/a[1]/";
+    pc.limit = -1;
+    auto ids = db->ids_matching(pc);
+    ASSERT_EQ(ids.size(), 1u);
+    EXPECT_EQ(db->get_images_by_ids(ids)[0].path, "/a[1]/one.jpg");
+}
+
+TEST_F(DatabaseTest, PathPrefixCombinesWithGlobs) {
+    db->insert(make_image("/a/keep.jpg", "sha1"));
+    db->insert(make_image("/a/skip.jpg", "sha2"));
+    db->insert(make_image("/b/keep.jpg", "sha3"));
+
+    Database::PageCriteria pc;
+    pc.filter.path_prefix = "/a/";
+    pc.filter.matches = {"*keep*"};
+    pc.limit = -1;
+    auto ids = db->ids_matching(pc);
+    ASSERT_EQ(ids.size(), 1u);
+    EXPECT_EQ(db->get_images_by_ids(ids)[0].path, "/a/keep.jpg");
+}
+
+TEST_F(DatabaseTest, SetGalleryByIdsCanRefuseToOverwrite) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+    int64_t one = db->get_image_id("/a/one.jpg");
+    int64_t two = db->get_image_id("/a/two.jpg");
+    ASSERT_EQ(db->set_gallery_by_ids({one}, "first"), 1);
+
+    // no_overwrite skips the image that already has one, and takes the other.
+    EXPECT_EQ(db->set_gallery_by_ids({one, two}, "second", /*no_overwrite=*/true), 1);
+
+    for (const auto& r : db->get_images_by_ids({one, two})) {
+        if (r.path == "/a/one.jpg") EXPECT_EQ(r.gallery, "first");
+        if (r.path == "/a/two.jpg") EXPECT_EQ(r.gallery, "second");
+    }
+}
+
+// ---- R78: a metadata write must name its subject ----
+
+TEST_F(DatabaseTest, ResolveNamedSelectionRefusesAnUnnamedSubject) {
+    // No glob and no prefix resolves to the whole collection, and a metadata
+    // write over it strips tags or empties galleries with no restore snapshot
+    // and no activity-log entry. The refusal is here rather than in cli/ so
+    // every surface that resolves a selection inherits it.
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+
+    EXPECT_FALSE(resolve_named_selection(*db, "", {}, {}).has_value());
+}
+
+TEST_F(DatabaseTest, ResolveNamedSelectionAcceptsAGlob) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+
+    auto ids = resolve_named_selection(*db, "", {"*one*"}, {});
+    ASSERT_TRUE(ids.has_value());
+    ASSERT_EQ(ids->size(), 1u);
+    EXPECT_EQ(db->get_images_by_ids(*ids)[0].path, "/a/one.jpg");
+}
+
+TEST_F(DatabaseTest, ResolveNamedSelectionAcceptsAPathPrefix) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/b/two.jpg", "sha2"));
+
+    auto ids = resolve_named_selection(*db, "/a/", {}, {});
+    ASSERT_TRUE(ids.has_value());
+    EXPECT_EQ(ids->size(), 1u);
+}
+
+TEST_F(DatabaseTest, ResolveNamedSelectionAcceptsAnExcludeAlone) {
+    // An exclude names a subject too: "everything except these" is a stated
+    // intent, not an omission.
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+
+    auto ids = resolve_named_selection(*db, "", {}, {"*two*"});
+    ASSERT_TRUE(ids.has_value());
+    EXPECT_EQ(ids->size(), 1u);
+}
+
+TEST_F(DatabaseTest, ResolveNamedSelectionMayLegitimatelyMatchNothing) {
+    // Named but empty is not the same as unnamed: the caller said what it
+    // wanted and nothing qualified, which is a no-op rather than a refusal.
+    db->insert(make_image("/a/one.jpg", "sha1"));
+
+    auto ids = resolve_named_selection(*db, "", {"*nothing*"}, {});
+    ASSERT_TRUE(ids.has_value());
+    EXPECT_TRUE(ids->empty());
+}
+
+// R78's CLI half. resolve_named_selection is unit-tested above; this pins that
+// each of the six metadata writes actually consults it, exits 1, and changes
+// nothing — the record notes no test drives cmd_tag, cmd_gallery or cmd_fav,
+// and only a subprocess can, since all three are cli/ functions.
+TEST_F(DatabaseTest, CliMetadataWritesRefuseAnUnnamedSubject) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+
+    fs::path root = make_temp_dir("r78-cli");
+    std::string cli_db = (root / "cli.db").string();
+    {
+        Database cli(cli_db);
+        cli.init_schema();
+        for (int i = 0; i < 3; i++) {
+            ImageInfo info;
+            info.path = (root / ("img" + std::to_string(i) + ".jpg")).string();
+            info.filename = "img" + std::to_string(i) + ".jpg";
+            info.extension = "jpg";
+            info.file_size = 1;
+            info.sha256 = "s" + std::to_string(i);
+            info.metadata_json = "{}";
+            cli.insert(info);
+        }
+        // Metadata a collection-wide write would destroy.
+        cli.set_tag({(root / "img0.jpg").string()}, "keepme", true);
+        cli.set_gallery({(root / "img0.jpg").string()}, "keepgallery", false);
+    }
+
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"tag add holiday", "tag add requires --match or --path"},
+        {"tag remove keepme", "tag remove requires --match or --path"},
+        {"gallery set trip", "gallery set requires --match or --path"},
+        {"gallery clear", "gallery clear requires --match or --path"},
+        {"fav add", "fav add requires --match or --path"},
+        {"fav remove", "fav remove requires --match or --path"},
+    };
+    for (const auto& [args, expected] : cases) {
+        fs::path out_path = root / "out.txt";
+        std::string cmd = phig_bin.string() + " " + args + " --db " + cli_db + " > " +
+                          out_path.string() + " 2>&1";
+        int rc = std::system(cmd.c_str());
+        int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+
+        std::ifstream in(out_path);
+        std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+        EXPECT_EQ(exit_code, 1) << args << " output was:\n" << output;
+        EXPECT_NE(output.find(expected), std::string::npos) << args << " output was:\n" << output;
+    }
+
+    // Nothing was written by any of the six refusals.
+    Database after(cli_db);
+    EXPECT_EQ(after.get_tags_for_image((root / "img0.jpg").string()),
+              (std::vector<std::string>{"keepme"}));
+    for (const auto& r : after.get_all_images()) {
+        if (r.path == (root / "img0.jpg").string()) EXPECT_EQ(r.gallery, "keepgallery");
+    }
+
+    fs::remove_all(root);
 }

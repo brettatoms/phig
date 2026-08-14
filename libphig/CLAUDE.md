@@ -70,21 +70,25 @@ splits reconcile into a decision and an application the caller authorizes.
 One of those is more than a missing entry point: the activity log has no reader
 anywhere in `core/`, so it is core work before it is ABI work.
 
-**Selection is being unified on ids, and is half-converted.** Plan 053's
-decision 2 settles it: everything whose subject is existing rows takes ids, and
-globs survive only as query predicates, because a filename search cannot be
-asked for with ids — resolving it to ids *is* the search. `phig_query` now takes
-`phig_query_add_match`/`phig_query_add_exclude`, evaluated in SQL through a
+**Selection is ids. Globs are query predicates and nothing else.** Everything
+whose subject is existing rows names them by id: the metadata writes, and the
+thumbs, faces and organize operations. Globs live on `phig_query` alone —
+`phig_query_add_match` and `phig_query_add_exclude`, evaluated in SQL through a
 registered `phig_glob` calling phig's own `glob_match` (not SQLite's `GLOB`,
-which has character classes and no escape), and `phig_query_ids` resolves any
-query to the ids it selects.
+which has character classes and no escape) — because a filename search cannot
+be asked for with ids: resolving it to ids *is* the search. `phig_query_ids`
+turns any query into the ids it selects, which is how a caller gets from one
+vocabulary to the other. Plan 053's decision 2, delivered by its step 3.
 
-What has not moved yet is the operations: `phig_thumbs_options` and
-`phig_faces_options` still take `match`/`exclude`, and organize still takes
-them too. 053's step 3 converts those to ids and moves the glob resolution to
-the caller. Until it lands, the ABI has both conventions — queries on globs,
-metadata writes on ids, operations on globs. Do not read the operations' current
-shape as the intended one.
+Index is the one operation that takes neither. It walks a directory, so its
+subject is files that have no row yet.
+
+**An empty id list selects nothing, not everything.** Before ids, an operation
+given no filter ran over the whole collection, so a caller that forgot to name a
+subject swept it — and a faces rebuild deletes person labels (R60). NULL/0 is
+now a no-op. `cli/` preserves its own behaviour by resolving every id when no
+`--match` is given, which is what a caller asking for the whole collection has
+to do too: say so.
 
 `ScanOptions::thumbs`/`faces` is the deliberate exclusion and must never be
 exposed: the ABI models the three as independent operations, and those flags

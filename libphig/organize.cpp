@@ -6,16 +6,6 @@
 
 namespace {
 
-std::vector<std::string> copy_globs(const char* const* items, size_t n) {
-    std::vector<std::string> out;
-    if (items == nullptr) return out;
-    out.reserve(n);
-    for (size_t i = 0; i < n; ++i) {
-        if (items[i] != nullptr) out.emplace_back(items[i]);
-    }
-    return out;
-}
-
 ConflictResolution from_abi(phig_conflict_resolution r) {
     switch (r) {
         case PHIG_CONFLICT_SKIP:
@@ -113,8 +103,11 @@ phig_status phig_op_organize_plan_start(phig_ctx* ctx, const phig_organize_optio
     OrganizeOptions core;
     core.destination = opts->destination;
     core.format = opts->format != nullptr ? opts->format : "%Y/%m/%original";
-    core.matches = copy_globs(opts->matches, opts->match_count);
-    core.excludes = copy_globs(opts->excludes, opts->exclude_count);
+    // By value: the caller's array need only outlive this call, while the
+    // engine runs on a worker thread afterwards.
+    if (opts->ids != nullptr && opts->id_count > 0) {
+        core.ids.assign(opts->ids, opts->ids + opts->id_count);
+    }
     core.on_conflict = from_abi(opts->on_conflict);
     core.db_path = ctx->db_path;
     core.log_enabled = false;  // planning opens no operation

@@ -102,12 +102,31 @@ struct OpFixture {
     }
 };
 
-phig_thumbs_options default_thumbs() {
+// Every id in the collection. These tests predate id selection and meant "the
+// whole collection" by setting no filter at all; NULL/0 now selects nothing, so
+// what they meant has to be said. Resolving through phig_query_ids is also how
+// a real client would do it.
+struct AllIds {
+    phig_id_list* list = nullptr;
+    explicit AllIds(phig_ctx* ctx) {
+        phig_query* q = nullptr;
+        EXPECT_EQ(phig_query_new(ctx, &q), PHIG_OK);
+        EXPECT_EQ(phig_query_ids(ctx, q, &list), PHIG_OK);
+        phig_query_free(q);
+    }
+    ~AllIds() { phig_id_list_free(list); }
+    AllIds(const AllIds&) = delete;
+    AllIds& operator=(const AllIds&) = delete;
+};
+
+// `ids` may be null, which selects nothing — the right default for the tests
+// that assert an operation did no work.
+phig_thumbs_options default_thumbs(const phig_id_list* ids = nullptr) {
     phig_thumbs_options o{};
-    o.match = nullptr;
-    o.match_count = 0;
-    o.exclude = nullptr;
-    o.exclude_count = 0;
+    if (ids != nullptr) {
+        o.ids = ids->items;
+        o.id_count = static_cast<size_t>(ids->count);
+    }
     o.size = 0;
     o.force = false;
     o.parallel = 1;
@@ -133,7 +152,8 @@ phig_index_options default_index(const std::string& dir) {
 TEST(AbiOperations, ThumbsRunsToCompletionAndReportsCounts) {
     OpFixture fx(3);
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
 
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
@@ -181,7 +201,8 @@ TEST(AbiOperations, IndexAddsFilesFoundOnDisk) {
 TEST(AbiOperations, PollDrainsProgressAndCountersAreAbsolute) {
     OpFixture fx(4);
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
 
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
@@ -214,7 +235,8 @@ TEST(AbiOperations, PollDrainsProgressAndCountersAreAbsolute) {
 TEST(AbiOperations, PollReturnsFalseWhenNothingIsQueued) {
     OpFixture fx(1);
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
 
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
@@ -234,7 +256,8 @@ TEST(AbiOperations, PollReturnsFalseWhenNothingIsQueued) {
 TEST(AbiOperations, CancelBeforeAnyWorkReportsCancelledAndIncomplete) {
     OpFixture fx(8);
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
 
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
@@ -260,7 +283,8 @@ TEST(AbiOperations, CancelMidRunKeepsTheWorkAlreadyDone) {
     // because no item has started. Wait for real progress first, then cancel.
     OpFixture fx(24);
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
 
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
@@ -300,7 +324,8 @@ TEST(AbiOperations, CancelMidRunKeepsTheWorkAlreadyDone) {
 TEST(AbiOperations, CancelIsIdempotentAndSafeAfterCompletion) {
     OpFixture fx(1);
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
 
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
@@ -322,7 +347,8 @@ TEST(AbiOperations, FreeWhileRunningWaitsForTheWorker) {
     // use-after-free would show up.
     OpFixture fx(8);
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
 
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
@@ -334,7 +360,8 @@ TEST(AbiOperations, FreeWhileRunningWaitsForTheWorker) {
 TEST(AbiOperations, ResultBeforeCompletionIsRejected) {
     OpFixture fx(8);
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
 
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
@@ -361,7 +388,8 @@ TEST(AbiOperations, ResultBeforeCompletionIsRejected) {
 TEST(AbiOperations, WrongResultGetterForTheOperationKindIsRejected) {
     OpFixture fx(1);
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
 
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
@@ -529,7 +557,8 @@ TEST(AbiOperations, PerFileErrorsAreRetainedForInspection) {
     fx.add_broken_row("broken.jpg");
 
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
     phig_op_wait(op);
@@ -559,7 +588,8 @@ TEST(AbiOperations, ErrorsAreRetainedForACallerThatNeverPolled) {
     fx.add_broken_row("broken.jpg");
 
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
     phig_op_wait(op);  // no poll, ever
@@ -581,7 +611,8 @@ TEST(AbiOperations, AFailureSeenByBothPollAndTheSweepIsRetainedOnce) {
     fx.add_broken_row("broken.jpg");
 
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
     phig_op_wait(op);
@@ -603,7 +634,8 @@ TEST(AbiOperations, EveryRetainedErrorPointerStaysReadable) {
     for (int i = 0; i < 12; ++i) fx.add_broken_row("broken" + std::to_string(i) + ".jpg");
 
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);
     phig_op_wait(op);
@@ -695,7 +727,8 @@ TEST(AbiOperations, PolledStringsStayValidUntilTheNextPoll) {
     // and read back after it has produced many more.
     OpFixture fx(16);
     phig_ctx* ctx = fx.open();
-    phig_thumbs_options opts = default_thumbs();
+    AllIds all(ctx);
+    phig_thumbs_options opts = default_thumbs(all.list);
 
     phig_op* op = nullptr;
     ASSERT_EQ(phig_op_thumbs_start(ctx, &opts, &op), PHIG_OK);

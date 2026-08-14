@@ -126,6 +126,15 @@ struct ScratchThumbs {
             db->insert(info);
         }
     }
+    // Every row. These tests predate id selection and meant "the whole
+    // collection" by setting no filter; an empty selection now means nothing,
+    // so what they meant has to be said.
+    std::vector<int64_t> all_ids() {
+        Database::PageCriteria pc;
+        pc.limit = -1;
+        return db->ids_matching(pc);
+    }
+
     ~ScratchThumbs() {
         db.reset();
         if (had_orig_cache) {
@@ -143,6 +152,7 @@ TEST(ThumbsEngineRun, GeneratesOneThumbnailPerSelectedImage) {
     ScratchThumbs coll(4);
     ThumbsOptions opts;
     opts.parallel = 2;
+    opts.ids = coll.all_ids();
     ThumbsEngine engine(opts, *coll.db);
     CancelToken tok;
 
@@ -158,6 +168,7 @@ TEST(ThumbsEngineRun, SecondRunSkipsEverythingItAlreadyGenerated) {
     ScratchThumbs coll(4);
     ThumbsOptions opts;
     opts.parallel = 2;
+    opts.ids = coll.all_ids();
     CancelToken tok;
 
     ThumbsEngine(opts, *coll.db).run(tok, nullptr);
@@ -171,6 +182,11 @@ TEST(ThumbsEngineRun, ForceRegeneratesWhatTheSecondRunWouldSkip) {
     ScratchThumbs coll(4);
     ThumbsOptions opts;
     opts.parallel = 2;
+    // Before the first run, not between the two: the first run is what puts the
+    // thumbnails in the cache, and without a selection it would generate
+    // nothing, leaving the forced run with nothing to regenerate and this test
+    // asserting force works when it had never been exercised.
+    opts.ids = coll.all_ids();
     CancelToken tok;
 
     ThumbsEngine(opts, *coll.db).run(tok, nullptr);
@@ -218,6 +234,7 @@ TEST(ThumbsEngineRun, PublishesSelectedCountBeforeAnyFileCompletes) {
     ScratchThumbs coll(3);
     ThumbsOptions opts;
     opts.parallel = 1;
+    opts.ids = coll.all_ids();
     ThumbsEngine engine(opts, *coll.db);
     CancelToken tok;
     ProgressQueue<ThumbsProgress> q(64);
@@ -263,6 +280,7 @@ TEST(ThumbsEngineRun, UndecodableFilePublishesTheDecodeErrorOnProgress) {
 
     ThumbsOptions opts;
     opts.parallel = 1;
+    opts.ids = coll.all_ids();
     ThumbsEngine engine(opts, *coll.db);
     CancelToken tok;
     ProgressQueue<ThumbsProgress> q(64);
@@ -291,7 +309,14 @@ TEST(ThumbsEngineRun, SelectionFiltersRestrictWhatIsProcessed) {
     ScratchThumbs coll(4);
     ThumbsOptions opts;
     opts.parallel = 2;
-    opts.matches.push_back((coll.dir / "img0.jpg").string());
+    // The engine takes ids; the glob is resolved by whoever calls it, which for
+    // the CLI is Database::ids_matching. Resolving here keeps this test's
+    // subject — that a restricted selection restricts the run — while exercising
+    // the surface the engine actually has.
+    Database::PageCriteria pc;
+    pc.filter.matches = {(coll.dir / "img0.jpg").string()};
+    pc.limit = -1;
+    opts.ids = coll.db->ids_matching(pc);
     ThumbsEngine engine(opts, *coll.db);
     CancelToken tok;
 
@@ -314,14 +339,19 @@ TEST(ThumbsEngineRun, PublishesNothingWhenGivenANullQueue) {
 }
 
 TEST(ThumbsEngineRun, AnExcludedRowGetsNoThumbnail) {
-    // R74's predicate is pinned by FilterTest against passes_selection itself.
-    // What that cannot show is that this engine consults it: a thumbs run that
-    // read only the match list would pass every one of those tests and still
-    // write a thumbnail for a file the caller excluded.
+    // R74's predicate is pinned by FilterTest against passes_selection itself,
+    // and DatabaseTest.ExcludeBeatsMatchJustLikePassesSelection pins that
+    // ids_matching applies it in SQL. What neither can show is that a row left
+    // out of the selection gets no thumbnail written for it — the engine now
+    // acts on ids alone, so this is where "excluded" has to mean "no cache
+    // entry" rather than merely "not counted".
     ScratchThumbs coll(2);
     ThumbsOptions opts;
     opts.parallel = 2;
-    opts.excludes = {"*img1*"};
+    Database::PageCriteria pc;
+    pc.filter.excludes = {"*img1*"};
+    pc.limit = -1;
+    opts.ids = coll.db->ids_matching(pc);
     ThumbsEngine engine(opts, *coll.db);
     CancelToken tok;
 
@@ -334,4 +364,20 @@ TEST(ThumbsEngineRun, AnExcludedRowGetsNoThumbnail) {
     EXPECT_TRUE(thumb_exists(included, PHIG_DEFAULT_THUMB_SIZE));
     EXPECT_FALSE(thumb_exists(excluded, PHIG_DEFAULT_THUMB_SIZE))
         << "--exclude did not reach the cache write";
+}
+
+TEST(ThumbsEngineRun, AnEmptySelectionGeneratesNothing) {
+    // Empty means nothing, not everything. Before ids, an empty match list
+    // selected the whole collection, so a caller that forgot to set a selection
+    // got a collection-wide run; now it gets a no-op.
+    ScratchThumbs coll(3);
+    ThumbsOptions opts;
+    opts.ids = {};
+    ThumbsEngine engine(opts, *coll.db);
+    CancelToken tok;
+
+    ThumbsResult r = engine.run(tok, nullptr);
+
+    EXPECT_EQ(r.total_selected, 0u);
+    EXPECT_EQ(r.generated, 0u);
 }

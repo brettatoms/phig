@@ -65,6 +65,15 @@ struct ScratchFaces {
             db->insert(info);
         }
     }
+    // Every row. These tests predate id selection and meant "the whole
+    // collection" by setting no filter; an empty selection now means nothing,
+    // so what they meant has to be said.
+    std::vector<int64_t> all_ids() const {
+        Database::PageCriteria pc;
+        pc.limit = -1;
+        return db->ids_matching(pc);
+    }
+
     ~ScratchFaces() {
         db.reset();
         std::error_code ec;
@@ -101,6 +110,7 @@ TEST(FacesEngineRun, DetectsFacesInEveryImageAcrossWorkers) {
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 2;
+    opts.ids = coll.all_ids();
     FacesEngine engine(opts, *coll.db);
     CancelToken tok;
     ProgressQueue<FacesProgress> q(64);
@@ -184,6 +194,7 @@ TEST(FacesEngineRun, PublishesModelLoadThenSelectedThenFiles) {
     ScratchFaces coll(2);
     FacesRebuildOptions opts;
     opts.parallel = 1;
+    opts.ids = coll.all_ids();
     FacesEngine engine(opts, *coll.db);
     CancelToken tok;
     ProgressQueue<FacesProgress> q(64);
@@ -229,6 +240,7 @@ TEST(FacesEngineRun, UndecodableFileIsSkippedWithoutFailingTheRun) {
 
     FacesRebuildOptions opts;
     opts.parallel = 2;
+    opts.ids = coll.all_ids();
     FacesEngine engine(opts, *coll.db);
     CancelToken tok;
 
@@ -262,6 +274,7 @@ TEST(FacesEngineRun, UndecodableFileIsCountedAsAnError) {
 
     FacesRebuildOptions opts;
     opts.parallel = 1;
+    opts.ids = coll.all_ids();
     FacesEngine engine(opts, *coll.db);
     CancelToken tok;
 
@@ -297,6 +310,7 @@ TEST(FacesEngineRun, UndecodableFilePublishesTheDecodeErrorOnProgress) {
 
     FacesRebuildOptions opts;
     opts.parallel = 1;
+    opts.ids = coll.all_ids();
     FacesEngine engine(opts, *coll.db);
     CancelToken tok;
     ProgressQueue<FacesProgress> q(64);
@@ -324,7 +338,12 @@ TEST(FacesEngineRun, SelectionFiltersRestrictWhatIsProcessed) {
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 1;
-    opts.matches.push_back((coll.dir / "f0.jpg").string());
+    // The engine takes ids; the glob is resolved by whoever calls it, which for
+    // the CLI is Database::ids_matching.
+    Database::PageCriteria pc;
+    pc.filter.matches = {(coll.dir / "f0.jpg").string()};
+    pc.limit = -1;
+    opts.ids = coll.db->ids_matching(pc);
     FacesEngine engine(opts, *coll.db);
     CancelToken tok;
 
@@ -359,6 +378,7 @@ TEST(FacesEngineRun, ImageDeletedMidRunIsSkippedRatherThanAbortingTheRun) {
 
     FacesRebuildOptions opts;
     opts.parallel = 4;
+    opts.ids = coll.all_ids();
     FacesEngine engine(opts, *coll.db);
     CancelToken tok;
 
@@ -502,7 +522,10 @@ TEST(FacesEngineRun, AnExcludedImagesFacesAreLeftAlone) {
 
     FacesRebuildOptions opts;
     opts.parallel = 2;
-    opts.excludes = {"*f1*"};
+    Database::PageCriteria pc;
+    pc.filter.excludes = {"*f1*"};
+    pc.limit = -1;
+    opts.ids = coll.db->ids_matching(pc);
     CancelToken tok;
     FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
 
@@ -562,6 +585,7 @@ TEST(FacesEngineRun, RefusesTheRunWhenNoDetectorCanBeBuiltAndWritesNothing) {
     FacesRebuildOptions opts;
     opts.parallel = 2;
     CancelToken tok;
+    opts.ids = coll.all_ids();
     std::string err = thrown_message([&] { FacesEngine(opts, *coll.db).run(tok, nullptr); });
 
     EXPECT_NE(err.find(expected_detector_refusal()), std::string::npos)
@@ -607,4 +631,24 @@ TEST(FacesEngineRun, CliSearchByFaceRefusesWhenNoDetectorCanBeBuilt) {
     EXPECT_NE(run.output.find(expected_detector_refusal()), std::string::npos) << run.output;
     EXPECT_EQ(run.output.find("f0.jpg"), std::string::npos)
         << "the search ran anyway: " << run.output;
+}
+
+TEST(FacesEngineRun, AnEmptySelectionDetectsNothing) {
+    // Matters more here than anywhere else in the codebase: a rebuild deletes
+    // every selected image's face rows, including the person labels R60 records
+    // as unrecoverable. An unset selection must not mean the whole collection.
+    //
+    // Needs no face models: an empty selection never reaches a detector, which
+    // is why this one has no face_path_blocker skip.
+    ScratchFaces coll(3);
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    opts.ids = {};
+    FacesEngine engine(opts, *coll.db);
+    CancelToken tok;
+
+    FacesResult r = engine.run(tok, nullptr);
+
+    EXPECT_EQ(r.total_selected, 0u);
+    EXPECT_EQ(r.faces_detected, 0u);
 }

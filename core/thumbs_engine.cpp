@@ -7,7 +7,6 @@
 #include "hasher.h"
 #include "log.h"
 #include "parallel.h"
-#include "selection.h"
 #include "thumbs.h"
 
 bool thumb_needs_generating(const ImageInfo& img, bool force, int size) {
@@ -21,15 +20,7 @@ ThumbsEngine::ThumbsEngine(const ThumbsOptions& opts, Database& db) : opts_(opts
 ThumbsResult ThumbsEngine::run(const CancelToken& cancel, ProgressQueue<ThumbsProgress>* progress) {
     ThumbsResult result;
 
-    std::vector<ImageInfo> images = db_.get_all_images();
-    if (!opts_.matches.empty() || !opts_.excludes.empty()) {
-        images.erase(std::remove_if(images.begin(), images.end(),
-                                    [&](const ImageInfo& img) {
-                                        return !passes_selection(img.path, opts_.matches,
-                                                                 opts_.excludes);
-                                    }),
-                     images.end());
-    }
+    std::vector<ImageInfo> images = db_.get_images_by_ids(opts_.ids);
     result.total_selected = images.size();
 
     if (progress) {

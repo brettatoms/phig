@@ -11,8 +11,12 @@
 enum class FacesStage { FileDone, Selected, LoadingFaceModels };
 
 struct FacesRebuildOptions {
-    std::vector<std::string> matches;
-    std::vector<std::string> excludes;
+    // The rows to act on. Empty selects nothing. This engine deletes and
+    // re-derives face rows for everything it selects, including the person
+    // labels R60 records as unrecoverable, so an unset selection meaning "the
+    // whole collection" would be the worst possible default. cli/ resolves its
+    // --match/--exclude globs through Database::ids_matching before filling it.
+    std::vector<int64_t> ids;
     int parallel = -1;  // -1 = auto
 };
 

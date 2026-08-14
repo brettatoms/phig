@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -11,8 +12,11 @@
 #include "types.h"
 
 struct ThumbsOptions {
-    std::vector<std::string> matches;
-    std::vector<std::string> excludes;
+    // The rows to act on. Empty selects nothing — a caller names its subject,
+    // and forgetting to is a no-op rather than a whole-collection run. cli/
+    // resolves its --match/--exclude globs through Database::ids_matching
+    // before constructing this.
+    std::vector<int64_t> ids;
     bool force = false;
     int parallel = -1;                   // -1 = auto
     int size = PHIG_DEFAULT_THUMB_SIZE;  // longest edge, in pixels

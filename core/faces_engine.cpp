@@ -11,7 +11,6 @@
 #include "log.h"
 #include "parallel.h"
 #include "scan_engine.h"  // detector_for_worker
-#include "selection.h"
 
 IdentifyResult identify_person(Database& db, const std::string& person, float threshold) {
     IdentifyResult result;
@@ -75,13 +74,7 @@ FacesEngine::FacesEngine(const FacesRebuildOptions& opts, Database& db) : opts_(
 FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgress>* progress) {
     FacesResult result;
 
-    std::vector<ImageInfo> all = db_.get_all_images();
-    std::vector<ImageInfo> images;
-    for (const auto& img : all) {
-        if (passes_selection(img.path, opts_.matches, opts_.excludes)) {
-            images.push_back(img);
-        }
-    }
+    std::vector<ImageInfo> images = db_.get_images_by_ids(opts_.ids);
     result.total_selected = images.size();
 
     if (progress) {
