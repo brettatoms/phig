@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -1335,4 +1336,34 @@ TEST_F(DatabaseTest, EmbeddingQueriesSkipRowsWithAnOverLongBlob) {
     auto bobs = db->get_face_embeddings_for_person(person);
     ASSERT_EQ(bobs.size(), 1u) << "the over-long row for Bob must be skipped";
     EXPECT_EQ(bobs[0].face_id, good_id);
+}
+
+// Foreign key integrity, and the migration loop's check on it. Schema
+// migrations that rebuild a table run with foreign_keys=OFF, because SQLite's
+// DROP TABLE deletes every row first and would cascade children away; this is
+// what verifies the result before the migration commits.
+TEST_F(DatabaseTest, ForeignKeyViolationsReportsZeroOnAConsistentDatabase) {
+    auto info = make_image("/p/a.jpg", "sha_a");
+    db->insert(info);
+    db->set_tag({info.path}, "keep", true);
+
+    EXPECT_EQ(db->foreign_key_violations(), 0);
+}
+
+TEST_F(DatabaseTest, ForeignKeyViolationsCountsAnOrphanedChildRow) {
+    auto info = make_image("/p/a.jpg", "sha_a");
+    db->insert(info);
+    db->set_tag({info.path}, "keep", true);
+
+    // Orphan the image_tags row the only way the schema allows: with foreign
+    // keys off, which is the state a rebuilding migration runs in.
+    const char* orphan = R"(
+        PRAGMA foreign_keys=OFF;
+        DELETE FROM images;
+        PRAGMA foreign_keys=ON;
+    )";
+    ASSERT_EQ(sqlite3_exec(db->db_ptr(), orphan, nullptr, nullptr, nullptr), SQLITE_OK)
+        << sqlite3_errmsg(db->db_ptr());
+
+    EXPECT_GT(db->foreign_key_violations(), 0);
 }

@@ -43,6 +43,13 @@ class Database {
     int schema_version();
     static int expected_schema_version();
 
+    // Runs PRAGMA foreign_key_check and returns the number of violations it
+    // reports; 0 means every foreign key resolves. init_schema() calls this
+    // inside each migration's transaction, because migrations run with
+    // foreign_keys disabled and nothing else would catch a migration that left
+    // child rows pointing at parents it did not carry across.
+    int foreign_key_violations();
+
     void insert(const ImageInfo& info);
     void insert_batch(const std::vector<ImageInfo>& infos);
     void insert_copy(const std::string& source_path, const std::string& dest_path);

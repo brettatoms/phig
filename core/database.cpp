@@ -281,6 +281,18 @@ int Database::schema_version() { return get_schema_version(); }
 
 int Database::expected_schema_version() { return CURRENT_SCHEMA_VERSION; }
 
+int Database::foreign_key_violations() {
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "PRAGMA foreign_key_check", -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare foreign_key_check: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) count++;
+    sqlite3_finalize(stmt);
+    return count;
+}
+
 void Database::set_schema_version(int version) {
     exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
     sqlite3_stmt* stmt;
@@ -493,11 +505,22 @@ void Database::init_schema() {
         // concurrent process already applied this step we skip it instead of
         // re-running non-idempotent DDL (e.g. ALTER TABLE ADD COLUMN).
         for (int v = db_version + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
+            // Foreign keys off for every migration, not only the ones that
+            // rebuild a table. SQLite's DROP TABLE performs an implicit DELETE
+            // of every row before dropping, so dropping a table with ON DELETE
+            // CASCADE children takes their rows with it and still reports
+            // success — and the pragma is a no-op inside a transaction, so it
+            // cannot be set where a migration runs. Conditioning it on the
+            // version number would leave that to the next migration author to
+            // notice. The pragma is per-connection, so no other process is
+            // affected.
+            exec("PRAGMA foreign_keys=OFF");
             exec("BEGIN IMMEDIATE TRANSACTION");
             try {
                 if (get_schema_version() >= v) {
                     // Another process already applied v while we waited.
                     exec("COMMIT");
+                    exec("PRAGMA foreign_keys=ON");
                     continue;
                 }
                 if (v == 6) {
@@ -515,11 +538,25 @@ void Database::init_schema() {
                 }
                 if (!migrations()[v].empty()) exec(migrations()[v]);
                 set_schema_version(v);
+                // Before COMMIT, not after: a violation found afterwards is
+                // already durable and there is nothing left to roll back. This
+                // catches a migration that stranded child rows. It does not
+                // catch one that let the cascade delete them — deleted children
+                // leave no orphans, so that case reports zero violations and is
+                // only visible to a test that asserts the rows are still there.
+                int violations = foreign_key_violations();
+                if (violations > 0) {
+                    throw std::runtime_error("Migration to schema v" + std::to_string(v) +
+                                             " left " + std::to_string(violations) +
+                                             " foreign key violations");
+                }
                 exec("COMMIT");
             } catch (...) {
                 exec("ROLLBACK");
+                exec("PRAGMA foreign_keys=ON");
                 throw;
             }
+            exec("PRAGMA foreign_keys=ON");
         }
     }
     // else: db_version == CURRENT_SCHEMA_VERSION, nothing to do
