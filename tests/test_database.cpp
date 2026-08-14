@@ -1367,3 +1367,22 @@ TEST_F(DatabaseTest, ForeignKeyViolationsCountsAnOrphanedChildRow) {
 
     EXPECT_GT(db->foreign_key_violations(), 0);
 }
+
+// R72: an image id names the same image for as long as that image exists.
+// Schema v9 made images.id AUTOINCREMENT; before it, deleting the highest row
+// handed its id straight to the next insert.
+TEST_F(DatabaseTest, ImageIdIsNotReusedAfterTheHighestRowIsDeleted) {
+    ASSERT_EQ(db->schema_version(), 9);
+
+    db->insert(make_image("/p/a.jpg", "sha_a"));
+    db->insert(make_image("/p/b.jpg", "sha_b"));
+    db->insert(make_image("/p/c.jpg", "sha_c"));
+    int64_t top = db->get_image_id("/p/c.jpg");
+
+    db->delete_paths({"/p/c.jpg"});
+    db->insert(make_image("/p/d.jpg", "sha_d"));
+    int64_t next = db->get_image_id("/p/d.jpg");
+
+    EXPECT_NE(next, top) << "a deleted image id was reissued to a different file";
+    EXPECT_GT(next, top);
+}

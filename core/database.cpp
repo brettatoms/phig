@@ -18,7 +18,7 @@
 namespace fs = std::filesystem;
 
 // Schema version this code expects. Bump when adding migrations.
-static const int CURRENT_SCHEMA_VERSION = 8;
+static const int CURRENT_SCHEMA_VERSION = 9;
 
 // migrations()[N] upgrades from version N-1 to version N.
 // Version 1 = initial schema, created directly by init_schema().
@@ -133,6 +133,59 @@ static const std::vector<std::string>& migrations() {
        DROP TABLE faces;
        ALTER TABLE faces_new RENAME TO faces;
        CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id);)",
+        // v9: images.id to AUTOINCREMENT so a deleted id is never reissued
+        // (R72). A plain INTEGER PRIMARY KEY is the rowid and is assigned
+        // max(rowid)+1, so deleting the highest image hands its id to the next
+        // insert — and the ABI gives ids to clients that come back to write
+        // against them.
+        //
+        // Columns are listed rather than SELECT *: a database that reached
+        // here through the pre-migration path has columns appended by ALTER
+        // TABLE, so column order differs from a freshly created one.
+        //
+        // Copying rows with their ids seeds sqlite_sequence to the maximum, so
+        // the first insert after this continues above it rather than filling
+        // the gap.
+        //
+        // Unlike v8's faces rebuild, images is an FK parent: image_tags and
+        // faces both reference it ON DELETE CASCADE. DROP TABLE deletes every
+        // row before dropping, so with foreign_keys=ON this would take every
+        // image_tags row and every faces row with it — all tag and favorite
+        // assignments, and all embeddings, boxes and person labels. The tags
+        // and people rows themselves would survive; what goes is every
+        // association to them. That is why init_schema runs migrations with
+        // the pragma off.
+        R"(CREATE TABLE images_new (
+         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+         path        TEXT NOT NULL UNIQUE,
+         filename    TEXT NOT NULL,
+         extension   TEXT NOT NULL,
+         file_size   INTEGER NOT NULL,
+         created_at  TEXT,
+         modified_at TEXT,
+         sha256      TEXT NOT NULL,
+         phash       INTEGER NOT NULL,
+         width       INTEGER,
+         height      INTEGER,
+         metadata    TEXT,
+         media_type  TEXT NOT NULL DEFAULT 'image',
+         duration_ms INTEGER,
+         gallery     TEXT,
+         blur_score  REAL,
+         effective_date TEXT);
+       INSERT INTO images_new (id, path, filename, extension, file_size, created_at,
+                               modified_at, sha256, phash, width, height, metadata,
+                               media_type, duration_ms, gallery, blur_score, effective_date)
+         SELECT id, path, filename, extension, file_size, created_at,
+                modified_at, sha256, phash, width, height, metadata,
+                media_type, duration_ms, gallery, blur_score, effective_date FROM images;
+       DROP TABLE images;
+       ALTER TABLE images_new RENAME TO images;
+       CREATE INDEX IF NOT EXISTS idx_phash ON images(phash);
+       CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256);
+       CREATE INDEX IF NOT EXISTS idx_path ON images(path);
+       CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery);
+       CREATE INDEX IF NOT EXISTS idx_effective_date ON images(effective_date DESC, id DESC);)",
     };
     return table;
 }
@@ -397,7 +450,7 @@ void Database::init_schema() {
 
                 exec(R"(
                     CREATE TABLE IF NOT EXISTS images (
-                        id          INTEGER PRIMARY KEY,
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
                         path        TEXT NOT NULL UNIQUE,
                         filename    TEXT NOT NULL,
                         extension   TEXT NOT NULL,
