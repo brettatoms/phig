@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -551,16 +552,37 @@ TEST_F(OrganizeEngineTest, CancellationPartwayMarksTheOperationInterrupted) {
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
+    // The canceller races apply's loop, and losing that race fails every
+    // assertion below: apply checks cancel.stop() once per file and otherwise
+    // runs flat out, ProgressQueue::push never blocks, so nothing couples the
+    // two. Measured, apply moves these 40 files in ~34ms, so the canceller has
+    // to act inside that window — and a thread that has not been scheduled even
+    // once will not.
+    //
+    // Two things keep the window wide. `started` makes the main thread wait
+    // until the canceller has actually run, so apply never races a thread that
+    // does not exist yet; after that the canceller is blocked in pop() and a
+    // condvar notify wakes it, which is far more reliable than first-scheduling
+    // a new thread on a saturated machine. And it cancels on the FIRST FileDone
+    // rather than the third, spending none of the window waiting for events it
+    // does not need.
+    //
+    // This is still a timing-dependent test, not a deterministic one. If it
+    // ever flakes again, widen the window with more files rather than loosening
+    // an assertion — each one here is load-bearing.
     ProgressQueue<OrganizeProgress> q(1024);
+    std::atomic<bool> started{false};
     std::thread canceller([&] {
+        started.store(true, std::memory_order_release);
         OrganizeProgress p;
         while (q.pop(p)) {
-            if (p.stage == OrganizeStage::FileDone && p.done >= 3) {
+            if (p.stage == OrganizeStage::FileDone) {
                 cancel.cancel();
                 break;
             }
         }
     });
+    while (!started.load(std::memory_order_acquire)) std::this_thread::yield();
     OrganizeResult result = engine.apply(plan, true, cancel, &q);
     q.close();
     canceller.join();
