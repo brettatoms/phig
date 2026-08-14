@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <set>
 #include <string>
@@ -15,6 +17,7 @@
 #include "database.h"
 #include "fault_injection.h"
 #include "phig_binary.h"
+#include "selection.h"
 #include "temp_dir.h"
 #include "types.h"
 
@@ -2203,4 +2206,121 @@ TEST_F(DatabaseTest, SetGalleryByIdsCanRefuseToOverwrite) {
         if (r.path == "/a/one.jpg") EXPECT_EQ(r.gallery, "first");
         if (r.path == "/a/two.jpg") EXPECT_EQ(r.gallery, "second");
     }
+}
+
+// ---- R78: a metadata write must name its subject ----
+
+TEST_F(DatabaseTest, ResolveNamedSelectionRefusesAnUnnamedSubject) {
+    // No glob and no prefix resolves to the whole collection, and a metadata
+    // write over it strips tags or empties galleries with no restore snapshot
+    // and no activity-log entry. The refusal is here rather than in cli/ so
+    // every surface that resolves a selection inherits it.
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+
+    EXPECT_FALSE(resolve_named_selection(*db, "", {}, {}).has_value());
+}
+
+TEST_F(DatabaseTest, ResolveNamedSelectionAcceptsAGlob) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+
+    auto ids = resolve_named_selection(*db, "", {"*one*"}, {});
+    ASSERT_TRUE(ids.has_value());
+    ASSERT_EQ(ids->size(), 1u);
+    EXPECT_EQ(db->get_images_by_ids(*ids)[0].path, "/a/one.jpg");
+}
+
+TEST_F(DatabaseTest, ResolveNamedSelectionAcceptsAPathPrefix) {
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/b/two.jpg", "sha2"));
+
+    auto ids = resolve_named_selection(*db, "/a/", {}, {});
+    ASSERT_TRUE(ids.has_value());
+    EXPECT_EQ(ids->size(), 1u);
+}
+
+TEST_F(DatabaseTest, ResolveNamedSelectionAcceptsAnExcludeAlone) {
+    // An exclude names a subject too: "everything except these" is a stated
+    // intent, not an omission.
+    db->insert(make_image("/a/one.jpg", "sha1"));
+    db->insert(make_image("/a/two.jpg", "sha2"));
+
+    auto ids = resolve_named_selection(*db, "", {}, {"*two*"});
+    ASSERT_TRUE(ids.has_value());
+    EXPECT_EQ(ids->size(), 1u);
+}
+
+TEST_F(DatabaseTest, ResolveNamedSelectionMayLegitimatelyMatchNothing) {
+    // Named but empty is not the same as unnamed: the caller said what it
+    // wanted and nothing qualified, which is a no-op rather than a refusal.
+    db->insert(make_image("/a/one.jpg", "sha1"));
+
+    auto ids = resolve_named_selection(*db, "", {"*nothing*"}, {});
+    ASSERT_TRUE(ids.has_value());
+    EXPECT_TRUE(ids->empty());
+}
+
+// R78's CLI half. resolve_named_selection is unit-tested above; this pins that
+// each of the six metadata writes actually consults it, exits 1, and changes
+// nothing — the record notes no test drives cmd_tag, cmd_gallery or cmd_fav,
+// and only a subprocess can, since all three are cli/ functions.
+TEST_F(DatabaseTest, CliMetadataWritesRefuseAnUnnamedSubject) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+
+    fs::path root = make_temp_dir("r78-cli");
+    std::string cli_db = (root / "cli.db").string();
+    {
+        Database cli(cli_db);
+        cli.init_schema();
+        for (int i = 0; i < 3; i++) {
+            ImageInfo info;
+            info.path = (root / ("img" + std::to_string(i) + ".jpg")).string();
+            info.filename = "img" + std::to_string(i) + ".jpg";
+            info.extension = "jpg";
+            info.file_size = 1;
+            info.sha256 = "s" + std::to_string(i);
+            info.metadata_json = "{}";
+            cli.insert(info);
+        }
+        // Metadata a collection-wide write would destroy.
+        cli.set_tag({(root / "img0.jpg").string()}, "keepme", true);
+        cli.set_gallery({(root / "img0.jpg").string()}, "keepgallery", false);
+    }
+
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"tag add holiday", "tag add requires --match or --path"},
+        {"tag remove keepme", "tag remove requires --match or --path"},
+        {"gallery set trip", "gallery set requires --match or --path"},
+        {"gallery clear", "gallery clear requires --match or --path"},
+        {"fav add", "fav add requires --match or --path"},
+        {"fav remove", "fav remove requires --match or --path"},
+    };
+    for (const auto& [args, expected] : cases) {
+        fs::path out_path = root / "out.txt";
+        std::string cmd = phig_bin.string() + " " + args + " --db " + cli_db + " > " +
+                          out_path.string() + " 2>&1";
+        int rc = std::system(cmd.c_str());
+        int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+
+        std::ifstream in(out_path);
+        std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+        EXPECT_EQ(exit_code, 1) << args << " output was:\n" << output;
+        EXPECT_NE(output.find(expected), std::string::npos) << args << " output was:\n" << output;
+    }
+
+    // Nothing was written by any of the six refusals.
+    Database after(cli_db);
+    EXPECT_EQ(after.get_tags_for_image((root / "img0.jpg").string()),
+              (std::vector<std::string>{"keepme"}));
+    for (const auto& r : after.get_all_images()) {
+        if (r.path == (root / "img0.jpg").string()) EXPECT_EQ(r.gallery, "keepgallery");
+    }
+
+    fs::remove_all(root);
 }

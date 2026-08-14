@@ -181,15 +181,14 @@ id = "R78"
 tier = "engine"
 concern = "authorization"
 statement = "A metadata write refuses to run unless the caller named which images it applies to."
-rationale = "tag add, tag remove, gallery set, gallery clear, fav add and fav remove each require at least one --match or a --path and exit 1 otherwise (cli/main.cpp:1587, :1655, :1707). Without that check select_paths would hand the write every row in the collection, since passes_selection returns true for everything when the match list is empty (R74): `phig tag remove holiday` would strip that tag collection-wide and `phig gallery clear` would empty every gallery, both silently, both destroying user-authored metadata nothing can rebuild, and neither leaving a trace — metadata.write opens no logged operation, so there is no restore snapshot and no activity-log entry to read afterwards. Measured with the built binary: all three refused, with 'Error: tag remove requires --match or --path', 'Error: gallery clear requires --match or --path' and 'Error: fav remove requires --match or --path', each exiting 1. Recorded as violated for the guard's location: it is three copies in cli/, and Database::set_tag, set_gallery and clear_gallery act on whatever path list they are handed. The ABI is not exposed today, because phig_tag_add and its five neighbours take an explicit array of image ids and a client cannot ask for everything by omission — but the guard belongs with the write rather than with one caller of it, and 053 owns bringing glob selection to the ABI, which is the change that would otherwise reintroduce the hole."
-enforced_at = [
-    "cli/main.cpp:cmd_tag",
-    "cli/main.cpp:cmd_gallery",
-    "cli/main.cpp:cmd_fav",
-]
+rationale = "tag add, tag remove, gallery set, gallery clear, fav add and fav remove each require at least one --match or a --path and exit 1 otherwise. Without that check the selection resolves to every row in the collection, since an empty filter matches everything (R74): `phig tag remove holiday` would strip that tag collection-wide and `phig gallery clear` would empty every gallery, both silently, both destroying user-authored metadata nothing can rebuild, and neither leaving a trace — metadata.write opens no logged operation, so there is no restore snapshot and no activity-log entry to read afterwards. The refusal is resolve_named_selection in core/selection.cpp, which returns nullopt when the caller named nothing at all; naming a selection that happens to match nothing is a different thing and returns an empty list, because the caller said what it wanted and nothing qualified. It sits on the resolve step rather than on the write because the write cannot see the hazard: set_tag_by_ids and set_gallery_by_ids receive an id list and cannot tell a caller that asked for the whole collection from one that forgot to filter. Resolution is where the omission is still visible, and putting it there is what makes it inheritable — a future phigd accepting a glob over HTTP calls the same function and gets the same refusal rather than reimplementing the check, which a cli/-only guard could not offer. The ABI needs none of it: phig_tag_add and its five neighbours take an explicit array of ids, so a client cannot ask for everything by omission. Plan 053 step 5 moved the guard here from three copies in cli/main.cpp, which is why this was recorded violated for its location; cli/ now renders the nullopt as its error and supplies only the wording."
+enforced_at = ["core/selection.cpp:resolve_named_selection"]
 binds = ["metadata.write"]
 protects = ["user-metadata"]
-tests = []
+tests = [
+    "DatabaseTest.ResolveNamedSelectionRefusesAnUnnamedSubject",
+    "DatabaseTest.ResolveNamedSelectionMayLegitimatelyMatchNothing",
+    "DatabaseTest.CliMetadataWritesRefuseAnUnnamedSubject",
+]
 test_kind = "subprocess"
-status = "violated"
-test_gap = "Nothing in tests/ drives cmd_tag, cmd_gallery or cmd_fav — all three are cli/ functions no fixture calls — so every refusal above was measured by running the binary. Only a subprocess test could pin them, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes."
+status = "holds"

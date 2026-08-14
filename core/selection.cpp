@@ -52,3 +52,16 @@ bool passes_selection(const std::string& filename, const std::vector<std::string
     }
     return false;
 }
+
+std::optional<std::vector<int64_t>> resolve_named_selection(
+    Database& db, const std::string& path_prefix, const std::vector<std::string>& matches,
+    const std::vector<std::string>& excludes) {
+    if (path_prefix.empty() && matches.empty() && excludes.empty()) return std::nullopt;
+
+    Database::PageCriteria selection;
+    selection.filter.path_prefix = path_prefix;
+    selection.filter.matches = matches;
+    selection.filter.excludes = excludes;
+    selection.limit = -1;  // a selection is not a page
+    return db.ids_matching(selection);
+}

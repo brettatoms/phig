@@ -1541,18 +1541,21 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
 
 // Resolve the images selected by an optional --path prefix plus match/filter
 // globs into a list of paths, reusing the shared filter logic.
-// Resolve, then operate. Every filter is applied in SQL — the globs through
-// phig_glob, --path as a range over the path index — and the write below takes
-// the ids, so nothing loads the collection to sift it in memory.
-static std::vector<int64_t> select_ids(Database& db, const std::string& path_prefix,
-                                       const std::vector<std::string>& matches,
-                                       const std::vector<std::string>& excludes) {
-    Database::PageCriteria selection;
-    selection.filter.path_prefix = path_prefix;
-    selection.filter.matches = matches;
-    selection.filter.excludes = excludes;
-    selection.limit = -1;
-    return db.ids_matching(selection);
+// Resolve a metadata write's selection, rendering core's refusal of an unnamed
+// subject (R78) as the CLI's error. The check lives in core/ so phigd inherits
+// it; this only supplies the wording, which is cli/'s job.
+static bool resolve_write_selection(Database& db, const std::string& what,
+                                    const std::string& path_prefix,
+                                    const std::vector<std::string>& matches,
+                                    const std::vector<std::string>& excludes,
+                                    std::vector<int64_t>& out) {
+    auto ids = resolve_named_selection(db, path_prefix, matches, excludes);
+    if (!ids) {
+        std::cerr << "Error: " << what << " requires --match or --path\n";
+        return false;
+    }
+    out = std::move(*ids);
+    return true;
 }
 
 int cmd_tag(int argc, char* argv[], const std::string& db_path, bool no_wait) {
@@ -1597,15 +1600,14 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path, bool no_wait) {
                 return 1;
             }
         }
-        if (matches.empty() && path_prefix.empty()) {
-            std::cerr << "Error: tag " << subcmd << " requires --match or --path\n";
-            return 1;
-        }
         auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
-        int n =
-            db.set_tag_by_ids(select_ids(db, path_prefix, matches, excludes), tag, subcmd == "add");
+        std::vector<int64_t> ids;
+        if (!resolve_write_selection(db, "tag " + subcmd, path_prefix, matches, excludes, ids)) {
+            return 1;
+        }
+        int n = db.set_tag_by_ids(ids, tag, subcmd == "add");
         std::cout << (subcmd == "add" ? "Tagged " : "Untagged ") << n << " images (" << tag
                   << ")\n";
         return 0;
@@ -1666,14 +1668,14 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path, bool no_wait
                 return 1;
             }
         }
-        if (matches.empty() && path_prefix.empty()) {
-            std::cerr << "Error: gallery " << subcmd << " requires --match or --path\n";
-            return 1;
-        }
         auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
-        auto ids = select_ids(db, path_prefix, matches, excludes);
+        std::vector<int64_t> ids;
+        if (!resolve_write_selection(db, "gallery " + subcmd, path_prefix, matches, excludes,
+                                     ids)) {
+            return 1;
+        }
         if (is_set) {
             int n = db.set_gallery_by_ids(ids, gallery, no_overwrite);
             std::cout << "Set gallery '" << gallery << "' on " << n << " images\n";
@@ -1718,15 +1720,14 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path, bool no_wait) {
                 return 1;
             }
         }
-        if (matches.empty() && path_prefix.empty()) {
-            std::cerr << "Error: fav " << subcmd << " requires --match or --path\n";
-            return 1;
-        }
         auto lock = acquire_writer_lock(no_wait);
         Database db(db_path);
         db.init_schema();
-        int n = db.set_tag_by_ids(select_ids(db, path_prefix, matches, excludes), "favorite",
-                                  subcmd == "add");
+        std::vector<int64_t> ids;
+        if (!resolve_write_selection(db, "fav " + subcmd, path_prefix, matches, excludes, ids)) {
+            return 1;
+        }
+        int n = db.set_tag_by_ids(ids, "favorite", subcmd == "add");
         std::cout << (subcmd == "add" ? "Favorited " : "Unfavorited ") << n << " images\n";
         return 0;
     }
