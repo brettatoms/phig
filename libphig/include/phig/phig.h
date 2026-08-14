@@ -527,12 +527,12 @@ typedef struct {
 } phig_index_options;
 
 typedef struct {
-    /* Glob filters over the collection. NULL/0 selects everything. Exclude wins
-       where the two overlap. The pointers need only outlive the _start call. */
-    const char* const* match;
-    size_t match_count;
-    const char* const* exclude;
-    size_t exclude_count;
+    /* The images to act on, as ids — resolve a set with phig_query_ids.
+       NULL/0 selects NOTHING, not everything: a caller names its subject, and
+       an unset selection is a no-op rather than a whole-collection run. The
+       array need only outlive the _start call. */
+    const int64_t* ids;
+    size_t id_count;
     /* Longest edge in pixels. 0 uses phig's default. Sizes are independent —
        generating one never invalidates another. */
     int size;

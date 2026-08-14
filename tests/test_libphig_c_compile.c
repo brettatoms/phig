@@ -155,7 +155,7 @@ void phig_c_compile_check(void) {
     }
 
     {
-        static const char* const globs[1] = {"*.jpg"};
+        static const int64_t op_ids[2] = {1, 2};
         phig_op* op = NULL;
         phig_op_progress prog;
         phig_index_options iopts;
@@ -173,10 +173,8 @@ void phig_c_compile_check(void) {
         iopts.parallel = 0;
         (void)phig_op_index_start(ctx, &iopts, &op);
 
-        topts.match = globs;
-        topts.match_count = 1;
-        topts.exclude = NULL;
-        topts.exclude_count = 0;
+        topts.ids = op_ids;
+        topts.id_count = 2;
         topts.size = 0;
         topts.force = false;
         topts.parallel = 0;

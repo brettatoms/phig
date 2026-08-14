@@ -1158,8 +1158,15 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
         ScopedInterruptHandler interrupt_guard(cancel);
 
         ThumbsOptions opts;
-        opts.matches = matches;
-        opts.excludes = excludes;
+        // The engine takes ids, so the globs resolve here. No --match/--exclude
+        // means every row, which is what this command has always done — the
+        // engine's empty-selects-nothing rule is about a caller that named no
+        // subject, not about a user who asked for the whole collection.
+        Database::PageCriteria selection;
+        selection.filter.matches = matches;
+        selection.filter.excludes = excludes;
+        selection.limit = -1;
+        opts.ids = db.ids_matching(selection);
         opts.force = force;
         opts.parallel = parallel;
 

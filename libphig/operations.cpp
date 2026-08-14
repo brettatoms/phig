@@ -154,8 +154,11 @@ phig_status phig_op_thumbs_start(phig_ctx* ctx, const phig_thumbs_options* opts,
     if (st != PHIG_OK) return st;
 
     ThumbsOptions topts;
-    topts.matches = copy_globs(opts->match, opts->match_count);
-    topts.excludes = copy_globs(opts->exclude, opts->exclude_count);
+    // By value: the caller's array need only outlive this call, while the
+    // engine runs on a worker thread afterwards.
+    if (opts->ids != nullptr && opts->id_count > 0) {
+        topts.ids.assign(opts->ids, opts->ids + opts->id_count);
+    }
     topts.force = opts->force;
     topts.parallel = opts->parallel;
     if (opts->size > 0) topts.size = opts->size;
