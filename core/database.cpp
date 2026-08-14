@@ -13,6 +13,7 @@
 #define SQLITE_CORE
 #endif
 #include "dates.h"
+#include "selection.h"
 #include "sqlite-vec.h"
 
 namespace fs = std::filesystem;
@@ -306,6 +307,30 @@ Database::Database(const std::string& path, bool read_only) {
 
     // Initialize sqlite-vec extension
     sqlite3_vec_init(db_, nullptr, nullptr);
+
+    // phig's own glob, callable from SQL as phig_glob(pattern, path). Not
+    // SQLite's GLOB: that has [...] character classes and no backslash escape,
+    // where phig has the escape and treats brackets literally, so translating
+    // patterns would change which files an existing --match selects.
+    // Registering glob_match itself keeps one implementation. Deterministic and
+    // pure, so SQLITE_DETERMINISTIC lets the planner hoist it where it can.
+    sqlite3_create_function(
+        db_, "phig_glob", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr,
+        [](sqlite3_context* ctx, int argc, sqlite3_value** argv) {
+            if (argc != 2 || sqlite3_value_type(argv[0]) == SQLITE_NULL ||
+                sqlite3_value_type(argv[1]) == SQLITE_NULL) {
+                sqlite3_result_int(ctx, 0);
+                return;
+            }
+            const auto* pattern = reinterpret_cast<const char*>(sqlite3_value_text(argv[0]));
+            const auto* path = reinterpret_cast<const char*>(sqlite3_value_text(argv[1]));
+            if (pattern == nullptr || path == nullptr) {
+                sqlite3_result_int(ctx, 0);
+                return;
+            }
+            sqlite3_result_int(ctx, glob_match(pattern, path) ? 1 : 0);
+        },
+        nullptr, nullptr);
 }
 
 Database::~Database() {
@@ -2130,6 +2155,22 @@ void Database::build_filter_sql(const SearchCriteria& c, std::string& sql,
     if (c.max_sharpness >= 0) {
         sql += " AND blur_score <= " + std::to_string(c.max_sharpness);
     }
+    // Exclude first and unconditionally, mirroring passes_selection: an exclude
+    // wins over a match, and an exclude with no matches still narrows.
+    for (const auto& e : c.excludes) {
+        sql += " AND NOT phig_glob(?, path)";
+        binds.push_back({e, false});
+    }
+    // An empty match list selects everything, so the OR group is only emitted
+    // when there is something to match.
+    if (!c.matches.empty()) {
+        sql += " AND (";
+        for (size_t i = 0; i < c.matches.size(); i++) {
+            sql += (i == 0) ? "phig_glob(?, path)" : " OR phig_glob(?, path)";
+            binds.push_back({c.matches[i], false});
+        }
+        sql += ")";
+    }
 }
 
 void Database::bind_filter_values(sqlite3_stmt* stmt,
@@ -2302,6 +2343,41 @@ int64_t Database::count_matching(const SearchCriteria& filter) {
         throw std::runtime_error("Failed to count matches: " + std::string(sqlite3_errmsg(db_)));
     }
     return n;
+}
+
+std::vector<int64_t> Database::ids_matching(const PageCriteria& c) {
+    std::string sql = "SELECT id FROM images WHERE 1=1";
+    std::vector<std::pair<std::string, bool>> binds;
+    build_filter_sql(c.filter, sql, binds);
+
+    const char* dir = c.descending ? "DESC" : "ASC";
+    sql += std::string(" ORDER BY ") + sort_column(c.sort) + " " + dir + ", id " + dir;
+    if (c.limit >= 0) sql += " LIMIT ? OFFSET ?";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare id query: " + std::string(sqlite3_errmsg(db_)));
+    }
+    int idx = 1;
+    bind_filter_values(stmt, binds, idx);
+    if (c.limit >= 0) {
+        sqlite3_bind_int(stmt, idx++, c.limit);
+        sqlite3_bind_int64(stmt, idx++, c.offset);
+    }
+
+    std::vector<int64_t> out;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        out.push_back(sqlite3_column_int64(stmt, 0));
+    }
+    sqlite3_finalize(stmt);
+    // A mid-iteration error would otherwise return a short list as if it were
+    // the whole selection — the failure that matters most here, because a
+    // caller acts on this list rather than displaying it.
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error("Failed to read ids: " + std::string(sqlite3_errmsg(db_)));
+    }
+    return out;
 }
 
 bool Database::get_metadata_json(int64_t id, std::string& out) {

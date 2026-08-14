@@ -79,6 +79,10 @@ struct AbiSymbolCount {
 };
 constexpr AbiSymbolCount kAbiSymbolCounts[] = {
     {1, 3, 69},
+    // 1.4 adds phig_query_add_match, phig_query_add_exclude, phig_query_ids
+    // and phig_id_list_free — glob predicates on a query and resolving one to
+    // ids (plan 053 decision 2). Additive, so the soname is unchanged.
+    {1, 4, 73},
 };
 
 // Every exported entry point declared in the public header.

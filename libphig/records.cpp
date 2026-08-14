@@ -15,6 +15,14 @@ struct ListStorage {
     std::deque<std::string> strings;
 };
 
+// Same trick for a list of ids: the header is the first member, so the pointer
+// handed to the caller round-trips back to IdListStorage* in
+// phig_id_list_free.
+struct IdListStorage {
+    phig_id_list header;
+    std::vector<int64_t> items;
+};
+
 const char* intern(ListStorage& st, const std::string& s) {
     st.strings.push_back(s);
     return st.strings.back().c_str();
@@ -59,6 +67,19 @@ phig_image_list* phig_make_image_list(const std::vector<ImageInfo>& rows) {
 extern "C" void phig_image_list_free(phig_image_list* list) {
     if (list == nullptr) return;
     delete reinterpret_cast<ListStorage*>(list);
+}
+
+phig_id_list* phig_make_id_list(std::vector<int64_t> ids) {
+    auto* st = new IdListStorage();
+    st->items = std::move(ids);
+    st->header.items = st->items.data();
+    st->header.count = static_cast<int64_t>(st->items.size());
+    return &st->header;
+}
+
+extern "C" void phig_id_list_free(phig_id_list* list) {
+    if (list == nullptr) return;
+    delete reinterpret_cast<IdListStorage*>(list);
 }
 
 extern "C" void phig_string_free(char* s) { delete[] s; }

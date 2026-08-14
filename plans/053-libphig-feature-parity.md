@@ -103,6 +103,26 @@ and SQLite's `GLOB` disagree — phig has backslash escapes, SQLite has `[...]`
 character classes — so `glob_match` is registered as a custom SQLite function
 rather than translating patterns and silently changing what `--match` means.
 
+A function call on `path` is opaque to the planner, so it cannot use
+`idx_path` and the filter is a full scan. Measured against a synthetic 200,000
+-row database, `phig search --count`, three runs each, with the 0.07 s process
+startup floor subtracted:
+
+| query | wall | query cost |
+|---|---|---|
+| no filter | 0.15 s | ~80 ms |
+| `--match '/photos/0042/*'` | 0.16 s | ~90 ms |
+| `--match '*IMG_0123456*'` | 0.17 s | ~100 ms |
+
+So the glob adds 10-20 ms to a scan that already costs 80 ms — the scan is the
+expense, not the matching, and pushing the predicate into SQL does not make the
+query materially dearer than the unfiltered count beside it. Linear
+extrapolation puts an unfiltered count near 400 ms at a million rows and a
+globbed one near 500 ms, which is where it stops being free: `phig_query_count`
+exists so a client can size a scrollbar, and half a second is a visible stall if
+a client calls it on its UI thread. That is 044's territory — it owns query cost
+at scale — not a reason to filter anywhere other than in SQL.
+
 ### 3. `images.id` has to be stable first
 
 **Done — schema v9, R84 holds.** Decision 2 makes an id the way every caller
@@ -245,7 +265,8 @@ entry point at all. Signatures are reshaped in place rather than accreting
 
 1. Schema v9 + R84, with its real-behavior migration tests — done, executed via
    `docs/plans/2026-08-14-053-schema-v9.md`. R84 holds.
-2. `phig_query_ids` and the glob predicates, on the SQLite function.
+2. `phig_query_ids` and the glob predicates, on the SQLite function — done,
+   executed via `docs/plans/2026-08-14-053-query-selection.md`.
 3. Operations converted to ids; `cli/` resolves ahead of them.
 4. Items 5, 6, 7 — small, independent, unblocked once 2 lands. Item 7 carries
    R77's three guarantees into `core/` with the loop.
