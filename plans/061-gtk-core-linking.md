@@ -28,6 +28,12 @@ gtk's tests link (a fake seam, not the engine), what happens to libphig
 not through a new surface value). What is left is dependencies rather than
 questions — see the end.
 
+**Confirmed 2026-11-07.** GTK on Linux is the next client phig builds, ahead of
+the macOS client, which is what decides the boundary question in this plan's
+favour. Order: plan 060's R60 fix, then this plan, then a GTK M1 plan scoped to
+browse and curate (Gallery with its sidebar, the Viewer, and tag, gallery and
+favorite edits), all of which `core/` already supports.
+
 ## Why
 
 **The "foreign caller" framing does not describe `gtk/`.** Root `CLAUDE.md`
@@ -50,23 +56,21 @@ list is a callable function today:
 
 | Capability | In `core/` |
 |---|---|
-| Duplicate groups | `Database::get_exact_duplicates` (`core/database.h:125`) |
-| One image's tags | `Database::get_tags_for_image` (`core/database.h:173`) |
-| Tag counts | `Database::get_tag_counts` (`core/database.h:174`) |
-| Gallery counts | `Database::get_gallery_counts` (`core/database.h:197`) |
-| People, read | `Database::list_people` (`core/database.h:261`) |
-| Photos of a person | `Database::get_images_for_person` (`core/database.h:264`) |
+| Duplicate groups | `Database::get_exact_duplicates` (`core/database.h:132`) |
+| One image's tags | `Database::get_tags_for_image` (`core/database.h:205`) |
+| Tag counts | `Database::get_tag_counts` (`core/database.h:206`) |
+| Gallery counts | `Database::get_gallery_counts` (`core/database.h:232`) |
+| People, read | `Database::list_people` (`core/database.h:296`) |
+| Photos of a person | `Database::get_images_for_person` (`core/database.h:299`) |
 | Face model download | `download_face_models` (`core/models.h:9`) |
 | Person / face / similar search | `SearchEngine`'s other three `SearchMode`s |
-| Glob and path selection | `SearchQuery::matches` / `excludes` |
+| Glob and path selection | `Database::ids_matching`, `resolve_named_selection` (`core/selection.h`) |
 | Remove | `cmd_rm` (`core/remove_exec.h`) |
 | Full-resolution decode | `core/raw.h`, `core/image_codec.h` |
 
 **What the boundary costs.** 053 gates six of plan 047's nine screens:
 Duplicates and People have no data source, Remove and the Activity Log have no
-action or reader, the Gallery's search field cannot filter by filename or path
-(`phig_query` has no such predicate — the thumbs and faces operations take
-`match`/`exclude`, queries do not), and the Viewer cannot list an image's tags
+action or reader, and the Viewer cannot list an image's tags
 or populate the sidebar's tag and gallery sections. Pixel decoding for the
 Viewer is worse than gated: 053 excludes it and no numbered plan owns it, so
 the Viewer has no route to a full-resolution image through the ABI at all.
@@ -280,7 +284,7 @@ which is why neither is a data-integrity rule.
 
 libphig stops having a shipping consumer until the macOS client exists. It is
 left as it is: nothing about a monorepo needs a maintainer assigned to a
-directory, so it stays at ABI 1.3 with its 22 tests green in CI, and it is
+directory, so it stays at ABI 1.4 with its tests green in CI, and it is
 updated when the macOS and Windows clients need a symbol — which is when 049
 builds the Swift interop layer against it. The cost of that position is real
 and is that an ABI with no caller is infrastructure whose gaps nobody finds.
@@ -329,8 +333,8 @@ M0 reading phig only through libphig stays as the record of what shipped.
 
 - **041** — reconcile plan/apply, for a scan dialog that removes stale rows.
   Core-side work with no substitute.
-- **053** — a removal plan/apply pair in `core/`, which R66 already requires of
-  the ABI, for the Remove screen.
+- **064** — a removal plan/apply pair in `core/`, which R66 already requires of
+  the ABI, for the Remove screen. 053 handed remove to 064.
 - **A GTK M1 plan** — this plan opens the boundary and does not schedule the
   screens behind it.
 

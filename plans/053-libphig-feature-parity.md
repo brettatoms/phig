@@ -301,6 +301,9 @@ entry point at all. Signatures are reshaped in place rather than accreting
 
 ## Relationship to other plans
 
+- **061** — confirmed 2026-11-07: `gtk/` links `core/` directly, so this plan
+  is not on the GTK client's critical path. The remaining work order stands,
+  without a date, and is driven by 049/050, the macOS client that needs a C ABI.
 - **047** — the demand side, and the reason for the order above.
 - **052** — needs every capability here over the wire and must answer the five
   decisions identically. Decision 1 answers its open question 1.

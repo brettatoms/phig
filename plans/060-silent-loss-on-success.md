@@ -298,9 +298,59 @@ So: R60 first and on its own. R27, R48 and R69 second, and if R60's design is
 still open they go ahead of it rather than behind it. None of the three depends
 on how R60 is answered, and R60 depends on none of them.
 
+## R60 decision: labels survive per image
+
+Decided 2026-11-07, answering open questions 1 and 2. A rebuild keeps an
+image's labels by matching them back within that image, rather than asking the
+caller to authorize their loss.
+
+Inside the per-image transaction `FacesEngine::run` already opens
+(`core/faces_engine.cpp:183-187`):
+
+1. Before `delete_faces_for_image`, read the image's labelled faces: box,
+   embedding and `person_id`.
+2. Insert the new detections.
+3. Match each old labelled face to the new face in the same image with the
+   greatest box overlap, accepted only if the overlap and the embedding distance
+   both pass a threshold, and copy its `person_id` across. One new face takes at
+   most one label.
+4. Call `auto_label_face` only for faces still unlabelled.
+
+This removes the order dependence that made open question 1 hard. A label
+belongs to a face in one image and is matched within that image, so it no longer
+depends on which references elsewhere in the run have been deleted yet. The fix
+is in `core/`, so the CLI, the ABI and `gtk/`, which links `core/` under plan
+061, all get it without a new authorization surface.
+
+A labelled face with no match among the new detections, for example after a
+model change, loses its label. It is counted in a new `FacesResult` field, and
+`face rebuild` prints a warning with the count when it is non-zero. The old
+face row is not kept: that would leave two detector generations in one image.
+
+Plan/apply for faces was rejected for now. Its plan cannot list the labels that
+will be lost without running the matching first, and once matching runs inside
+the rebuild, little is left to authorize. If reported losses turn out to
+matter, it can be added later.
+
+To settle during implementation:
+
+- **Thresholds.** The overlap and embedding-distance thresholds are measured on
+  real images, not chosen by reasoning.
+- **Plan 046.** `delete_faces_for_image` fails on this Linux machine with `SQL
+  logic error` from the `vec_faces` DELETE. This fix runs through that call, so
+  its tests either run where 046 does not reproduce or are developed alongside
+  046.
+- **Scan is not affected.** Both scan paths that write faces
+  (`core/scan_engine.cpp:255`, `:371`) skip an image that already has faces, so
+  `FacesEngine::run` is the only path that re-detects over labelled faces.
+  Scan does delete faces when a file's content changes (`core/database.cpp:661`),
+  which drops their labels too. That is a different case, an edited photo
+  rather than a re-detection, and is not covered by this decision.
+
 ## Open
 
-1. **What authorizes a face rebuild.** Three shapes, and they are not
+1. **What authorizes a face rebuild.** Answered by the R60 decision above. Three
+   shapes, and they are not
    alternatives at the same layer. A CLI confirmation plus `--yes` matches R22's
    rule for `rm` and fixes nothing for the ABI. A plan/apply pair
    (`phig_op_faces_plan_start` / `phig_op_faces_apply_start`) matches R66 and
@@ -311,8 +361,9 @@ on how R60 is answered, and R60 depends on none of them.
    the run is the question the shape turns on, and it is not obvious: the
    re-derivation depends on which references are still labelled when each face
    is inserted, so it is order-dependent within the run.
-2. **Whether labels can survive a rebuild at all.** If they can, the
-   authorization question mostly goes away. A re-detected face has no stable
+2. **Whether labels can survive a rebuild at all.** Answered by the R60
+   decision above: matched per image, not against a run-wide snapshot. If they
+   can, the authorization question mostly goes away. A re-detected face has no stable
    identity — the box moves, the embedding changes, and plan 045 made `faces.id`
    AUTOINCREMENT precisely because a face id must never name a different face.
    Re-attaching a label would mean matching old labelled embeddings against new
