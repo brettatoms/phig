@@ -56,7 +56,7 @@ class AbiOrganizeTest : public ::testing::Test {
 
     phig_ctx* open(const OrganizeFixture& fx) {
         phig_config cfg{};
-        cfg.db_path = fx.db_path.c_str();
+        cfg.catalog_dir = fx.dir.c_str();
         cfg.mode = PHIG_READ_WRITE;
         EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
         return ctx;

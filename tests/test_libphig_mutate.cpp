@@ -11,19 +11,21 @@
 #include "phig/phig.h"
 
 namespace {
+// A scratch catalog directory; `path` is its database.
 struct TempDbPath {
+    std::string dir;
     std::string path;
     TempDbPath() {
-        path = (std::filesystem::temp_directory_path() /
-                ("phig_mut_" + std::to_string(::getpid()) + "_" +
-                 std::to_string(reinterpret_cast<uintptr_t>(this)) + ".db"))
-                   .string();
+        dir = (std::filesystem::temp_directory_path() /
+               ("phig_mut_" + std::to_string(::getpid()) + "_" +
+                std::to_string(reinterpret_cast<uintptr_t>(this))))
+                  .string();
+        std::filesystem::create_directories(dir);
+        path = dir + "/phig.db";
     }
     ~TempDbPath() {
         std::error_code ec;
-        std::filesystem::remove(path, ec);
-        std::filesystem::remove(path + "-wal", ec);
-        std::filesystem::remove(path + "-shm", ec);
+        std::filesystem::remove_all(dir, ec);
     }
 };
 
@@ -51,7 +53,8 @@ std::vector<int64_t> seed_three(const std::string& db_path) {
 
 phig_ctx* open_rw(const std::string& path) {
     phig_config cfg{};
-    cfg.db_path = path.c_str();
+    const std::string dir = std::filesystem::path(path).parent_path().string();
+    cfg.catalog_dir = dir.c_str();
     cfg.mode = PHIG_READ_WRITE;
     phig_ctx* ctx = nullptr;
     EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -139,7 +142,7 @@ TEST(AbiMutate, ReadOnlyContextRefusesWrites) {
     TempDbPath tmp;
     auto ids = seed_three(tmp.path);
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -328,7 +331,7 @@ TEST(AbiMutate, ConcurrentReadsOnSharedCtxReturnConsistentResults) {
     TempDbPath tmp;
     seed_three(tmp.path);
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);

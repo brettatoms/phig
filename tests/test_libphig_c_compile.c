@@ -92,8 +92,7 @@ void phig_c_compile_check(void) {
     int64_t count = 0;
     char* json = NULL;
 
-    cfg.db_path = "/nonexistent/phig.db";
-    cfg.thumbs_dir = NULL;
+    cfg.catalog_dir = "/nonexistent";
     cfg.mode = PHIG_READ_ONLY;
     cfg.models_dir = NULL;
     (void)phig_abi_version();
@@ -140,11 +139,11 @@ void phig_c_compile_check(void) {
     {
         phig_settings* st = NULL;
         (void)phig_settings_load(NULL, &st);
-        (void)phig_settings_get(st, PHIG_KEY_DB, "fallback");
-        (void)phig_settings_get_raw(st, PHIG_KEY_DB, "fallback");
+        (void)phig_settings_get(st, PHIG_KEY_CATALOG, "fallback");
+        (void)phig_settings_get_raw(st, PHIG_KEY_CATALOG, "fallback");
         (void)phig_settings_get_int(st, PHIG_KEY_PARALLEL, 4);
         (void)phig_settings_get_bool(st, PHIG_KEY_LOG_ENABLED, true);
-        (void)phig_settings_has(st, PHIG_KEY_THUMBS_DIR);
+        (void)phig_settings_has(st, PHIG_KEY_MODELS_DIR);
         (void)phig_settings_count(st);
         (void)phig_settings_key_at(st, 0);
         (void)phig_settings_set(st, PHIG_KEY_MODELS_DIR, "/models");

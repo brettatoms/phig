@@ -17,19 +17,21 @@
 #include "phig/phig.h"
 
 namespace {
+// A scratch catalog directory; `path` is its database.
 struct TempDbPath {
+    std::string dir;
     std::string path;
     TempDbPath() {
-        path = (std::filesystem::temp_directory_path() /
-                ("phig_abi_" + std::to_string(::getpid()) + "_" +
-                 std::to_string(reinterpret_cast<uintptr_t>(this)) + ".db"))
-                   .string();
+        dir = (std::filesystem::temp_directory_path() /
+               ("phig_abi_" + std::to_string(::getpid()) + "_" +
+                std::to_string(reinterpret_cast<uintptr_t>(this))))
+                  .string();
+        std::filesystem::create_directories(dir);
+        path = dir + "/phig.db";
     }
     ~TempDbPath() {
         std::error_code ec;
-        std::filesystem::remove(path, ec);
-        std::filesystem::remove(path + "-wal", ec);
-        std::filesystem::remove(path + "-shm", ec);
+        std::filesystem::remove_all(dir, ec);
     }
 };
 }  // namespace
@@ -57,10 +59,10 @@ std::string journal_mode_of(const std::string& path) {
 }  // namespace
 
 namespace {
-// Restores phig's process-wide path overrides when the test scope exits,
-// including on an ASSERT_* early return.
-struct PathOverrideGuard {
-    ~PathOverrideGuard() { set_path_overrides(std::nullopt, std::nullopt, std::nullopt); }
+// Clears phig's process-wide catalog when the test scope exits, including on
+// an ASSERT_* early return.
+struct CatalogGuard {
+    ~CatalogGuard() { clear_catalog(); }
 };
 }  // namespace
 
@@ -191,14 +193,14 @@ TEST(Abi, InitRejectsNullConfig) {
 
 TEST(Abi, InitRejectsNullOut) {
     phig_config cfg{};
-    cfg.db_path = "/tmp/whatever.db";
+    cfg.catalog_dir = "/tmp/whatever";
     EXPECT_EQ(phig_init(&cfg, nullptr), PHIG_ERR_INVALID_ARG);
 }
 
 TEST(Abi, InitRejectsNullDbPath) {
     phig_config cfg{};
     phig_ctx* ctx = nullptr;
-    cfg.db_path = nullptr;
+    cfg.catalog_dir = nullptr;
     EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_ERR_INVALID_ARG);
     EXPECT_EQ(ctx, nullptr);
 }
@@ -206,7 +208,7 @@ TEST(Abi, InitRejectsNullDbPath) {
 TEST(Abi, InitFailsOnUnopenableDatabase) {
     phig_config cfg{};
     phig_ctx* ctx = nullptr;
-    cfg.db_path = "/nonexistent-dir-xyz/phig.db";
+    cfg.catalog_dir = "/nonexistent-dir-xyz";
     cfg.mode = PHIG_READ_ONLY;
     EXPECT_NE(phig_init(&cfg, &ctx), PHIG_OK);
     EXPECT_EQ(ctx, nullptr);
@@ -217,7 +219,7 @@ TEST(Abi, InitSucceedsAndShutdownIsClean) {
     make_db(tmp.path);
     phig_config cfg{};
     phig_ctx* ctx = nullptr;
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
     ASSERT_NE(ctx, nullptr);
@@ -240,7 +242,7 @@ TEST(Abi, ReadOnlyInitDoesNotCreateDatabase) {
     ASSERT_FALSE(std::filesystem::exists(tmp.path));
 
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     EXPECT_NE(phig_init(&cfg, &ctx), PHIG_OK);
@@ -260,7 +262,7 @@ TEST(Abi, ReadOnlyInitSucceedsOnExistingDatabase) {
     ASSERT_EQ(journal_mode_of(tmp.path), "wal");
 
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -274,7 +276,7 @@ TEST(Abi, ReadOnlyInitSucceedsOnExistingDatabase) {
 TEST(Abi, ReadWriteInitStillCreatesDatabase) {
     TempDbPath tmp;
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_WRITE;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -286,7 +288,7 @@ TEST(AbiThumb, ReturnsPathAndReportsMissing) {
     TempDbPath tmp;
     make_db(tmp.path);
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -306,7 +308,7 @@ TEST(AbiThumb, RejectsBadDigestAndSmallBuffer) {
     TempDbPath tmp;
     make_db(tmp.path);
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -325,17 +327,13 @@ TEST(AbiThumb, RejectsBadDigestAndSmallBuffer) {
     phig_shutdown(ctx);
 }
 
-TEST(AbiThumb, HonorsConfiguredThumbsDir) {
-    PathOverrideGuard guard;
+TEST(AbiThumb, ThumbnailsLiveInTheCatalog) {
+    CatalogGuard guard;
     TempDbPath tmp;
     make_db(tmp.path);
-    auto custom =
-        (std::filesystem::temp_directory_path() / ("phig_thumbs_" + std::to_string(::getpid())))
-            .string();
 
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
-    cfg.thumbs_dir = custom.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -344,50 +342,13 @@ TEST(AbiThumb, HonorsConfiguredThumbsDir) {
     char buf[4096];
     bool exists = true;
     ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
-    EXPECT_EQ(std::string(buf).rfind(custom, 0), 0u);  // path starts with custom dir
+    EXPECT_EQ(std::string(buf).rfind(tmp.dir + "/thumbs/", 0), 0u) << buf;
     EXPECT_FALSE(exists);
 
     phig_shutdown(ctx);
 }
 
-TEST(AbiThumb, NullThumbsDirLeavesDefaultInPlace) {
-    PathOverrideGuard guard;
-    TempDbPath tmp;
-    make_db(tmp.path);
-
-    phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
-    cfg.thumbs_dir = nullptr;  // must not clobber an existing override
-    cfg.mode = PHIG_READ_ONLY;
-    phig_ctx* ctx = nullptr;
-    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
-
-    std::string sha(64, 'b');
-    char buf[4096];
-    bool exists = true;
-    ASSERT_EQ(phig_thumb_lookup(ctx, sha.c_str(), 512, buf, sizeof(buf), &exists), PHIG_OK);
-    EXPECT_NE(std::string(buf).find("thumbs"), std::string::npos);
-
-    phig_shutdown(ctx);
-}
-
 namespace {
-// A scratch thumbs_dir, removed on scope exit, so generation tests never
-// write into a real ~/.cache/phig/thumbs.
-struct ScratchThumbsDir {
-    std::string path;
-    ScratchThumbsDir() {
-        path = (std::filesystem::temp_directory_path() /
-                ("phig_thumb_gen_" + std::to_string(::getpid()) + "_" +
-                 std::to_string(reinterpret_cast<uintptr_t>(this))))
-                   .string();
-    }
-    ~ScratchThumbsDir() {
-        std::error_code ec;
-        std::filesystem::remove_all(path, ec);
-    }
-};
-
 // Inserts one row with a real fixture file behind it (so generation has real
 // pixels to decode) and returns its id.
 int64_t seed_thumb_row(const std::string& db_path, const std::string& src_fixture,
@@ -407,15 +368,13 @@ int64_t seed_thumb_row(const std::string& db_path, const std::string& src_fixtur
 }  // namespace
 
 TEST(AbiThumbGenerate, GeneratesFromMissThenLookupReportsExists) {
-    PathOverrideGuard guard;
+    CatalogGuard guard;
     TempDbPath tmp;
-    ScratchThumbsDir thumbs;
     std::string sha(64, 'c');
     int64_t id = seed_thumb_row(tmp.path, "tests/data/faces_small.jpg", "image", sha);
 
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
-    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -434,15 +393,13 @@ TEST(AbiThumbGenerate, GeneratesFromMissThenLookupReportsExists) {
 }
 
 TEST(AbiThumbGenerate, GeneratingTwiceStaysOkAndLeavesOneValidFile) {
-    PathOverrideGuard guard;
+    CatalogGuard guard;
     TempDbPath tmp;
-    ScratchThumbsDir thumbs;
     std::string sha(64, 'd');
     int64_t id = seed_thumb_row(tmp.path, "tests/data/faces_small.jpg", "image", sha);
 
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
-    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -465,14 +422,12 @@ TEST(AbiThumbGenerate, GeneratingTwiceStaysOkAndLeavesOneValidFile) {
 }
 
 TEST(AbiThumbGenerate, NonexistentImageIdReturnsErrDb) {
-    PathOverrideGuard guard;
+    CatalogGuard guard;
     TempDbPath tmp;
-    ScratchThumbsDir thumbs;
     make_db(tmp.path);
 
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
-    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -486,15 +441,13 @@ TEST(AbiThumbGenerate, NonexistentImageIdReturnsErrDb) {
 // naive generate_thumb(path, sha): a video row has no decodable pixels at
 // `path` itself, only through extract_video_keyframe first.
 TEST(AbiThumbGenerate, VideoRowProducesThumbnailViaKeyframe) {
-    PathOverrideGuard guard;
+    CatalogGuard guard;
     TempDbPath tmp;
-    ScratchThumbsDir thumbs;
     std::string sha(64, 'e');
     int64_t id = seed_thumb_row(tmp.path, "tests/data/test_red.mov", "video", sha);
 
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
-    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -511,15 +464,13 @@ TEST(AbiThumbGenerate, VideoRowProducesThumbnailViaKeyframe) {
 }
 
 TEST(AbiThumbGenerate, ConcurrentGenerationOfSameRowAllSucceed) {
-    PathOverrideGuard guard;
+    CatalogGuard guard;
     TempDbPath tmp;
-    ScratchThumbsDir thumbs;
     std::string sha(64, 'f');
     int64_t id = seed_thumb_row(tmp.path, "tests/data/faces_small.jpg", "image", sha);
 
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
-    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -553,15 +504,13 @@ TEST(AbiThumbGenerate, ConcurrentGenerationOfSameRowAllSucceed) {
 // an unexpected exit (silent death, code 0) shows up as a failed exit-code
 // match instead of aborting the suite.
 TEST(AbiThumbGenerate, ConcurrentGenerationOfDanglingRowReturnsNotFound) {
-    PathOverrideGuard guard;
+    CatalogGuard guard;
     TempDbPath tmp;
-    ScratchThumbsDir thumbs;
     std::string sha(64, '1');
     int64_t id = seed_thumb_row(tmp.path, "tests/data/does_not_exist.jpg", "image", sha);
 
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
-    cfg.thumbs_dir = thumbs.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
 
     constexpr int kMarkerExitCode = 42;

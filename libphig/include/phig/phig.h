@@ -12,8 +12,9 @@
  * same thread whose call failed — not from another thread, and not after a
  * successful call on that thread has cleared it.
  *
- * Not covered by this: phig_config.thumbs_dir is resolved through a
- * process-wide global (see below), independent of any phig_ctx.
+ * Not covered by this: the catalog's thumbs/ directory is resolved through a
+ * process-wide global (see phig_config.catalog_dir), independent of any
+ * phig_ctx.
  *
  * All dates are ISO-8601 TEXT ("YYYY-MM-DD HH:MM:SS"), never epoch integers.
  */
@@ -74,19 +75,18 @@ typedef enum { PHIG_READ_ONLY = 0, PHIG_READ_WRITE = 1 } phig_access_mode;
 typedef struct phig_ctx phig_ctx;
 
 typedef struct {
-    const char* db_path; /* required */
+    /* The catalog directory: phig.db, its lock, the trash, thumbs/ and
+       phig.log live inside it. Required.
 
-    /* Thumbnail cache directory. NULL uses phig's default
-       (~/.cache/phig/thumbs, honoring XDG_CACHE_HOME).
+       PROCESS-WIDE: phig resolves the catalog's thumbnail and trash
+       locations through a global, so the last context initialized decides
+       them for every context in the process. Open one catalog per process.
+       The catalog is installed before the database is opened, so it takes
+       effect even if phig_init then fails.
 
-       PROCESS-WIDE: phig resolves the cache location through a global, so this
-       applies to every context in the process, not just this one. Set it once,
-       at startup, before creating any context — the way a host reads its config
-       once. Passing different values for two contexts in one process is not
-       supported; the last one set wins for all of them. The override is applied
-       before the database is opened, so it takes effect even if phig_init
-       subsequently fails. */
-    const char* thumbs_dir;
+       PHIG_READ_ONLY requires the catalog to exist at this build's schema.
+       PHIG_READ_WRITE creates a missing catalog and migrates an older one. */
+    const char* catalog_dir;
     phig_access_mode mode;
 
     const char* models_dir; /* NULL = phig's default (~/.cache/phig/models) */
@@ -103,7 +103,7 @@ PHIG_API uint32_t phig_abi_version(void);
  * PHIG_READ_ONLY opens the database with SQLITE_OPEN_READONLY: the file must
  * already exist and writes fail. Because phig databases are WAL-mode, SQLite
  * still needs to create a -shm file to service reads, so the directory
- * containing db_path must be writable even in read-only mode. A read-only
+ * containing phig.db must be writable even in read-only mode. A read-only
  * mount or a sandbox with no write access to that directory fails with
  * PHIG_ERR_DB.
  *
@@ -241,9 +241,8 @@ PHIG_API void phig_string_free(char* s);
  * path, so sizes are independent: a lookup at 768 does not see a cached 512.
  * Callers should ask for a small set of sizes rather than one per pixel value.
  *
- * Resolves against the thumbnail cache directory configured via
- * phig_config.thumbs_dir (process-wide; see that field's documentation), or
- * phig's default if none was set. */
+ * Resolves against the catalog's thumbs/ directory (process-wide; see
+ * phig_config.catalog_dir). */
 PHIG_API phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, int size, char* out_path,
                                        size_t out_len, bool* exists);
 
@@ -311,8 +310,7 @@ typedef struct phig_settings phig_settings;
 
 /* Known keys. Arbitrary string keys work too — these exist for typo
  * resistance on the documented ones. */
-#define PHIG_KEY_DB "paths.db"
-#define PHIG_KEY_THUMBS_DIR "paths.thumbs_dir"
+#define PHIG_KEY_CATALOG "paths.catalog"
 #define PHIG_KEY_MODELS_DIR "paths.models_dir"
 #define PHIG_KEY_PARALLEL "general.parallel"
 #define PHIG_KEY_LOG_ENABLED "log.enabled"
@@ -374,7 +372,7 @@ PHIG_API phig_status phig_settings_unset(phig_settings* s, const char* key);
  * ordering, and keys phig does not model are preserved. */
 PHIG_API phig_status phig_settings_save(phig_settings* s, const char* path);
 
-/* Fills cfg->db_path/thumbs_dir/models_dir from settings, leaving fields the
+/* Fills cfg->catalog_dir/models_dir from settings, leaving fields the
  * config does not set untouched so a caller can pre-seed defaults. Does NOT
  * set cfg->mode — that is a per-context decision, not a user preference.
  *

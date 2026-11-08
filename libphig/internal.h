@@ -28,7 +28,6 @@ struct phig_ctx {
     std::unique_ptr<Database> db;
     phig_access_mode mode = PHIG_READ_ONLY;
     std::string db_path;
-    std::string thumbs_dir;
 };
 
 // The error from the last PHIG_TRY/PHIG_CATCH call on the calling thread.
@@ -47,7 +46,7 @@ struct phig_settings {
     // A C string handed out to a caller. The bytes live in a heap buffer
     // reserved to at least PATH_MAX, so the `const char*` a caller holds
     // stays valid — and stays current — across any edit whose new value is a
-    // realistic path or setting. phig_settings_to_config gives cfg->db_path a
+    // realistic path or setting. phig_settings_to_config gives cfg->catalog_dir a
     // pointer in here, and the documented contract only asks that `s`
     // outlive phig_init; it never tells the caller to re-read after an edit.
     // A std::string would defeat this: assigning a longer value moves its

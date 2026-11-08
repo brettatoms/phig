@@ -102,23 +102,6 @@ std::string trash_path_for(const std::string& filename) {
     return (fs::path(trash_dir()) / tagged).string();
 }
 
-void set_path_overrides(const std::optional<std::string>& db,
-                        const std::optional<std::string>& models,
-                        const std::optional<std::string>& thumbs) {
-    if (!db && !thumbs) {
-        clear_catalog();
-    } else {
-        CatalogPaths p = catalog_paths(default_catalog_dir());
-        if (db) {
-            p.db = *db;
-            p.lock = lock_path(*db);
-        }
-        if (thumbs) p.thumbs = *thumbs;
-        set_catalog(p);
-    }
-    set_models_dir(models);
-}
-
 std::string expand_tilde(const std::string& path) {
     if (!path.empty() && path[0] == '~') {
         const char* home = std::getenv("HOME");

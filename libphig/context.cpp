@@ -1,3 +1,4 @@
+#include "catalog.h"
 #include "internal.h"
 #include "paths.h"
 
@@ -13,38 +14,25 @@ uint32_t phig_abi_version(void) { return (PHIG_ABI_VERSION_MAJOR << 16) | PHIG_A
 phig_status phig_init(const phig_config* cfg, phig_ctx** out) {
     if (out == nullptr) return PHIG_ERR_INVALID_ARG;
     *out = nullptr;
-    if (cfg == nullptr || cfg->db_path == nullptr || cfg->db_path[0] == '\0') {
+    if (cfg == nullptr || cfg->catalog_dir == nullptr || cfg->catalog_dir[0] == '\0') {
         return PHIG_ERR_INVALID_ARG;
     }
     try {
+        const CatalogPaths paths = catalog_paths(cfg->catalog_dir);
+        set_catalog(paths);
+        migrate_legacy_catalog_files(paths);
         auto ctx = std::make_unique<phig_ctx>();
         ctx->mode = cfg->mode;
-        ctx->db_path = cfg->db_path;
-        ctx->thumbs_dir = cfg->thumbs_dir ? cfg->thumbs_dir : "";
-        // thumbs_dir is process-wide (see paths.h): phig resolves the cache
-        // location through a global override, the same one the CLI sets from
-        // config.ini. Only apply it when the caller supplied one, so a NULL
-        // leaves any existing override untouched.
-        if (cfg->thumbs_dir && cfg->thumbs_dir[0] != '\0') {
-            set_path_overrides(std::nullopt, std::nullopt, std::string(cfg->thumbs_dir));
-        }
-        ctx->db = std::make_unique<Database>(cfg->db_path, cfg->mode == PHIG_READ_ONLY);
-        // A database newer than this build is unreadable either way, and
-        // init_schema() would report it as a generic failure — check before
-        // calling it so the caller gets PHIG_ERR_SCHEMA.
-        if (ctx->db->schema_version() > Database::expected_schema_version()) {
-            return PHIG_ERR_SCHEMA;
-        }
-        // Read-only contexts must not migrate; a read-write one may.
-        if (cfg->mode == PHIG_READ_WRITE) ctx->db->init_schema();
-        // Every query below assumes this build's schema. A read-only context
-        // could not migrate, so reject an older database here instead of
-        // failing on the first phig_query_page with "no such column".
-        if (ctx->db->schema_version() != Database::expected_schema_version()) {
-            return PHIG_ERR_SCHEMA;
-        }
+        ctx->db_path = paths.db;
+        // A read-only context neither creates nor migrates (R70); a read-write
+        // one creates a missing catalog, because a client indexes into a new
+        // catalog through one.
+        ctx->db = open_catalog_db(
+            paths.db, cfg->mode == PHIG_READ_ONLY ? CatalogAccess::Read : CatalogAccess::Create);
         *out = ctx.release();
         return PHIG_OK;
+    } catch (const CatalogError& e) {
+        return e.kind() == CatalogError::Kind::Missing ? PHIG_ERR_DB : PHIG_ERR_SCHEMA;
     } catch (...) {
         return PHIG_ERR_DB;
     }

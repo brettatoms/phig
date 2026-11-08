@@ -19,8 +19,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// A scratch collection plus a redirected thumbnail cache, so a thumbs operation
-// writes into the fixture instead of the user's real cache.
+// A scratch collection that is its own catalog: a thumbs operation writes into
+// <dir>/thumbs instead of the user's real cache.
 struct OpFixture {
     fs::path dir;
     std::string db_path;
@@ -96,7 +96,8 @@ struct OpFixture {
 
     phig_ctx* open(phig_access_mode mode = PHIG_READ_WRITE) {
         phig_config cfg{};
-        cfg.db_path = db_path.c_str();
+        const std::string catalog = dir.string();
+        cfg.catalog_dir = catalog.c_str();
         cfg.mode = mode;
         phig_ctx* ctx = nullptr;
         EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_OK);

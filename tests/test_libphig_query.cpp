@@ -66,20 +66,21 @@ TEST(EffectiveDate, LeavesNonMatchingShapesAlone) {
 #include <string>
 
 namespace {
-// Unique temp DB path per test; removed by TempDb's destructor.
+// A scratch catalog directory per test; `path` is its database.
 struct TempDb {
+    std::string dir;
     std::string path;
     TempDb() {
-        path = (std::filesystem::temp_directory_path() /
-                ("phig_test_" + std::to_string(::getpid()) + "_" +
-                 std::to_string(reinterpret_cast<uintptr_t>(this)) + ".db"))
-                   .string();
+        dir = (std::filesystem::temp_directory_path() /
+               ("phig_test_" + std::to_string(::getpid()) + "_" +
+                std::to_string(reinterpret_cast<uintptr_t>(this))))
+                  .string();
+        std::filesystem::create_directories(dir);
+        path = dir + "/phig.db";
     }
     ~TempDb() {
         std::error_code ec;
-        std::filesystem::remove(path, ec);
-        std::filesystem::remove(path + "-wal", ec);
-        std::filesystem::remove(path + "-shm", ec);
+        std::filesystem::remove_all(dir, ec);
     }
 };
 
@@ -351,7 +352,7 @@ TEST(AbiSchema, ReadOnlyInitRejectsOlderDatabase) {
                  "UPDATE meta SET value='5' WHERE key='schema_version'");
     }
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_ERR_SCHEMA);
@@ -366,7 +367,7 @@ TEST(AbiSchema, ReadOnlyInitRejectsNewerDatabase) {
         raw_exec(db.db_ptr(), "UPDATE meta SET value='999' WHERE key='schema_version'");
     }
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_ERR_SCHEMA);
@@ -393,7 +394,7 @@ TEST(AbiSchema, ReadWriteInitMigratesOlderDatabase) {
                  "UPDATE meta SET value='5' WHERE key='schema_version'");
     }
     phig_config cfg{};
-    cfg.db_path = tmp.path.c_str();
+    cfg.catalog_dir = tmp.dir.c_str();
     cfg.mode = PHIG_READ_WRITE;
     phig_ctx* ctx = nullptr;
     ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
@@ -554,7 +555,8 @@ namespace {
 // Opens a read-only ABI context on `path`. Caller shuts it down.
 phig_ctx* open_ro(const std::string& path) {
     phig_config cfg{};
-    cfg.db_path = path.c_str();
+    const std::string dir = std::filesystem::path(path).parent_path().string();
+    cfg.catalog_dir = dir.c_str();
     cfg.mode = PHIG_READ_ONLY;
     phig_ctx* ctx = nullptr;
     EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_OK);

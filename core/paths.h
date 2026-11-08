@@ -133,13 +133,6 @@ std::string resolve_conflict(const std::string& dest, const std::string& on_conf
                              std::set<std::string>& claimed,
                              const std::function<bool(const std::string&)>& is_protected);
 
-// Installs a catalog whose database and thumbnails may sit outside its
-// directory, and the models directory. Kept for the callers that still name
-// paths one at a time; prefer set_catalog() and set_models_dir().
-void set_path_overrides(const std::optional<std::string>& db,
-                        const std::optional<std::string>& models,
-                        const std::optional<std::string>& thumbs);
-
 // Internal: temporary sibling path for atomic writes (exposed for testing).
 // A temp path in the same directory as dest (so the final rename stays on one
 // filesystem and is atomic). Includes the pid and a per-process counter so

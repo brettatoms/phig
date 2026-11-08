@@ -191,8 +191,7 @@ phig_status phig_settings_to_config(phig_settings* s, phig_config* cfg) {
             const char* key;
             const char** field;
         } map[] = {
-            {PHIG_KEY_DB, &cfg->db_path},
-            {PHIG_KEY_THUMBS_DIR, &cfg->thumbs_dir},
+            {PHIG_KEY_CATALOG, &cfg->catalog_dir},
             {PHIG_KEY_MODELS_DIR, &cfg->models_dir},
         };
         for (auto& m : map) {

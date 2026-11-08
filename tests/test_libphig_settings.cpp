@@ -32,22 +32,22 @@ struct TempIni {
 }  // namespace
 
 TEST(AbiSettings, LoadsAndReadsStringValues) {
-    TempIni f("[paths]\ndb = /photos/phig.db\n");
+    TempIni f("[paths]\ncatalog = /photos/phig.db\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
     ASSERT_NE(s, nullptr);
-    EXPECT_STREQ(phig_settings_get(s, PHIG_KEY_DB, "unset"), "/photos/phig.db");
+    EXPECT_STREQ(phig_settings_get(s, PHIG_KEY_CATALOG, "unset"), "/photos/phig.db");
     EXPECT_STREQ(phig_settings_get(s, "paths.nope", "fallback"), "fallback");
-    EXPECT_TRUE(phig_settings_has(s, PHIG_KEY_DB));
+    EXPECT_TRUE(phig_settings_has(s, PHIG_KEY_CATALOG));
     EXPECT_FALSE(phig_settings_has(s, "paths.nope"));
     phig_settings_free(s);
 }
 
 TEST(AbiSettings, ExpandsTildeOnRead) {
-    TempIni f("[paths]\ndb = ~/photos/phig.db\n");
+    TempIni f("[paths]\ncatalog = ~/photos/phig.db\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
-    const char* v = phig_settings_get(s, PHIG_KEY_DB, "");
+    const char* v = phig_settings_get(s, PHIG_KEY_CATALOG, "");
     ASSERT_NE(v, nullptr);
     EXPECT_EQ(std::string(v).find('~'), std::string::npos);
     EXPECT_NE(std::string(v).find("/photos/phig.db"), std::string::npos);
@@ -80,7 +80,7 @@ TEST(AbiSettings, MissingFileYieldsNotFoundWithUsableHandle) {
     EXPECT_EQ(phig_settings_load(missing.c_str(), &s), PHIG_ERR_NOT_FOUND);
     ASSERT_NE(s, nullptr);  // usable empty handle
     EXPECT_EQ(phig_settings_count(s), 0u);
-    EXPECT_EQ(phig_settings_set(s, PHIG_KEY_DB, "/new"), PHIG_OK);
+    EXPECT_EQ(phig_settings_set(s, PHIG_KEY_CATALOG, "/new"), PHIG_OK);
     EXPECT_EQ(phig_settings_save(s, missing.c_str()), PHIG_OK);
     EXPECT_TRUE(std::filesystem::exists(missing));
     phig_settings_free(s);
@@ -152,29 +152,28 @@ TEST(AbiSettings, SetSaveRoundTripPreservesComments) {
 }
 
 TEST(AbiSettings, UnsetRemovesKey) {
-    TempIni f("[paths]\ndb = /x\nthumbs_dir = /t\n");
+    TempIni f("[paths]\ncatalog = /x\nthumbs_dir = /t\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
-    ASSERT_EQ(phig_settings_unset(s, PHIG_KEY_DB), PHIG_OK);
-    EXPECT_FALSE(phig_settings_has(s, PHIG_KEY_DB));
+    ASSERT_EQ(phig_settings_unset(s, PHIG_KEY_CATALOG), PHIG_OK);
+    EXPECT_FALSE(phig_settings_has(s, PHIG_KEY_CATALOG));
     EXPECT_EQ(phig_settings_unset(s, "paths.nope"), PHIG_OK);  // absent = no-op
     phig_settings_free(s);
 }
 
 TEST(AbiSettings, ToConfigFillsPathsAndLeavesModeAlone) {
-    TempIni f("[paths]\ndb = /photos/phig.db\nthumbs_dir = /ssd/thumbs\n");
+    TempIni f("[paths]\ncatalog = /photos/catalog\nmodels_dir = /ssd/models\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
 
     phig_config cfg{};
     cfg.mode = PHIG_READ_WRITE;  // caller's choice; must survive
     ASSERT_EQ(phig_settings_to_config(s, &cfg), PHIG_OK);
-    ASSERT_NE(cfg.db_path, nullptr);
-    EXPECT_STREQ(cfg.db_path, "/photos/phig.db");
-    ASSERT_NE(cfg.thumbs_dir, nullptr);
-    EXPECT_STREQ(cfg.thumbs_dir, "/ssd/thumbs");
+    ASSERT_NE(cfg.catalog_dir, nullptr);
+    EXPECT_STREQ(cfg.catalog_dir, "/photos/catalog");
+    ASSERT_NE(cfg.models_dir, nullptr);
+    EXPECT_STREQ(cfg.models_dir, "/ssd/models");
     EXPECT_EQ(cfg.mode, PHIG_READ_WRITE);
-    EXPECT_EQ(cfg.models_dir, nullptr);  // not in the file, left untouched
     phig_settings_free(s);
 }
 
@@ -184,9 +183,9 @@ TEST(AbiSettings, ToConfigDoesNotClobberPreSeededFields) {
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
 
     phig_config cfg{};
-    cfg.db_path = "/caller/seeded.db";
+    cfg.catalog_dir = "/caller/seeded";
     ASSERT_EQ(phig_settings_to_config(s, &cfg), PHIG_OK);
-    EXPECT_STREQ(cfg.db_path, "/caller/seeded.db");
+    EXPECT_STREQ(cfg.catalog_dir, "/caller/seeded");
     phig_settings_free(s);
 }
 
@@ -223,30 +222,30 @@ TEST(AbiSettings, NullArgumentsAreRejected) {
 // to dangle: set() erased the cache entry that backed them. Run this under
 // valgrind; gtest alone will pass on freed-but-unrecycled memory.
 TEST(AbiSettings, ToConfigPointersSurviveALaterSetOfTheSameKey) {
-    TempIni f("[paths]\ndb = /photos/phig.db\nthumbs_dir = /ssd/thumbs\n");
+    TempIni f("[paths]\ncatalog = /photos/catalog\nmodels_dir = /ssd/models\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
 
     phig_config cfg{};
     ASSERT_EQ(phig_settings_to_config(s, &cfg), PHIG_OK);
-    const char* db = cfg.db_path;
-    const char* thumbs = cfg.thumbs_dir;
+    const char* db = cfg.catalog_dir;
+    const char* thumbs = cfg.models_dir;
     ASSERT_NE(db, nullptr);
     ASSERT_NE(thumbs, nullptr);
 
     // The user edits the db path in the settings dialog and saves.
-    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, "/new/place/phig.db"), PHIG_OK);
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_CATALOG, "/new/place"), PHIG_OK);
     ASSERT_EQ(phig_settings_save(s, nullptr), PHIG_OK);
 
     // Both pointers must still be readable. The edited one reflects the new
     // value (the cache is refreshed in place, not freed); the untouched one is
     // unchanged.
-    EXPECT_STREQ(db, "/new/place/phig.db");
-    EXPECT_STREQ(thumbs, "/ssd/thumbs");
-    EXPECT_EQ(cfg.db_path, db);  // same storage, not reallocated
+    EXPECT_STREQ(db, "/new/place");
+    EXPECT_STREQ(thumbs, "/ssd/models");
+    EXPECT_EQ(cfg.catalog_dir, db);  // same storage, not reallocated
 
     // An unset must not free it either.
-    ASSERT_EQ(phig_settings_unset(s, PHIG_KEY_THUMBS_DIR), PHIG_OK);
+    ASSERT_EQ(phig_settings_unset(s, PHIG_KEY_MODELS_DIR), PHIG_OK);
     EXPECT_STREQ(thumbs, "");
 
     phig_settings_free(s);
@@ -254,12 +253,13 @@ TEST(AbiSettings, ToConfigPointersSurviveALaterSetOfTheSameKey) {
 
 // Same lifetime rule for phig_settings_get's returned pointer.
 TEST(AbiSettings, GetPointerSurvivesALaterSetOfTheSameKey) {
-    TempIni f("[paths]\ndb = /photos/a-fairly-long-database-path.db\n");
+    TempIni f("[paths]\ncatalog = /photos/a-fairly-long-database-path.db\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
-    const char* v = phig_settings_get(s, PHIG_KEY_DB, "fb");
+    const char* v = phig_settings_get(s, PHIG_KEY_CATALOG, "fb");
     ASSERT_NE(v, nullptr);
-    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, "/photos/another-fairly-long-path.db"), PHIG_OK);
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_CATALOG, "/photos/another-fairly-long-path.db"),
+              PHIG_OK);
     EXPECT_STREQ(v, "/photos/another-fairly-long-path.db");
     phig_settings_free(s);
 }
@@ -273,35 +273,35 @@ TEST(AbiSettings, GetPointerSurvivesALaterSetOfTheSameKey) {
 // staying under PATH_MAX, so this specifically exercises the reservation
 // change rather than the retire-and-grow safety net.
 TEST(AbiSettings, ToConfigPointerReflectsALongPathAfterSet) {
-    TempIni f("[paths]\ndb = /a/b.db\n");
+    TempIni f("[paths]\ncatalog = /a/b.db\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
 
     phig_config cfg{};
     ASSERT_EQ(phig_settings_to_config(s, &cfg), PHIG_OK);
-    ASSERT_STREQ(cfg.db_path, "/a/b.db");
+    ASSERT_STREQ(cfg.catalog_dir, "/a/b.db");
 
     const std::string long_path =
         "/home/brett/Pictures/Photo Library 2019-2026/masters/originals/phig-collection.db";
     ASSERT_EQ(long_path.size(), 81u);
-    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, long_path.c_str()), PHIG_OK);
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_CATALOG, long_path.c_str()), PHIG_OK);
 
-    EXPECT_STREQ(cfg.db_path, long_path.c_str());
+    EXPECT_STREQ(cfg.catalog_dir, long_path.c_str());
     phig_settings_free(s);
 }
 
 // Same rule for phig_settings_get's returned pointer.
 TEST(AbiSettings, GetPointerReflectsALongPathAfterSet) {
-    TempIni f("[paths]\ndb = /a/b.db\n");
+    TempIni f("[paths]\ncatalog = /a/b.db\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
-    const char* v = phig_settings_get(s, PHIG_KEY_DB, "fb");
+    const char* v = phig_settings_get(s, PHIG_KEY_CATALOG, "fb");
     ASSERT_STREQ(v, "/a/b.db");
 
     const std::string long_path =
         "/home/brett/Pictures/Photo Library 2019-2026/masters/originals/phig-collection.db";
     ASSERT_EQ(long_path.size(), 81u);
-    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, long_path.c_str()), PHIG_OK);
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_CATALOG, long_path.c_str()), PHIG_OK);
 
     EXPECT_STREQ(v, long_path.c_str());
     phig_settings_free(s);
@@ -314,48 +314,48 @@ TEST(AbiSettings, GetPointerReflectsALongPathAfterSet) {
 // the old pointer stays readable and still reports the value it had when it
 // was fetched.
 TEST(AbiSettings, PointerStaysReadableAfterAValueLargerThanPathMax) {
-    TempIni f("[paths]\ndb = /a/b.db\n");
+    TempIni f("[paths]\ncatalog = /a/b.db\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
-    const char* v = phig_settings_get(s, PHIG_KEY_DB, "fb");
+    const char* v = phig_settings_get(s, PHIG_KEY_CATALOG, "fb");
     ASSERT_STREQ(v, "/a/b.db");
 
     const std::string huge_path = "/" + std::string(PATH_MAX + 100, 'x');
     ASSERT_GT(huge_path.size(), static_cast<size_t>(PATH_MAX));
-    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, huge_path.c_str()), PHIG_OK);
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_CATALOG, huge_path.c_str()), PHIG_OK);
 
     // Memory safety: the old pointer is still readable and unchanged (retired,
     // not freed). It does NOT reflect the new value — that is the accepted,
     // documented exception to currency at this extreme.
     EXPECT_STREQ(v, "/a/b.db");
 
-    const char* v2 = phig_settings_get(s, PHIG_KEY_DB, "fb");
+    const char* v2 = phig_settings_get(s, PHIG_KEY_CATALOG, "fb");
     EXPECT_STREQ(v2, huge_path.c_str());
     phig_settings_free(s);
 }
 
 TEST(AbiSettings, GetRawDoesNotExpandTildeAndRoundTrips) {
-    TempIni f("[paths]\ndb = ~/photos/phig.db\n");
+    TempIni f("[paths]\ncatalog = ~/photos/phig.db\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
 
     // get expands; get_raw does not.
-    const char* expanded = phig_settings_get(s, PHIG_KEY_DB, "");
+    const char* expanded = phig_settings_get(s, PHIG_KEY_CATALOG, "");
     ASSERT_NE(expanded, nullptr);
     EXPECT_EQ(std::string(expanded).find('~'), std::string::npos);
 
-    const char* raw = phig_settings_get_raw(s, PHIG_KEY_DB, "");
+    const char* raw = phig_settings_get_raw(s, PHIG_KEY_CATALOG, "");
     ASSERT_NE(raw, nullptr);
     EXPECT_STREQ(raw, "~/photos/phig.db");
 
     // A settings dialog writes back exactly what it displayed: the `~` must
     // survive rather than being replaced by this machine's home directory.
-    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_DB, raw), PHIG_OK);
+    ASSERT_EQ(phig_settings_set(s, PHIG_KEY_CATALOG, raw), PHIG_OK);
     ASSERT_EQ(phig_settings_save(s, nullptr), PHIG_OK);
     EXPECT_NE(f.read().find("~/photos/phig.db"), std::string::npos);
 
     EXPECT_STREQ(phig_settings_get_raw(s, "paths.nope", "fb"), "fb");
-    EXPECT_STREQ(phig_settings_get_raw(nullptr, PHIG_KEY_DB, "fb"), "fb");
+    EXPECT_STREQ(phig_settings_get_raw(nullptr, PHIG_KEY_CATALOG, "fb"), "fb");
     EXPECT_STREQ(phig_settings_get_raw(s, nullptr, "fb"), "fb");
     phig_settings_free(s);
 }
@@ -363,24 +363,24 @@ TEST(AbiSettings, GetRawDoesNotExpandTildeAndRoundTrips) {
 // libphig must resolve keys the way the CLI does, or a GUI save appends a
 // duplicate line instead of rewriting the existing one.
 TEST(AbiSettings, KeyLookupIsCaseAndSeparatorInsensitive) {
-    TempIni f("[General]\nparallel = 2\n[Paths]\nthumbs-dir = /ssd\n");
+    TempIni f("[General]\nparallel = 2\n[Paths]\nmodels-dir = /ssd\n");
     phig_settings* s = nullptr;
     ASSERT_EQ(phig_settings_load(f.path.c_str(), &s), PHIG_OK);
 
     EXPECT_TRUE(phig_settings_has(s, PHIG_KEY_PARALLEL));
     EXPECT_EQ(phig_settings_get_int(s, PHIG_KEY_PARALLEL, 0), 2);
-    EXPECT_STREQ(phig_settings_get(s, PHIG_KEY_THUMBS_DIR, "fb"), "/ssd");
-    EXPECT_STREQ(phig_settings_get(s, "PATHS.Thumbs-Dir", "fb"), "/ssd");
+    EXPECT_STREQ(phig_settings_get(s, PHIG_KEY_MODELS_DIR, "fb"), "/ssd");
+    EXPECT_STREQ(phig_settings_get(s, "PATHS.Models-Dir", "fb"), "/ssd");
 
     // Enumeration reports the normalized form, which is the form get accepts.
     ASSERT_EQ(phig_settings_count(s), 2u);
     EXPECT_STREQ(phig_settings_key_at(s, 0), "general.parallel");
-    EXPECT_STREQ(phig_settings_key_at(s, 1), "paths.thumbs_dir");
+    EXPECT_STREQ(phig_settings_key_at(s, 1), "paths.models_dir");
 
     ASSERT_EQ(phig_settings_set(s, PHIG_KEY_PARALLEL, "8"), PHIG_OK);
     ASSERT_EQ(phig_settings_save(s, nullptr), PHIG_OK);
     // Rewritten in place: one `parallel` line, still under [General].
-    EXPECT_EQ(f.read(), "[General]\nparallel = 8\n[Paths]\nthumbs-dir = /ssd\n");
+    EXPECT_EQ(f.read(), "[General]\nparallel = 8\n[Paths]\nmodels-dir = /ssd\n");
     phig_settings_free(s);
 }
 
