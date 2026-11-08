@@ -41,3 +41,9 @@ set_tests_properties(gallery-model PROPERTIES SKIP_RETURN_CODE 77)
 phig_gtk_test(thumb-loader tests/test-thumb-loader.c src/thumb-loader.c)
 target_link_libraries(test-thumb-loader PRIVATE phig_abi)
 set_tests_properties(thumb-loader PROPERTIES SKIP_RETURN_CODE 77)
+
+# Tests collection.cpp itself, against a database it builds, so unlike the
+# other gtk tests it links phig-core.
+phig_gtk_test(collection tests/test-collection.cpp src/collection.cpp src/row-page.c)
+target_link_libraries(test-collection PRIVATE phig-core)
+target_compile_definitions(test-collection PRIVATE PHIG_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
