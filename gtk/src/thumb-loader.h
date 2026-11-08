@@ -3,7 +3,7 @@
 
 #include <gio/gio.h>
 #include <gtk/gtk.h>
-#include <phig/phig.h>
+#include "collection.h"
 
 G_BEGIN_DECLS
 
@@ -22,12 +22,13 @@ typedef enum {
 typedef void (*ThumbCallback)(ThumbResult result, GdkTexture* texture, gpointer user_data);
 
 /* ThumbLoader: an async, cancellable queue that resolves a thumbnail path
- * through phig_thumb_lookup, generating it via phig_thumb_generate on a miss,
+ * through phig_collection_thumb_lookup, generating it via
+ * phig_collection_thumb_generate on a miss,
  * and loads the file into a GdkTexture, backed by a byte-bounded LRU cache of
  * decoded textures.
  *
  * n_threads workers pull requests off a bounded queue; each request looks up
- * the sha via phig_thumb_lookup, generates on a miss, and loads the file off
+ * the sha via phig_collection_thumb_lookup, generates on a miss, and loads the file off
  * the main thread. Results are posted back to the main thread with
  * g_idle_add. cache_bytes bounds the decoded-texture cache, charged at
  * width * height * 4 per texture; the least-recently-used entry is evicted
@@ -35,16 +36,15 @@ typedef void (*ThumbCallback)(ThumbResult result, GdkTexture* texture, gpointer 
 #define PHIG_TYPE_THUMB_LOADER (thumb_loader_get_type())
 G_DECLARE_FINAL_TYPE(ThumbLoader, thumb_loader, PHIG, THUMB_LOADER, GObject)
 
-/* Caller keeps ownership of ctx and must not free it while any reference to
- * the loader is outstanding: workers call phig_thumb_lookup on ctx from their
- * own threads for as long as the loader exists, and ctx is only safe for
- * concurrent use for as long as it is not freed out from under a call. */
-ThumbLoader* thumb_loader_new(phig_ctx* ctx, guint n_threads, gsize cache_bytes);
+/* Caller keeps ownership of coll and must not close it while any reference to
+ * the loader is outstanding, or before thumb_loader_shutdown: workers call into
+ * it from their own threads. */
+ThumbLoader* thumb_loader_new(PhigCollection* coll, guint n_threads, gsize cache_bytes);
 
 /* Stops and joins every worker thread and drains the request queue, so that
- * once this returns no thread is inside phig_thumb_lookup/phig_thumb_generate
- * on ctx and none ever will be again. The caller must call this before
- * freeing ctx, regardless of how many refs on the loader itself remain
+ * once this returns no thread is inside phig_collection_thumb_lookup/
+ * phig_collection_thumb_generate on coll and none ever will be again. The caller must call this before
+ * closing coll, regardless of how many refs on the loader itself remain
  * outstanding (an idle source posted for delivery holds one of those, and
  * draining the main loop to wait for it is not reliable at shutdown). Safe to
  * call more than once (dispose also calls it, for callers that skip an
@@ -53,7 +53,7 @@ void thumb_loader_shutdown(ThumbLoader* self);
 
 /* Request a thumbnail texture for `image_id`/`sha256` (the latter 64-char
  * hex, or empty if the row has not been hashed yet). Both identify the same
- * row; `image_id` is what phig_thumb_generate needs to resolve the path and
+ * row; `image_id` is what phig_collection_thumb_generate needs to resolve the path and
  * media type for generation, and the caller already has it on hand
  * (PhigImageRow), so passing it here avoids a second query to reverse it
  * from the sha.
@@ -71,7 +71,7 @@ void thumb_loader_shutdown(ThumbLoader* self);
  * the value rather than passing raw pixel sizes, or the cache grows a generation
  * per distinct size.
  *
- * On a cache miss this generates the thumbnail via phig_thumb_generate before
+ * On a cache miss this generates the thumbnail via phig_collection_thumb_generate before
  * replying, so it is far slower than a hit — hundreds of milliseconds versus
  * about one. Replies THUMB_MISS if the row has no sha256; THUMB_FAILED if
  * generation or the subsequent file load fails. */

@@ -1,7 +1,5 @@
 #include "thumb-loader.h"
 
-#include <limits.h>
-
 /* Pushed once per worker at shutdown. GAsyncQueue asserts its data is
  * non-NULL, so a real sentinel pointer stands in for "stop"; workers compare
  * against this address, never dereference it. */
@@ -73,7 +71,7 @@ static char* thumb_cache_key(const char* sha256, guint32 size) {
 
 struct _ThumbLoader {
     GObject parent_instance;
-    phig_ctx* ctx;
+    PhigCollection* coll;
     gsize cache_bytes_budget;
 
     GAsyncQueue* queue; /* ThumbRequest*, or THUMB_LOADER_STOP as a per-worker shutdown sentinel */
@@ -119,7 +117,8 @@ static void thumb_loader_evict_locked(ThumbLoader* self) {
 
 /* Inserts a freshly loaded texture into the cache, taking ownership of the
  * reference passed in. Returns a new ref for the caller to deliver, since the
- * cache's own ref may be evicted (and dropped) before the callback runs. */
+ * cache's own ref may be evicted (and dropped) before the callback runs. The
+ * returned reference is taken before eviction. */
 static GdkTexture* thumb_loader_cache_insert(ThumbLoader* self, const char* sha256, guint32 size,
                                               GdkTexture* texture) {
     g_mutex_lock(&self->cache_lock);
@@ -150,9 +149,11 @@ static GdkTexture* thumb_loader_cache_insert(ThumbLoader* self, const char* sha2
     entry->lru_link = self->lru.tail;
     self->cache_bytes += entry->bytes;
 
-    thumb_loader_evict_locked(self);
-
+    /* The caller's reference is taken before evicting: a texture larger than
+     * the whole budget is evicted by its own insert, and the entry is freed
+     * with it. */
     GdkTexture* ref = g_object_ref(entry->texture);
+    thumb_loader_evict_locked(self);
     g_mutex_unlock(&self->cache_lock);
     return ref;
 }
@@ -252,47 +253,41 @@ static gpointer thumb_loader_worker(gpointer data) {
             continue;
         }
 
-        char path[PATH_MAX];
-        bool exists = false;
-        /* Ask phig for the size this request needs. Sizes are independent in
-         * phig's cache, so a 768 lookup does not see a cached 512 — the caller
-         * quantises max_dim so this is a small set of sizes, not one per pixel. */
+        /* Sizes are independent in phig's cache, so a 768 lookup does not see a
+         * cached 512. The caller quantises max_dim, so this is a small set of
+         * sizes rather than one per pixel. */
         int want = req->max_dim > 0 ? (int)req->max_dim : PHIG_THUMB_SIZE_DEFAULT;
-        phig_status status =
-            phig_thumb_lookup(self->ctx, req->sha256, want, path, sizeof(path), &exists);
-        bool generation_failed = false;
+        char* path = NULL;
+        PhigThumbLookup look = phig_collection_thumb_lookup(self->coll, req->sha256, want, &path);
+        gboolean generation_failed = FALSE;
 
-        if (status == PHIG_OK && !exists) {
-            /* Generation is far slower than a lookup or a file load (hundreds
-             * of milliseconds vs. about one), so by the time a queued request
-             * gets here the user may have scrolled past it — check
-             * cancellation immediately before paying that cost rather than
-             * after. */
+        if (look == PHIG_THUMB_ABSENT) {
+            /* Generation costs hundreds of milliseconds against about one for a
+             * load, so a request the user has scrolled past stops here. */
             if (req->cancellable != NULL && g_cancellable_is_cancelled(req->cancellable)) {
+                g_free(path);
                 thumb_request_free(req);
                 continue;
             }
-            if (phig_thumb_generate(self->ctx, req->image_id, want) == PHIG_OK)
-                status =
-                    phig_thumb_lookup(self->ctx, req->sha256, want, path, sizeof(path), &exists);
-            else
-                generation_failed = true;
+            if (phig_collection_thumb_generate(self->coll, req->image_id, want)) {
+                g_free(path);
+                path = NULL;
+                look = phig_collection_thumb_lookup(self->coll, req->sha256, want, &path);
+            } else {
+                generation_failed = TRUE;
+            }
         }
 
-        if (status != PHIG_OK || generation_failed) {
-            /* out_len is sized generously above; any lookup failure here is a
-             * real error, not a too-small buffer. A failed generation is
-             * equally a real failure — the row has a sha256 but phig could
-             * not decode the image — so both count as THUMB_FAILED. */
+        if (look == PHIG_THUMB_ERROR || generation_failed) {
+            /* A failed generation is a real failure: the row has a sha256 and
+             * phig could not decode the image. */
             req->result = THUMB_FAILED;
-        } else if (!exists) {
+        } else if (look == PHIG_THUMB_ABSENT) {
             req->result = THUMB_MISS;
         } else {
             GError* error = NULL;
-            /* phig writes the cache entry at exactly the size requested above, so
-             * the file on disk is already the right size — no client-side
-             * rescale. That also keeps the texture small, which is what lets the
-             * byte budget hold proportionally more of them. */
+            /* phig wrote the file at the size asked for, so it loads without a
+             * rescale, which keeps the texture as small as the budget assumes. */
             GdkTexture* texture = gdk_texture_new_from_filename(path, &error);
             if (texture == NULL) {
                 g_warning("thumb loader: failed to load %s: %s", path,
@@ -304,6 +299,7 @@ static gpointer thumb_loader_worker(gpointer data) {
                 req->texture = texture;
             }
         }
+        g_free(path);
 
         if (req->cancellable != NULL && g_cancellable_is_cancelled(req->cancellable)) {
             thumb_request_free(req);
@@ -316,9 +312,9 @@ static gpointer thumb_loader_worker(gpointer data) {
     return NULL;
 }
 
-/* Stops every worker so the loader's ctx (borrowed; see thumb_loader_new's
- * contract) can be freed safely afterward. Returning only once no worker is
- * still inside phig_thumb_lookup/phig_thumb_generate on it is g_thread_join's
+/* Stops every worker so the loader's coll (borrowed; see thumb_loader_new's
+ * contract) can be closed safely afterward. Returning only once no worker is
+ * still inside phig_collection_thumb_lookup/phig_collection_thumb_generate on it is g_thread_join's
  * guarantee for each thread. One THUMB_LOADER_STOP per worker is enough to
  * stop all of them, since each worker consumes exactly one item before
  * exiting. Guarded on n_threads rather than on self->workers being non-NULL:
@@ -339,7 +335,7 @@ static gpointer thumb_loader_worker(gpointer data) {
  * lets go. Setting stopped first makes those already-queued deliveries
  * harmless no-ops (thumb_loader_deliver) rather than callbacks into a caller
  * that may itself be mid-teardown; it is set here, not in dispose, because
- * ctx must already be unusable to every worker before any such delivery could
+ * coll must already be unusable to every worker before any such delivery could
  * run.
  *
  * Idempotent: a second call finds n_threads workers already joined and NULL
@@ -366,7 +362,7 @@ void thumb_loader_shutdown(ThumbLoader* self) {
 }
 
 /* Falls back to thumb_loader_shutdown for callers that drop the last ref
- * without having called it explicitly (every existing test does this): ctx
+ * without having called it explicitly (every existing test does this): coll
  * must not be relied upon by a worker beyond this object's own lifetime
  * regardless of how the caller chose to tear it down. Idempotent, so this is
  * a no-op when main() has already called thumb_loader_shutdown. */
@@ -401,9 +397,9 @@ static void thumb_loader_init(ThumbLoader* self) {
     g_mutex_init(&self->idle_lock);
 }
 
-ThumbLoader* thumb_loader_new(phig_ctx* ctx, guint n_threads, gsize cache_bytes) {
+ThumbLoader* thumb_loader_new(PhigCollection* coll, guint n_threads, gsize cache_bytes) {
     ThumbLoader* self = g_object_new(PHIG_TYPE_THUMB_LOADER, NULL);
-    self->ctx = ctx;
+    self->coll = coll;
     self->cache_bytes_budget = cache_bytes;
     self->n_threads = n_threads;
     self->queue = g_async_queue_new();
@@ -437,7 +433,7 @@ void thumb_loader_request(ThumbLoader* self, int64_t image_id, const char* sha25
         return; /* never dispatched, so cb must not run: matches the header's contract */
 
     /* Probe before dispatching: without this, a rebind onto an already-cached
-     * texture still pays a phig_thumb_lookup plus a file decode on a worker
+     * texture still pays a phig_collection_thumb_lookup plus a file decode on a worker
      * (~0.5ms) before the cache is consulted in thumb_loader_deliver. Matters
      * more now that zoom re-requests every visible cell at a new size and the
      * previous size may still be resident. */

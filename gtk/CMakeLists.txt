@@ -17,7 +17,7 @@ pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk4 libadwaita-1)
 add_executable(phig-gtk src/main.c src/gallery-model.c src/thumb-loader.c src/collection.cpp
                src/row-page.c)
 target_compile_options(phig-gtk PRIVATE ${PHIG_GTK_WARNINGS})
-target_link_libraries(phig-gtk PRIVATE phig_abi phig-core PkgConfig::GTK)
+target_link_libraries(phig-gtk PRIVATE phig-core PkgConfig::GTK)
 
 # `--target gtk-all` builds the client and every gtk test binary.
 add_custom_target(gtk-all)
@@ -40,9 +40,8 @@ endfunction()
 phig_gtk_test(gallery-model tests/test-gallery-model.c src/gallery-model.c src/row-page.c
               tests/fake-collection.cpp)
 
-phig_gtk_test(thumb-loader tests/test-thumb-loader.c src/thumb-loader.c)
-target_link_libraries(test-thumb-loader PRIVATE phig_abi)
-set_tests_properties(thumb-loader PROPERTIES SKIP_RETURN_CODE 77)
+phig_gtk_test(thumb-loader tests/test-thumb-loader.cpp src/thumb-loader.c src/row-page.c
+              tests/fake-collection.cpp)
 
 # Tests collection.cpp itself, against a database it builds, so unlike the
 # other gtk tests it links phig-core.

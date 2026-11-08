@@ -1,7 +1,6 @@
 #include <adwaita.h>
 #include <gtk/gtk.h>
 #include <math.h>
-#include <phig/phig.h>
 #include <stdlib.h>
 
 #include "gallery-model.h"
@@ -95,7 +94,6 @@ typedef struct {
     /* Owned once startup finishes; NULL until then. Freed in order by
      * phig_app_free: the loader and the model both use them from worker
      * threads. */
-    phig_ctx* ctx;
     PhigCollection* coll;
     ThumbLoader* loader;
 
@@ -115,12 +113,12 @@ typedef struct {
     guint pinch_base_cell;  /* target size when the gesture began */
 } PhigApp;
 
-/* Shutdown order matters: loader workers must stop touching ctx before ctx is
- * torn down, and the model's own in-flight page fetches (which also run on
- * ctx, via a worker thread) must finish before phig_shutdown as well.
- * thumb_loader_shutdown joins every worker; dropping the grid's model then
- * drops the model's last ref, running phig_gallery_model_dispose (which waits
- * on its in_flight counter) synchronously before this function continues. */
+/* Shutdown order matters: the loader's workers and the model's in-flight page
+ * fetches both use the collection, so the loader is shut down and the model
+ * dropped before phig_collection_close. thumb_loader_shutdown joins every
+ * worker; dropping the grid's model then drops the model's last ref, running
+ * phig_gallery_model_dispose (which waits on its in_flight counter)
+ * synchronously before this function continues. */
 static void phig_app_free(PhigApp* app) {
     if (app->relayout_id != 0) {
         g_source_remove(app->relayout_id);
@@ -135,8 +133,6 @@ static void phig_app_free(PhigApp* app) {
 
     if (app->coll != NULL)
         phig_collection_close(app->coll);
-    if (app->ctx != NULL)
-        phig_shutdown(app->ctx);
     g_free(app->db_path);
     g_free(app);
 }
@@ -312,32 +308,18 @@ static void on_launched(GObject* source, GAsyncResult* result, gpointer user_dat
     g_object_unref(launcher);
 }
 
-/* Result of the worker startup sequence, handed to the main thread. On failure ctx and coll are NULL or closed by
- * startup_done. */
+/* Result of the worker startup sequence, handed to the main thread. On failure coll is NULL or closed by startup_done. */
 typedef struct {
     PhigApp* app; /* borrowed; app outlives this, freed only at process exit */
-    phig_ctx* ctx;
     PhigCollection* coll;
 } StartupResult;
 
-/* phig_init's failure has no message to carry, so it gets a fixed one. The
- * collection's error comes back as an owned copy. */
+/* The collection's error comes back as an owned copy. */
 static void startup_thread_func(GTask* task, gpointer source_object, gpointer task_data,
                                  GCancellable* cancellable) {
     (void)source_object;
     (void)cancellable;
     StartupResult* result = task_data;
-
-    phig_config cfg = {0};
-    cfg.db_path = result->app->db_path;
-    cfg.mode = PHIG_READ_ONLY;
-
-    phig_status status = phig_init(&cfg, &result->ctx);
-    if (status != PHIG_OK) {
-        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED,
-                                 "Could not open the phig database.");
-        return;
-    }
 
     char* error = NULL;
     result->coll = phig_collection_open(result->app->db_path, &error);
@@ -778,8 +760,8 @@ static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_da
     g_object_unref(list_model);
 }
 
-/* Owns nothing: on success startup_done moves ctx and coll onto app, and on
- * failure it closes them. */
+/* Owns nothing: on success startup_done moves coll onto app, and on
+ * failure it closes it. */
 static void startup_result_free(StartupResult* result) {
     g_free(result);
 }
@@ -823,17 +805,14 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
         g_error_free(error);
         if (startup->coll != NULL)
             phig_collection_close(startup->coll);
-        if (startup->ctx != NULL)
-            phig_shutdown(startup->ctx);
         return;
     }
 
-    app->ctx = startup->ctx;
     app->coll = startup->coll;
     guint n_threads = env_override_uint("PHIG_THUMB_LOADER_THREADS", PHIG_THUMB_LOADER_THREADS);
     gsize cache_bytes =
         (gsize)env_override_uint("PHIG_THUMB_CACHE_BYTES", PHIG_THUMB_CACHE_BYTES);
-    app->loader = thumb_loader_new(app->ctx, n_threads, cache_bytes);
+    app->loader = thumb_loader_new(app->coll, n_threads, cache_bytes);
 
     /* The model borrows coll, which app owns until phig_app_free. */
     PhigGalleryModel* model = phig_gallery_model_new(app->coll);
