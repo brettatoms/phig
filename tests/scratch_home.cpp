@@ -20,7 +20,10 @@ class ScratchHome : public ::testing::Environment {
    public:
     void SetUp() override {
         std::error_code ec;
-        const char* real_home = std::getenv("HOME");
+        // Copied before setenv("HOME") below, which may free what getenv returned.
+        const char* home_env = std::getenv("HOME");
+        const std::optional<std::string> real_home =
+            home_env != nullptr ? std::optional<std::string>(home_env) : std::nullopt;
         fs::path real_models;
         try {
             real_models = models_dir();
@@ -39,15 +42,16 @@ class ScratchHome : public ::testing::Environment {
             fs::create_directories(home / ".cache" / "phig", ec);
             fs::create_directory_symlink(real_models, home / ".cache" / "phig" / "models", ec);
         }
-        if (real_home != nullptr) {
-            const fs::path samples = fs::path(real_home) / "phig-live-samples";
+        if (real_home) {
+            const fs::path samples = fs::path(*real_home) / "phig-live-samples";
             if (fs::is_directory(samples, ec)) {
                 fs::create_directory_symlink(samples, home / "phig-live-samples", ec);
             }
         }
     }
 
-    // remove_all removes the models symlink, not what it points at.
+    // remove_all removes the models and phig-live-samples symlinks, not what
+    // they point at.
     void TearDown() override {
         std::error_code ec;
         fs::remove_all(root_, ec);

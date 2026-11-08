@@ -41,7 +41,7 @@ void phig_collection_close(PhigCollection* coll);
 
 /* The catalog phig uses when none is named: PHIG_CATALOG, then the config
  * file's [paths] catalog, then $XDG_DATA_HOME/phig. Free with g_free. NULL,
- * with a warning, if the config file cannot be read. */
+ * with a warning, if the config file cannot be read or its catalog is empty. */
 char* phig_collection_default_catalog(void);
 
 /* Rows are in gallery order: newest effective date first, id breaking ties. */

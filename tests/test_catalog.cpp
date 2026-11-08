@@ -533,3 +533,31 @@ TEST_F(CatalogCliTest, ACatalogUnderAnUnreadableParentIsAnErrorNotACrash) {
     EXPECT_EQ(r.exit_code, 1) << r.output;
     EXPECT_NE(r.output.find("no phig catalog at"), std::string::npos) << r.output;
 }
+
+// A command run with no --catalog moves the legacy thumbnails and log into an
+// existing default catalog before it opens the log, so its own lines follow
+// the moved ones in <catalog>/phig.log.
+TEST_F(CatalogCliTest, ACommandMovesLegacyFilesIntoTheDefaultCatalog) {
+    const fs::path db = phig_scratch_db_path(dir);
+    fs::create_directories(db.parent_path());
+    {
+        Database d(db.string());
+        d.init_schema();
+    }
+    const fs::path catalog = db.parent_path();
+    const std::string name = std::string(64, 'a') + ".jpg";
+    const fs::path legacy_thumb = dir / "xdg" / "cache" / "phig" / "thumbs" / "512" / "aa" / name;
+    const fs::path legacy_log = dir / "xdg" / "state" / "phig" / "phig.log";
+    write_file(legacy_thumb, "thumb");
+    write_file(legacy_log, "legacy line\n");
+
+    PhigRun r = run_phig(phig_bin, dir, "tag list");
+    EXPECT_EQ(r.exit_code, 0) << r.output;
+
+    EXPECT_EQ(read_file(catalog / "thumbs" / "512" / "aa" / name), "thumb");
+    EXPECT_FALSE(fs::exists(legacy_thumb));
+    EXPECT_FALSE(fs::exists(legacy_log));
+    const std::string log = read_file(catalog / "phig.log");
+    ASSERT_EQ(log.rfind("legacy line\n", 0), 0u) << log;
+    EXPECT_NE(log.find("moved " + legacy_log.string(), 12), std::string::npos) << log;
+}

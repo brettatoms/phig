@@ -50,13 +50,13 @@ struct PhigRun {
 };
 
 // Run `phig <args>` with HOME and all four XDG directories pointed inside
-// `scratch`.
+// `scratch`, and PHIG_CATALOG unset.
 //
 // Redirecting them is not tidiness. Without it the child reads the developer's
-// ~/.config/phig/config.ini — which may set db, models_dir or thumbs_dir and
-// silently decide what the test measured — takes its advisory lock on the real
-// collection's sidecar, and writes thumbnails and log lines into the real
-// cache. It also fixes where the child looks for the face models
+// ~/.config/phig/config.ini — which may set catalog or models_dir and silently
+// decide what the test measured — or a PHIG_CATALOG from the caller's shell,
+// takes its advisory lock in the real catalog, and writes thumbnails and log
+// lines into it. It also fixes where the child looks for the face models
 // (models_dir() is cache_dir() + "/models"), which is what lets a test drive
 // the models-missing path on a machine that has them installed.
 //
@@ -77,7 +77,7 @@ inline PhigRun run_phig(const std::filesystem::path& binary, const std::filesyst
     fs::path out_path = scratch / "phig-run-output.txt";
 
     std::string cmd = (stdin_line ? "printf '%s\\n' '" + *stdin_line + "' | " : std::string()) +
-                      "HOME='" + env_root.string() + "' XDG_CONFIG_HOME='" +
+                      "env -u PHIG_CATALOG HOME='" + env_root.string() + "' XDG_CONFIG_HOME='" +
                       (env_root / "config").string() + "' XDG_DATA_HOME='" +
                       (env_root / "data").string() + "' XDG_CACHE_HOME='" +
                       (env_root / "cache").string() + "' XDG_STATE_HOME='" +

@@ -148,7 +148,7 @@ TEST_F(PathsTest, ExpandTildeLeavesNonTildeUnchanged) {
 
 TEST_F(PathsTest, ExpandTildeOnlyLeadingTilde) { EXPECT_EQ(expand_tilde("/x/~/y"), "/x/~/y"); }
 
-// ---- Path overrides (from config) take precedence over computed paths ----
+// ---- The catalog layout, the installed catalog and the models directory ----
 
 TEST_F(PathsTest, CatalogPathsLayOutOneDirectory) {
     CatalogPaths p = catalog_paths("/srv/catalog");

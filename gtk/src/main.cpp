@@ -885,6 +885,15 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) noexcept {
      * model is not attached until it finishes (startup_done, above). */
     gtk_window_present(GTK_WINDOW(app->window));
 
+    /* Empty when no catalog was named and the default could not be resolved:
+     * opening "" would resolve to a path at the filesystem root. */
+    if (app->catalog_dir.empty()) {
+        show_startup_error(app,
+                           "phig could not resolve its default catalog. Check [paths] catalog "
+                           "in the config file, or name a catalog directory.");
+        return;
+    }
+
     auto* startup = new StartupResult{};
     startup->app = app;
     GTask* task = g_task_new(NULL, NULL, startup_done, NULL);
@@ -894,7 +903,8 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) noexcept {
     g_object_unref(task);
 }
 
-// phig's own default, from core/ through the collection seam.
+// phig's own default, from core/ through the collection seam. Empty when it
+// cannot be resolved.
 static std::string resolve_default_catalog() {
     char* path = phig_collection_default_catalog();
     std::string out = path != nullptr ? path : "";

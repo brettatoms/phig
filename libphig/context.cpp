@@ -1,3 +1,5 @@
+#include <filesystem>
+
 #include "catalog.h"
 #include "internal.h"
 #include "paths.h"
@@ -18,7 +20,8 @@ phig_status phig_init(const phig_config* cfg, phig_ctx** out) {
         return PHIG_ERR_INVALID_ARG;
     }
     try {
-        const CatalogPaths paths = catalog_paths(cfg->catalog_dir);
+        const CatalogPaths paths =
+            catalog_paths(std::filesystem::absolute(cfg->catalog_dir).lexically_normal().string());
         set_catalog(paths);
         migrate_legacy_catalog_files(paths);
         auto ctx = std::make_unique<phig_ctx>();

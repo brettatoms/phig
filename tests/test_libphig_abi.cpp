@@ -227,6 +227,31 @@ TEST(Abi, ReadWriteInitCreatesAMissingCatalog) {
     phig_shutdown(ctx);
 }
 
+// The installed catalog outlives the call, so a relative catalog_dir is
+// resolved against the working directory at phig_init, not at each later use.
+// Observed through phig_thumb_lookup: libphig keeps its own installed catalog.
+TEST(Abi, InitInstallsARelativeCatalogAsAnAbsolutePath) {
+    namespace fs = std::filesystem;
+    CatalogGuard guard;
+    TempDbPath tmp;
+    make_db(tmp.path);
+    const fs::path name = fs::path(tmp.dir).filename();
+    const std::string relative = (fs::relative(tmp.dir, fs::current_path()) / ".." / name).string();
+    ASSERT_FALSE(fs::path(relative).is_absolute());
+    phig_config cfg{};
+    cfg.catalog_dir = relative.c_str();
+    cfg.mode = PHIG_READ_ONLY;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+    char buf[4096];
+    bool exists = true;
+    ASSERT_EQ(phig_thumb_lookup(ctx, std::string(64, 'a').c_str(), 512, buf, sizeof(buf), &exists),
+              PHIG_OK);
+    const std::string thumbs = (fs::absolute(tmp.dir).lexically_normal() / "thumbs/").string();
+    EXPECT_EQ(std::string(buf).rfind(thumbs, 0), 0u) << buf;
+    phig_shutdown(ctx);
+}
+
 TEST(Abi, InitSucceedsAndShutdownIsClean) {
     TempDbPath tmp;
     make_db(tmp.path);

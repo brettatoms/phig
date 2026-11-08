@@ -2,6 +2,7 @@
 #include <unistd.h>
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "collection.h"
@@ -173,6 +174,26 @@ void test_default_catalog_follows_the_environment() {
     g_unsetenv("XDG_CONFIG_HOME");
 }
 
+void test_default_catalog_is_null_when_it_cannot_be_resolved() {
+    const fs::path config_home =
+        "/tmp/phig-gtk-xdg-config-empty-" + std::to_string(static_cast<long>(getpid()));
+    fs::create_directories(config_home / "phig");
+    std::ofstream(config_home / "phig" / "config.ini") << "[paths]\ncatalog =\n";
+    g_setenv("XDG_CONFIG_HOME", config_home.c_str(), TRUE);
+    g_setenv("XDG_DATA_HOME", "/tmp/phig-gtk-xdg-data", TRUE);
+    g_unsetenv("PHIG_CATALOG");
+
+    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING, "*default catalog failed*");
+    char* path = phig_collection_default_catalog();
+    g_test_assert_expected_messages();
+    g_assert_null(path);
+
+    g_unsetenv("XDG_DATA_HOME");
+    g_unsetenv("XDG_CONFIG_HOME");
+    std::error_code ec;
+    fs::remove_all(config_home, ec);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -188,5 +209,7 @@ int main(int argc, char** argv) {
                     test_lookup_rejects_a_malformed_sha);
     g_test_add_func("/collection/default-catalog-follows-the-environment",
                     test_default_catalog_follows_the_environment);
+    g_test_add_func("/collection/default-catalog-is-null-when-it-cannot-be-resolved",
+                    test_default_catalog_is_null_when_it_cannot_be_resolved);
     return g_test_run();
 }

@@ -46,5 +46,6 @@ bool is_thumbnail_filename(const std::string& filename);
 // backup need not carry them.
 inline constexpr const char* PHIG_CACHEDIR_TAG = "CACHEDIR.TAG";
 
-// Writes PHIG_CACHEDIR_TAG into dir if it is not already there.
+// Writes PHIG_CACHEDIR_TAG into dir if it is not already there. Best-effort:
+// a failed write is ignored, since the tag only affects backups.
 void ensure_cachedir_tag(const std::string& dir);
