@@ -420,6 +420,18 @@ reported afterwards, by a CLI warning, `FacesResult::labels_dropped` and
    the formats are whole documents, and a JSON array concatenated onto another
    is not JSON. Whichever way it goes, it has to reach all four open sites, and
    `--count` should stop accepting a flag it ignores.
+7. **Whether label carry compares boxes as fractions of the image.** Found
+   2026-11-07, after the R60 fix shipped. Face boxes are stored in the pixel
+   coordinates of whatever `raw_decode` produced: for a RAW, the sidecar JPEG,
+   then the embedded preview, then a full decode. If that source changes between
+   the scan and the rebuild, for example because the sidecar JPEG was deleted,
+   the image decodes at a different size, no old box overlaps a new one, and
+   every label on the RAW is dropped. The drop is counted and warned, so it is
+   not silent, but it is avoidable. Comparing boxes normalized by the decoded
+   image's width and height would carry them. That needs the decode size at both
+   ends: the faces table stores none today, so the old boxes' dimensions would
+   have to be stored, or recovered from the image row's `width` and `height` if
+   those match what was decoded. Neither is checked yet.
 
 ## Relationship to other plans
 

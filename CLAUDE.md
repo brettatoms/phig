@@ -633,21 +633,21 @@ fixed-path truncating write, and was filed read-only until that was measured.
 
 ## Known issues
 
-Three `DatabaseTest` cases fail on master — `UpdatePathOntoStaleDestClearsItsFaces`,
-`DeletePathsCascadesTagsAndFaces`, `PurgeSnapshotMarksOmittedFaces` — all with
-`Failed to delete face vectors: SQL logic error` from
-`delete_faces_for_image`'s DELETE against the `vec_faces` vec0 virtual table.
-Reproducible from a clean build at `3177320`, so a change that leaves exactly
-these three failing has not caused them. **Platform-dependent**: all three pass
-on macOS at `7c59d2d` against Apple's system SQLite 3.51.0, so a clean run
-proves the machine, not the fix. Diagnosis in progress: plan 046.
+Three `DatabaseTest` cases have failed on some machines —
+`UpdatePathOntoStaleDestClearsItsFaces`, `DeletePathsCascadesTagsAndFaces`,
+`PurgeSnapshotMarksOmittedFaces` — all with `Failed to delete face vectors: SQL
+logic error` from `delete_faces_for_image`'s DELETE against the `vec_faces` vec0
+virtual table. They failed from a clean build at `3177320` on the Linux
+development machine, and passed on macOS at `7c59d2d` against Apple's system
+SQLite 3.51.0. Diagnosis: plan 046.
 
-**They no longer reproduce on CI.** All three passed on both the ubuntu-latest
-and ubuntu-26.04 legs on 2026-08-13 (run against `b69dae0`), where the whole
-suite was green. That is a measurement of those runners, not a fix: nothing has
-changed in `delete_faces_for_image` or the vendored vec0, so the likely
-explanation is the environment rather than the code. Do not close 046 on this —
-but do not spend time chasing a failure CI is not showing either.
+**They no longer reproduce anywhere they have been run since.** Both ubuntu CI
+legs passed them on 2026-08-13 (`b69dae0`), and the original Linux machine
+passed them on 2026-11-07 (`1c646f5`, system SQLite 3.54.1). Nothing has changed
+in `delete_faces_for_image` or the vendored vec0, so the likely explanation is
+the environment rather than the code. If exactly these three fail, your change
+probably did not cause it: record `sqlite3_libversion()` in plan 046 and keep
+going. Do not close 046 on the passing runs.
 
 `DatabaseConcurrency.ConcurrentMigrationIsSafe` was a genuine 10% flake
 caused by `sqlite3_busy_timeout` being set after `PRAGMA

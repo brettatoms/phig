@@ -53,6 +53,15 @@ The statement **prepares** successfully and fails at `sqlite3_step`.
   - The same DELETE immediately after a stepped KNN (`MATCH ... AND k = ?`)
     query — succeeds.
 
+- **No longer reproduces on the Linux machine it was found on (2026-11-07).**
+  All three pass at `1c646f5` against system SQLite 3.54.1 (Arch `sqlite
+  3.54.1-1`), with no change to `delete_faces_for_image` or the vendored vec0
+  since the failure was recorded. The SQLite in use when they failed was never
+  recorded (Next steps, step 1), so this cannot say whether the SQLite upgrade
+  is what changed. Like the CI result from 2026-08-13, it describes the
+  environment, not a fix. 046 stays open until a real CLI path is shown to be
+  safe (step 4) or the trigger is identified.
+
 ## What macOS rules out
 
 Measured 2026-08-07 at `7c59d2d` on macOS arm64. Repro checked in at
