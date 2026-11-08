@@ -1,7 +1,8 @@
 ---
 name: GTK Links core/ Directly
-status: planned
+status: completed
 created: 2026-08-10
+completed: 2026-11-07
 description: >
   Make `gtk/` a peer of `libphig` over `core/` rather than a client of it, the
   same standing `cli/` and `phigd` have. Removes plan 053 from the GTK
@@ -353,3 +354,24 @@ M0 reading phig only through libphig stays as the record of what shipped.
   discipline the seam preserves.
 - `rules/boundary.toml` — R62 and R66, the two rules a third surface would
   otherwise escape.
+
+## Outcome
+
+Shipped in `6e60ea7`..`dd4667c` and the documentation commit that closes this
+plan; execution plan `docs/plans/2026-11-07-061-gtk-core-linking.md`.
+
+- `gtk/` reaches phig through `src/collection.h`, implemented over `phig-core`
+  in `src/collection.cpp` and by `tests/fake-collection.cpp` for the tests.
+  `phig-gtk` no longer links libphig.
+- On-demand thumbnail generation moved from `libphig/thumbs.cpp` into `core/`
+  as `ensure_thumb`, which `phig_thumb_generate` and the GTK client both call.
+- `gtk/` builds inside the root build behind `PHIG_BUILD_GTK` (off by
+  default). Its three test binaries carry the `gtk` label and need no
+  collection.
+- `main` and `thumb-loader` are C++. `gallery-model.c` stays C.
+- The over-budget eviction defect is fixed, with a test.
+
+Found and not fixed: when a thumbnail request is cancelled after dispatch, its
+callback never runs, so the `ThumbResultData` and the `GtkListItem` reference
+`on_factory_bind` passed with it are never released. Fixing it needs a
+destroy-notify on `thumb_loader_request`.

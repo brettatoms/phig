@@ -4,22 +4,46 @@ GTK4/libadwaita desktop client. M0 status: a working thumbnail grid, not a
 finished app — see `gtk/README.md` for the measured performance numbers and
 what M0's criterion still misses.
 
-Talks to phig only through `libphig`'s C ABI. **May only include
-`<phig/phig.h>` — never a `core/` header, never link `phig-core`, and never
-let a `cv::Mat` reach GUI code** (it can't cross a process boundary, which
-matters once decode moves out-of-process).
+Links `phig-core` directly, as `cli/` does, through one seam:
+`src/collection.h`. Built from the repository root with
+`cmake -B build -DPHIG_BUILD_GTK=ON`, then
+`cmake --build build --target phig-gtk`.
 
 ## Rules
 
+- **Only `src/collection.cpp` includes a `core/` header.** Widget code calls
+  `collection.h`, never `Database` or an engine. The seam keeps reads paged.
+  No call returns the whole collection, because a full read carries about
+  3.8 KB of EXIF per row that the client never reads. A new capability is a
+  new `collection.h` function.
+- **The tests link `tests/fake-collection.cpp`, not `phig-core`.** They test
+  the client's own behaviour and need no collection. A new `collection.h`
+  function gets a fake implementation too. `test-collection` is the exception:
+  it tests `collection.cpp` against a database it builds.
+- **A `cv::Mat` never leaves `collection.cpp`.** Decoded pixels become a
+  `GdkTexture` or a file path before widget code sees them.
+- **No exception unwinds into GTK.** GTK calls the client's handlers through C
+  frames. Every function passed to GLib or GTK is `noexcept`, and every
+  `collection.h` function catches.
+- **Never authorize a removal with `cmd_rm`'s `ConfirmFn`.** A destructive
+  operation is authorized by a plan the caller inspects and then applies
+  (R66). The Remove screen waits for that plan/apply pair in `core/`.
+- **GObjects only where GTK requires one.** `PhigImageRow` and
+  `PhigGalleryModel` are GObjects because GTK's list machinery needs them, and
+  `gallery-model.c` stays C. GObject instance memory is zeroed, not
+  C++-constructed, so a `std::string` member would need placement-new.
+  Everything else is plain C++ structs and free functions, with `GRef`
+  (`src/gref.h`) owning GObject references.
 - **GTK calls happen on the main thread only.** `ThumbLoader`'s worker
-  threads call `phig_thumb_lookup`/`phig_thumb_generate` off the main
+  threads call
+  `phig_collection_thumb_lookup`/`phig_collection_thumb_generate` off the main
   thread, then post results back via `g_idle_add` — never touch a
   `GtkWidget`, `GdkTexture`, or any GTK API from a worker thread directly.
 - **`ThumbLoader` and `max_dim`:** `max_dim` is the largest edge in **physical**
   pixels — cell size times `gtk_widget_get_scale_factor`. The worker decodes to
   that size and the texture cache is keyed `(sha256, max_dim)`, so the same image
   at two zoom levels is two entries rather than one stale one. Quantise the value
-  before passing it (`PHIG_TEXTURE_SIZE_QUANTUM` in `main.c`); passing raw pixel
+  before passing it (`PHIG_TEXTURE_SIZE_QUANTUM` in `main.cpp`); passing raw pixel
   sizes grows a cache generation per distinct size.
 - **Cell size is derived, never set:** the grid divides the viewport width by the
   column count, so it always fills the width exactly with no horizontal scroll.
