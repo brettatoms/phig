@@ -34,6 +34,8 @@ favour. Order: plan 060's R60 fix, then this plan, then a GTK M1 plan scoped to
 browse and curate (Gallery with its sidebar, the Viewer, and tag, gallery and
 favorite edits), all of which `core/` already supports.
 
+Execution plan: `docs/plans/2026-11-07-061-gtk-core-linking.md`.
+
 ## Why
 
 **The "foreign caller" framing does not describe `gtk/`.** Root `CLAUDE.md`
