@@ -2,7 +2,6 @@
 name: CLI Primitive Split
 status: designing
 created: 2026-08-07
-closes_rules: [R70]
 description: >
   Apply the same decomposition plan 031 gave the ABI to `cli/`: indexing,
   thumbnail generation, and face detection as primitives rather than jobs fused
@@ -58,27 +57,9 @@ than defaulting.
   size is the one that cannot. A parser branch, not a design question; it lands
   here because it is `cli/` argv parsing and the flag belongs to one of the
   three primitives.
-- **Every CLI command opens the collection read-write and migrates it, including
-  the ones that only read** (R70, `rules/boundary.toml`). All twelve `Database`
-  constructions in `cli/main.cpp` pass one argument, so all twelve take the
-  default `read_only = false`, and `cmd_search` and `cmd_duplicates` call
-  `init_schema` on their first two lines (`cli/main.cpp:855-856` and
-  `:500-501`). `Database`'s `read_only` flag exists and works — libphig's
-  `phig_init` passes it from the context mode and skips `init_schema` for a
-  read-only context (`libphig/context.cpp:31-45`) — and `read_only` appears zero
-  times in `cli/main.cpp`. Measured: `phig search --count` against a path
-  holding no database left a 122880-byte v8 database there and exited 1 with
-  `Database is empty.`; `phig duplicates` did the same; against copies of a
-  collection with `meta.schema_version` set back to 7, both left it at 8;
-  `phig help` and `phig --help` created nothing. So a read migrates a collection
-  forward irreversibly — `init_schema` refuses a database newer than the build,
-  so a `search` on one machine can make the collection unopenable by an older
-  phig on another — and a mistyped `--db` leaves a stray empty collection behind
-  instead of an error. R20 and R21 record the dry-run corners of this for `rm`
-  and organize. It lands here because the fix is a `cli/` change: pass
-  `read_only = true` on the commands that only read, and decide what those
-  commands do with a database older than the build, where libphig returns
-  `PHIG_ERR_SCHEMA`.
+- **Reads that create and migrate (R70)** moved to plan 067 on 2026-11-08. 067
+  changes how every command in `cli/main.cpp` opens its database, so the
+  read-only open is part of the same change.
 - **Nine numeric flags abort the process on a non-numeric value.**
   `std::stoi`, `std::stof`, `std::stod` and `parse_size` throw
   `std::invalid_argument` and nothing catches it. Measured:
@@ -108,8 +89,7 @@ than defaulting.
   nothing to move — `core/` never sees argv. `rules/README.md` now states that
   bar under "Anchors outside `core/` and `libphig/`", with this as the worked
   example of what fails it. The fix is one `try`/`catch` per site, or one
-  helper; it lands here for the reason R70 does, that this is the open plan
-  that owns `cli/`.
+  helper; it lands here because this is the open plan that owns `cli/`.
 - Whether `cli/` moves onto plan 042's organize engine once it exists, replacing
   the inline orchestration at `cli/main.cpp:720-744`.
 - Whether scan gains `--dry-run` from plan 041's reconcile plan phase.
