@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "gallery-model.h"
+#include "collection.h"
 #include "thumb-loader.h"
 
 /* Grid zoom. The grid always divides the viewport width exactly — cell size is
@@ -91,10 +92,11 @@ typedef struct {
     GtkLabel* failed_label; /* header-bar counter for THUMB_FAILED results */
     char* db_path;
 
-    /* Owned once startup finishes; NULL until then. Kept on the app struct so
-     * shutdown can free them in order (loader before ctx: workers hold ctx
-     * for as long as they run). */
+    /* Owned once startup finishes; NULL until then. Freed in order by
+     * phig_app_free: the loader and the model both use them from worker
+     * threads. */
     phig_ctx* ctx;
+    PhigCollection* coll;
     ThumbLoader* loader;
 
     guint thumb_failed_count;
@@ -131,6 +133,8 @@ static void phig_app_free(PhigApp* app) {
     if (app->grid != NULL)
         gtk_grid_view_set_model(app->grid, NULL);
 
+    if (app->coll != NULL)
+        phig_collection_close(app->coll);
     if (app->ctx != NULL)
         phig_shutdown(app->ctx);
     g_free(app->db_path);
@@ -308,21 +312,16 @@ static void on_launched(GObject* source, GAsyncResult* result, gpointer user_dat
     g_object_unref(launcher);
 }
 
-/* Result of the worker startup sequence, handed to the main thread. On
- * failure ctx/query are NULL and error explains why. */
+/* Result of the worker startup sequence, handed to the main thread. On failure ctx and coll are NULL or closed by
+ * startup_done. */
 typedef struct {
     PhigApp* app; /* borrowed; app outlives this, freed only at process exit */
     phig_ctx* ctx;
-    phig_query* query;
+    PhigCollection* coll;
 } StartupResult;
 
-/* phig_last_error reports the last error on the calling thread, so it must be
- * read here, on the worker thread that made the failing call, and carried to
- * the main thread as an owned copy — by the time startup_done runs on the
- * main thread the ctx may have been used again (or never existed at all) and
- * the message would be stale or unreadable. A failed phig_init produces no
- * context at all, per the header, so that case carries a fixed message
- * instead of a phig_last_error call. */
+/* phig_init's failure has no message to carry, so it gets a fixed one. The
+ * collection's error comes back as an owned copy. */
 static void startup_thread_func(GTask* task, gpointer source_object, gpointer task_data,
                                  GCancellable* cancellable) {
     (void)source_object;
@@ -340,13 +339,13 @@ static void startup_thread_func(GTask* task, gpointer source_object, gpointer ta
         return;
     }
 
-    status = phig_query_new(result->ctx, &result->query);
-    if (status != PHIG_OK) {
-        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "%s",
-                                 phig_last_error(result->ctx));
+    char* error = NULL;
+    result->coll = phig_collection_open(result->app->db_path, &error);
+    if (result->coll == NULL) {
+        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "%s", error);
+        g_free(error);
         return;
     }
-    phig_query_set_sort(result->query, PHIG_SORT_DATE, TRUE);
 
     g_task_return_boolean(task, TRUE);
 }
@@ -779,14 +778,9 @@ static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_da
     g_object_unref(list_model);
 }
 
+/* Owns nothing: on success startup_done moves ctx and coll onto app, and on
+ * failure it closes them. */
 static void startup_result_free(StartupResult* result) {
-    /* query is never freed here. On success it is borrowed by the model for
-     * the model's lifetime (phig-gtk has no query-replace path yet, so that
-     * lifetime is the rest of the process). On failure, startup_done frees it
-     * itself before returning, since phig_query_new succeeding followed by a
-     * later fallible step (currently just phig_query_set_sort, but nothing
-     * stops that changing) is the one path where query is allocated but never
-     * reaches the model. */
     g_free(result);
 }
 
@@ -827,24 +821,22 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
     if (!g_task_propagate_boolean(task, &error)) {
         show_startup_error(app, error->message);
         g_error_free(error);
-        if (startup->query != NULL)
-            phig_query_free(startup->query);
+        if (startup->coll != NULL)
+            phig_collection_close(startup->coll);
         if (startup->ctx != NULL)
             phig_shutdown(startup->ctx);
         return;
     }
 
     app->ctx = startup->ctx;
+    app->coll = startup->coll;
     guint n_threads = env_override_uint("PHIG_THUMB_LOADER_THREADS", PHIG_THUMB_LOADER_THREADS);
     gsize cache_bytes =
         (gsize)env_override_uint("PHIG_THUMB_CACHE_BYTES", PHIG_THUMB_CACHE_BYTES);
     app->loader = thumb_loader_new(app->ctx, n_threads, cache_bytes);
 
-    /* The model borrows ctx/query for its lifetime. Both outlive it here:
-     * ctx lives on app until phig_app_free at process exit, and query is
-     * never freed once handed to the model (phig-gtk has no query-replace
-     * path yet, so the model is never torn down before the app is). */
-    PhigGalleryModel* model = phig_gallery_model_new(app->ctx, startup->query);
+    /* The model borrows coll, which app owns until phig_app_free. */
+    PhigGalleryModel* model = phig_gallery_model_new(app->coll);
     g_signal_connect(model, "page-fetch-failed", G_CALLBACK(on_page_fetch_failed), app);
     GtkSelectionModel* selection = GTK_SELECTION_MODEL(gtk_no_selection_new(G_LIST_MODEL(model)));
     gtk_grid_view_set_model(app->grid, selection);
