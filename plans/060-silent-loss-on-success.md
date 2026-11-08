@@ -307,14 +307,21 @@ caller to authorize their loss.
 Inside the per-image transaction `FacesEngine::run` already opens
 (`core/faces_engine.cpp:183-187`):
 
-1. Before `delete_faces_for_image`, read the image's labelled faces: box,
-   embedding and `person_id`.
+1. Before `delete_faces_for_image`, read the image's labelled faces: box and
+   `person_id`.
 2. Insert the new detections.
 3. Match each old labelled face to the new face in the same image with the
-   greatest box overlap, accepted only if the overlap and the embedding distance
-   both pass a threshold, and copy its `person_id` across. One new face takes at
-   most one label.
+   greatest box overlap (intersection over union), accepted only above a
+   threshold, and copy its `person_id` across. Matching is greedy and
+   one-to-one: one new face takes at most one label.
 4. Call `auto_label_face` only for faces still unlabelled.
+
+Box overlap is the only test. An embedding-distance check was considered and
+rejected: rebuilt with the same model, the detector is deterministic and the
+embeddings are identical, so the check adds nothing; rebuilt with a different
+recognition model, the embeddings are not comparable, so the check would reject
+every match and drop every label in the one case a rebuild is most often run
+for.
 
 This removes the order dependence that made open question 1 hard. A label
 belongs to a face in one image and is matched within that image, so it no longer
@@ -334,12 +341,18 @@ matter, it can be added later.
 
 To settle during implementation:
 
-- **Thresholds.** The overlap and embedding-distance thresholds are measured on
-  real images, not chosen by reasoning.
-- **Plan 046.** `delete_faces_for_image` fails on this Linux machine with `SQL
-  logic error` from the `vec_faces` DELETE. This fix runs through that call, so
-  its tests either run where 046 does not reproduce or are developed alongside
-  046.
+- **Threshold.** The overlap threshold is measured on real images, not chosen
+  by reasoning.
+- **Plan 046.** This fix runs through `delete_faces_for_image`, which 046's
+  failures reach. As of 2026-11-07 they do not reproduce on the Linux machine
+  they were found on: all three pass after a clean rebuild with no change to the
+  code, so the face-path tests for this fix run there.
+- **R60 stays `partial`, not `holds`.** Its statement requires authorization
+  before user-authored metadata is destroyed. After this fix an unmatched label
+  is still dropped without it, and is reported afterwards. The rule keeps its
+  statement and 060 keeps claiming it.
+
+Executed via `docs/plans/2026-11-07-060-r60-label-carry.md`.
 - **Scan is not affected.** Both scan paths that write faces
   (`core/scan_engine.cpp:255`, `:371`) skip an image that already has faces, so
   `FacesEngine::run` is the only path that re-detects over labelled faces.
