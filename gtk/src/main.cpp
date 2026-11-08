@@ -1,6 +1,5 @@
 #include <adwaita.h>
 #include <gtk/gtk.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -8,8 +7,8 @@
 #include <string>
 #include <vector>
 
-#include "collection.h"
 #include "gallery-model.h"
+#include "collection.h"
 #include "gref.h"
 #include "thumb-loader.h"
 
@@ -79,10 +78,12 @@
  * unparseable. */
 static guint env_override_uint(const char* name, guint fallback) {
     const char* value = g_getenv(name);
-    if (value == NULL || value[0] == '\0') return fallback;
+    if (value == NULL || value[0] == '\0')
+        return fallback;
     char* end = NULL;
     long parsed = strtol(value, &end, 10);
-    if (end == value || parsed <= 0) return fallback;
+    if (end == value || parsed <= 0)
+        return fallback;
     return (guint)parsed;
 }
 
@@ -110,12 +111,12 @@ struct PhigApp {
 
     // Zoom state. columns is the resting column count; pinch_cell tracks the
     // live size during a pinch so the snap can see which way it is going.
-    guint target_cell_px = 0;            // what zoom sets; held across window resizes
-    guint columns = 0;                   // derived from target_cell_px and the viewport width
-    guint relayout_id = 0;               // pending phig_relayout_idle, 0 if none
+    guint target_cell_px = 0;     // what zoom sets; held across window resizes
+    guint columns = 0;            // derived from target_cell_px and the viewport width
+    guint relayout_id = 0;        // pending phig_relayout_idle, 0 if none
     bool relayout_needs_rebind = false;  // geometry changed: re-request textures
-    double pinch_cell = 0.0;             // live target size during a pinch
-    guint pinch_base_cell = 0;           // target size when the gesture began
+    double pinch_cell = 0.0;      // live target size during a pinch
+    guint pinch_base_cell = 0;    // target size when the gesture began
 
     PhigApp() = default;
     PhigApp(const PhigApp&) = delete;
@@ -152,13 +153,12 @@ struct PhigMeasureState {
     bool have_last_frame = false;
     guint tick_id = 0;
     guint timeout_id = 0;
-    double step = 0.0;               // adjustment units per timeout tick
-    bool returning = false;          // sweeping back down after reaching upper bound
+    double step = 0.0;  // adjustment units per timeout tick
+    bool returning = false;  // sweeping back down after reaching upper bound
     gint64 refresh_interval_us = 0;  // from the frame clock; 0 until first sampled
 };
 
-static gboolean phig_measure_tick(GtkWidget* widget, GdkFrameClock* clock,
-                                  gpointer user_data) noexcept {
+static gboolean phig_measure_tick(GtkWidget* widget, GdkFrameClock* clock, gpointer user_data) noexcept {
     (void)widget;
     auto* state = static_cast<PhigMeasureState*>(user_data);
     gint64 now_us = gdk_frame_clock_get_frame_time(clock);
@@ -208,11 +208,10 @@ static void phig_measure_report(const PhigMeasureState& state) {
     gint64 p99 = sorted[static_cast<size_t>(sorted.size() * 0.99)];
     gint64 worst = sorted.back();
 
-    g_printerr(
-        "PHIG_MEASURE scroll frames=%u refresh_ms=%.3f p50_ms=%.3f p90_ms=%.3f "
-        "p99_ms=%.3f worst_ms=%.3f late=%u (%.1f%%)\n",
-        static_cast<guint>(deltas.size()), interval_us / 1000.0, p50 / 1000.0, p90 / 1000.0,
-        p99 / 1000.0, worst / 1000.0, late, 100.0 * late / static_cast<double>(deltas.size()));
+    g_printerr("PHIG_MEASURE scroll frames=%u refresh_ms=%.3f p50_ms=%.3f p90_ms=%.3f "
+               "p99_ms=%.3f worst_ms=%.3f late=%u (%.1f%%)\n",
+               static_cast<guint>(deltas.size()), interval_us / 1000.0, p50 / 1000.0, p90 / 1000.0, p99 / 1000.0,
+               worst / 1000.0, late, 100.0 * late / static_cast<double>(deltas.size()));
 }
 
 /* Advances the vertical adjustment one step per timeout firing: sweeps from
@@ -233,7 +232,8 @@ static gboolean phig_measure_step(gpointer user_data) noexcept {
      * (page_size/upper read 0 until GTK completes a size allocation), which
      * would otherwise read as "already at the end" and finish the sweep
      * before it starts. Wait for a real page size instead of stepping. */
-    if (gtk_adjustment_get_page_size(vadj) <= 0.0) return G_SOURCE_CONTINUE;
+    if (gtk_adjustment_get_page_size(vadj) <= 0.0)
+        return G_SOURCE_CONTINUE;
 
     if (!state->returning) {
         value += state->step;
@@ -263,7 +263,8 @@ static gboolean phig_measure_step(gpointer user_data) noexcept {
  * 2,000,000px tall at the default column count, so the default sweeps
  * end to end in a few seconds. */
 static void phig_measure_maybe_start(PhigApp* app) {
-    if (g_getenv("PHIG_MEASURE") == NULL) return;
+    if (g_getenv("PHIG_MEASURE") == NULL)
+        return;
 
     auto* state = new PhigMeasureState{};
     state->app = app;
@@ -284,7 +285,8 @@ static void on_launched(GObject* source, GAsyncResult* result, gpointer user_dat
         const char* message = error != NULL ? error->message : "Unknown error";
         AdwToast* toast = adw_toast_new(message);
         adw_toast_overlay_add_toast(app->toast_overlay, toast);
-        if (error != NULL) g_error_free(error);
+        if (error != NULL)
+            g_error_free(error);
     }
 
     g_object_unref(launcher);
@@ -299,7 +301,7 @@ struct StartupResult {
 
 // The collection's error comes back as an owned copy.
 static void startup_thread_func(GTask* task, gpointer source_object, gpointer task_data,
-                                GCancellable* cancellable) noexcept {
+                                 GCancellable* cancellable) noexcept {
     (void)source_object;
     (void)cancellable;
     auto* result = static_cast<StartupResult*>(task_data);
@@ -315,6 +317,7 @@ static void startup_thread_func(GTask* task, gpointer source_object, gpointer ta
     g_task_return_boolean(task, TRUE);
 }
 
+
 /* ---- Grid zoom geometry ----
  *
  * Cell size is always derived from the viewport width so the row exactly fills
@@ -323,7 +326,8 @@ static void startup_thread_func(GTask* task, gpointer source_object, gpointer ta
 
 static int phig_viewport_width(PhigApp* app) {
     int w = gtk_widget_get_width(GTK_WIDGET(app->scroller));
-    if (w > 0) return w;
+    if (w > 0)
+        return w;
     /* Before the first allocation the widget reports 0; the hadjustment's page
      * size is the same visible width and is set slightly earlier. */
     GtkAdjustment* hadj = gtk_scrolled_window_get_hadjustment(app->scroller);
@@ -332,7 +336,8 @@ static int phig_viewport_width(PhigApp* app) {
 }
 
 static guint phig_cell_size_for(int viewport_width, guint columns) {
-    if (columns == 0) return 1;
+    if (columns == 0)
+        return 1;
     int per = viewport_width / (int)columns;
     return per > 1 ? (guint)per : 1;
 }
@@ -343,10 +348,10 @@ static guint phig_cell_size_for(int viewport_width, guint columns) {
  * this is the zoom-in limit — computed from the cache size rather than
  * hardcoded. */
 static guint phig_min_columns_for_width(int viewport_width, int scale) {
-    if (viewport_width <= 0 || scale <= 0) return PHIG_COLUMNS_MIN;
+    if (viewport_width <= 0 || scale <= 0)
+        return PHIG_COLUMNS_MIN;
     /* Want: (width / columns) * scale <= CACHE  =>  columns >= width * scale / CACHE */
-    guint needed =
-        (guint)((viewport_width * scale + PHIG_CACHE_THUMB_PX - 1) / PHIG_CACHE_THUMB_PX);
+    guint needed = (guint)((viewport_width * scale + PHIG_CACHE_THUMB_PX - 1) / PHIG_CACHE_THUMB_PX);
     return needed > PHIG_COLUMNS_MIN ? needed : PHIG_COLUMNS_MIN;
 }
 
@@ -354,7 +359,8 @@ static guint phig_min_columns_for_width(int viewport_width, int scale) {
  * viewport width. This is the whole resize policy: the target is held and the
  * count moves, so thumbnails keep their size and the grid reflows instead. */
 static guint phig_columns_for_target(int viewport_width, guint target_px) {
-    if (viewport_width <= 0 || target_px == 0) return 1; /* clamped once a real width arrives */
+    if (viewport_width <= 0 || target_px == 0)
+        return 1; /* clamped once a real width arrives */
     guint columns = (guint)(((guint)viewport_width + target_px / 2) / target_px);
     return columns > 0 ? columns : 1;
 }
@@ -362,12 +368,16 @@ static guint phig_columns_for_target(int viewport_width, guint target_px) {
 static guint phig_clamp_columns(PhigApp* app, guint columns) {
     int width = phig_viewport_width(app);
     int scale = gtk_widget_get_scale_factor(GTK_WIDGET(app->grid));
-    if (scale < 1) scale = 1;
+    if (scale < 1)
+        scale = 1;
     guint lo = phig_min_columns_for_width(width, scale);
     guint hi = PHIG_COLUMNS_MAX;
-    if (lo > hi) lo = hi;
-    if (columns < lo) return lo;
-    if (columns > hi) return hi;
+    if (lo > hi)
+        lo = hi;
+    if (columns < lo)
+        return lo;
+    if (columns > hi)
+        return hi;
     return columns;
 }
 
@@ -375,7 +385,8 @@ static guint phig_clamp_columns(PhigApp* app, guint columns) {
  * share one cached texture. */
 static guint phig_texture_size_for(PhigApp* app) {
     int scale = gtk_widget_get_scale_factor(GTK_WIDGET(app->grid));
-    if (scale < 1) scale = 1;
+    if (scale < 1)
+        scale = 1;
     guint physical = phig_cell_size_for(phig_viewport_width(app), app->columns) * (guint)scale;
     guint quantised = ((physical + PHIG_TEXTURE_SIZE_QUANTUM - 1) / PHIG_TEXTURE_SIZE_QUANTUM) *
                       PHIG_TEXTURE_SIZE_QUANTUM;
@@ -401,9 +412,12 @@ static void phig_queue_relayout(PhigApp* app);
  * phig_queue_relayout, which re-derives from the unchanged target. */
 static void phig_set_target_cell(PhigApp* app, guint target_px) {
     guint lo = PHIG_CELL_MIN_PX, hi = PHIG_CELL_MAX_PX;
-    if (target_px < lo) target_px = lo;
-    if (target_px > hi) target_px = hi;
-    if (target_px == app->target_cell_px) return;
+    if (target_px < lo)
+        target_px = lo;
+    if (target_px > hi)
+        target_px = hi;
+    if (target_px == app->target_cell_px)
+        return;
     app->target_cell_px = target_px;
     phig_queue_relayout(app);
 }
@@ -414,16 +428,19 @@ static void phig_set_target_cell(PhigApp* app, guint target_px) {
  * commits past 60%. The 0.4-0.6 dead zone holds the current count, so a gesture
  * hovering on a boundary does not oscillate between two layouts. */
 static guint phig_snap_columns(double fractional, guint current) {
-    if (fractional <= 0.0) return current;
+    if (fractional <= 0.0)
+        return current;
     double floor_part = floor(fractional);
     double frac = fractional - floor_part;
     guint lower = (guint)floor_part;
-    if (lower == 0) return 1;
+    if (lower == 0)
+        return 1;
 
     bool toward_fewer = fractional < (double)current; /* fewer columns = bigger cells */
     double threshold = toward_fewer ? 0.4 : 0.6;
     return frac > threshold ? lower + 1 : lower;
 }
+
 
 /* Cells are NOT given a size request. GtkGridView divides its allocated width
  * among max_columns equal columns, so the cell width already follows the
@@ -438,7 +455,8 @@ static void phig_resize_visible_cells(PhigApp* app) {
          child = gtk_widget_get_next_sibling(child)) {
         for (GtkWidget* inner = gtk_widget_get_first_child(child); inner != NULL;
              inner = gtk_widget_get_next_sibling(inner)) {
-            if (!GTK_IS_FRAME(inner)) continue;
+            if (!GTK_IS_FRAME(inner))
+                continue;
             int cur_w = -1, cur_h = -1;
             gtk_widget_get_size_request(inner, &cur_w, &cur_h);
             /* Width stays -1 (unconstrained, follows the column); height makes
@@ -454,7 +472,8 @@ static gboolean phig_relayout_idle(gpointer user_data) noexcept {
     app->relayout_id = 0;
 
     int width = phig_viewport_width(app);
-    if (width <= 0) return G_SOURCE_REMOVE;
+    if (width <= 0)
+        return G_SOURCE_REMOVE;
 
     /* Re-derive the column count from the target cell size. A resize changes the
      * count and keeps thumbnails at their chosen size; zoom changes the target
@@ -487,7 +506,8 @@ static gboolean phig_relayout_idle(gpointer user_data) noexcept {
 }
 
 static void phig_queue_relayout(PhigApp* app) {
-    if (app->relayout_id == 0) app->relayout_id = g_idle_add(phig_relayout_idle, app);
+    if (app->relayout_id == 0)
+        app->relayout_id = g_idle_add(phig_relayout_idle, app);
 }
 
 static void on_grid_width_changed(GObject* object, GParamSpec* pspec, gpointer user_data) noexcept {
@@ -496,8 +516,7 @@ static void on_grid_width_changed(GObject* object, GParamSpec* pspec, gpointer u
     phig_queue_relayout(static_cast<PhigApp*>(user_data));
 }
 
-static void on_scale_factor_changed(GObject* object, GParamSpec* pspec,
-                                    gpointer user_data) noexcept {
+static void on_scale_factor_changed(GObject* object, GParamSpec* pspec, gpointer user_data) noexcept {
     (void)object;
     (void)pspec;
     /* Moving between monitors changes how many physical pixels a cell needs, so
@@ -507,8 +526,7 @@ static void on_scale_factor_changed(GObject* object, GParamSpec* pspec,
 
 /* Trackpad pinch. The gesture is continuous but the resting state is always a
  * whole column count: the scale is tracked live and snapped on release. */
-static void on_zoom_begin(GtkGesture* gesture, GdkEventSequence* sequence,
-                          gpointer user_data) noexcept {
+static void on_zoom_begin(GtkGesture* gesture, GdkEventSequence* sequence, gpointer user_data) noexcept {
     (void)gesture;
     (void)sequence;
     auto* app = static_cast<PhigApp*>(user_data);
@@ -516,11 +534,11 @@ static void on_zoom_begin(GtkGesture* gesture, GdkEventSequence* sequence,
     app->pinch_cell = (double)app->target_cell_px;
 }
 
-static void on_zoom_scale_changed(GtkGestureZoom* gesture, double scale,
-                                  gpointer user_data) noexcept {
+static void on_zoom_scale_changed(GtkGestureZoom* gesture, double scale, gpointer user_data) noexcept {
     (void)gesture;
     auto* app = static_cast<PhigApp*>(user_data);
-    if (scale <= 0.0) return;
+    if (scale <= 0.0)
+        return;
     /* Pinching out (scale > 1) magnifies, i.e. bigger thumbnails. */
     app->pinch_cell = (double)app->pinch_base_cell * scale;
 }
@@ -528,13 +546,13 @@ static void on_zoom_scale_changed(GtkGestureZoom* gesture, double scale,
 /* Snap on release so the resting state is a whole number of columns filling the
  * width, then adopt the cell size that count implies as the new target. Uses the
  * hysteresis rule so a pinch resting on a boundary does not oscillate. */
-static void on_zoom_end(GtkGesture* gesture, GdkEventSequence* sequence,
-                        gpointer user_data) noexcept {
+static void on_zoom_end(GtkGesture* gesture, GdkEventSequence* sequence, gpointer user_data) noexcept {
     (void)gesture;
     (void)sequence;
     auto* app = static_cast<PhigApp*>(user_data);
     int width = phig_viewport_width(app);
-    if (width <= 0 || app->pinch_cell <= 0.0) return;
+    if (width <= 0 || app->pinch_cell <= 0.0)
+        return;
     double fractional = (double)width / app->pinch_cell;
     guint snapped = phig_clamp_columns(app, phig_snap_columns(fractional, app->columns));
     phig_set_target_cell(app, phig_cell_size_for(width, snapped));
@@ -550,10 +568,11 @@ static gboolean on_scroll(GtkEventControllerScroll* controller, double dx, doubl
         gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(controller));
     if ((state & GDK_CONTROL_MASK) == 0)
         return GDK_EVENT_PROPAGATE; /* plain scroll must still scroll the grid */
-    if (dy == 0.0) return GDK_EVENT_STOP;
+    if (dy == 0.0)
+        return GDK_EVENT_STOP;
     /* Scrolling up (dy < 0) zooms in: bigger thumbnails. */
-    double next =
-        dy < 0.0 ? app->target_cell_px * PHIG_ZOOM_STEP : app->target_cell_px / PHIG_ZOOM_STEP;
+    double next = dy < 0.0 ? app->target_cell_px * PHIG_ZOOM_STEP
+                           : app->target_cell_px / PHIG_ZOOM_STEP;
     phig_set_target_cell(app, (guint)(next + 0.5));
     return GDK_EVENT_STOP;
 }
@@ -562,7 +581,7 @@ static gboolean on_scroll(GtkEventControllerScroll* controller, double dx, doubl
  * the frame gives every cell the same footprint whether or not it currently has
  * a picture. Size is applied at bind time, not here — see on_factory_setup. */
 static void on_factory_setup(GtkSignalListItemFactory* factory, GtkListItem* item,
-                             gpointer user_data) noexcept {
+                              gpointer user_data) noexcept {
     (void)factory;
     (void)user_data;
     GtkWidget* frame = gtk_frame_new(NULL);
@@ -594,7 +613,7 @@ struct ThumbResultData {
 static void phig_app_note_thumb_failed(PhigApp* app) {
     app->thumb_failed_count++;
     char* text = g_strdup_printf("%u thumbnail%s failed", app->thumb_failed_count,
-                                 app->thumb_failed_count == 1 ? "" : "s");
+                                  app->thumb_failed_count == 1 ? "" : "s");
     gtk_label_set_text(app->failed_label, text);
     g_free(text);
     gtk_widget_set_visible(GTK_WIDGET(app->failed_label), TRUE);
@@ -609,9 +628,9 @@ static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer us
     GtkListItem* item = data->item.get();
     PhigApp* app = data->app;
 
-    auto* cancellable =
-        static_cast<GCancellable*>(g_object_get_data(G_OBJECT(item), "phig-cancellable"));
-    if (cancellable == NULL || g_cancellable_is_cancelled(cancellable)) return;
+    auto* cancellable = static_cast<GCancellable*>(g_object_get_data(G_OBJECT(item), "phig-cancellable"));
+    if (cancellable == NULL || g_cancellable_is_cancelled(cancellable))
+        return;
 
     GtkWidget* frame = gtk_list_item_get_child(item);
     GtkWidget* picture = gtk_frame_get_child(GTK_FRAME(frame));
@@ -636,7 +655,7 @@ static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer us
  * it must survive the hop to a worker thread and back regardless of whether
  * GTK still wants it bound when the result arrives. */
 static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item,
-                            gpointer user_data) noexcept {
+                             gpointer user_data) noexcept {
     (void)factory;
     auto* app = static_cast<PhigApp*>(user_data);
     auto* row = PHIG_IMAGE_ROW(gtk_list_item_get_item(item));
@@ -664,19 +683,19 @@ static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item
     auto* data = new ThumbResultData{gref(item), app};
 
     thumb_loader_request(*app->loader, phig_image_row_get_id(row), phig_image_row_get_sha256(row),
-                         phig_texture_size_for(app), cancellable, on_thumb_result, data);
+                          phig_texture_size_for(app), cancellable, on_thumb_result, data);
 }
 
 /* unbind: cancel any outstanding request for this cell and clear the
  * picture, so a cell recycled onto a different row never flashes the
  * previous one's thumbnail while its own request is in flight. */
 static void on_factory_unbind(GtkSignalListItemFactory* factory, GtkListItem* item,
-                              gpointer user_data) noexcept {
+                               gpointer user_data) noexcept {
     (void)factory;
     (void)user_data;
-    auto* cancellable =
-        static_cast<GCancellable*>(g_object_get_data(G_OBJECT(item), "phig-cancellable"));
-    if (cancellable != NULL) g_cancellable_cancel(cancellable);
+    auto* cancellable = static_cast<GCancellable*>(g_object_get_data(G_OBJECT(item), "phig-cancellable"));
+    if (cancellable != NULL)
+        g_cancellable_cancel(cancellable);
     g_object_set_data(G_OBJECT(item), "phig-cancellable", NULL);
 
     GtkWidget* frame = gtk_list_item_get_child(item);
@@ -693,7 +712,8 @@ static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_da
     GListModel* list_model = nullptr;
     g_object_get(selection, "model", &list_model, NULL);
 
-    if (list_model == NULL) return;
+    if (list_model == NULL)
+        return;
 
     PhigImageRow* row = PHIG_IMAGE_ROW(g_list_model_get_item(list_model, position));
 
@@ -725,7 +745,8 @@ static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_da
 static void on_page_fetch_failed(PhigGalleryModel* model, gpointer user_data) noexcept {
     (void)model;
     auto* app = static_cast<PhigApp*>(user_data);
-    if (app->page_fetch_toast_shown) return;
+    if (app->page_fetch_toast_shown)
+        return;
     app->page_fetch_toast_shown = true;
 
     AdwToast* toast = adw_toast_new("Some images could not be loaded");
@@ -759,7 +780,8 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
 
     app->coll = std::move(startup->coll);
     guint n_threads = env_override_uint("PHIG_THUMB_LOADER_THREADS", PHIG_THUMB_LOADER_THREADS);
-    gsize cache_bytes = (gsize)env_override_uint("PHIG_THUMB_CACHE_BYTES", PHIG_THUMB_CACHE_BYTES);
+    gsize cache_bytes =
+        (gsize)env_override_uint("PHIG_THUMB_CACHE_BYTES", PHIG_THUMB_CACHE_BYTES);
     app->loader = thumb_loader_new(app->coll.get(), n_threads, cache_bytes);
 
     /* The model borrows coll, which app owns until ~PhigApp. */
@@ -847,9 +869,9 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) noexcept {
     g_signal_connect(zoom, "end", G_CALLBACK(on_zoom_end), app);
     gtk_widget_add_controller(GTK_WIDGET(app->grid), GTK_EVENT_CONTROLLER(zoom));
 
-    GtkEventController* scroll =
-        gtk_event_controller_scroll_new(static_cast<GtkEventControllerScrollFlags>(
-            GTK_EVENT_CONTROLLER_SCROLL_VERTICAL | GTK_EVENT_CONTROLLER_SCROLL_DISCRETE));
+    GtkEventController* scroll = gtk_event_controller_scroll_new(
+        static_cast<GtkEventControllerScrollFlags>(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL |
+                                                   GTK_EVENT_CONTROLLER_SCROLL_DISCRETE));
     g_signal_connect(scroll, "scroll", G_CALLBACK(on_scroll), app);
     gtk_widget_add_controller(GTK_WIDGET(app->grid), scroll);
     adw_toolbar_view_set_content(app->toolbar_view, GTK_WIDGET(app->scroller));
