@@ -80,11 +80,11 @@ read_only_cli = ["search", "duplicates", "help", "models"]
 # 043 owns wiring it; when it lands it belongs on the mutating list, since it
 # decides which thumbnail files are written.
 mutating_cli_flags = [
-    # Global. --config picks the file that set_path_overrides feeds
-    # default_db_path, models_dir and thumbs_dir from, and that seeds
-    # log.enabled, so it decides which collection a mutating command writes,
-    # where thumbnails and models land, and whether the activity log records
-    # anything (R25 covers the restore snapshot surviving a disabled log).
+    # Global. --config picks the file that supplies the catalog setting and
+    # models_dir, and that seeds log.enabled, so it decides which collection a
+    # mutating command writes, where thumbnails and models land, and whether
+    # the activity log records anything (R25 covers the restore snapshot
+    # surviving a disabled log).
     # --no-wait decides whether a mutating command waits for the writer lock or
     # exits 1 without running (R49, R50).
     "--config", "--no-wait",

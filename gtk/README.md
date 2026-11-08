@@ -30,13 +30,16 @@ phig's own native libraries are needed too; see the root `README.md`.
 cd ..   # the repository root
 cmake -B build -DPHIG_BUILD_GTK=ON
 cmake --build build --target phig-gtk -j
-./build/gtk/phig-gtk [path/to/phig.db]
+./build/gtk/phig-gtk [path/to/catalog-dir]
 ctest --test-dir build -L gtk
 ```
 
+The argument is a catalog directory. Without one the client uses
+`phig_collection_default_catalog`, so `PHIG_CATALOG` and the config file apply.
+
 ## Measured performance (Task 7)
 
-Measured against the real collection (`~/.local/share/phig/phig.db`, 29,953
+Measured against the real collection (the catalog at `~/.local/share/phig/`, 29,953
 rows) with a Wayland session, on this machine (12 cores, NVMe thumbnail
 cache, HDD-backed source photos). Startup is 5 runs (median shown); frame
 timing is via `gtk_widget_add_tick_callback` on the grid, driven by a

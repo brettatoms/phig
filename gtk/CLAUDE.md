@@ -9,6 +9,9 @@ Links `phig-core` directly, as `cli/` does, through one seam:
 `cmake -B build -DPHIG_BUILD_GTK=ON`, then
 `cmake --build build --target phig-gtk`.
 
+The client's argument is a catalog directory. Without one it uses
+`phig_collection_default_catalog`, so `PHIG_CATALOG` and the config file apply.
+
 ## Rules
 
 - **Only `src/collection.cpp` includes a `core/` header.** Widget code calls

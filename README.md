@@ -97,11 +97,15 @@ phig follows the XDG base directory convention on all platforms (honoring
 
 | What | Default location |
 |------|------------------|
-| Database | `~/.local/share/phig/phig.db` |
+| Catalog (database, lock, trash, thumbnails, diagnostic log) | `~/.local/share/phig/` |
 | Face-recognition models | `~/.cache/phig/models/` |
-| Thumbnails | `~/.cache/phig/thumbs/` |
-| Diagnostic log | `~/.local/state/phig/phig.log` |
 | Config file | `~/.config/phig/config.ini` |
+
+A catalog is one directory holding `phig.db`, `phig.db.lock`, `trash/`,
+`thumbs/` and `phig.log`. Choose one with `--catalog <dir>` (a global flag),
+the `PHIG_CATALOG` environment variable, or `[paths] catalog` in the config
+file, in that order. For development, set `PHIG_CATALOG` in a `.envrc` to keep
+a scratch catalog apart from your real one.
 
 The database is the source of truth for your collection; it always reflects the
 current file locations so other tools can read it.
@@ -115,9 +119,8 @@ default. Leading `~` in path values is expanded.
 
 ```ini
 [paths]
-db = ~/photos/phig.db
+catalog = ~/photos/phig-catalog
 models_dir = ~/.cache/phig/models
-thumbs_dir = ~/.cache/phig/thumbs
 
 [general]
 parallel = 4
@@ -142,14 +145,14 @@ threshold = 0.6
 [log]
 enabled = true         # record mv/cp/rm in an activity log for audit/rollback
 max_entries = 100000   # cap log size; 0 = unlimited, oldest operations pruned first
-file = true            # write the diagnostic log to ~/.local/state/phig/phig.log
+file = true            # write the diagnostic log to <catalog>/phig.log
 file_level = info      # info | warn | error — minimum level written to the file
 ```
 
 `enabled` and `max_entries` control the activity log (`mv`/`cp`/`rm` history
 in the database); `file` and `file_level` control the diagnostic log — a
 separate spdlog logger that writes warnings/errors to stderr and, unless
-`file = false`, also to a rotating file at `~/.local/state/phig/phig.log`
+`file = false`, also to a rotating file at `<catalog>/phig.log`
 (5 MB rotation to `phig.1.log`).
 
 Destructive or per-invocation options are deliberately **not** configurable and
@@ -164,7 +167,7 @@ paths and any values your config overrides.
 
 Mutating commands (`scan`, `mv`, `cp`, `rm`, `tag`/`gallery`/`fav` writes,
 `face` writes, `thumbs rebuild`/`clean`, `models download`) take a process-wide
-advisory lock (`<db>.lock`) so two of them never run at once and interleave.
+advisory lock (the catalog's `phig.db.lock`) so two of them never run at once and interleave.
 If another mutating command is already running, phig prints
 `Another phig operation is running (pid N); waiting...` and waits. Pass
 `--no-wait` to fail immediately instead. Read commands (`search`,
@@ -356,7 +359,7 @@ New scans with `--faces` automatically label detected faces that match known peo
 
 ### Thumbnails
 
-Thumbnails are JPEGs cached under `~/.cache/phig/thumbs/<size>/`, keyed by
+Thumbnails are JPEGs cached under `<catalog>/thumbs/<size>/`, keyed by
 SHA256 and size, so identical files share one thumbnail and several sizes can
 coexist. 512px is the default; `--size` writes another without disturbing it.
 

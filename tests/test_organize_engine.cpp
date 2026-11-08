@@ -657,8 +657,8 @@ int64_t scalar(const std::string& db_path, const char* sql) {
 
 // OrganizeEngine::plan writes nothing, which the test above pins. The command
 // that calls it refuses a missing catalog before opening it, so the preview
-// creates nothing. cmd_organize lives in
-// cli/main.cpp and is not linked into phig-tests, so the binary is the way in.
+// creates nothing. cmd_organize lives in cli/main.cpp and is not linked into
+// phig-tests, so the binary is the way in.
 TEST_F(OrganizeEngineTest, CliDryRunOverAMissingCatalogRefusesAndCreatesNothing) {
     fs::path phig_bin = phig_binary_path();
     if (phig_bin.empty()) {

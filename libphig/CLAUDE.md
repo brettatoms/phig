@@ -10,6 +10,12 @@ Linux, `libphig/phig.exported_symbols` on macOS), not inferred from headers.
 Public header: `libphig/include/phig/phig.h`. This is the only header a
 foreign client may include.
 
+## Catalog
+
+`phig_config` names a catalog directory in `catalog_dir`; the context derives
+the database, thumbnail cache and lock from it. `PHIG_READ_WRITE` creates a
+missing catalog and `PHIG_READ_ONLY` refuses one.
+
 ## Coverage — and what it lags
 
 **The target is every phig feature, not the subset below.** The ABI is what a

@@ -83,6 +83,12 @@ parallel (`CTestConfig.cmake`'s `CTEST_PARALLEL_LEVEL` is ignored by a direct
 from `tests/temp_dir.h`, which is what makes parallel safe; a new fixture that
 hardcodes a temp path instead will pass alone and fail under `--parallel`.
 
+The test binaries point `HOME` and the four XDG directories at a per-process
+scratch directory, and clear `PHIG_CATALOG`, before any test runs
+(`tests/scratch_home.cpp`). The face models are linked in from the real
+`~/.cache/phig/models`. A test therefore never writes the developer's catalog,
+log or lock.
+
 **The four `DuplicatesPerf` tests are `RUN_SERIAL`** (root `CMakeLists.txt`), so
 `--parallel` drains before them and starts nothing beside them. A timing
 assertion is only meaningful on an unshared machine: those tests compare the
@@ -153,19 +159,13 @@ finding.
 ./build/phig --version                                          # phig 0.3.0
 ```
 
-**The `search --count` check that used to sit here was unsound and has been
-removed.** It read `./build/phig search --count --db
-~/.local/share/phig/phig.db   # 29925`. Two problems, both measured 2026-08-13:
+A fixed `search --count` against the default catalog is not a sound check: the
+default catalog on the development machine holds schema v8 and zero images, so
+a count there says nothing about a real collection.
 
-- That database holds zero images. It contains schema v8, no operations, and
-  one tag — `favorite`, the one `init_schema` creates — so it is a database
-  that was never populated rather than one that was emptied. No `scan`, `rm`,
-  `mv` or `cp` in `~/.local/state/phig/phig.log` has ever named that path.
-- **Running the check creates the thing it verifies.** phig opens the database
-  read-write and initializes the schema even for a read (R70), so
-  `search --count` against a missing path makes an empty database and then
-  reports it empty. The check could never fail with "no such database", which
-  is the failure it existed to catch.
+A read against a catalog that does not exist now fails with `no phig catalog at
+<dir>` and creates nothing (R70), so `phig --catalog <dir> search --count` is a
+sound check against a catalog you have scanned.
 
 A real-run check against a live collection is still worth having. It needs a
 path that a read cannot bring into existence, so write it against a collection
@@ -337,46 +337,46 @@ the source rather than trusting this block:
 
 ```bash
 # Global — recognized anywhere in the argv, before the command parsers see it
-phig [--config <path>] [--no-wait] <command> ...
+phig [--config <path>] [--catalog <dir>] [--no-wait] <command> ...
 phig --version | --help
 
 # Scan a directory into the database
-phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--parallel N] [--db <path>]
+phig scan <directory> [--recursive] [--force [hash,thumbs,faces,all]] [--thumbs] [--faces] [--media image|video|all] [--hidden] [--ignore-mount-warning] [--on-error warn|fail] [--parallel N]
 
 # Generate thumbnails
-phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--parallel N] [--db <path>]
-phig thumbs clean [--dry-run] [--db <path>]
+phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--parallel N]
+phig thumbs clean [--dry-run]
 
 # Find duplicate images
-phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--exclude <glob>] [--media image|video|all] [--fav] [--db <path>]
+phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--exclude <glob>] [--media image|video|all] [--fav]
 
 # Copy files into YYYY/MM structure
-phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename]
 
 # Move files into YYYY/MM structure
-phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename] [--db <path>]
+phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename]
 
 # Search the collection
-phig search [--ext <ext>] [--after <date>] [--before <date>] [--camera <s>] [--make <s>] [--min-size <n>] [--max-size <n>] [--media image|video|all] [--min-duration <d>] [--max-duration <d>] [--similar <image>] [--similar-hash <hex>] [--threshold 0-64] [--face <image>] [--face-threshold <f>] [--person <name>] [--tag <name>] [--gallery <name>] [--fav] [--blurry] [--min-sharpness <n>] [--max-sharpness <n>] [--match <glob>] [--exclude <glob>] [--limit N] [--count] [--porcelain] [--print0] [--format text|csv|json] [--output <path>] [--db <path>]
+phig search [--ext <ext>] [--after <date>] [--before <date>] [--camera <s>] [--make <s>] [--min-size <n>] [--max-size <n>] [--media image|video|all] [--min-duration <d>] [--max-duration <d>] [--similar <image>] [--similar-hash <hex>] [--threshold 0-64] [--face <image>] [--face-threshold <f>] [--person <name>] [--tag <name>] [--gallery <name>] [--fav] [--blurry] [--min-sharpness <n>] [--max-sharpness <n>] [--match <glob>] [--exclude <glob>] [--limit N] [--count] [--porcelain] [--print0] [--format text|csv|json] [--output <path>]
 
 # Remove images from the database and/or disk
-phig rm [--match <glob>] [--exclude <glob>] [--hard|--db-only|--orphans] [--ignore-mount-warning] [--dry-run] [--yes] [--db <path>]
+phig rm [--match <glob>] [--exclude <glob>] [--hard|--db-only|--orphans] [--ignore-mount-warning] [--dry-run] [--yes]
 phig trash empty [--yes]
 
 # Tags, galleries, favorites
-phig tag add|remove <tag> [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
-phig tag list [--db <path>]
-phig gallery set <name> [--no-overwrite] [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
-phig gallery clear [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
-phig gallery list [--db <path>]
-phig fav add|remove [--match <glob>] [--exclude <glob>] [--path <dir>] [--db <path>]
-phig fav list [--count] [--limit N] [--porcelain] [--print0] [--format text|csv|json] [--output <path>] [--db <path>]
+phig tag add|remove <tag> [--match <glob>] [--exclude <glob>] [--path <dir>]
+phig tag list
+phig gallery set <name> [--no-overwrite] [--match <glob>] [--exclude <glob>] [--path <dir>]
+phig gallery clear [--match <glob>] [--exclude <glob>] [--path <dir>]
+phig gallery list
+phig fav add|remove [--match <glob>] [--exclude <glob>] [--path <dir>]
+phig fav list [--count] [--limit N] [--porcelain] [--print0] [--format text|csv|json] [--output <path>]
 
 # Faces
-phig face name <image> <name> [--db <path>]
-phig face identify <name> [--db <path>]
-phig face rebuild [--match <glob>] [--exclude <glob>] [--parallel N] [--db <path>]
-phig face list [--db <path>]
+phig face name <image> <name>
+phig face identify <name>
+phig face rebuild [--match <glob>] [--exclude <glob>] [--parallel N]
+phig face list
 
 # Download the face detection/recognition models
 phig models download
@@ -386,13 +386,20 @@ phig models download
 `duplicates`, `cp` and `mv` reject it — measured, `Unknown option: --path` and
 exit 1 — even though `--path` reads as a natural fit for all three.
 
-Paths follow XDG conventions (all resolved in `core/paths.cpp`): database at
-`~/.local/share/phig/phig.db`, models at `~/.cache/phig/models`, thumbnails
-at `~/.cache/phig/thumbs`, diagnostic log at `~/.local/state/phig/phig.log`,
-config at `~/.config/phig/config.ini`. An optional INI config file (parsed
-in `core/config.cpp` via vendored inih) sets defaults; a global `--config
-<path>` flag overrides its location. Precedence: CLI flag > config >
-default.
+A catalog is one directory holding a collection's database (`phig.db`), its
+writer lock (`phig.db.lock`), the trash (`trash/`), the thumbnail cache
+(`thumbs/<size>/ab/<sha>.jpg`, tagged with `CACHEDIR.TAG`) and the diagnostic
+log (`phig.log`). Which catalog a command uses: `--catalog <dir>`, then
+`PHIG_CATALOG`, then `[paths] catalog` in the config file, then
+`~/.local/share/phig/`. All of it is resolved in `core/paths.cpp` and
+`core/catalog.cpp`. User-level files stay in XDG locations: models at
+`~/.cache/phig/models`, config at `~/.config/phig/config.ini`. The first run
+against the default catalog moves thumbnails from `~/.cache/phig/thumbs` and
+the log from `~/.local/state/phig/` into it. A read never creates or migrates a
+catalog (R70): a read against a missing or outdated catalog fails, and only
+`scan` creates one. An optional INI config file (parsed in `core/config.cpp`
+via vendored inih) sets defaults; a global `--config <path>` flag overrides its
+location. Precedence: CLI flag > config > default.
 
 ## Project structure
 
@@ -435,7 +442,7 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   surviving row before deleting the stale one, logged as a `relink` entry.
   Ambiguous (two+ identical-content files) or no on-disk match: no
   transfer, row still deleted with a restore snapshot.
-- **Thumbnails** — JPEGs cached in `~/.cache/phig/thumbs/<size>/ab/<sha>.jpg`,
+- **Thumbnails** — JPEGs cached in `<catalog>/thumbs/<size>/ab/<sha>.jpg`,
   keyed by (SHA256, size). Deduplicates naturally, and sizes are independent:
   generating 768px never replaces or invalidates 512px, so a client can ask for
   what it needs without a cache-wide regeneration. 512 is the default that
@@ -489,7 +496,7 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   BUSY_SNAPSHOT, and schema migrations re-check the version inside an
   IMMEDIATE transaction so concurrent first-runs don't re-apply DDL.
   Most mutating commands additionally take a process-wide advisory `flock`
-  on `<db>.lock` (`core/lockfile.cpp`) so whole operations serialize; reads
+  on the catalog's `phig.db.lock` (`core/lockfile.cpp`) so whole operations serialize; reads
   never take it. Per-machine only. The `face` subcommands are the exception
   — they run lock-free, matching libphig's faces operation, and defend
   themselves instead: `faces.id` is AUTOINCREMENT so a deleted id is never

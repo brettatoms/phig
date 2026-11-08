@@ -1,7 +1,8 @@
 ---
 name: Catalog Directory and Test Isolation
-status: planned
+status: completed
 created: 2026-11-08
+completed: 2026-11-08
 closes_rules: [R50, R70]
 description: >
   Make a catalog one directory holding a collection's database, lock, trash,
@@ -307,3 +308,51 @@ Each step lands green on its own.
   written against `--catalog`.
 - **068:** rewrites `gtk/src/collection.h`. Whichever lands second carries
   decision 8's gtk change.
+
+## Outcome
+
+Shipped on branch `067-catalog-directory`. Commits in the range
+`1543e23..HEAD`, newest first:
+
+```
+80cdee3 Keep the gtk main.cpp change to the catalog rename
+c4d9118 Open the gtk client on a catalog directory
+a4aa729 Fix the libphig install check and clear installed paths between tests
+ab0855a Open a libphig context on a catalog directory
+825ca45 Bring rule text and catalog tests in line with read-only opens
+bb43b07 Pin that trash and thumbnails stay inside their own catalog
+514092c Pin that a command locks the catalog it writes (R50)
+ed6aa49 Restore unset environment variables in the catalog tests; open thumbs clean --dry-run read-only
+9c6b02d Open a catalog read-only for every command that only reads (R70)
+ba6b70f Give run_phig's child /dev/null or one line on stdin
+55c7ea1 Replace --db with a global --catalog <dir>
+4dff1bb Name the catalog from PHIG_CATALOG or the config file's [paths] catalog
+c141f37 Add the catalog open policy: read, write or create
+459a180 Tag the thumbnail cache and move legacy files into the default catalog
+8e0deae Resolve a collection's files from one catalog directory
+fe39a67 Keep the live-photo samples reachable from the scratch home
+6b00ce7 Run every test with HOME and the XDG directories in scratch
+```
+
+Final counts: `ctest --test-dir build --parallel 6` ran 939 tests, all
+passed, 13 skipped (live-photo sample files and the two face-path
+clear-failure cases, which depend on the machine). `phig-tests` ran 921 and
+`phig-perf-tests` 5. `ctest --test-dir build/with-gtk -L gtk` ran its 3
+binaries, all passed.
+
+Findings:
+
+- libphig's `phig_init` ignores `phig_config.models_dir`, although `phig.h`
+  documents it (Decision 7). Not changed here.
+- `tests/test_libphig_install` is built by neither CI nor ctest. A removed
+  `phig_config` field went unnoticed there until review.
+- The "Decisions beyond 067" rulings: dry runs of `rm`, `cp` and `mv` open the
+  catalog read-only, so R20 and R21 were rewritten (they recorded that a
+  dry run creates the database and applies migrations); the log file sink is
+  enabled only when the catalog exists or the command is `scan`; the writer
+  lock checks the catalog first unless `scan` or `models download` may
+  create it; the removed `[paths] db` and `thumbs_dir` keys fail with a
+  message naming `[paths] catalog`; libphig's read-write context still
+  creates a catalog.
+- R50 now holds and is removed from plan 039, which keeps the portability of
+  `lock_path` and `WriterLock`.

@@ -9,7 +9,8 @@ of its own.
 
 ## Rules
 
-- Flag order convention: `phig <subcommand> <args> --db <path>`.
+- Global flags (`--catalog`, `--config`, `--no-wait`) are recognized anywhere in
+  argv; by convention they go first: `phig --catalog <dir> <subcommand> <args>`.
 - New commands call into a `core/` engine rather than reimplementing logic
   here. If a command needs new engine behavior, that goes in `core/` (and,
   if a non-CLI client will eventually need it too, in `libphig/`) — see the
