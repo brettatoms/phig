@@ -28,7 +28,7 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R39 | metadata | holds | When a moved row and a demoted JPEG both transfer into the same surviving row, the moved row's gallery is the one that lands, because relink runs before demote and a gallery transfer fills only an empty target. |
 | R40 | metadata | violated (test gap) | Dropping a row because a move or a copy has taken its path writes a restore snapshot for it, so the tags and gallery that row carried can still be named afterwards. |
 | R43 | attachments | holds (test gap) | A JPEG with a same-basename RAW file beside it is not a photo of its own: the walk skips it, and a row it acquired from an earlier scan has its metadata moved to the RAW's row before that row is dropped. |
-| R50 | concurrency | violated (test gap) | A mutating command's advisory lock is taken on the lock file belonging to the database that command is about to write. |
+| R50 | concurrency | holds (test gap) | A mutating command's advisory lock is taken on the lock file belonging to the database that command is about to write. |
 | R51 | concurrency | holds | A face id names the same face for as long as that face exists: faces.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
 | R52 | concurrency | holds (test gap) | A face rebuild reads an image's id inside the same transaction that writes that image's faces, so an image deleted while the worker waits for the write lock costs one skipped file rather than the whole run. |
 | R54 | concurrency | holds (test gap) | The connection is opened SQLITE_OPEN_FULLMUTEX explicitly, so one shared connection called from several threads is serialized by SQLite rather than by how the system SQLite was compiled. |
@@ -132,7 +132,7 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R43 | attachments | holds (test gap) | A JPEG with a same-basename RAW file beside it is not a photo of its own: the walk skips it, and a row it acquired from an earlier scan has its metadata moved to the RAW's row before that row is dropped. |
 | R47 | attachments | holds | A Live Photo's video is carried only when its still actually changes directory and the video has no row of its own. |
 | R49 | concurrency | holds (test gap) | The advisory writer lock excludes only processes that construct one on the same file: no read takes it, and it never excludes a writer that takes none. |
-| R50 | concurrency | violated (test gap) | A mutating command's advisory lock is taken on the lock file belonging to the database that command is about to write. |
+| R50 | concurrency | holds (test gap) | A mutating command's advisory lock is taken on the lock file belonging to the database that command is about to write. |
 | R52 | concurrency | holds (test gap) | A face rebuild reads an image's id inside the same transaction that writes that image's faces, so an image deleted while the worker waits for the write lock costs one skipped file rather than the whole run. |
 | R53 | concurrency | holds (test gap) | The busy timeout is set before the connection issues its first statement, so a process opening a collection concurrently with another waits rather than failing. |
 | R54 | concurrency | holds (test gap) | The connection is opened SQLITE_OPEN_FULLMUTEX explicitly, so one shared connection called from several threads is serialized by SQLite rather than by how the system SQLite was compiled. |

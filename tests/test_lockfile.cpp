@@ -12,6 +12,7 @@
 
 #include "database.h"
 #include "lockfile.h"
+#include "paths.h"
 #include "phig_binary.h"
 #include "temp_dir.h"
 #include "types.h"
@@ -157,4 +158,60 @@ TEST_F(LockfileTest, CliRefusesALockTakingWriteWhileAllowingReadsAndLocklessWrit
     PhigRun after = run_phig(phig_bin, dir, "--no-wait tag add holiday --match '*.jpg'");
     EXPECT_EQ(after.exit_code, 0) << after.output;
     EXPECT_NE(after.output.find("Tagged 2 images"), std::string::npos) << after.output;
+}
+
+// Which lock file a command takes is the catalog's: holding catalog A's lock
+// refuses a write to A, and leaves a write to B, or a write to A while only the
+// default catalog's lock is held, free to run.
+TEST_F(LockfileTest, CliLocksTheCatalogItWrites) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) GTEST_SKIP() << "phig binary not built";
+
+    auto make = [&](const std::string& name) {
+        const fs::path c = dir / name;
+        fs::create_directories(c);
+        Database db((c / "phig.db").string());
+        db.init_schema();
+        ImageInfo info;
+        info.path = (c / "a.jpg").string();
+        info.filename = "a.jpg";
+        info.extension = "jpg";
+        info.file_size = 1;
+        info.sha256 = "sha-" + name;
+        info.metadata_json = "{}";
+        info.created_at = "2024-01-01T00:00:00Z";
+        info.modified_at = "2024-01-01T00:00:00Z";
+        db.insert(info);
+        return c;
+    };
+    const fs::path a = make("a");
+    const fs::path b = make("b");
+    auto tag = [&](const fs::path& c) {
+        return run_phig(phig_bin, dir,
+                        "--no-wait --catalog '" + c.string() + "' tag add t --match '*.jpg'");
+    };
+    auto hold = [](const fs::path& lock) {
+        fs::create_directories(lock.parent_path());
+        int fd = ::open(lock.c_str(), O_RDWR | O_CREAT, 0644);
+        EXPECT_GE(fd, 0);
+        EXPECT_EQ(::flock(fd, LOCK_EX | LOCK_NB), 0);
+        return fd;
+    };
+
+    int fd = hold(catalog_paths(a.string()).lock);
+    PhigRun refused = tag(a);
+    EXPECT_EQ(refused.exit_code, 1) << refused.output;
+    EXPECT_NE(refused.output.find("Another phig operation is running"), std::string::npos)
+        << refused.output;
+    PhigRun other = tag(b);
+    EXPECT_EQ(other.exit_code, 0) << "B was excluded by A's lock: " << other.output;
+    ::flock(fd, LOCK_UN);
+    ::close(fd);
+
+    fd = hold(phig_scratch_lock_path(dir));
+    PhigRun free_a = tag(a);
+    EXPECT_EQ(free_a.exit_code, 0)
+        << "A was excluded by the default catalog's lock: " << free_a.output;
+    ::flock(fd, LOCK_UN);
+    ::close(fd);
 }
