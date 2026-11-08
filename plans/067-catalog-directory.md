@@ -312,9 +312,17 @@ Each step lands green on its own.
 ## Outcome
 
 Shipped on branch `067-catalog-directory`. Commits in the range
-`1543e23..HEAD`, newest first:
+`1543e23..HEAD`, newest first, plus the commit that updates this section:
 
 ```
+88088fc Correct the catalog docs
+9c2bbd1 Fix minor catalog issues in gtk, libphig and the test helpers
+317eb8d Record which writes create a catalog and where trash empty reaches
+62fb164 Guard the installed catalog and models directory with a mutex
+f20ef72 Take no writer lock on a dry run, and lock models downloads apart
+925f241 Refuse an empty catalog path instead of aborting
+da2a6fa Correct the catalog docs after review
+8e61356 Document the catalog directory and mark plan 067 completed
 80cdee3 Keep the gtk main.cpp change to the catalog rename
 c4d9118 Open the gtk client on a catalog directory
 a4aa729 Fix the libphig install check and clear installed paths between tests
@@ -334,9 +342,9 @@ fe39a67 Keep the live-photo samples reachable from the scratch home
 6b00ce7 Run every test with HOME and the XDG directories in scratch
 ```
 
-Final counts: `ctest --test-dir build --parallel 6` ran 939 tests, all
+Final counts: `ctest --test-dir build --parallel 6` ran 947 tests, all
 passed, 13 skipped (live-photo sample files and the two face-path
-clear-failure cases, which depend on the machine). `phig-tests` ran 921 and
+clear-failure cases, which depend on the machine). `phig-tests` ran 942 and
 `phig-perf-tests` 5. `ctest --test-dir build/with-gtk -L gtk` ran its 3
 binaries, all passed.
 
@@ -350,9 +358,17 @@ Findings:
   catalog read-only, so R20 and R21 were rewritten (they recorded that a
   dry run creates the database and applies migrations); the log file sink is
   enabled only when the catalog exists or the command is `scan`; the writer
-  lock checks the catalog first unless `scan` or `models download` may
-  create it; the removed `[paths] db` and `thumbs_dir` keys fail with a
-  message naming `[paths] catalog`; libphig's read-write context still
-  creates a catalog.
+  lock checks the catalog first unless the command is `scan`; the removed
+  `[paths] db` and `thumbs_dir` keys fail with a message naming `[paths]
+  catalog`; libphig's read-write context still creates a catalog.
 - R50 now holds and is removed from plan 039, which keeps the portability of
   `lock_path` and `WriterLock`.
+- The final review's fixes: an empty `--catalog` or `[paths] catalog`, and a
+  catalog under an unreadable parent, exit 1 with an error instead of
+  aborting; dry runs take no writer lock, so R49 holds as written;
+  `models download` locks `.download.lock` in the models directory and no
+  longer creates a catalog; the catalog lock is `acquire_catalog_lock` in
+  `core/catalog.cpp`, where R50 now anchors; the installed catalog and models
+  directory are read under a mutex. R68 records that `trash empty` deletes
+  whatever a user-chosen catalog's `trash/` holds, and plan 064 takes the
+  guard for it.
