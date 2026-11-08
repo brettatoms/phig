@@ -115,6 +115,7 @@ enable_testing()
 find_package(GTest 1.12 REQUIRED)
 
 add_executable(phig-tests
+    tests/scratch_home.cpp
     tests/test_scanner.cpp
     tests/test_hasher.cpp
     tests/test_image_codec.cpp
@@ -182,6 +183,7 @@ gtest_discover_tests(phig-tests
 # dominate phig-tests' runtime if left in the default suite. Still built and run
 # by ctest, so CI keeps gating on them; just not part of the fast local loop.
 add_executable(phig-perf-tests
+    tests/scratch_home.cpp
     tests/perf_duplicates.cpp
 )
 target_link_libraries(phig-perf-tests PRIVATE
