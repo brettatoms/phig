@@ -4,9 +4,12 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "catalog.h"
+#include "config.h"
 #include "database.h"
 #include "paths.h"
 #include "thumbs.h"
@@ -45,37 +48,31 @@ bool is_hex64(const char* s) {
 
 extern "C" {
 
-PhigCollection* phig_collection_open(const char* db_path, char** error) {
+PhigCollection* phig_collection_open(const char* catalog_dir, char** error) {
     *error = nullptr;
     try {
+        const CatalogPaths paths = catalog_paths(catalog_dir);
         auto coll = std::make_unique<PhigCollection>();
-        coll->db = std::make_unique<Database>(db_path, /*read_only=*/true);
-        // A read-only connection cannot migrate, and every query below assumes
-        // this build's schema.
-        int have = coll->db->schema_version();
-        int want = Database::expected_schema_version();
-        if (have != want) {
-            *error = g_strdup_printf(
-                "The collection is at schema version %d and this build reads version %d.", have,
-                want);
-            return nullptr;
-        }
+        coll->db = open_catalog_db(paths.db, CatalogAccess::Read);
+        set_catalog(paths);
+        migrate_legacy_catalog_files(paths);
         return coll.release();
     } catch (const std::exception& e) {
         *error = g_strdup(e.what());
     } catch (...) {
-        *error = g_strdup("Could not open the phig database.");
+        *error = g_strdup("Could not open the phig catalog.");
     }
     return nullptr;
 }
 
 void phig_collection_close(PhigCollection* coll) { delete coll; }
 
-char* phig_collection_default_path(void) {
+char* phig_collection_default_catalog(void) {
     try {
-        return g_strdup(default_db_path().c_str());
+        const Config cfg = load_config(config_path());
+        return g_strdup(resolve_catalog_dir(std::nullopt, cfg).dir.c_str());
     } catch (...) {
-        warn_caught("default path");
+        warn_caught("default catalog");
     }
     return nullptr;
 }

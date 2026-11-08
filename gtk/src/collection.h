@@ -32,14 +32,17 @@ typedef struct {
 PhigRowPage* phig_row_page_new(guint n_rows);
 void phig_row_page_free(PhigRowPage* page);
 
-/* Opens the database at db_path read-only. Returns NULL and sets *error (free
- * with g_free) if the file is missing or unreadable, or is at a schema version
- * this build does not read. Never creates a file. */
-PhigCollection* phig_collection_open(const char* db_path, char** error);
+/* Opens the catalog in catalog_dir read-only, and installs it as the
+ * process's catalog, so thumbnail lookups resolve inside it. Returns NULL
+ * and sets *error (free with g_free) if the catalog has no database, or its
+ * schema is not the version this build reads. Never creates a file. */
+PhigCollection* phig_collection_open(const char* catalog_dir, char** error);
 void phig_collection_close(PhigCollection* coll);
 
-/* phig's default database path ($XDG_DATA_HOME/phig/phig.db). Free with g_free. */
-char* phig_collection_default_path(void);
+/* The catalog phig uses when none is named: PHIG_CATALOG, then the config
+ * file's [paths] catalog, then $XDG_DATA_HOME/phig. Free with g_free. NULL,
+ * with a warning, if the config file cannot be read. */
+char* phig_collection_default_catalog(void);
 
 /* Rows are in gallery order: newest effective date first, id breaking ties. */
 gboolean phig_collection_count(PhigCollection* coll, guint* out);

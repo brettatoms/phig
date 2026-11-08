@@ -1,7 +1,7 @@
 #include <glib.h>
+#include <unistd.h>
 
 #include <filesystem>
-#include <optional>
 #include <string>
 
 #include "collection.h"
@@ -14,20 +14,17 @@ namespace {
 
 // A database of three rows dated 2021, 2023 and 2022 in insert order, so the
 // gallery's newest-first order differs from insertion order. The 2023 row is a
-// real JPEG, so a thumbnail can be generated from it. XDG_DATA_HOME points
-// into the temp dir, so generated thumbnails never reach the real cache.
+// real JPEG, so a thumbnail can be generated from it. XDG_DATA_HOME needs no
+// redirect: the catalog is the temp dir, so generated thumbnails land inside it.
 struct Fixture {
     fs::path dir;
     std::string db_path;
-    std::optional<std::string> saved_data_home;  // XDG_DATA_HOME before the fixture
 
     Fixture() {
         char* tmp = g_dir_make_tmp("phig-gtk-collection-XXXXXX", nullptr);
         g_assert_nonnull(tmp);
         dir = tmp;
         g_free(tmp);
-        if (const char* data_home = g_getenv("XDG_DATA_HOME")) saved_data_home = data_home;
-        g_setenv("XDG_DATA_HOME", (dir / "cache").c_str(), TRUE);
         db_path = (dir / "phig.db").string();
 
         Database db(db_path);
@@ -41,10 +38,6 @@ struct Fixture {
     ~Fixture() {
         std::error_code ec;
         fs::remove_all(dir, ec);
-        if (saved_data_home)
-            g_setenv("XDG_DATA_HOME", saved_data_home->c_str(), TRUE);
-        else
-            g_unsetenv("XDG_DATA_HOME");
     }
 
     Fixture(const Fixture&) = delete;
@@ -63,7 +56,7 @@ struct Fixture {
 
     PhigCollection* open() const {
         char* error = nullptr;
-        PhigCollection* coll = phig_collection_open(db_path.c_str(), &error);
+        PhigCollection* coll = phig_collection_open(dir.c_str(), &error);
         if (coll == nullptr) g_error("open failed: %s", error);
         return coll;
     }
@@ -71,7 +64,7 @@ struct Fixture {
 
 void test_open_reports_a_missing_file_without_creating_it() {
     Fixture f;
-    fs::path absent = f.dir / "absent.db";
+    fs::path absent = f.dir / "absent";
     char* error = nullptr;
     PhigCollection* coll = phig_collection_open(absent.c_str(), &error);
     g_assert_null(coll);
@@ -132,6 +125,7 @@ void test_a_thumbnail_is_generated_on_demand() {
     g_assert_cmpint(phig_collection_thumb_lookup(coll, sha.c_str(), 256, &path), ==,
                     PHIG_THUMB_PRESENT);
     g_assert_true(g_file_test(path, G_FILE_TEST_EXISTS));
+    g_assert_true(std::string(path).rfind((f.dir / "thumbs").string(), 0) == 0);
     g_free(path);
 
     phig_collection_close(coll);
@@ -156,13 +150,27 @@ void test_lookup_rejects_a_malformed_sha() {
     phig_collection_close(coll);
 }
 
-void test_default_path_follows_xdg_data_home() {
+void test_default_catalog_follows_the_environment() {
+    // A config directory with no config file, so a developer's real
+    // config.ini cannot decide the answer.
+    const std::string config_home =
+        "/tmp/phig-gtk-xdg-config-" + std::to_string(static_cast<long>(getpid()));
+    g_setenv("XDG_CONFIG_HOME", config_home.c_str(), TRUE);
     g_setenv("XDG_DATA_HOME", "/tmp/phig-gtk-xdg-data", TRUE);
-    char* path = phig_collection_default_path();
-    g_assert_cmpstr(path, ==, "/tmp/phig-gtk-xdg-data/phig/phig.db");
+    g_unsetenv("PHIG_CATALOG");
+
+    char* path = phig_collection_default_catalog();
+    g_assert_cmpstr(path, ==, "/tmp/phig-gtk-xdg-data/phig");
     g_free(path);
+
+    g_setenv("PHIG_CATALOG", "/tmp/phig-gtk-elsewhere", TRUE);
+    path = phig_collection_default_catalog();
+    g_assert_cmpstr(path, ==, "/tmp/phig-gtk-elsewhere");
+    g_free(path);
+
+    g_unsetenv("PHIG_CATALOG");
     g_unsetenv("XDG_DATA_HOME");
-    g_assert_false(g_file_test("/tmp/phig-gtk-xdg-data", G_FILE_TEST_EXISTS));
+    g_unsetenv("XDG_CONFIG_HOME");
 }
 
 }  // namespace
@@ -178,7 +186,7 @@ int main(int argc, char** argv) {
                     test_generation_fails_for_a_missing_source_or_an_unknown_id);
     g_test_add_func("/collection/lookup-rejects-a-malformed-sha",
                     test_lookup_rejects_a_malformed_sha);
-    g_test_add_func("/collection/default-path-follows-xdg-data-home",
-                    test_default_path_follows_xdg_data_home);
+    g_test_add_func("/collection/default-catalog-follows-the-environment",
+                    test_default_catalog_follows_the_environment);
     return g_test_run();
 }
