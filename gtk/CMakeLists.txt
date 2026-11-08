@@ -14,7 +14,7 @@ set(PHIG_GTK_WARNINGS -Wall -Wextra)
 
 pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk4 libadwaita-1)
 
-add_executable(phig-gtk src/main.cpp src/gallery-model.c src/thumb-loader.c src/collection.cpp
+add_executable(phig-gtk src/main.cpp src/gallery-model.c src/thumb-loader.cpp src/collection.cpp
                src/row-page.c)
 target_compile_options(phig-gtk PRIVATE ${PHIG_GTK_WARNINGS})
 target_link_libraries(phig-gtk PRIVATE phig-core PkgConfig::GTK)
@@ -40,7 +40,7 @@ endfunction()
 phig_gtk_test(gallery-model tests/test-gallery-model.c src/gallery-model.c src/row-page.c
               tests/fake-collection.cpp)
 
-phig_gtk_test(thumb-loader tests/test-thumb-loader.cpp src/thumb-loader.c src/row-page.c
+phig_gtk_test(thumb-loader tests/test-thumb-loader.cpp src/thumb-loader.cpp src/row-page.c
               tests/fake-collection.cpp)
 
 # Tests collection.cpp itself, against a database it builds, so unlike the

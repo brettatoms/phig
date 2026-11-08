@@ -102,7 +102,7 @@ struct PhigApp {
     // releases the loader and drops the model first, then member destruction
     // closes coll.
     CollectionPtr coll;
-    ThumbLoader* loader = nullptr;
+    std::shared_ptr<ThumbLoader> loader;
 
     guint thumb_failed_count = 0;
     bool page_fetch_toast_shown = false;  // one toast per session, not one per failed page
@@ -128,9 +128,9 @@ struct PhigApp {
 // waits for in-flight page fetches before coll closes.
 PhigApp::~PhigApp() {
     if (relayout_id != 0) g_source_remove(relayout_id);
-    if (loader != nullptr) {
-        thumb_loader_shutdown(loader);
-        g_object_unref(loader);
+    if (loader) {
+        thumb_loader_shutdown(*loader);
+        loader.reset();
     }
     if (grid != nullptr) gtk_grid_view_set_model(grid, nullptr);
 }
@@ -677,7 +677,7 @@ static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item
 
     auto* data = new ThumbResultData{gref(item), app};
 
-    thumb_loader_request(app->loader, phig_image_row_get_id(row), phig_image_row_get_sha256(row),
+    thumb_loader_request(*app->loader, phig_image_row_get_id(row), phig_image_row_get_sha256(row),
                           phig_texture_size_for(app), cancellable, on_thumb_result, data);
 }
 
