@@ -87,14 +87,13 @@ inline PhigRun run_phig(const std::filesystem::path& binary, const std::filesyst
     return PhigRun{WIFEXITED(rc) ? WEXITSTATUS(rc) : -1, output};
 }
 
-// Where a child of run_phig() takes its advisory writer lock: lock_path() is
-// default_db_path() + ".lock" and default_db_path() is data_dir() + "/phig.db",
-// so the redirected XDG_DATA_HOME decides it.
+// Where a child of run_phig() takes its advisory writer lock when it is given no
+// --catalog: the default catalog is data_dir(), inside the redirected XDG_DATA_HOME.
 inline std::filesystem::path phig_scratch_lock_path(const std::filesystem::path& scratch) {
     return scratch / "xdg" / "data" / "phig" / "phig.db.lock";
 }
 
-// The database a child of run_phig() uses when it is given no --db.
+// The database a child of run_phig() uses when it is given no --catalog.
 inline std::filesystem::path phig_scratch_db_path(const std::filesystem::path& scratch) {
     return scratch / "xdg" / "data" / "phig" / "phig.db";
 }

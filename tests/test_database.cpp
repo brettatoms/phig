@@ -31,7 +31,7 @@ class DatabaseTest : public ::testing::Test {
 
     void SetUp() override {
         dir = make_temp_dir("db");
-        db_path = (dir / "test.db").string();
+        db_path = (dir / "phig.db").string();
         db = std::make_unique<Database>(db_path);
         db->init_schema();
     }
@@ -1898,7 +1898,7 @@ TEST_F(DatabaseTest, CliGallerySetHonorsNoOverwriteAndClearRefusesTheFlag) {
     }
     const std::string a = (dir / "a.jpg").string();
     db->insert(make_image(a, "sha-a"));
-    const std::string select = " --match '*a.jpg' --db '" + db_path + "'";
+    const std::string select = " --match '*a.jpg' --catalog '" + dir.string() + "'";
 
     PhigRun first = run_phig(phig_bin, dir, "gallery set first" + select);
     ASSERT_EQ(first.exit_code, 0) << first.output;
@@ -1943,9 +1943,9 @@ TEST_F(DatabaseTest, CliTagAddSkipsAnExcludedPath) {
     db->insert(make_image(kept, "sha-kept"));
     db->insert(make_image(spared, "sha-spared"));
 
-    PhigRun run =
-        run_phig(phig_bin, dir,
-                 "tag add holiday --match '*.jpg' --exclude '*spared*' --db '" + db_path + "'");
+    PhigRun run = run_phig(
+        phig_bin, dir,
+        "tag add holiday --match '*.jpg' --exclude '*spared*' --catalog '" + dir.string() + "'");
 
     EXPECT_EQ(run.exit_code, 0) << run.output;
     EXPECT_NE(run.output.find("Tagged 1 images"), std::string::npos) << run.output;
@@ -2273,7 +2273,8 @@ TEST_F(DatabaseTest, CliMetadataWritesRefuseAnUnnamedSubject) {
     }
 
     fs::path root = make_temp_dir("r78-cli");
-    std::string cli_db = (root / "cli.db").string();
+    fs::create_directories(root / "catalog");
+    std::string cli_db = (root / "catalog" / "phig.db").string();
     {
         Database cli(cli_db);
         cli.init_schema();
@@ -2301,17 +2302,12 @@ TEST_F(DatabaseTest, CliMetadataWritesRefuseAnUnnamedSubject) {
         {"fav remove", "fav remove requires --match or --path"},
     };
     for (const auto& [args, expected] : cases) {
-        fs::path out_path = root / "out.txt";
-        std::string cmd = phig_bin.string() + " " + args + " --db " + cli_db + " > " +
-                          out_path.string() + " 2>&1";
-        int rc = std::system(cmd.c_str());
-        int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+        PhigRun run =
+            run_phig(phig_bin, root, args + " --catalog '" + (root / "catalog").string() + "'");
 
-        std::ifstream in(out_path);
-        std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-
-        EXPECT_EQ(exit_code, 1) << args << " output was:\n" << output;
-        EXPECT_NE(output.find(expected), std::string::npos) << args << " output was:\n" << output;
+        EXPECT_EQ(run.exit_code, 1) << args << " output was:\n" << run.output;
+        EXPECT_NE(run.output.find(expected), std::string::npos) << args << " output was:\n"
+                                                                << run.output;
     }
 
     // Nothing was written by any of the six refusals.

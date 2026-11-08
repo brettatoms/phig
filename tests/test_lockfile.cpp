@@ -85,8 +85,8 @@ TEST_F(LockfileTest, WaitBlocksThenAcquiresAfterRelease) {
 //
 // The scratch database sits at the default path inside run_phig's redirected
 // XDG_DATA_HOME, so the lock file the child computes is the one this test
-// holds. Passing --db instead would put them on different files (R50) and the
-// refusal below would prove nothing.
+// holds. Passing --catalog with another directory would put them on different files,
+// and the refusal below would prove nothing.
 TEST_F(LockfileTest, CliRefusesALockTakingWriteWhileAllowingReadsAndLocklessWrites) {
     fs::path phig_bin = phig_binary_path();
     if (phig_bin.empty()) {

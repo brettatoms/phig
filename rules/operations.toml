@@ -89,10 +89,9 @@ mutating_cli_flags = [
     # --no-wait decides whether a mutating command waits for the writer lock or
     # exits 1 without running (R49, R50).
     "--config", "--no-wait",
-    # Every command. Names the collection that gets created, migrated and
-    # written — R70 for the creation and migration, R50 for the lock being
-    # taken on the default collection's file rather than on this one's.
-    "--db",
+    # Global. Names the catalog whose database is created, migrated and written,
+    # whose lock is taken, and whose trash and thumbnails are written and deleted.
+    "--catalog",
     # scan. Which files the walk admits, hence which rows are inserted and
     # updated; R75 records that none of them widens what reconcile deletes.
     "--recursive", "--media", "--hidden",

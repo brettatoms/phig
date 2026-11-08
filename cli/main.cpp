@@ -136,6 +136,12 @@ void print_usage() {
         << "  phig fav add|remove [--match|--exclude|--path]         Favorite images\n"
         << "  phig fav list [output flags]                          List favorites\n"
         << "  phig models download\n"
+        << "\nGlobal flags (anywhere on the command line):\n"
+        << "  --catalog <dir>          Catalog directory: database, thumbnails, trash and log\n"
+        << "                           (default: $PHIG_CATALOG, then [paths] catalog in the\n"
+        << "                           config file, then ~/.local/share/phig)\n"
+        << "  --config <path>          Config file (default: ~/.config/phig/config.ini)\n"
+        << "  --no-wait                Fail instead of waiting for another phig's writer lock\n"
         << "\nScan flags:\n"
         << "  --recursive              Scan subdirectories\n"
         << "  --on-error warn|fail     Behavior for unreadable files (default: warn)\n"
@@ -146,7 +152,6 @@ void print_usage() {
         << "  --media image|video|all  Restrict to one media type (default: all)\n"
         << "  --hidden                 Include hidden/temp files and directories (. or ~)\n"
         << "  --parallel N             Number of images to process in parallel (default: auto)\n"
-        << "  --db <path>              Database path\n"
         << "\nDuplicates flags:\n"
         << "  --type exact|near|all    Duplicate type to find (default: all)\n"
         << "  --threshold [0-64]       Hamming distance for near duplicates (default: 5)\n"
@@ -157,7 +162,6 @@ void print_usage() {
         << "  --exclude <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --media image|video|all  Filter by media type (default: all)\n"
         << "  --fav                    Only groups containing a favorite\n"
-        << "  --db <path>              Database path\n"
         << "\nCopy/Move flags (cp, mv):\n"
         << "  --format <string>        Output path format (default: %Y/%m/%original)\n"
         << "                           Tokens: %Y %m %d %camera %make %gallery %fav %original\n"
@@ -165,7 +169,6 @@ void print_usage() {
         << "  --exclude <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --dry-run                Show what would happen without doing it\n"
         << "  --on-conflict skip|overwrite|rename  (default: skip)\n"
-        << "  --db <path>              Database path\n"
         << "\nRemove flags (rm):\n"
         << "  --match <glob>           Remove entries matching glob (repeatable, matches path)\n"
         << "  --exclude <glob>          Exclude matching files (repeatable, wins over --match)\n"
@@ -175,7 +178,6 @@ void print_usage() {
         << "  --ignore-mount-warning   With --orphans, also remove rows whose parent dir is gone\n"
         << "  --dry-run                Show what would be removed\n"
         << "  --yes                    Skip confirmation for broad removals\n"
-        << "  --db <path>              Database path\n"
         << "\nSearch flags:\n"
         << "  --ext <extension>        Match file extension (e.g., jpg, png, cr2)\n"
         << "  --after <date>           Files dated after YYYY-MM-DD\n"
@@ -207,13 +209,11 @@ void print_usage() {
         << "  --print0                 Null-separated paths\n"
         << "  --format text|csv|json   Output format (default: text)\n"
         << "  --output <path>          Write to file\n"
-        << "  --db <path>              Database path\n"
         << "\nThumbs rebuild flags:\n"
         << "  --match <glob>           Only matching files (repeatable)\n"
         << "  --exclude <glob>          Exclude matching files (repeatable)\n"
         << "  --force                  Regenerate even if thumbnail exists\n"
-        << "  --parallel N             Number of images to process in parallel (default: auto)\n"
-        << "  --db <path>              Database path\n";
+        << "  --parallel N             Number of images to process in parallel (default: auto)\n";
 }
 
 // ---- Scan command ----
@@ -1126,8 +1126,6 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
                 force = true;
             } else if (arg == "--parallel" && i + 1 < argc) {
                 parallel = std::stoi(argv[++i]);
-            } else if (arg == "--db") {
-                i++;  // already handled
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 return 1;
@@ -1235,8 +1233,6 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
             std::string arg = argv[i];
             if (arg == "--dry-run") {
                 dry_run = true;
-            } else if (arg == "--db") {
-                i++;  // already handled
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 return 1;
@@ -1429,8 +1425,6 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
                 excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--parallel" && i + 1 < argc) {
                 parallel = std::stoi(argv[++i]);
-            } else if (arg == "--db") {
-                i++;  // already handled
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 return 1;
@@ -1601,8 +1595,6 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path, bool no_wait) {
                 excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--path" && i + 1 < argc) {
                 path_prefix = expand_tilde(argv[++i]);
-            } else if (arg == "--db" && i + 1 < argc) {
-                i++;  // resolved by caller
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 return 1;
@@ -1669,8 +1661,6 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path, bool no_wait
                 path_prefix = expand_tilde(argv[++i]);
             } else if (arg == "--no-overwrite" && is_set) {
                 no_overwrite = true;
-            } else if (arg == "--db" && i + 1 < argc) {
-                i++;  // resolved by caller
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 return 1;
@@ -1721,8 +1711,6 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path, bool no_wait) {
                 excludes.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--path" && i + 1 < argc) {
                 path_prefix = expand_tilde(argv[++i]);
-            } else if (arg == "--db" && i + 1 < argc) {
-                i++;  // resolved by caller
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 return 1;
@@ -1763,8 +1751,6 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path, bool no_wait) {
                 opts.format = argv[++i];
             } else if (arg == "--output" && i + 1 < argc) {
                 opts.output = argv[++i];
-            } else if (arg == "--db" && i + 1 < argc) {
-                i++;  // resolved by caller
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 return 1;
@@ -1813,6 +1799,7 @@ int main(int argc, char* argv[]) {
     std::string config_file;
     bool have_config_file = false;
     bool no_wait = false;
+    std::optional<std::string> catalog_flag;
     std::vector<char*> filtered_args;
     filtered_args.push_back(argv[0]);
     for (int i = 1; i < argc; i++) {
@@ -1820,6 +1807,8 @@ int main(int argc, char* argv[]) {
         if (a == "--config" && i + 1 < argc) {
             config_file = argv[++i];
             have_config_file = true;
+        } else if (a == "--catalog" && i + 1 < argc) {
+            catalog_flag = argv[++i];
         } else if (a == "--no-wait") {
             no_wait = true;
         } else {
@@ -1847,7 +1836,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
-    const ResolvedCatalog resolved = resolve_catalog_dir(std::nullopt, cfg);
+    const ResolvedCatalog resolved = resolve_catalog_dir(catalog_flag, cfg);
     const CatalogPaths catalog = catalog_paths(resolved.dir);
     set_catalog(catalog);
     set_models_dir(cfg.models_dir);
@@ -1969,8 +1958,6 @@ int main(int argc, char* argv[]) {
                     std::cerr << "Error: --on-error must be 'warn' or 'fail'\n";
                     return 1;
                 }
-            } else if (arg == "--db" && i + 1 < argc) {
-                opts.db_path = argv[++i];
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 print_usage();
@@ -2023,8 +2010,6 @@ int main(int argc, char* argv[]) {
                 if (opts.media == "all") opts.media = "";
             } else if (arg == "--fav") {
                 opts.fav = true;
-            } else if (arg == "--db" && i + 1 < argc) {
-                opts.db_path = argv[++i];
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 print_usage();
@@ -2084,8 +2069,6 @@ int main(int argc, char* argv[]) {
                     std::cerr << "Error: --on-conflict must be 'skip', 'overwrite', or 'rename'\n";
                     return 1;
                 }
-            } else if (arg == "--db" && i + 1 < argc) {
-                opts.db_path = argv[++i];
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 print_usage();
@@ -2152,8 +2135,6 @@ int main(int argc, char* argv[]) {
                 opts.dry_run = true;
             } else if (arg == "--yes" || arg == "-y") {
                 opts.assume_yes = true;
-            } else if (arg == "--db" && i + 1 < argc) {
-                opts.db_path = argv[++i];
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 print_usage();
@@ -2212,12 +2193,6 @@ int main(int argc, char* argv[]) {
         }
     } else if (command == "thumbs") {
         std::string thumbs_db = default_db_path();
-        for (int i = 2; i < argc; i++) {
-            if (std::string(argv[i]) == "--db" && i + 1 < argc) {
-                thumbs_db = argv[i + 1];
-                break;
-            }
-        }
         try {
             return cmd_thumbs(argc, argv, thumbs_db, cfg.parallel.value_or(-1), no_wait);
         } catch (const std::exception& e) {
@@ -2226,12 +2201,6 @@ int main(int argc, char* argv[]) {
         }
     } else if (command == "tag" || command == "gallery" || command == "fav") {
         std::string db_path = default_db_path();
-        for (int i = 2; i < argc; i++) {
-            if (std::string(argv[i]) == "--db" && i + 1 < argc) {
-                db_path = argv[i + 1];
-                break;
-            }
-        }
         try {
             if (command == "tag") return cmd_tag(argc, argv, db_path, no_wait);
             if (command == "gallery") return cmd_gallery(argc, argv, db_path, no_wait);
@@ -2242,13 +2211,6 @@ int main(int argc, char* argv[]) {
         }
     } else if (command == "face") {
         std::string face_db = default_db_path();
-        // Check for --db flag
-        for (int i = 2; i < argc; i++) {
-            if (std::string(argv[i]) == "--db" && i + 1 < argc) {
-                face_db = argv[i + 1];
-                break;
-            }
-        }
         try {
             return cmd_face(argc, argv, face_db, cfg.parallel.value_or(-1));
         } catch (const std::exception& e) {
@@ -2360,8 +2322,6 @@ int main(int argc, char* argv[]) {
                 }
             } else if (arg == "--output" && i + 1 < argc) {
                 opts.output = argv[++i];
-            } else if (arg == "--db" && i + 1 < argc) {
-                opts.db_path = argv[++i];
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 print_usage();

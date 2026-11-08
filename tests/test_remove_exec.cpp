@@ -622,7 +622,8 @@ TEST_F(RemoveExecTest, CliRefusesNonInteractiveConfirmationEvenWithPipedYes) {
     for (int i = 0; i < N; i++) {
         write_file(cli_photos / ("img" + std::to_string(i) + ".jpg"), "not-really-a-jpeg");
     }
-    std::string cli_db = (cli_root / "cli.db").string();
+    fs::create_directories(cli_root / "catalog");
+    std::string cli_db = (cli_root / "catalog" / "phig.db").string();
     {
         Database cli(cli_db);
         cli.init_schema();
@@ -643,14 +644,11 @@ TEST_F(RemoveExecTest, CliRefusesNonInteractiveConfirmationEvenWithPipedYes) {
         }
     }
 
-    fs::path out_path = cli_root / "out.txt";
-    std::string cmd = "echo yes | " + phig_bin.string() + " rm --match '*' --hard --db " + cli_db +
-                      " > " + out_path.string() + " 2>&1";
-    int rc = std::system(cmd.c_str());
-    int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
-
-    std::ifstream in(out_path);
-    std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    PhigRun run =
+        run_phig(phig_bin, cli_root,
+                 "rm --match '*' --hard --catalog '" + (cli_root / "catalog").string() + "'");
+    int exit_code = run.exit_code;
+    const std::string& output = run.output;
 
     EXPECT_EQ(exit_code, 1) << "output was:\n" << output;
     EXPECT_NE(output.find("Refusing without confirmation."), std::string::npos) << "output was:\n"

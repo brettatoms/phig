@@ -586,14 +586,11 @@ TEST(FacesEngineRun, CliRejectsAnUnknownFlagWithoutTouchingFaceData) {
     ASSERT_TRUE(coll.db->set_face_person(face_id, person_id));
 
     fs::path out_path = coll.dir / "rebuild-out.txt";
-    std::string cmd = phig_bin.string() + " face rebuild --mtach '" +
-                      (coll.dir / "f0.jpg").string() + "' --db '" + coll.db_path + "' > '" +
-                      out_path.string() + "' 2>&1";
-    int rc = std::system(cmd.c_str());
-    int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
-
-    std::ifstream in(out_path);
-    std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    PhigRun run = run_phig(phig_bin, coll.dir,
+                           "face rebuild --mtach '" + (coll.dir / "f0.jpg").string() +
+                               "' --catalog '" + coll.dir.string() + "'");
+    int exit_code = run.exit_code;
+    const std::string& output = run.output;
 
     EXPECT_EQ(exit_code, 1) << "output was:\n" << output;
     EXPECT_NE(output.find("Unknown option: --mtach"), std::string::npos) << "output was:\n"
@@ -634,13 +631,14 @@ TEST(FacesEngineRun, CliRebuildWarnsWhenItDropsALabel) {
     ASSERT_TRUE(coll.db->set_face_person(face_id, coll.db->get_or_create_person("Ada")));
 
     fs::path out_path = coll.dir / "rebuild-out.txt";
-    std::string cmd = phig_bin.string() + " face rebuild --match '" +
-                      (coll.dir / "f0.jpg").string() + "' --db '" + coll.db_path + "' > '" +
-                      out_path.string() + "' 2>&1";
-    int rc = std::system(cmd.c_str());
-    int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
-    std::ifstream in(out_path);
-    std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // The child's cache is redirected into coll.dir; give it the models this process found.
+    fs::create_directories(coll.dir / "xdg" / "cache" / "phig");
+    fs::create_directory_symlink(models_dir(), coll.dir / "xdg" / "cache" / "phig" / "models");
+    PhigRun run = run_phig(phig_bin, coll.dir,
+                           "face rebuild --match '" + (coll.dir / "f0.jpg").string() +
+                               "' --catalog '" + coll.dir.string() + "'");
+    int exit_code = run.exit_code;
+    const std::string& output = run.output;
 
     EXPECT_EQ(exit_code, 0) << "output was:\n" << output;
     EXPECT_NE(output.find("1 person label(s) dropped"), std::string::npos) << "output was:\n"
@@ -750,9 +748,9 @@ TEST(FacesEngineRun, CliFaceNameRefusesWhenNoDetectorCanBeBuilt) {
                         "build it with `cmake --build build` to run this test";
     }
     ScratchFaces coll(1);
-    PhigRun run = run_phig(
-        phig_bin, coll.dir,
-        "face name '" + (coll.dir / "f0.jpg").string() + "' Ada --db '" + coll.db_path + "'");
+    PhigRun run = run_phig(phig_bin, coll.dir,
+                           "face name '" + (coll.dir / "f0.jpg").string() + "' Ada --catalog '" +
+                               coll.dir.string() + "'");
 
     EXPECT_EQ(run.exit_code, 1) << run.output;
     EXPECT_NE(run.output.find(expected_detector_refusal()), std::string::npos) << run.output;
@@ -773,8 +771,9 @@ TEST(FacesEngineRun, CliSearchByFaceRefusesWhenNoDetectorCanBeBuilt) {
     fs::path query = coll.dir / "query.jpg";
     fs::copy_file(coll.dir / "f0.jpg", query);
 
-    PhigRun run = run_phig(phig_bin, coll.dir,
-                           "search --face '" + query.string() + "' --db '" + coll.db_path + "'");
+    PhigRun run =
+        run_phig(phig_bin, coll.dir,
+                 "search --face '" + query.string() + "' --catalog '" + coll.dir.string() + "'");
 
     EXPECT_EQ(run.exit_code, 1) << run.output;
     EXPECT_NE(run.output.find(expected_detector_refusal()), std::string::npos) << run.output;

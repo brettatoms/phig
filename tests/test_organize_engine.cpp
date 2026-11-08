@@ -666,12 +666,12 @@ TEST_F(OrganizeEngineTest, CliDryRunOverAnAbsentDatabaseStillCreatesAndMigratesI
         GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
                         "build it with `cmake --build build` to run this test";
     }
-    const fs::path absent = dir / "absent.db";
+    const fs::path absent = dir / "absent";
     const fs::path dest = dir / "out";
     ASSERT_FALSE(fs::exists(absent));
 
-    PhigRun run = run_phig(phig_bin, dir,
-                           "cp '" + dest.string() + "' --dry-run --db '" + absent.string() + "'");
+    PhigRun run = run_phig(
+        phig_bin, dir, "cp '" + dest.string() + "' --dry-run --catalog '" + absent.string() + "'");
 
     // Exit 1, not 0: a database with no rows is refused before the preview is
     // printed. The refusal is beside the point — the file it just created is
@@ -700,8 +700,9 @@ TEST_F(OrganizeEngineTest, CliDryRunPreviewsEveryCopyAndWritesNothingElse) {
     }
     const fs::path preview_dest = dir / "preview";
 
-    PhigRun preview = run_phig(
-        phig_bin, dir, "cp '" + preview_dest.string() + "' --dry-run --db '" + db_path + "'");
+    PhigRun preview =
+        run_phig(phig_bin, dir,
+                 "cp '" + preview_dest.string() + "' --dry-run --catalog '" + dir.string() + "'");
 
     EXPECT_EQ(preview.exit_code, 0) << preview.output;
     EXPECT_NE(preview.output.find("[DRY RUN]"), std::string::npos) << preview.output;
@@ -719,8 +720,8 @@ TEST_F(OrganizeEngineTest, CliDryRunPreviewsEveryCopyAndWritesNothingElse) {
     // that had simply found nothing to do, and the test would pin the fixture
     // rather than the flag.
     const fs::path applied_dest = dir / "applied";
-    PhigRun applied =
-        run_phig(phig_bin, dir, "cp '" + applied_dest.string() + "' --db '" + db_path + "'");
+    PhigRun applied = run_phig(
+        phig_bin, dir, "cp '" + applied_dest.string() + "' --catalog '" + dir.string() + "'");
     EXPECT_EQ(applied.exit_code, 0) << applied.output;
     EXPECT_TRUE(fs::exists(applied_dest / "2019" / "07" / "a.jpg")) << applied.output;
     EXPECT_TRUE(fs::exists(applied_dest / "2020" / "01" / "b.jpg")) << applied.output;
