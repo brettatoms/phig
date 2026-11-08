@@ -12,7 +12,9 @@
 #include "config.h"
 #include "database.h"
 #include "paths.h"
+#include "phig_binary.h"
 #include "temp_dir.h"
+#include "types.h"
 
 namespace fs = std::filesystem;
 
@@ -328,4 +330,97 @@ TEST_F(ResolveCatalogTest, RelativeAndTildePathsBecomeAbsolute) {
               (cwd / "rel" / "cat").lexically_normal().string());
     const std::string home = std::getenv("HOME");
     EXPECT_EQ(resolve_catalog_dir(std::string("~/cat"), Config{}).dir, home + "/cat");
+}
+
+namespace {
+
+class CatalogCliTest : public ::testing::Test {
+   protected:
+    fs::path phig_bin;
+    fs::path dir;
+    void SetUp() override {
+        phig_bin = phig_binary_path();
+        if (phig_bin.empty()) GTEST_SKIP() << "phig binary not built";
+        dir = make_temp_dir("catalog-cli");
+    }
+    void TearDown() override {
+        std::error_code ec;
+        if (!dir.empty()) fs::remove_all(dir, ec);
+    }
+    PhigRun run(const fs::path& catalog, const std::string& args) {
+        return run_phig(phig_bin, dir, "--catalog '" + catalog.string() + "' " + args);
+    }
+    // A catalog at this build's schema with one row whose file exists.
+    fs::path make_catalog(const std::string& name) {
+        const fs::path c = dir / name;
+        fs::create_directories(c / "photos");
+        const fs::path photo = c / "photos" / "a.jpg";
+        std::ofstream(photo) << "x";
+        Database db((c / "phig.db").string());
+        db.init_schema();
+        ImageInfo info;
+        info.path = photo.string();
+        info.filename = "a.jpg";
+        info.extension = "jpg";
+        info.file_size = 1;
+        info.sha256 = std::string(64, 'a');
+        info.metadata_json = "{}";
+        info.created_at = "2024-01-01T00:00:00Z";
+        info.modified_at = "2024-01-01T00:00:00Z";
+        db.insert(info);
+        return c;
+    }
+};
+
+}  // namespace
+
+TEST_F(CatalogCliTest, ReadsRefuseAMissingCatalogAndCreateNothing) {
+    const fs::path missing = dir / "missing";
+    for (const char* args :
+         {"search --count", "duplicates", "tag list", "gallery list", "fav list", "face list"}) {
+        PhigRun r = run(missing, args);
+        EXPECT_EQ(r.exit_code, 1) << args << ": " << r.output;
+        EXPECT_NE(r.output.find("no phig catalog at " + missing.string()), std::string::npos)
+            << args << ": " << r.output;
+        EXPECT_FALSE(fs::exists(missing)) << args << " created the catalog";
+    }
+}
+
+TEST_F(CatalogCliTest, ReadsRefuseAnOutdatedCatalogAndLeaveItsVersion) {
+    const fs::path c = make_catalog("old");
+    const std::string db_path = (c / "phig.db").string();
+    const int older = Database::expected_schema_version() - 1;
+    stamp_schema_version(db_path, older);
+    for (const char* args : {"search --count", "duplicates", "cp '/tmp/never' --dry-run",
+                             "rm --match '*' --dry-run"}) {
+        PhigRun r = run(c, args);
+        EXPECT_EQ(r.exit_code, 1) << args << ": " << r.output;
+        Database after(db_path, /*read_only=*/true);
+        EXPECT_EQ(after.schema_version(), older) << args << " migrated the catalog";
+    }
+}
+
+TEST_F(CatalogCliTest, WritesRefuseAMissingCatalogAndCreateNothing) {
+    const fs::path missing = dir / "missing";
+    for (const char* args :
+         {"tag add holiday --match '*'", "gallery set trip --match '*'", "fav add --match '*'",
+          "rm --match '*' --yes", "cp '/tmp/never'", "trash empty --yes", "thumbs rebuild",
+          "thumbs clean", "face rebuild", "face identify Ada"}) {
+        PhigRun r = run(missing, args);
+        EXPECT_EQ(r.exit_code, 1) << args << ": " << r.output;
+        EXPECT_FALSE(fs::exists(missing)) << args << " created the catalog";
+    }
+}
+
+TEST_F(CatalogCliTest, ScanCreatesAMissingCatalog) {
+    const fs::path photos = dir / "photos";
+    fs::create_directories(photos);
+    fs::copy_file("tests/data/faces_small.jpg", photos / "f.jpg");
+    const fs::path fresh = dir / "fresh";
+    PhigRun r = run(fresh, "scan '" + photos.string() + "'");
+    EXPECT_EQ(r.exit_code, 0) << r.output;
+    EXPECT_TRUE(fs::exists(fresh / "phig.db"));
+    PhigRun count = run(fresh, "search --count");
+    EXPECT_EQ(count.exit_code, 0) << count.output;
+    EXPECT_NE(count.output.find('1'), std::string::npos) << count.output;
 }

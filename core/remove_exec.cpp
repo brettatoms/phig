@@ -4,6 +4,7 @@
 #include <iostream>
 #include <system_error>
 
+#include "catalog.h"
 #include "log.h"
 #include "paths.h"
 #include "selection.h"
@@ -70,8 +71,9 @@ int cmd_rm(const RemoveOptions& opts, const ConfirmFn& confirm) {
         return 1;
     }
 
-    Database db(opts.db_path);
-    db.init_schema();
+    auto db_owner =
+        open_catalog_db(opts.db_path, opts.dry_run ? CatalogAccess::Read : CatalogAccess::Write);
+    Database& db = *db_owner;
 
     auto all_images = db.get_all_images();
     const size_t total = all_images.size();

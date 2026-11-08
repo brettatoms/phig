@@ -64,8 +64,8 @@ The bytes on disk.
 | R09 | conflict | holds | An explicit per-item override may replace a file that exists on disk, but never another image's not-yet-moved source. |
 | R10 | conflict | holds | A destination that became occupied between plan and apply is skipped, never re-resolved to a name the caller was not shown. |
 | R11 | conflict | holds | A file whose resolved destination is its own path is left alone: nothing is written and nothing is logged, a resolution only the overwrite policy produces. |
-| R20 | authorization | holds (test gap) | A dry-run removal takes no disk action, deletes no row and opens no logged operation, but it still creates the database file and applies any pending schema migration. |
-| R21 | authorization | holds (test gap) | The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, but the command that calls it has already opened the database read-write and migrated it, so the preview is side-effect-free only below cli/. |
+| R20 | authorization | holds (test gap) | A dry-run removal takes no disk action, deletes no row, opens no logged operation, and opens the catalog read-only, so it neither creates the database nor migrates its schema. |
+| R21 | authorization | holds (test gap) | The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, and the command that calls it opens the catalog read-only, so the preview neither creates nor migrates it. |
 | R22 | authorization | holds (test gap) | A hard delete, and any removal that takes at least half the collection and touches twenty rows or more, proceeds only on an explicit yes: assume_yes, or a confirmer that returns true, with a missing confirmer counted as a refusal. |
 | R23 | recoverability | holds | The default removal mode moves a file into phig's trash directory under a generated name, retrying with a fresh one if that name is taken, so the removal is reversible from disk and never destroys what is already in the trash. |
 | R32 | atomicity | holds | OrganizeEngine::apply moves or copies one media file, then commits that file's path update and log entry in a single transaction and compensates if it fails, before starting the next — so a run that stops partway leaves every media file before the stop point moved and recorded and every one after it untouched. |
@@ -115,8 +115,8 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R15 | reconcile | holds (test gap) | Scan skips its whole destructive phase when every tracked row under the scanned directory classifies as deletable. |
 | R17 | reconcile | holds (test gap) | The has_sibling_raw and Live Photo peeks over indexed paths only decide whether to open a logged operation; the demote passes decide again, authoritatively, inside it. |
 | R18 | recoverability | holds (test gap) | A log entry describing a database change is inserted inside the same transaction as that change, so the log never records a change that did not commit. |
-| R20 | authorization | holds (test gap) | A dry-run removal takes no disk action, deletes no row and opens no logged operation, but it still creates the database file and applies any pending schema migration. |
-| R21 | authorization | holds (test gap) | The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, but the command that calls it has already opened the database read-write and migrated it, so the preview is side-effect-free only below cli/. |
+| R20 | authorization | holds (test gap) | A dry-run removal takes no disk action, deletes no row, opens no logged operation, and opens the catalog read-only, so it neither creates the database nor migrates its schema. |
+| R21 | authorization | holds (test gap) | The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, and the command that calls it opens the catalog read-only, so the preview neither creates nor migrates it. |
 | R22 | authorization | holds (test gap) | A hard delete, and any removal that takes at least half the collection and touches twenty rows or more, proceeds only on an explicit yes: assume_yes, or a confirmer that returns true, with a missing confirmer counted as a refusal. |
 | R25 | recoverability | partial (test gap) | Deleting a row captures its restore snapshot whether the activity log is enabled or not. |
 | R26 | recoverability | holds | delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns. |
@@ -145,7 +145,7 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R62 | atomicity | partial (test gap) | No C++ exception crosses an ABI entry point. |
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R67 | cancellation | holds | phig_op_free joins the operation's worker rather than detaching it, so no engine thread outlives the handle or the Database it writes through. |
-| R70 | authorization | violated (test gap) | A command that only reads a collection neither creates its database nor migrates its schema. |
+| R70 | authorization | holds (test gap) | A command that only reads a collection neither creates its database nor migrates its schema. |
 | R72 | atomicity | holds (test gap) | A run that will detect faces establishes that it can detect before it writes anything: the OpenCV it was built against must be able to run the detection model, and both model files must be present. |
 | R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
 | R75 | reconcile | holds (test gap) | Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk. |
@@ -161,8 +161,8 @@ The record of what happened.
 | R11 | conflict | holds | A file whose resolved destination is its own path is left alone: nothing is written and nothing is logged, a resolution only the overwrite policy produces. |
 | R18 | recoverability | holds (test gap) | A log entry describing a database change is inserted inside the same transaction as that change, so the log never records a change that did not commit. |
 | R19 | recoverability | holds | No entry in the activity log is ever updated or deleted on its own; the only removal is log_prune, which drops whole operations oldest-first and always keeps the newest. |
-| R20 | authorization | holds (test gap) | A dry-run removal takes no disk action, deletes no row and opens no logged operation, but it still creates the database file and applies any pending schema migration. |
-| R21 | authorization | holds (test gap) | The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, but the command that calls it has already opened the database read-write and migrated it, so the preview is side-effect-free only below cli/. |
+| R20 | authorization | holds (test gap) | A dry-run removal takes no disk action, deletes no row, opens no logged operation, and opens the catalog read-only, so it neither creates the database nor migrates its schema. |
+| R21 | authorization | holds (test gap) | The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, and the command that calls it opens the catalog read-only, so the preview neither creates nor migrates it. |
 | R25 | recoverability | partial (test gap) | Deleting a row captures its restore snapshot whether the activity log is enabled or not. |
 | R26 | recoverability | holds | delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns. |
 | R27 | recoverability | violated (test gap) | An operation that did not do everything it was asked to do is recorded with a terminal status that says so. |

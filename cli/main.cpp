@@ -85,13 +85,16 @@ class ScopedInterruptHandler {
 };
 }  // namespace
 
-// Acquire the process-wide writer lock for a mutating command. Prints a clear
-// message and exits nonzero if --no-wait was given and another op holds it.
-static std::unique_ptr<WriterLock> acquire_writer_lock(bool no_wait) {
-    std::string path = current_catalog().lock;
-    fs::create_directories(fs::path(path).parent_path());
+// Acquire the process-wide writer lock for a mutating command, on the catalog's
+// lock file. Prints a clear message and exits nonzero if --no-wait was given
+// and another op holds it. Unless may_create is set, the catalog must already
+// exist: creating the lock file would otherwise create the catalog directory.
+static std::unique_ptr<WriterLock> acquire_writer_lock(bool no_wait, bool may_create = false) {
+    const CatalogPaths catalog = current_catalog();
+    if (!may_create) require_catalog(catalog.db);
+    fs::create_directories(fs::path(catalog.lock).parent_path());
     try {
-        return std::make_unique<WriterLock>(path, no_wait);
+        return std::make_unique<WriterLock>(catalog.lock, no_wait);
     } catch (const LockBusy& e) {
         std::cerr << "Error: " << e.what() << " (use without --no-wait to wait)\n";
         std::exit(1);
@@ -245,8 +248,8 @@ ForceOptions parse_force(const std::string& value) {
 int cmd_scan(const ScanOptions& opts) {
     auto start_time = std::chrono::steady_clock::now();
 
-    Database db(opts.db_path);
-    db.init_schema();
+    auto db_owner = open_catalog_db(opts.db_path, CatalogAccess::Create);
+    Database& db = *db_owner;
 
     // Helper to show paths relative to the scan directory
     std::string base_dir = fs::canonical(opts.directory).string();
@@ -498,8 +501,8 @@ std::vector<DuplicateGroup> select_groups(const std::vector<DuplicateGroup>& gro
 }
 
 int cmd_duplicates(const DuplicatesOptions& opts) {
-    Database db(opts.db_path);
-    db.init_schema();
+    auto db_owner = open_catalog_db(opts.db_path, CatalogAccess::Read);
+    Database& db = *db_owner;
 
     if (db.count() == 0) {
         std::cerr << "Database is empty. Run 'phig scan <directory>' first.\n";
@@ -844,8 +847,8 @@ uint64_t parse_hex_phash(const std::string& hex) {
 }  // anonymous namespace
 
 int cmd_search(const SearchOptions& opts) {
-    Database db(opts.db_path);
-    db.init_schema();
+    auto db_owner = open_catalog_db(opts.db_path, CatalogAccess::Read);
+    Database& db = *db_owner;
 
     if (db.count() == 0) {
         std::cerr << "Database is empty. Run 'phig scan <directory>' first.\n";
@@ -1136,8 +1139,8 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
 
         auto start_time = std::chrono::steady_clock::now();
 
-        Database db(db_path);
-        db.init_schema();
+        auto db_owner = open_catalog_db(db_path, CatalogAccess::Write);
+        Database& db = *db_owner;
 
         if (db.count() == 0) {
             std::cerr << "Database is empty. Run 'phig scan <directory>' first.\n";
@@ -1241,8 +1244,8 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
 
         auto lock = acquire_writer_lock(no_wait);
 
-        Database db(db_path);
-        db.init_schema();
+        auto db_owner = open_catalog_db(db_path, CatalogAccess::Write);
+        Database& db = *db_owner;
 
         auto known_hashes = db.get_all_sha256s();
         std::string thumb_cache = thumbs_dir();
@@ -1334,8 +1337,9 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
     //             refuses a face another labeler named first.
     //   rebuild   reads each image id inside the transaction that writes its
     //             faces, so a row deleted underneath it skips one file.
-    Database db(db_path);
-    db.init_schema();
+    auto db_owner =
+        open_catalog_db(db_path, subcmd == "list" ? CatalogAccess::Read : CatalogAccess::Write);
+    Database& db = *db_owner;
 
     if (subcmd == "name") {
         if (argc < 5) {
@@ -1571,8 +1575,8 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path, bool no_wait) {
     std::string subcmd = argv[2];
 
     if (subcmd == "list") {
-        Database db(db_path);
-        db.init_schema();
+        auto db_owner = open_catalog_db(db_path, CatalogAccess::Read);
+        Database& db = *db_owner;
         for (const auto& [name, count] : db.get_tag_counts()) {
             std::cout << name << " (" << count << ")\n";
         }
@@ -1601,8 +1605,8 @@ int cmd_tag(int argc, char* argv[], const std::string& db_path, bool no_wait) {
             }
         }
         auto lock = acquire_writer_lock(no_wait);
-        Database db(db_path);
-        db.init_schema();
+        auto db_owner = open_catalog_db(db_path, CatalogAccess::Write);
+        Database& db = *db_owner;
         std::vector<int64_t> ids;
         if (!resolve_write_selection(db, "tag " + subcmd, path_prefix, matches, excludes, ids)) {
             return 1;
@@ -1628,8 +1632,8 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path, bool no_wait
     std::string subcmd = argv[2];
 
     if (subcmd == "list") {
-        Database db(db_path);
-        db.init_schema();
+        auto db_owner = open_catalog_db(db_path, CatalogAccess::Read);
+        Database& db = *db_owner;
         for (const auto& [name, count] : db.get_gallery_counts()) {
             std::cout << name << " (" << count << ")\n";
         }
@@ -1667,8 +1671,8 @@ int cmd_gallery(int argc, char* argv[], const std::string& db_path, bool no_wait
             }
         }
         auto lock = acquire_writer_lock(no_wait);
-        Database db(db_path);
-        db.init_schema();
+        auto db_owner = open_catalog_db(db_path, CatalogAccess::Write);
+        Database& db = *db_owner;
         std::vector<int64_t> ids;
         if (!resolve_write_selection(db, "gallery " + subcmd, path_prefix, matches, excludes,
                                      ids)) {
@@ -1717,8 +1721,8 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path, bool no_wait) {
             }
         }
         auto lock = acquire_writer_lock(no_wait);
-        Database db(db_path);
-        db.init_schema();
+        auto db_owner = open_catalog_db(db_path, CatalogAccess::Write);
+        Database& db = *db_owner;
         std::vector<int64_t> ids;
         if (!resolve_write_selection(db, "fav " + subcmd, path_prefix, matches, excludes, ids)) {
             return 1;
@@ -1966,7 +1970,7 @@ int main(int argc, char* argv[]) {
         }
 
         try {
-            auto lock = acquire_writer_lock(no_wait);
+            auto lock = acquire_writer_lock(no_wait, true);
             return cmd_scan(opts);
         } catch (const std::exception& e) {
             log_error(command + ": " + e.what());
@@ -2079,8 +2083,9 @@ int main(int argc, char* argv[]) {
         try {
             auto lock = acquire_writer_lock(no_wait);
 
-            Database db(opts.db_path);
-            db.init_schema();
+            auto db_owner =
+                open_catalog_db(opts.db_path, dry_run ? CatalogAccess::Read : CatalogAccess::Write);
+            Database& db = *db_owner;
             if (db.count() == 0) {
                 std::cerr << "Database is empty. Run 'phig scan <directory>' first.\n";
                 return 1;
@@ -2223,7 +2228,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         try {
-            auto lock = acquire_writer_lock(no_wait);
+            auto lock = acquire_writer_lock(no_wait, true);
             if (download_face_models()) {
                 std::cout << "All models downloaded successfully.\n";
                 return 0;

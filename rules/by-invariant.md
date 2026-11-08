@@ -971,31 +971,31 @@ The worker holds raw pointers to the phig_op and to the per-operation Database t
 
 ### R20 — holds (test gap)
 
-A dry-run removal takes no disk action, deletes no row and opens no logged operation, but it still creates the database file and applies any pending schema migration.
+A dry-run removal takes no disk action, deletes no row, opens no logged operation, and opens the catalog read-only, so it neither creates the database nor migrates its schema.
 
-The preview returns before the confirmation guard and before log_begin_operation, so nothing on disk moves and nothing about the selection is recorded. What it does not skip is the connection: cmd_rm constructs a Database and calls init_schema before it reads dry_run, and both create-if-missing and the forward-only migration happen there. A preview that migrates a v7 database to v8 has changed the file it was asked not to touch, and no plan says so. This is the removal-shaped corner of the wider fact R70 records: every CLI command that opens a collection opens it read-write and migrates it, including the two operations.toml lists in read_only_cli. Database's read_only constructor flag exists and libphig uses it; cli/ never does.
+The preview returns before the confirmation guard and before log_begin_operation, so nothing on disk moves and nothing about the selection is recorded. cmd_rm opens the catalog with CatalogAccess::Read when dry_run is set, so the preview cannot create a missing database or migrate an older one; it fails with a CatalogError instead (R70).
 
 | | |
 |---|---|
 | Enforced at | `core/remove_exec.cpp:cmd_rm` |
 | Binds | `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans` |
 | Protects | original-file, db-row, activity-log |
-| Evidence | witness: `RemoveExecTest.RmDryRunTouchesNothing`, `RemoveExecTest.RmDryRunCreatesAndMigratesADatabaseThatWasNotThere` |
-| Test gap | The two listed tests pin the file, the row, the empty operations and operation_entries tables, and that a preview against a path with no database leaves one there at the current schema version. What is still read off the code rather than asserted is the migration half of the second clause: no test opens an older database and checks a dry run left it upgraded, because the suite has no way to build a pre-v8 file — it was measured by running the binary against a database pinned at schema_version 7, which came back at 8. |
+| Evidence | witness: `RemoveExecTest.RmDryRunTouchesNothing`, `RemoveExecTest.RmDryRunOnAMissingCatalogCreatesNothing`, `CatalogCliTest.ReadsRefuseAnOutdatedCatalogAndLeaveItsVersion` |
+| Test gap | The migration half is pinned through the binary against a catalog stamped one version back, not against a database built at an older schema; the suite cannot build one. |
 
 ### R21 — holds (test gap)
 
-The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, but the command that calls it has already opened the database read-write and migrated it, so the preview is side-effect-free only below cli/.
+The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, and the command that calls it opens the catalog read-only, so the preview neither creates nor migrates it.
 
-Keeping the preview in core/ rather than in a CLI branch is what lets every surface offer it: organize.plan is an operation with an ABI entry point, so a GUI showing a user what a move would do runs the same code the CLI's dry run runs. The alternative, a dry_run flag threaded into apply, would put the guard inside the function that writes, where every later edit has to remember it. The second clause is the same defect R20 records for rm, from the same shape of code: cli/main.cpp:609-610 calls init_schema before the dry_run check at :640, exactly as core/remove_exec.cpp:73-74 does before :128. It cannot be anchored here because the enforcement that would fix it is in cli/. Measured: a dry-run mv over three indexed files printed three destinations and left the operations table, the rows and the destination directory untouched, and a dry-run mv against a database pinned at schema_version 7 left it at 8.
+Keeping the preview in core/ rather than in a CLI branch is what lets every surface offer it: organize.plan is an operation with an ABI entry point, so a GUI showing a user what a move would do runs the same code the CLI's dry run runs. The CLI opens the catalog with CatalogAccess::Read for a dry run, so the preview is side-effect-free end to end (R70).
 
 | | |
 |---|---|
 | Enforced at | `core/organize_engine.cpp:OrganizeEngine::plan` |
 | Binds | `organize.plan` |
 | Protects | original-file, db-row, activity-log |
-| Evidence | subprocess: `OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase`, `OrganizeEngineTest.CliDryRunOverAnAbsentDatabaseStillCreatesAndMigratesIt`, `OrganizeEngineTest.CliDryRunPreviewsEveryCopyAndWritesNothingElse` |
-| Test gap | Both clauses are now driven through the binary, cmd_organize included. One correction to what the previous gap implied: a dry run against a database that is not there exits 1, not 0 — cmd_organize refuses an empty database at cli/main.cpp:613 before it reaches the dry-run branch — and the file it leaves behind at the current schema version is created on the way to that refusal. What is still read off the code is which migration ran: the test opens an absent path, so it pins 'created and migrated', not 'an older file was upgraded'. The suite has no way to build a pre-v8 database, which is the same limit R20 records. |
+| Evidence | subprocess: `OrganizeEngineTest.PlanWritesNothingToDiskOrDatabase`, `OrganizeEngineTest.CliDryRunOverAMissingCatalogRefusesAndCreatesNothing`, `OrganizeEngineTest.CliDryRunPreviewsEveryCopyAndWritesNothingElse`, `CatalogCliTest.ReadsRefuseAnOutdatedCatalogAndLeaveItsVersion` |
+| Test gap | Both clauses are driven through the binary. The migration clause uses a catalog stamped one version back, not one built at an older schema. |
 
 ### R22 — holds (test gap)
 
@@ -1081,19 +1081,19 @@ Trash is what makes rm's default mode recoverable (R23): the row goes, the bytes
 | Evidence | subprocess: none |
 | Test gap | No test calls cmd_trash_empty at all — not the empty-trash short-circuit, not the --yes bypass, not the non-interactive refusal, not the typed-confirmation path. It reads stdin and calls isatty directly, so the only test that could reach it is a subprocess driving the built phig binary, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes, which pins the equivalent guard on cmd_rm. |
 
-### R70 — violated (test gap)
+### R70 — holds (test gap)
 
 A command that only reads a collection neither creates its database nor migrates its schema.
 
-Every cli/ command that opens a collection opens it read-write. All twelve Database constructions in cli/main.cpp pass one argument, so all twelve take the default read_only = false, and cmd_search and cmd_duplicates then call init_schema on their first two lines (cli/main.cpp:855-856 and :500-501). The read-write constructor creates the parent directory and opens with SQLITE_OPEN_CREATE (core/database.cpp:214-231); init_schema applies the forward-only migration (core/database.cpp:298). The flag exists and works — libphig's phig_init passes it from the context mode and skips init_schema for a read-only context (libphig/context.cpp:31-45) — and cli/main.cpp never names it: read_only appears there zero times. Measured with the built binary: 'phig search --count' against a path holding no database left a 122880-byte file there whose meta table reads schema_version 8, then exited 1 with 'Database is empty.'; 'phig duplicates' against another such path did the same. Against copies of a two-image collection with meta.schema_version set back to 7, 'phig search --count' printed 2 and left the value at 8, and 'phig duplicates' left it at 8 as well. Under an empty XDG_DATA_HOME, 'phig help' and 'phig --help' created nothing, while 'phig search --count' with no --db created the database at the default path. Two consequences follow. A read migrates a collection forward irreversibly, and init_schema refuses a database newer than the build (core/database.cpp:301-305), so running search on one machine can make the collection unopenable by an older phig on another. And a mistyped --db leaves a stray empty collection behind instead of reporting that there is nothing there. R20 records the removal-shaped corner of this and R21 the organize-dry-run corner; both are scoped to a dry run, and this is the general fact. operations.toml's read_only_cli holds search, duplicates and help, and only help mutates nothing. Plan 043 owns it: the fix is a cli/ change — pass read_only on the commands that only read, and decide what they do with a database older than the build, which libphig answers with PHIG_ERR_SCHEMA — and 043 is the open plan that owns cli/, the same routing 060's open question 3 uses for cmd_organize's exit code. 054 cannot close it: 054 writes missing tests, and this needs the code to change.
+open_catalog_db is the one open policy. Read opens read-only, so it can neither create the file nor migrate it, and it refuses a missing database and any schema version other than this build's with a CatalogError naming the catalog. Write and Create migrate; only Create makes a missing database. Which access a command passes is decided at its call site: every CLI command that only reads, including the dry runs of rm, cp and mv, passes Read, and libphig's read-only context does the same. A migration is forward-only and init_schema refuses a database newer than the build, so a read that migrated would make the catalog unopenable by an older phig on another machine. A read that created would turn a mistyped catalog path into an empty catalog reported as empty.
 
 | | |
 |---|---|
-| Enforced at | `core/database.cpp:init_schema`, `libphig/context.cpp:phig_init`, `cli/main.cpp:cmd_search`, `cli/main.cpp:cmd_duplicates` |
+| Enforced at | `core/catalog.cpp:open_catalog_db`, `libphig/context.cpp:phig_init` |
 | Binds | `cli` |
 | Protects | db-row |
-| Evidence | subprocess: none |
-| Test gap | No test drives cmd_search or cmd_duplicates, so neither the creation nor the migration is pinned on the commands this rule is about; both were measured by running the binary. Nothing in tests/ asserts that a read leaves no file behind on either surface — Abi.InitFailsOnUnopenableDatabase is the nearest and only shows that a read-only context fails on a path inside a directory that does not exist. |
+| Evidence | subprocess: `OpenCatalogTest.ReadAndWriteRefuseAMissingCatalogAndCreateNothing`, `OpenCatalogTest.ReadRefusesAnOutdatedCatalogAndLeavesItsVersion`, `CatalogCliTest.ReadsRefuseAMissingCatalogAndCreateNothing`, `CatalogCliTest.ReadsRefuseAnOutdatedCatalogAndLeaveItsVersion` |
+| Test gap | The subprocess tests cover search, duplicates, the four list forms and the two dry runs; which access each remaining command passes is read off cli/main.cpp's call sites rather than asserted one by one. |
 
 ### R73 — violated (test gap)
 

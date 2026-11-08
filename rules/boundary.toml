@@ -141,12 +141,10 @@ id = "R70"
 tier = "boundary"
 concern = "authorization"
 statement = "A command that only reads a collection neither creates its database nor migrates its schema."
-rationale = "Every cli/ command that opens a collection opens it read-write. All twelve Database constructions in cli/main.cpp pass one argument, so all twelve take the default read_only = false, and cmd_search and cmd_duplicates then call init_schema on their first two lines (cli/main.cpp:855-856 and :500-501). The read-write constructor creates the parent directory and opens with SQLITE_OPEN_CREATE (core/database.cpp:214-231); init_schema applies the forward-only migration (core/database.cpp:298). The flag exists and works — libphig's phig_init passes it from the context mode and skips init_schema for a read-only context (libphig/context.cpp:31-45) — and cli/main.cpp never names it: read_only appears there zero times. Measured with the built binary: 'phig search --count' against a path holding no database left a 122880-byte file there whose meta table reads schema_version 8, then exited 1 with 'Database is empty.'; 'phig duplicates' against another such path did the same. Against copies of a two-image collection with meta.schema_version set back to 7, 'phig search --count' printed 2 and left the value at 8, and 'phig duplicates' left it at 8 as well. Under an empty XDG_DATA_HOME, 'phig help' and 'phig --help' created nothing, while 'phig search --count' with no --db created the database at the default path. Two consequences follow. A read migrates a collection forward irreversibly, and init_schema refuses a database newer than the build (core/database.cpp:301-305), so running search on one machine can make the collection unopenable by an older phig on another. And a mistyped --db leaves a stray empty collection behind instead of reporting that there is nothing there. R20 records the removal-shaped corner of this and R21 the organize-dry-run corner; both are scoped to a dry run, and this is the general fact. operations.toml's read_only_cli holds search, duplicates and help, and only help mutates nothing. Plan 043 owns it: the fix is a cli/ change — pass read_only on the commands that only read, and decide what they do with a database older than the build, which libphig answers with PHIG_ERR_SCHEMA — and 043 is the open plan that owns cli/, the same routing 060's open question 3 uses for cmd_organize's exit code. 054 cannot close it: 054 writes missing tests, and this needs the code to change."
+rationale = "open_catalog_db is the one open policy. Read opens read-only, so it can neither create the file nor migrate it, and it refuses a missing database and any schema version other than this build's with a CatalogError naming the catalog. Write and Create migrate; only Create makes a missing database. Which access a command passes is decided at its call site: every CLI command that only reads, including the dry runs of rm, cp and mv, passes Read, and libphig's read-only context does the same. A migration is forward-only and init_schema refuses a database newer than the build, so a read that migrated would make the catalog unopenable by an older phig on another machine. A read that created would turn a mistyped catalog path into an empty catalog reported as empty."
 enforced_at = [
-    "core/database.cpp:init_schema",
+    "core/catalog.cpp:open_catalog_db",
     "libphig/context.cpp:phig_init",
-    "cli/main.cpp:cmd_search",
-    "cli/main.cpp:cmd_duplicates",
 ]
 binds_surface = ["cli"]
 # db-row is the whole exposure: the migration rewrites the tables rows live in
@@ -154,10 +152,15 @@ binds_surface = ["cli"]
 # is a collection of rows that did not exist. Nothing here deletes a file or a
 # log entry, so original-file and activity-log stay off.
 protects = ["db-row"]
-tests = []
+tests = [
+    "OpenCatalogTest.ReadAndWriteRefuseAMissingCatalogAndCreateNothing",
+    "OpenCatalogTest.ReadRefusesAnOutdatedCatalogAndLeavesItsVersion",
+    "CatalogCliTest.ReadsRefuseAMissingCatalogAndCreateNothing",
+    "CatalogCliTest.ReadsRefuseAnOutdatedCatalogAndLeaveItsVersion",
+]
 test_kind = "subprocess"
-status = "violated"
-test_gap = "No test drives cmd_search or cmd_duplicates, so neither the creation nor the migration is pinned on the commands this rule is about; both were measured by running the binary. Nothing in tests/ asserts that a read leaves no file behind on either surface — Abi.InitFailsOnUnopenableDatabase is the nearest and only shows that a read-only context fails on a path inside a directory that does not exist."
+status = "holds"
+test_gap = "The subprocess tests cover search, duplicates, the four list forms and the two dry runs; which access each remaining command passes is read off cli/main.cpp's call sites rather than asserted one by one."
 
 [[rule]]
 id = "R73"

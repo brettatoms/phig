@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "catalog.h"
 #include "database.h"
 #include "fault_injection.h"
 #include "paths.h"
@@ -491,29 +492,19 @@ TEST_F(RemoveExecTest, RmDryRunTouchesNothing) {
     EXPECT_EQ(count_table("operation_entries"), 0);
 }
 
-// The second half of the same rule, and the surprising half: what a dry run
-// does not skip is the connection. cmd_rm constructs a Database and calls
-// init_schema before it reads dry_run, so a preview against a path with no
-// database there creates one at the current schema version. The selection is
-// necessarily empty — a database that did not exist has no rows — which is
-// exactly the run a caller expects to be inert.
-TEST_F(RemoveExecTest, RmDryRunCreatesAndMigratesADatabaseThatWasNotThere) {
-    const std::string fresh = (root / "fresh.db").string();
-    ASSERT_FALSE(fs::exists(fresh));
-
+// A preview opens the catalog read-only, so against a missing catalog it
+// refuses instead of creating one.
+TEST_F(RemoveExecTest, RmDryRunOnAMissingCatalogCreatesNothing) {
+    const fs::path missing = root / "missing";
     RemoveOptions opts;
-    opts.db_path = fresh;
+    opts.db_path = (missing / "phig.db").string();
     opts.matches = {"*c.jpg"};
     opts.mode = RemoveMode::Trash;
     opts.dry_run = true;
     opts.assume_yes = true;
 
-    EXPECT_EQ(cmd_rm(opts), 0);
-
-    ASSERT_TRUE(fs::exists(fresh)) << "the preview left no database behind";
-    Database opened(fresh);
-    EXPECT_EQ(opened.schema_version(), Database::expected_schema_version())
-        << "the preview created the file but left it un-migrated";
+    EXPECT_THROW(cmd_rm(opts), CatalogError);
+    EXPECT_FALSE(fs::exists(missing));
 }
 
 TEST_F(RemoveExecTest, ConfirmCallbackRefusalCancelsTheOperation) {

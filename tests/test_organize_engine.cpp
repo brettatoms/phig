@@ -656,11 +656,10 @@ int64_t scalar(const std::string& db_path, const char* sql) {
 }  // namespace
 
 // OrganizeEngine::plan writes nothing, which the test above pins. The command
-// that calls it opens the database read-write and migrates it before it looks
-// at --dry-run, so the preview is side-effect-free only below cli/ — and that
-// half has never been asserted, only measured by hand. cmd_organize lives in
+// that calls it opens the catalog read-only for --dry-run, so the preview
+// refuses a missing catalog and creates nothing. cmd_organize lives in
 // cli/main.cpp and is not linked into phig-tests, so the binary is the way in.
-TEST_F(OrganizeEngineTest, CliDryRunOverAnAbsentDatabaseStillCreatesAndMigratesIt) {
+TEST_F(OrganizeEngineTest, CliDryRunOverAMissingCatalogRefusesAndCreatesNothing) {
     fs::path phig_bin = phig_binary_path();
     if (phig_bin.empty()) {
         GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
@@ -673,17 +672,10 @@ TEST_F(OrganizeEngineTest, CliDryRunOverAnAbsentDatabaseStillCreatesAndMigratesI
     PhigRun run = run_phig(
         phig_bin, dir, "cp '" + dest.string() + "' --dry-run --catalog '" + absent.string() + "'");
 
-    // Exit 1, not 0: a database with no rows is refused before the preview is
-    // printed. The refusal is beside the point — the file it just created is
-    // the point.
     EXPECT_EQ(run.exit_code, 1) << run.output;
-    EXPECT_NE(run.output.find("Database is empty"), std::string::npos) << run.output;
+    EXPECT_NE(run.output.find("no phig catalog at"), std::string::npos) << run.output;
     EXPECT_FALSE(fs::exists(dest)) << "a preview must not create the destination tree";
-
-    ASSERT_TRUE(fs::exists(absent)) << "measured: the preview leaves a database behind";
-    Database opened(absent.string());
-    EXPECT_EQ(opened.schema_version(), Database::expected_schema_version())
-        << "the preview created the file and migrated it, both before --dry-run was read";
+    EXPECT_FALSE(fs::exists(absent));
 }
 
 TEST_F(OrganizeEngineTest, CliDryRunPreviewsEveryCopyAndWritesNothingElse) {
