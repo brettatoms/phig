@@ -442,3 +442,45 @@ TEST_F(CatalogCliTest, ScanCreatesAMissingCatalog) {
     EXPECT_EQ(count.exit_code, 0) << count.output;
     EXPECT_NE(count.output.find('1'), std::string::npos) << count.output;
 }
+
+TEST_F(CatalogCliTest, RmTrashesIntoItsOwnCatalog) {
+    const fs::path a = make_catalog("a");
+    const fs::path b = make_catalog("b");
+    PhigRun r = run(a, "rm --match '*' --yes");
+    ASSERT_EQ(r.exit_code, 0) << r.output;
+    EXPECT_FALSE(fs::exists(a / "photos" / "a.jpg"));
+    ASSERT_TRUE(fs::exists(a / "trash"));
+    EXPECT_FALSE(fs::is_empty(a / "trash"));
+    EXPECT_FALSE(fs::exists(b / "trash"));
+    EXPECT_FALSE(fs::exists(phig_scratch_db_path(dir).parent_path() / "trash"))
+        << "trash went to the default catalog";
+}
+
+TEST_F(CatalogCliTest, TrashEmptyLeavesAnotherCatalogsTrash) {
+    const fs::path a = make_catalog("a");
+    const fs::path b = make_catalog("b");
+    fs::create_directories(a / "trash");
+    std::ofstream(a / "trash" / "kept.jpg") << "x";
+    fs::create_directories(b / "trash");
+    std::ofstream(b / "trash" / "gone.jpg") << "x";
+    PhigRun r = run(b, "trash empty --yes");
+    EXPECT_EQ(r.exit_code, 0) << r.output;
+    EXPECT_FALSE(fs::exists(b / "trash" / "gone.jpg")) << "the control: B's own trash is emptied";
+    EXPECT_TRUE(fs::exists(a / "trash" / "kept.jpg"));
+}
+
+TEST_F(CatalogCliTest, ThumbsCleanLeavesAnotherCatalogsThumbnails) {
+    const fs::path a = make_catalog("a");
+    const fs::path b = make_catalog("b");
+    const std::string orphan = std::string(64, 'f') + ".jpg";
+    const fs::path a_orphan = a / "thumbs" / "512" / "ff" / orphan;
+    const fs::path b_thumb = b / "thumbs" / "512" / "ff" / orphan;
+    for (const fs::path& p : {a_orphan, b_thumb}) {
+        fs::create_directories(p.parent_path());
+        std::ofstream(p) << "x";
+    }
+    PhigRun r = run(a, "thumbs clean");
+    EXPECT_EQ(r.exit_code, 0) << r.output;
+    EXPECT_FALSE(fs::exists(a_orphan)) << "the control: A's own orphan is removed";
+    EXPECT_TRUE(fs::exists(b_thumb));
+}

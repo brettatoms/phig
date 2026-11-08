@@ -475,14 +475,14 @@ A trail that can be edited in place records what someone wanted to have happened
 
 The default removal mode moves a file into phig's trash directory under a generated name, retrying with a fresh one if that name is taken, so the removal is reversible from disk and never destroys what is already in the trash.
 
-Trash is what lets rm be the ordinary removal command: the row goes, the bytes stay. The trash name is the file's stem plus eight random hex characters, generated rather than searched for, so there is no window between choosing a name and taking it. Uniqueness is not asserted: move_file refuses to clobber and throws errc::file_exists, and execute_trash_action loops back for a fresh name — that retry, not the randomness, is what makes the no-clobber claim true. Measured: removing a tracked file with the default mode moved it to <data_dir>/trash/c.5904e5a1.jpg and logged a trash entry naming that path, beside the purge_row entry for its row.
+Trash is what lets rm be the ordinary removal command: the row goes, the bytes stay. The trash name is the file's stem plus eight random hex characters, generated rather than searched for, so there is no window between choosing a name and taking it. Uniqueness is not asserted: move_file refuses to clobber and throws errc::file_exists, and execute_trash_action loops back for a fresh name — that retry, not the randomness, is what makes the no-clobber claim true. Measured: removing a tracked file with the default mode moved it to <catalog>/trash/c.5904e5a1.jpg and logged a trash entry naming that path, beside the purge_row entry for its row.
 
 | | |
 |---|---|
 | Enforced at | `core/remove_exec.cpp:execute_trash_action`, `core/paths.cpp:trash_path_for` |
 | Binds | `remove.trash` |
 | Protects | original-file, attachment |
-| Evidence | witness: `RemoveExecTest.TrashMovesFileAndLogs`, `RemoveExecTest.TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs`, `RemoveExecTest.TrashManySameNameFilesAllSurviveDistinctly`, `RemoveExecTest.RmTrashLogsTheTrashAndThePurgeRowInOneOperation` |
+| Evidence | witness: `RemoveExecTest.TrashMovesFileAndLogs`, `RemoveExecTest.TrashTwoSameNameFilesGetDistinctPathsNoClobberAndLogs`, `RemoveExecTest.TrashManySameNameFilesAllSurviveDistinctly`, `RemoveExecTest.RmTrashLogsTheTrashAndThePurgeRowInOneOperation`, `CatalogCliTest.RmTrashesIntoItsOwnCatalog` |
 
 ### R25 — partial (test gap)
 
@@ -1071,14 +1071,14 @@ No ABI entry point takes a confirmation callback and none can: no callback may r
 
 Trash empty destroys its contents permanently and only after authorization: an empty trash returns without asking, --yes skips the prompt, and otherwise it refuses outright unless run at an interactive terminal where the operator types the literal string 'yes' in response to a prompt naming the item count and the trash directory.
 
-Trash is what makes rm's default mode recoverable (R23): the row goes, the bytes stay in <data_dir>/trash. cmd_trash_empty (cli/main.cpp:697-729) is where that recoverability ends — it is the one command with no restore snapshot and no activity-log entry behind it, so whatever it deletes is gone. The guard guarding that step is real, and it is the same shape as R22's hard-delete guard: it short-circuits on an empty trash before asking anything, otherwise prints the count and directory, refuses non-interactively so a piped 'yes' cannot bypass it, and only proceeds once the operator types 'yes' at a TTY; --yes exists for a caller that has already decided. But the guard is cli/main.cpp code with no core/ counterpart: operations.toml's own trash.empty entry names cli/main.cpp:cmd_trash_empty as its core_entry, remarking that no core/ primitive exists for it. So libphig has nothing to call, a future phigd has nothing to call, and the GTK client has nothing to call — each would have to reimplement the confirmation rather than inherit it, which is exactly the failure mode root CLAUDE.md's 'enforcement belongs in core/ or libphig/, never cli/' rule exists to name. libphig/CLAUDE.md:56 already lists 'Remove — rm's modes, trash empty' as missing ABI coverage under 053, and libphig links phig-core rather than cli/, so 053 cannot expose trash.empty without moving this guard into core/ first. Anchored at cli/main.cpp deliberately: the location is the defect, and status is violated for exactly that reason rather than because the guard is wrong.
+Trash is what makes rm's default mode recoverable (R23): the row goes, the bytes stay in <catalog>/trash. cmd_trash_empty (cli/main.cpp:697-729) is where that recoverability ends — it is the one command with no restore snapshot and no activity-log entry behind it, so whatever it deletes is gone. The guard guarding that step is real, and it is the same shape as R22's hard-delete guard: it short-circuits on an empty trash before asking anything, otherwise prints the count and directory, refuses non-interactively so a piped 'yes' cannot bypass it, and only proceeds once the operator types 'yes' at a TTY; --yes exists for a caller that has already decided. But the guard is cli/main.cpp code with no core/ counterpart: operations.toml's own trash.empty entry names cli/main.cpp:cmd_trash_empty as its core_entry, remarking that no core/ primitive exists for it. So libphig has nothing to call, a future phigd has nothing to call, and the GTK client has nothing to call — each would have to reimplement the confirmation rather than inherit it, which is exactly the failure mode root CLAUDE.md's 'enforcement belongs in core/ or libphig/, never cli/' rule exists to name. libphig/CLAUDE.md:56 already lists 'Remove — rm's modes, trash empty' as missing ABI coverage under 053, and libphig links phig-core rather than cli/, so 053 cannot expose trash.empty without moving this guard into core/ first. Anchored at cli/main.cpp deliberately: the location is the defect, and status is violated for exactly that reason rather than because the guard is wrong.
 
 | | |
 |---|---|
 | Enforced at | `cli/main.cpp:cmd_trash_empty` |
 | Binds | `trash.empty` |
 | Protects | original-file, attachment |
-| Evidence | subprocess: none |
+| Evidence | subprocess: `CatalogCliTest.TrashEmptyLeavesAnotherCatalogsTrash` |
 | Test gap | No test calls cmd_trash_empty at all — not the empty-trash short-circuit, not the --yes bypass, not the non-interactive refusal, not the typed-confirmation path. It reads stdin and calls isatty directly, so the only test that could reach it is a subprocess driving the built phig binary, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes, which pins the equivalent guard on cmd_rm. |
 
 ### R70 — holds (test gap)
