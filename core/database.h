@@ -238,6 +238,9 @@ class Database {
     int64_t insert_face(int64_t image_id, const FaceInfo& face);
     bool has_faces(const std::string& path);
     void delete_faces_for_image(int64_t image_id);
+    // This image's faces that carry a person label, in id order. A rebuild
+    // reads these before replacing the image's faces, to carry the labels over.
+    std::vector<LabelledFace> get_labelled_faces_for_image(int64_t image_id);
     int64_t get_image_id(const std::string& path);
 
     struct FaceSearchResult {

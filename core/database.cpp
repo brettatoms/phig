@@ -1754,6 +1754,46 @@ void Database::delete_faces_for_image(int64_t image_id) {
     step_write_or_throw(db_, stmt, "Failed to delete faces");
 }
 
+std::vector<LabelledFace> Database::get_labelled_faces_for_image(int64_t image_id) {
+    const char* sql = R"(
+        SELECT x, y, width, height, embedding, person_id
+        FROM faces
+        WHERE image_id = ? AND person_id IS NOT NULL
+        ORDER BY id
+    )";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare labelled faces read: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    sqlite3_bind_int64(stmt, 1, image_id);
+
+    std::vector<LabelledFace> out;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        LabelledFace lf{};
+        lf.face.x = sqlite3_column_int(stmt, 0);
+        lf.face.y = sqlite3_column_int(stmt, 1);
+        lf.face.width = sqlite3_column_int(stmt, 2);
+        lf.face.height = sqlite3_column_int(stmt, 3);
+        // Matching uses the box only, so a malformed embedding blob is left
+        // zeroed rather than costing the face its label.
+        const void* blob = sqlite3_column_blob(stmt, 4);
+        if (blob != nullptr &&
+            sqlite3_column_bytes(stmt, 4) == static_cast<int>(sizeof(lf.face.embedding))) {
+            std::memcpy(lf.face.embedding.data(), blob, sizeof(lf.face.embedding));
+        }
+        lf.person_id = sqlite3_column_int64(stmt, 5);
+        out.push_back(lf);
+    }
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error("Failed to read labelled faces: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    return out;
+}
+
 int64_t Database::insert_face(int64_t image_id, const FaceInfo& face) {
     // Insert into faces table
     const char* sql = R"(

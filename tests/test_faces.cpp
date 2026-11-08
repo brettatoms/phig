@@ -335,3 +335,33 @@ TEST(CarryLabels, NoLabelledFacesCarriesNothing) {
     EXPECT_EQ(c.person_ids, (std::vector<int64_t>{-1, -1}));
     EXPECT_EQ(c.dropped, 0u);
 }
+
+TEST_F(FaceDatabaseTest, LabelledFacesForImageReturnsOnlyLabelledFacesOfThatImage) {
+    db->insert(make_image("/test/a.jpg", "sha1"));
+    db->insert(make_image("/test/b.jpg", "sha2"));
+    int64_t a = db->get_image_id("/test/a.jpg");
+    int64_t b = db->get_image_id("/test/b.jpg");
+    int64_t ada = db->get_or_create_person("Ada");
+
+    int64_t named = db->insert_face(a, make_face(0.0f, 10, 20, 30, 40));
+    ASSERT_TRUE(db->set_face_person(named, ada));
+    db->insert_face(a, make_face(1.0f, 100, 100, 30, 40));  // unlabelled
+    int64_t other = db->insert_face(b, make_face(2.0f, 10, 20, 30, 40));
+    ASSERT_TRUE(db->set_face_person(other, ada));  // labelled, other image
+
+    std::vector<LabelledFace> got = db->get_labelled_faces_for_image(a);
+    ASSERT_EQ(got.size(), 1u);
+    EXPECT_EQ(got[0].person_id, ada);
+    EXPECT_EQ(got[0].face.x, 10);
+    EXPECT_EQ(got[0].face.y, 20);
+    EXPECT_EQ(got[0].face.width, 30);
+    EXPECT_EQ(got[0].face.height, 40);
+    EXPECT_EQ(got[0].face.embedding, make_face(0.0f).embedding);
+}
+
+TEST_F(FaceDatabaseTest, LabelledFacesForAnImageWithNoneIsEmpty) {
+    db->insert(make_image("/test/a.jpg", "sha1"));
+    int64_t a = db->get_image_id("/test/a.jpg");
+    db->insert_face(a, make_face(0.0f));
+    EXPECT_TRUE(db->get_labelled_faces_for_image(a).empty());
+}
