@@ -11,17 +11,15 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Points HOME and the four XDG base directories into one scratch directory for
-// the whole test process, before any test runs, and clears PHIG_CATALOG, which
-// a developer's .envrc may set. `phig` children started by a test inherit this.
-//
-// The face models are the one thing kept: <scratch>/home/.cache/phig/models
-// links to the real models directory, so the face tests still find them. A
-// test that needs them missing redirects XDG_CACHE_HOME itself.
+// Points HOME and the four XDG base directories into a per-process scratch
+// directory and clears PHIG_CATALOG. The real face models and ~/phig-live-samples
+// are linked back in, since tests read them at fixed paths under HOME and would
+// otherwise skip. A test needing the models missing redirects XDG_CACHE_HOME.
 class ScratchHome : public ::testing::Environment {
    public:
     void SetUp() override {
         std::error_code ec;
+        const char* real_home = std::getenv("HOME");
         fs::path real_models;
         try {
             real_models = models_dir();
@@ -39,6 +37,12 @@ class ScratchHome : public ::testing::Environment {
         if (!real_models.empty() && fs::is_directory(real_models, ec)) {
             fs::create_directories(home / ".cache" / "phig", ec);
             fs::create_directory_symlink(real_models, home / ".cache" / "phig" / "models", ec);
+        }
+        if (real_home != nullptr) {
+            const fs::path samples = fs::path(real_home) / "phig-live-samples";
+            if (fs::is_directory(samples, ec)) {
+                fs::create_directory_symlink(samples, home / "phig-live-samples", ec);
+            }
         }
     }
 
