@@ -61,7 +61,9 @@ bool generate_thumb(const cv::Mat& img, const std::string& sha256, int size) {
     std::string path = get_thumb_path(sha256, size);
     if (path.empty()) return false;
 
-    return atomic_write_file(path, buf.data(), buf.size());
+    if (!atomic_write_file(path, buf.data(), buf.size())) return false;
+    ensure_cachedir_tag(thumbs_dir());
+    return true;
 }
 
 bool generate_thumb(const std::string& image_path, const std::string& sha256, int size) {
@@ -120,6 +122,17 @@ int migrate_flat_thumb_cache() {
         ec.clear();
     }
     return moved;
+}
+
+void ensure_cachedir_tag(const std::string& dir) {
+    const fs::path tag = fs::path(dir) / PHIG_CACHEDIR_TAG;
+    std::error_code ec;
+    if (fs::exists(tag, ec)) return;
+    static const std::string body =
+        "Signature: 8a477f597d28d172789f06886806bc55\n"
+        "# This file is a cache directory tag created by phig.\n"
+        "# For information about cache directory tags, see https://bford.info/cachedir/\n";
+    atomic_write_file(tag.string(), body.data(), body.size());
 }
 
 bool is_thumbnail_filename(const std::string& filename) {

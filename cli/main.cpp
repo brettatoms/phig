@@ -1262,6 +1262,9 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
         for (auto& entry : fs::recursive_directory_iterator(thumb_cache)) {
             if (!entry.is_regular_file()) continue;
 
+            // The cache tag belongs to the cache; it is neither a thumbnail nor foreign.
+            if (entry.path() == fs::path(thumb_cache) / PHIG_CACHEDIR_TAG) continue;
+
             // Only ever touch files that match phig's thumbnail naming contract
             // (<64-hex-sha256>.jpg). Anything else in the cache dir — user files,
             // other apps' data if the dir is misconfigured — is left untouched.

@@ -39,3 +39,12 @@ int migrate_flat_thumb_cache();
 // Used to confine `thumbs clean` deletion so it can never remove a non-thumbnail
 // file if the cache directory is misconfigured to hold user data.
 bool is_thumbnail_filename(const std::string& filename);
+
+// The Cache Directory Tagging marker (https://bford.info/cachedir/). Backup
+// tools that honour it, such as borg, restic and GNU tar with --exclude-caches,
+// skip the directory holding it. Thumbnails can be regenerated, so a catalog
+// backup need not carry them.
+inline constexpr const char* PHIG_CACHEDIR_TAG = "CACHEDIR.TAG";
+
+// Writes PHIG_CACHEDIR_TAG into dir if it is not already there.
+void ensure_cachedir_tag(const std::string& dir);

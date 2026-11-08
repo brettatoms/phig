@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 
@@ -217,4 +218,16 @@ TEST_F(ThumbsTest, MigrationIsIdempotentAndIgnoresSizeDirs) {
     EXPECT_TRUE(thumb_exists(sha, PHIG_DEFAULT_THUMB_SIZE));
     EXPECT_EQ(migrate_flat_thumb_cache(), 0);
     EXPECT_TRUE(thumb_exists(sha, PHIG_DEFAULT_THUMB_SIZE));
+}
+
+TEST_F(ThumbsTest, WritingAThumbnailTagsTheCacheDirectory) {
+    cv::Mat img(64, 64, CV_8UC3, cv::Scalar(10, 20, 30));
+    const std::string sha(64, 'a');
+    ASSERT_TRUE(generate_thumb(img, sha, 128));
+    const fs::path tag = fs::path(thumbs_dir()) / PHIG_CACHEDIR_TAG;
+    ASSERT_TRUE(fs::exists(tag));
+    std::ifstream in(tag);
+    std::string first;
+    std::getline(in, first);
+    EXPECT_EQ(first, "Signature: 8a477f597d28d172789f06886806bc55");
 }

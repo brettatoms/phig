@@ -10,6 +10,7 @@ add_library(phig-core STATIC
     thumbs.cpp
     metadata.cpp
     paths.cpp
+    catalog.cpp
     config.cpp
     settings.cpp
     organize_engine.cpp
