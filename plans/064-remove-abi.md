@@ -57,6 +57,10 @@ consequence is deleting the wrong file.
   `cli/`.
 - R68: a `core/` trash-empty primitive carrying the guard, with the subprocess
   test the record says does not exist.
+- The trash-empty guard accounts for a catalog directory the user chose. A
+  catalog can be any directory, so `<catalog>/trash` can hold entries phig did
+  not put there; the primitive refuses those rather than deleting everything
+  it finds.
 - The four modes — trash, `--hard`, `--db-only`, `--orphans` — and
   `trash empty`, on plan/apply.
 - Real-behavior tests, per root `CLAUDE.md`'s data-safety convention.
