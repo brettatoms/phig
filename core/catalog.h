@@ -1,10 +1,12 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "config.h"
 #include "database.h"
 #include "paths.h"
 
@@ -61,3 +63,20 @@ std::unique_ptr<Database> open_catalog_db(const std::string& db_path, CatalogAcc
 // commands that touch a catalog without opening its database, and before
 // taking the writer lock, whose file would otherwise create the directory.
 void require_catalog(const std::string& db_path);
+
+// Where a command's catalog came from.
+enum class CatalogSource { Flag, Environment, Config, Default };
+
+struct ResolvedCatalog {
+    std::string dir;  // absolute, lexically normal
+    CatalogSource source;
+};
+
+// Which catalog a command uses: the --catalog flag, then PHIG_CATALOG, then
+// the config file's [paths] catalog, then default_catalog_dir(). An empty
+// PHIG_CATALOG counts as unset. A leading ~ is expanded, and a relative path
+// is resolved against the working directory.
+ResolvedCatalog resolve_catalog_dir(const std::optional<std::string>& flag, const Config& cfg);
+
+// "--catalog", "PHIG_CATALOG", "config" or "default", for messages.
+const char* catalog_source_name(CatalogSource source);

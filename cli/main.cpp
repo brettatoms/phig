@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "cancel.h"
+#include "catalog.h"
 #include "config.h"
 #include "database.h"
 #include "dates.h"
@@ -1778,16 +1779,15 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path, bool no_wait) {
 
 // Print the effective configuration (resolved paths + any config overrides),
 // shown at the top of --help output.
-static void print_active_config(const Config& cfg, const std::string& cfg_path, bool loaded) {
+static void print_active_config(const Config& cfg, const std::string& cfg_path, bool loaded,
+                                const char* catalog_source) {
     std::cout << "Active configuration:\n";
     std::cout << "  config file:  " << cfg_path << (loaded ? "  (loaded)" : "  (not found)")
               << "\n";
-    std::cout << "  db:           " << default_db_path() << (cfg.db ? "  [config]" : "  (default)")
-              << "\n";
+    const CatalogPaths catalog = current_catalog();
+    std::cout << "  catalog:      " << catalog.dir << "  [" << catalog_source << "]\n";
     std::cout << "  models_dir:   " << models_dir()
               << (cfg.models_dir ? "  [config]" : "  (default)") << "\n";
-    std::cout << "  thumbs_dir:   " << thumbs_dir()
-              << (cfg.thumbs_dir ? "  [config]" : "  (default)") << "\n";
 
     // Non-path values are listed only when set in the config file.
     auto line = [](const char* k, const std::string& v) {
@@ -1838,8 +1838,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Load configuration (missing file -> defaults). Install path overrides so
-    // default_db_path()/models_dir()/thumbs_dir() reflect the config everywhere.
+    // Load configuration (missing file -> defaults).
     std::string resolved_cfg_path = have_config_file ? config_file : config_path();
     Config cfg;
     try {
@@ -1848,22 +1847,36 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
-    set_path_overrides(cfg.db, cfg.models_dir, cfg.thumbs_dir);
+    const ResolvedCatalog resolved = resolve_catalog_dir(std::nullopt, cfg);
+    const CatalogPaths catalog = catalog_paths(resolved.dir);
+    set_catalog(catalog);
+    set_models_dir(cfg.models_dir);
 
-    // Thumbnails used to live at <thumbs>/ab/<sha>.jpg, before the size became
+    const LegacyMigration legacy = migrate_legacy_catalog_files(catalog);
+
+    // Thumbnails once lived at <thumbs>/ab/<sha>.jpg, before the size became
     // part of the path. Move any such files under <thumbs>/512/ so an existing
-    // cache stays usable instead of being silently orphaned. A rename, not a
-    // re-encode; a no-op once done.
-    if (int moved = migrate_flat_thumb_cache(); moved > 0) {
-        log_info("migrated " + std::to_string(moved) +
+    // cache stays usable. A rename, not a re-encode; a no-op once done.
+    const int flat_moved = migrate_flat_thumb_cache();
+
+    // Diagnostic logger: stderr sink for warnings and errors, plus a rotating
+    // file sink at <catalog>/phig.log. The file sink is created only when the
+    // catalog exists or this command will create it, because opening the sink
+    // creates the file and with it the catalog directory.
+    const std::string command_name = argc >= 2 ? argv[1] : "";
+    const bool log_to_file =
+        (!cfg.log_file || *cfg.log_file) && (fs::exists(catalog.db) || command_name == "scan");
+    log_init(catalog.log, log_to_file,
+             cfg.log_file_level ? log_level_from_string(*cfg.log_file_level) : LogLevel::Info);
+    for (const std::string& p : legacy.moved) log_info("moved " + p + " into " + catalog.dir);
+    for (const std::string& p : legacy.kept_both)
+        log_warn("left " + p + " in place: " + catalog.dir + " already has one");
+    for (const std::string& p : legacy.failed)
+        log_warn("could not move " + p + " into " + catalog.dir);
+    if (flat_moved > 0) {
+        log_info("migrated " + std::to_string(flat_moved) +
                  " thumbnails into the size-partitioned cache layout");
     }
-
-    // Diagnostic logger (plan 024): stderr sink for warnings/errors plus a
-    // rotating file sink at ~/.local/state/phig/phig.log unless disabled.
-    // Init before any dispatch so every instrumented site has a live logger.
-    log_init(default_log_path(), !cfg.log_file || *cfg.log_file,
-             cfg.log_file_level ? log_level_from_string(*cfg.log_file_level) : LogLevel::Info);
 
     bool cfg_loaded = fs::exists(resolved_cfg_path);
 
@@ -1875,7 +1888,8 @@ int main(int argc, char* argv[]) {
     std::string command = argv[1];
 
     if (command == "--help" || command == "-h" || command == "help") {
-        print_active_config(cfg, resolved_cfg_path, cfg_loaded);
+        print_active_config(cfg, resolved_cfg_path, cfg_loaded,
+                            catalog_source_name(resolved.source));
         print_usage();
         return 0;
     }
@@ -1884,7 +1898,8 @@ int main(int argc, char* argv[]) {
     for (int i = 2; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
-            print_active_config(cfg, resolved_cfg_path, cfg_loaded);
+            print_active_config(cfg, resolved_cfg_path, cfg_loaded,
+                                catalog_source_name(resolved.source));
             print_usage();
             return 0;
         }

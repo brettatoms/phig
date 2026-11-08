@@ -92,12 +92,14 @@ Config load_config(const std::string& path) {
                      "is not configurable; set it per-command on the command line");
             }
 
-            if (sec == "paths" && k == "db") {
-                cfg.db = expand_tilde(val);
+            if (sec == "paths" && k == "catalog") {
+                cfg.catalog = expand_tilde(val);
+            } else if (sec == "paths" && (k == "db" || k == "thumbs_dir")) {
+                fail(path, section, key,
+                     "was replaced by [paths] catalog, a directory holding the database, "
+                     "thumbnails, trash and log");
             } else if (sec == "paths" && k == "models_dir") {
                 cfg.models_dir = expand_tilde(val);
-            } else if (sec == "paths" && k == "thumbs_dir") {
-                cfg.thumbs_dir = expand_tilde(val);
             } else if (sec == "general" && k == "parallel") {
                 int n = parse_int(path, section, key, val);
                 if (n < 1) fail(path, section, key, "must be >= 1, got " + val);

@@ -1,5 +1,6 @@
 #include "catalog.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <system_error>
 
@@ -109,4 +110,34 @@ LegacyMigration migrate_legacy_catalog_files(const CatalogPaths& catalog) {
         // No HOME and no XDG variables: there is no legacy location to read.
     }
     return result;
+}
+
+namespace {
+
+std::string absolute_dir(const std::string& path) {
+    return fs::absolute(expand_tilde(path)).lexically_normal().string();
+}
+
+}  // namespace
+
+ResolvedCatalog resolve_catalog_dir(const std::optional<std::string>& flag, const Config& cfg) {
+    if (flag) return {absolute_dir(*flag), CatalogSource::Flag};
+    const char* env = std::getenv("PHIG_CATALOG");
+    if (env != nullptr && env[0] != '\0') return {absolute_dir(env), CatalogSource::Environment};
+    if (cfg.catalog) return {absolute_dir(*cfg.catalog), CatalogSource::Config};
+    return {default_catalog_dir(), CatalogSource::Default};
+}
+
+const char* catalog_source_name(CatalogSource source) {
+    switch (source) {
+        case CatalogSource::Flag:
+            return "--catalog";
+        case CatalogSource::Environment:
+            return "PHIG_CATALOG";
+        case CatalogSource::Config:
+            return "config";
+        case CatalogSource::Default:
+            break;
+    }
+    return "default";
 }

@@ -42,18 +42,29 @@ class ConfigTest : public ::testing::Test {
 
 TEST_F(ConfigTest, AbsentFileReturnsDefaults) {
     Config c = load_config((dir / "nope.ini").string());
-    EXPECT_FALSE(c.db.has_value());
+    EXPECT_FALSE(c.catalog.has_value());
     EXPECT_FALSE(c.parallel.has_value());
     EXPECT_FALSE(c.scan_recursive.has_value());
     EXPECT_FALSE(c.faces_threshold.has_value());
 }
 
+TEST_F(ConfigTest, RemovedPathKeysFailNamingTheirReplacement) {
+    for (const char* key : {"db = /x/phig.db\n", "thumbs_dir = /x/thumbs\n"}) {
+        std::string p = write_ini(std::string("[paths]\n") + key);
+        try {
+            load_config(p);
+            ADD_FAILURE() << "accepted " << key;
+        } catch (const std::runtime_error& e) {
+            EXPECT_NE(std::string(e.what()).find("[paths] catalog"), std::string::npos) << e.what();
+        }
+    }
+}
+
 TEST_F(ConfigTest, ParsesAllRecognizedKeys) {
     std::string p = write_ini(
         "[paths]\n"
-        "db = ~/photos/phig.db\n"
+        "catalog = ~/photos/catalog\n"
         "models_dir = ~/.cache/phig/models\n"
-        "thumbs_dir = /var/thumbs\n"
         "[general]\n"
         "parallel = 4\n"
         "[scan]\n"
@@ -70,9 +81,8 @@ TEST_F(ConfigTest, ParsesAllRecognizedKeys) {
         "[faces]\n"
         "threshold = 0.55\n");
     Config c = load_config(p);
-    EXPECT_EQ(c.db.value(), "/home/tester/photos/phig.db");
+    EXPECT_EQ(c.catalog.value(), "/home/tester/photos/catalog");
     EXPECT_EQ(c.models_dir.value(), "/home/tester/.cache/phig/models");
-    EXPECT_EQ(c.thumbs_dir.value(), "/var/thumbs");
     EXPECT_EQ(c.parallel.value(), 4);
     EXPECT_TRUE(c.scan_recursive.value());
     EXPECT_EQ(c.scan_on_error.value(), "fail");

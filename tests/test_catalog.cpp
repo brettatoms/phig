@@ -9,6 +9,7 @@
 #include <string>
 
 #include "catalog.h"
+#include "config.h"
 #include "database.h"
 #include "paths.h"
 #include "temp_dir.h"
@@ -264,4 +265,67 @@ TEST_F(OpenCatalogTest, TheMessageNamesTheCatalogDirectory) {
         EXPECT_NE(std::string(e.what()).find((dir / "nowhere").string()), std::string::npos)
             << e.what();
     }
+}
+
+namespace {
+
+// PHIG_CATALOG and XDG_DATA_HOME, restored afterwards.
+class ResolveCatalogTest : public ::testing::Test {
+   protected:
+    std::string saved_data;
+    void SetUp() override {
+        saved_data = std::getenv("XDG_DATA_HOME");
+        setenv("XDG_DATA_HOME", "/xdg/data", 1);
+        unsetenv("PHIG_CATALOG");
+    }
+    void TearDown() override {
+        setenv("XDG_DATA_HOME", saved_data.c_str(), 1);
+        unsetenv("PHIG_CATALOG");
+    }
+};
+
+}  // namespace
+
+TEST_F(ResolveCatalogTest, DefaultIsTheDataDirectory) {
+    ResolvedCatalog r = resolve_catalog_dir(std::nullopt, Config{});
+    EXPECT_EQ(r.dir, "/xdg/data/phig");
+    EXPECT_EQ(r.source, CatalogSource::Default);
+}
+
+TEST_F(ResolveCatalogTest, ConfigBeatsTheDefault) {
+    Config cfg;
+    cfg.catalog = "/from/config";
+    EXPECT_EQ(resolve_catalog_dir(std::nullopt, cfg).dir, "/from/config");
+    EXPECT_EQ(resolve_catalog_dir(std::nullopt, cfg).source, CatalogSource::Config);
+}
+
+TEST_F(ResolveCatalogTest, EnvironmentBeatsConfig) {
+    Config cfg;
+    cfg.catalog = "/from/config";
+    setenv("PHIG_CATALOG", "/from/env", 1);
+    ResolvedCatalog r = resolve_catalog_dir(std::nullopt, cfg);
+    EXPECT_EQ(r.dir, "/from/env");
+    EXPECT_EQ(r.source, CatalogSource::Environment);
+}
+
+TEST_F(ResolveCatalogTest, FlagBeatsEverything) {
+    Config cfg;
+    cfg.catalog = "/from/config";
+    setenv("PHIG_CATALOG", "/from/env", 1);
+    ResolvedCatalog r = resolve_catalog_dir(std::string("/from/flag"), cfg);
+    EXPECT_EQ(r.dir, "/from/flag");
+    EXPECT_EQ(r.source, CatalogSource::Flag);
+}
+
+TEST_F(ResolveCatalogTest, EmptyEnvironmentCountsAsUnset) {
+    setenv("PHIG_CATALOG", "", 1);
+    EXPECT_EQ(resolve_catalog_dir(std::nullopt, Config{}).source, CatalogSource::Default);
+}
+
+TEST_F(ResolveCatalogTest, RelativeAndTildePathsBecomeAbsolute) {
+    const fs::path cwd = fs::current_path();
+    EXPECT_EQ(resolve_catalog_dir(std::string("rel/cat"), Config{}).dir,
+              (cwd / "rel" / "cat").lexically_normal().string());
+    const std::string home = std::getenv("HOME");
+    EXPECT_EQ(resolve_catalog_dir(std::string("~/cat"), Config{}).dir, home + "/cat");
 }

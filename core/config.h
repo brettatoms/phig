@@ -7,9 +7,8 @@
 // the config file", so callers apply their own built-in default (CLI flags then
 // override config values).
 struct Config {
-    std::optional<std::string> db;
+    std::optional<std::string> catalog;  // [paths] catalog: the default catalog directory
     std::optional<std::string> models_dir;
-    std::optional<std::string> thumbs_dir;
     std::optional<int> parallel;
     std::optional<bool> scan_recursive;
     std::optional<std::string> scan_on_error;  // "warn" | "fail"
