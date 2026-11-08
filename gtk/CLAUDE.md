@@ -28,12 +28,18 @@ Links `phig-core` directly, as `cli/` does, through one seam:
 - **Never authorize a removal with `cmd_rm`'s `ConfirmFn`.** A destructive
   operation is authorized by a plan the caller inspects and then applies
   (R66). The Remove screen waits for that plan/apply pair in `core/`.
+- **C++ throughout, against GTK's C API.** No new C files. Three remain,
+  `src/gallery-model.c`, `src/row-page.c` and `tests/test-gallery-model.c`, and
+  plan 068 converts them. Not gtkmm: its libadwaita support lags the widgets
+  the client is built on. Prefer C++ types to GLib's where GTK does not
+  require GLib's: `std::string` over `char*`, standard containers over
+  `GHashTable`.
 - **GObjects only where GTK requires one.** `PhigImageRow` and
-  `PhigGalleryModel` are GObjects because GTK's list machinery needs them, and
-  `gallery-model.c` stays C. GObject instance memory is zeroed, not
-  C++-constructed, so a `std::string` member would need placement-new.
-  Everything else is plain C++ structs and free functions, with `GRef`
-  (`src/gref.h`) owning GObject references.
+  `PhigGalleryModel` are GObjects because GTK's list machinery needs them.
+  GObject instance memory is zeroed, not C++-constructed, so a member with a
+  constructor is placement-new'd in `instance_init` and destroyed in
+  `finalize`. Everything else is plain C++ structs and free functions, with
+  `GRef` (`src/gref.h`) owning GObject references.
 - **Widgets and rendering stay on the main thread.** `ThumbLoader`'s worker
   threads call `phig_collection_thumb_lookup`/`phig_collection_thumb_generate`
   and load the file into a new `GdkTexture`, then post results back via

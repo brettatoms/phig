@@ -250,7 +250,11 @@ you have actually scanned and state where.
 
 ## Tech stack
 
-- **Language:** C++20
+- **Language:** C++20, in `core/`, `cli/`, `gtk/` and libphig's
+  implementation. C appears in one place: libphig's exported header,
+  `<phig/phig.h>`, because it is the interface for clients written in other
+  languages. No new C source files anywhere else; `gtk/` calls GTK's C API
+  from C++.
 - **Build:** CMake
 - **Dev environment:** system-installed native libraries; `mise` (optional)
   pins `cmake`/`clang-format`/`clang-tidy` to the versions CI uses
