@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <cstdlib>
 #include <filesystem>
@@ -342,6 +343,24 @@ TEST_F(ResolveCatalogTest, EmptyEnvironmentCountsAsUnset) {
     EXPECT_EQ(resolve_catalog_dir(std::nullopt, Config{}).source, CatalogSource::Default);
 }
 
+// An empty --catalog or [paths] catalog names no directory; "" is not a path
+// to resolve against the working directory.
+TEST_F(ResolveCatalogTest, AnEmptyFlagOrConfigValueIsRefusedNamingItsSource) {
+    auto message_of = [](const std::optional<std::string>& flag, const Config& cfg) {
+        try {
+            resolve_catalog_dir(flag, cfg);
+        } catch (const std::runtime_error& e) {
+            return std::string(e.what());
+        }
+        ADD_FAILURE() << "expected a runtime_error";
+        return std::string();
+    };
+    EXPECT_NE(message_of(std::string(""), Config{}).find("--catalog"), std::string::npos);
+    Config cfg;
+    cfg.catalog = "";
+    EXPECT_NE(message_of(std::nullopt, cfg).find("[paths] catalog"), std::string::npos);
+}
+
 TEST_F(ResolveCatalogTest, RelativeAndTildePathsBecomeAbsolute) {
     const fs::path cwd = fs::current_path();
     EXPECT_EQ(resolve_catalog_dir(std::string("rel/cat"), Config{}).dir,
@@ -489,4 +508,28 @@ TEST_F(CatalogCliTest, ThumbsCleanLeavesAnotherCatalogsThumbnails) {
     EXPECT_EQ(r.exit_code, 0) << r.output;
     EXPECT_FALSE(fs::exists(a_orphan)) << "the control: A's own orphan is removed";
     EXPECT_TRUE(fs::exists(b_thumb));
+}
+
+TEST_F(CatalogCliTest, AnEmptyCatalogIsAnErrorNotACrash) {
+    PhigRun flag = run_phig(phig_bin, dir, "--catalog '' search --count");
+    EXPECT_EQ(flag.exit_code, 1) << flag.output;
+    EXPECT_NE(flag.output.find("Error: "), std::string::npos) << flag.output;
+    EXPECT_NE(flag.output.find("--catalog"), std::string::npos) << flag.output;
+
+    const fs::path config = dir / "empty-catalog.ini";
+    write_file(config, "[paths]\ncatalog =\n");
+    PhigRun cfg = run_phig(phig_bin, dir, "--config '" + config.string() + "' search --count");
+    EXPECT_EQ(cfg.exit_code, 1) << cfg.output;
+    EXPECT_NE(cfg.output.find("[paths] catalog"), std::string::npos) << cfg.output;
+}
+
+TEST_F(CatalogCliTest, ACatalogUnderAnUnreadableParentIsAnErrorNotACrash) {
+    if (::geteuid() == 0) GTEST_SKIP() << "root reads a mode-000 directory";
+    const fs::path locked = dir / "locked";
+    fs::create_directories(locked);
+    fs::permissions(locked, fs::perms::none);
+    PhigRun r = run(locked / "catalog", "search --count");
+    fs::permissions(locked, fs::perms::owner_all);
+    EXPECT_EQ(r.exit_code, 1) << r.output;
+    EXPECT_NE(r.output.find("no phig catalog at"), std::string::npos) << r.output;
 }

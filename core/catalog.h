@@ -74,7 +74,8 @@ struct ResolvedCatalog {
 
 // Which catalog a command uses: the --catalog flag, then PHIG_CATALOG, then
 // the config file's [paths] catalog, then default_catalog_dir(). An empty
-// PHIG_CATALOG counts as unset. A leading ~ is expanded, and a relative path
+// PHIG_CATALOG counts as unset; an empty flag or config value throws
+// std::runtime_error naming it. A leading ~ is expanded, and a relative path
 // is resolved against the working directory.
 ResolvedCatalog resolve_catalog_dir(const std::optional<std::string>& flag, const Config& cfg);
 

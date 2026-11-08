@@ -1841,7 +1841,13 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
-    const ResolvedCatalog resolved = resolve_catalog_dir(catalog_flag, cfg);
+    ResolvedCatalog resolved;
+    try {
+        resolved = resolve_catalog_dir(catalog_flag, cfg);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
     const CatalogPaths catalog = catalog_paths(resolved.dir);
     set_catalog(catalog);
     set_models_dir(cfg.models_dir);
@@ -1857,9 +1863,11 @@ int main(int argc, char* argv[]) {
     // file sink at <catalog>/phig.log. The file sink is created only when the
     // catalog exists or this command will create it, because opening the sink
     // creates the file and with it the catalog directory.
+    // An error checking for the database counts as no database.
     const std::string command_name = argc >= 2 ? argv[1] : "";
-    const bool log_to_file =
-        (!cfg.log_file || *cfg.log_file) && (fs::exists(catalog.db) || command_name == "scan");
+    std::error_code db_ec;
+    const bool log_to_file = (!cfg.log_file || *cfg.log_file) &&
+                             (fs::exists(catalog.db, db_ec) || command_name == "scan");
     log_init(catalog.log, log_to_file,
              cfg.log_file_level ? log_level_from_string(*cfg.log_file_level) : LogLevel::Info);
     for (const std::string& p : legacy.moved) log_info("moved " + p + " into " + catalog.dir);

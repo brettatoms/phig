@@ -121,10 +121,18 @@ std::string absolute_dir(const std::string& path) {
 }  // namespace
 
 ResolvedCatalog resolve_catalog_dir(const std::optional<std::string>& flag, const Config& cfg) {
-    if (flag) return {absolute_dir(*flag), CatalogSource::Flag};
+    if (flag) {
+        if (flag->empty()) throw std::runtime_error("--catalog names no directory");
+        return {absolute_dir(*flag), CatalogSource::Flag};
+    }
     const char* env = std::getenv("PHIG_CATALOG");
     if (env != nullptr && env[0] != '\0') return {absolute_dir(env), CatalogSource::Environment};
-    if (cfg.catalog) return {absolute_dir(*cfg.catalog), CatalogSource::Config};
+    if (cfg.catalog) {
+        if (cfg.catalog->empty()) {
+            throw std::runtime_error("[paths] catalog in the config file names no directory");
+        }
+        return {absolute_dir(*cfg.catalog), CatalogSource::Config};
+    }
     return {default_catalog_dir(), CatalogSource::Default};
 }
 
