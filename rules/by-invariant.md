@@ -650,6 +650,20 @@ set_gallery picks between two statements on its no_overwrite argument: 'UPDATE i
 | Evidence | subprocess: `DatabaseTest.GalleryOverwritesByDefault`, `DatabaseTest.GalleryNoOverwriteSkips`, `DatabaseTest.ClearGallery`, `DatabaseTest.CliGallerySetHonorsNoOverwriteAndClearRefusesTheFlag` |
 | Test gap | The parser branch is now driven through the binary, both of its effects: `gallery set --no-overwrite` reports 'on 0 images' and leaves the existing name, and `gallery clear --no-overwrite` exits 1 with 'Unknown option'. A control run without the flag replaces the name, so neither assertion can be satisfied by a `gallery set` that simply never writes. Measured with the branch changed to 'arg == "--no-overwrite"' setting no_overwrite = false: the declined run reports 'on 1 images' and the name becomes 'second', and the clear exits 0 having cleared the row. What remains is the other anchor's count. clear_gallery narrows to 'gallery IS NOT NULL' so a row that had no gallery is not reported as cleared, and DatabaseTest.ClearGallery only clears a row that has one — nothing shows that a selection of rows without galleries comes back 0 rather than counting them all. |
 
+### R85 — holds (test gap)
+
+A face rebuild carries each person label to the re-detected face in the same image whose box overlaps it at or above kLabelCarryMinOverlap, one label per face, and counts every label it does not carry.
+
+A person label is typed by a user and cannot be derived again from pixels, while a rebuild replaces every face row of the images it selects. FacesEngine::run reads the image's labelled faces inside the per-image transaction before deleting them, carry_labels matches them to the new detections by intersection over union, greedy from the highest overlap down and one-to-one, and the matched labels are written before auto_label_face names the rest. Box overlap is the only test: embeddings from a different model are not comparable, so an embedding check would drop every label in a model-change rebuild. Labels with no match at or above the threshold are counted in FacesResult::labels_dropped. Re-detecting 564 stored faces with the same model over the same pixels reproduced every box exactly, so labels carry through such a rebuild.
+
+| | |
+|---|---|
+| Enforced at | `core/faces_engine.cpp:FacesEngine::run`, `core/faces.cpp:carry_labels`, `core/database.cpp:get_labelled_faces_for_image` |
+| Binds | `faces.rebuild` |
+| Protects | user-metadata |
+| Evidence | witness: `FacesEngineRun.RebuildKeepsALabelOnTheFaceItNamed`, `FacesEngineRun.RebuildCountsALabelItCouldNotCarry`, `FacesEngineRun.CliRebuildWarnsWhenItDropsALabel`, `AbiOperations.FacesResultReportsLabelsItCouldNotCarry`, `CarryLabels.AnIdenticalBoxCarriesItsLabel`, `CarryLabels.OneDetectedFaceTakesAtMostOneLabel` |
+| Test gap | The engine, CLI and ABI witnesses skip wherever the face path cannot run, so ubuntu-26.04 is the only CI leg that runs them. Every witness rebuilds over the same model and pixels. Nothing exercises a partial-overlap match at the threshold or a rebuild whose decoded pixels differ from the detection's. |
+
 ## attachments
 
 ### R41 — holds
@@ -1015,7 +1029,7 @@ OrganizePlan::set_resolution is the only editing point in the engine, and it ref
 
 An operation that destroys user-authored metadata is authorized before it runs, by an explicit yes or by a plan the caller approves.
 
-rm asks (R22), organize publishes a plan the caller applies, and reconcile transfers metadata onto a surviving row before deleting (R38). A face rebuild does none of these, and is reachable from the ABI as phig_op_faces_start with no plan phase; operations.toml marks faces.rebuild destructive. FacesEngine::run replaces each selected image's face rows — boxes, embeddings, and the person_id that is a label someone typed. Inside the per-image transaction it reads the image's labelled faces first, matches them to the new detections by box overlap through carry_labels, greedy and one-to-one at kLabelCarryMinOverlap, and writes the matched labels before auto_label_face names the rest. A rebuild with the same model reproduces the boxes, so labels survive it. A labelled face that is not detected again loses its label without authorization: the loss is counted in FacesResult::labels_dropped, reported by face rebuild as a warning and by phig_faces_result, and not asked about first. That remainder is why the rule is partial.
+rm asks (R22), organize publishes a plan the caller applies, and reconcile transfers metadata onto a surviving row before deleting (R38). A face rebuild does none of these, and is reachable from the ABI as phig_op_faces_start with no plan phase; operations.toml marks faces.rebuild destructive. FacesEngine::run replaces each selected image's face rows — boxes, embeddings, and the person_id that is a label someone typed. Inside the per-image transaction it reads the image's labelled faces first, matches them to the new detections by box overlap through carry_labels, greedy and one-to-one at kLabelCarryMinOverlap, and writes the matched labels before auto_label_face names the rest. A rebuild with the same model over the same decoded pixels reproduced every stored box exactly when measured, so labels survive it; a rebuild whose pixel source differs, such as a RAW whose sidecar JPEG has been removed, decodes at another resolution and drops the labels on that image. A labelled face that is not detected again loses its label without authorization: the loss is counted in FacesResult::labels_dropped, reported by face rebuild as a warning and by phig_faces_result, and not asked about first. That remainder is why the rule is partial.
 
 | | |
 |---|---|
@@ -1023,7 +1037,7 @@ rm asks (R22), organize publishes a plan the caller applies, and reconcile trans
 | Binds | `faces.rebuild` |
 | Protects | user-metadata |
 | Evidence | witness: `FacesEngineRun.RebuildKeepsALabelOnTheFaceItNamed`, `FacesEngineRun.RebuildCountsALabelItCouldNotCarry`, `FacesEngineRun.CliRebuildWarnsWhenItDropsALabel`, `AbiOperations.FacesResultReportsLabelsItCouldNotCarry`, `CarryLabels.AnIdenticalBoxCarriesItsLabel`, `CarryLabels.OneDetectedFaceTakesAtMostOneLabel` |
-| Test gap | The engine, CLI and ABI witnesses skip wherever the face path cannot run — models absent, or OpenCV below 4.8.0 (R72) — so ubuntu-26.04 is the only CI leg that runs them; the CarryLabels unit tests run everywhere. Every witness rebuilds with the model that made the stored faces, so none shows what a model-change rebuild carries. Nothing pins authorization before an unmatched label is dropped, because the code does not ask. |
+| Test gap | The engine, CLI and ABI witnesses skip wherever the face path cannot run — models absent, or OpenCV below 4.8.0 (R72) — so ubuntu-26.04 is the only CI leg that runs them; the CarryLabels unit tests run everywhere. Every witness rebuilds with the model that made the stored faces, so none shows what a model-change rebuild carries. No test covers a rebuild whose decoded pixels differ from the detection's, such as a RAW whose sidecar JPEG was removed, where boxes shift scale and labels drop. Nothing pins authorization before an unmatched label is dropped, because the code does not ask. |
 
 ### R61 — violated (test gap)
 
