@@ -510,6 +510,10 @@ typedef struct {
     uint64_t total_selected;
     uint64_t faces_detected;
     uint64_t errors; /* files that could not be decoded */
+    /* Person labels on faces the run did not detect again. A rebuild carries
+       each label to the re-detected face whose box overlaps it; these matched
+       none and are gone. */
+    uint64_t labels_dropped;
     bool completed;
 } phig_faces_result;
 

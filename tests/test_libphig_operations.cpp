@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "database.h"
+#include "face_path.h"
+#include "paths.h"
 #include "phig/phig.h"
 #include "temp_dir.h"
 #include "types.h"
@@ -753,6 +755,49 @@ TEST(AbiOperations, PolledStringsStayValidUntilTheNextPoll) {
     // caller holds the pointer and does not poll. Nothing may rewrite it.
     phig_op_wait(op);
     EXPECT_EQ(std::string(held), copied) << "a held pointer changed without a poll";
+
+    phig_op_free(op);
+    phig_shutdown(ctx);
+}
+
+TEST(AbiOperations, FacesResultReportsLabelsItCouldNotCarry) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    // OpFixture points XDG_CACHE_HOME into its scratch directory, which moves
+    // models_dir() away from the installed models. Resolve them first, then
+    // link them into the scratch cache. libphig.so keeps its own copy of the
+    // path overrides, so set_path_overrides() here would not reach it.
+    const std::string models = models_dir();
+    OpFixture fx(1);
+    fs::create_directories(fx.dir / "phig");
+    fs::create_directory_symlink(models, fx.dir / "phig" / "models");
+
+    {
+        Database db(fx.db_path);
+        int64_t image_id = db.get_image_id((fx.dir / "img0.jpg").string());
+        ASSERT_GT(image_id, 0);
+        FaceInfo phantom{};
+        phantom.embedding.fill(0.5f);
+        phantom.width = 4;
+        phantom.height = 4;
+        int64_t face_id = db.insert_face(image_id, phantom);
+        ASSERT_TRUE(db.set_face_person(face_id, db.get_or_create_person("Ada")));
+    }
+
+    phig_ctx* ctx = fx.open();
+    AllIds all(ctx);
+    phig_faces_options fopts{};
+    fopts.ids = all.list->items;
+    fopts.id_count = static_cast<size_t>(all.list->count);
+    fopts.parallel = 1;
+    phig_op* op = nullptr;
+    ASSERT_EQ(phig_op_faces_start(ctx, &fopts, &op), PHIG_OK);
+    phig_op_wait(op);
+
+    ASSERT_EQ(phig_op_status(op), PHIG_OP_DONE);
+    phig_faces_result r{};
+    ASSERT_EQ(phig_op_faces_result(op, &r), PHIG_OK);
+    EXPECT_GT(r.faces_detected, 0u);
+    EXPECT_EQ(r.labels_dropped, 1u);
 
     phig_op_free(op);
     phig_shutdown(ctx);

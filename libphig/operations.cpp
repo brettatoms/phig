@@ -312,6 +312,7 @@ phig_status phig_op_faces_result(phig_op* op, phig_faces_result* out) {
     out->total_selected = r.total_selected;
     out->faces_detected = r.faces_detected;
     out->errors = r.errors;
+    out->labels_dropped = r.labels_dropped;
     out->completed = r.completed;
     return PHIG_OK;
 }
