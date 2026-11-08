@@ -159,6 +159,14 @@ void test_cancel_before_dispatch_never_calls_back() {
     g_object_unref(cancellable);
 }
 
+// Polls until a worker has posted a result for delivery, for up to 5s.
+void wait_for_posted_result(ThumbLoader& loader) {
+    for (int waited_ms = 0; thumb_loader_pending_idle_count(loader) == 0 && waited_ms < 5000;
+         waited_ms++)
+        g_usleep(1000);
+    g_assert_cmpuint(thumb_loader_pending_idle_count(loader), >, 0);
+}
+
 // Waits until a worker has posted the result before cancelling, so only the
 // delivery-side check can see the cancel.
 void test_cancel_after_dispatch_discards_the_result() {
@@ -168,16 +176,62 @@ void test_cancel_after_dispatch_discards_the_result() {
 
     thumb_loader_request(*f.loader, 1, sha_of(0).c_str(), 256, cancellable, on_must_not_run,
                          &called);
-    for (int waited_ms = 0; thumb_loader_pending_idle_count(*f.loader) == 0 && waited_ms < 5000;
-         waited_ms++)
-        g_usleep(1000);
-    g_assert_cmpuint(thumb_loader_pending_idle_count(*f.loader), >, 0);
+    wait_for_posted_result(*f.loader);
     g_cancellable_cancel(cancellable);
     pump(300);
 
     g_assert_false(called);
     g_assert_cmpuint(thumb_loader_cache_bytes(*f.loader), ==, 0);
     g_object_unref(cancellable);
+}
+
+// A posted delivery holds a loader reference, so dropping the caller's last one
+// leaves the loader alive until the delivery runs. It still calls back, and the
+// loader is then destroyed on the main thread, before the collection closes.
+void test_a_delivery_outlives_the_callers_reference() {
+    PhigCollection* coll = fake_collection_new(8);
+    std::shared_ptr<ThumbLoader> loader = thumb_loader_new(coll, 4, kRoomy);
+    std::weak_ptr<ThumbLoader> watch = loader;
+    Capture c;
+
+    thumb_loader_request(*loader, 1, sha_of(0).c_str(), 256, nullptr, on_capture, &c);
+    wait_for_posted_result(*loader);
+    loader.reset();
+    g_assert_false(watch.expired());
+    pump(300);
+
+    g_assert_true(c.called);
+    g_assert_cmpint(c.result, ==, THUMB_OK);
+    g_assert_true(watch.expired());
+    phig_collection_close(coll);
+}
+
+void test_shutdown_discards_a_posted_result() {
+    Fixture f;
+    bool called = false;
+
+    thumb_loader_request(*f.loader, 1, sha_of(0).c_str(), 256, nullptr, on_must_not_run, &called);
+    wait_for_posted_result(*f.loader);
+    thumb_loader_shutdown(*f.loader);
+    pump(300);
+
+    g_assert_false(called);
+    g_assert_cmpuint(thumb_loader_pending_idle_count(*f.loader), ==, 0);
+    g_assert_cmpuint(thumb_loader_cache_bytes(*f.loader), ==, 0);
+}
+
+// The texture is in memory, so without the shutdown check this would be a
+// synchronous hit.
+void test_a_request_after_shutdown_is_dropped() {
+    Fixture f;
+    g_assert_cmpint(request_and_wait(*f.loader, 1, sha_of(0), 256).result, ==, THUMB_OK);
+    thumb_loader_shutdown(*f.loader);
+    bool called = false;
+
+    thumb_loader_request(*f.loader, 1, sha_of(0).c_str(), 256, nullptr, on_must_not_run, &called);
+    pump(100);
+
+    g_assert_false(called);
 }
 
 // Six textures against room for three and a half: the three most recent stay.
@@ -218,6 +272,12 @@ int main(int argc, char** argv) {
                     test_cancel_before_dispatch_never_calls_back);
     g_test_add_func("/thumb-loader/cancel-after-dispatch-discards-the-result",
                     test_cancel_after_dispatch_discards_the_result);
+    g_test_add_func("/thumb-loader/a-delivery-outlives-the-callers-reference",
+                    test_a_delivery_outlives_the_callers_reference);
+    g_test_add_func("/thumb-loader/shutdown-discards-a-posted-result",
+                    test_shutdown_discards_a_posted_result);
+    g_test_add_func("/thumb-loader/a-request-after-shutdown-is-dropped",
+                    test_a_request_after_shutdown_is_dropped);
     g_test_add_func("/thumb-loader/the-cache-keeps-the-most-recent-within-budget",
                     test_the_cache_keeps_the_most_recent_within_budget);
     g_test_add_func("/thumb-loader/a-texture-over-budget-is-delivered-but-not-kept",

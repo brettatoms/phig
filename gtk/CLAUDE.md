@@ -34,11 +34,12 @@ Links `phig-core` directly, as `cli/` does, through one seam:
   C++-constructed, so a `std::string` member would need placement-new.
   Everything else is plain C++ structs and free functions, with `GRef`
   (`src/gref.h`) owning GObject references.
-- **GTK calls happen on the main thread only.** `ThumbLoader`'s worker
-  threads call
-  `phig_collection_thumb_lookup`/`phig_collection_thumb_generate` off the main
-  thread, then post results back via `g_idle_add` — never touch a
-  `GtkWidget`, `GdkTexture`, or any GTK API from a worker thread directly.
+- **Widgets and rendering stay on the main thread.** `ThumbLoader`'s worker
+  threads call `phig_collection_thumb_lookup`/`phig_collection_thumb_generate`
+  and load the file into a new `GdkTexture`, then post results back via
+  `g_idle_add`. Creating a texture is thread-safe, and so is dropping one that
+  never reached GTK. A worker never touches a `GtkWidget`, or a texture
+  already handed to GTK.
 - **`ThumbLoader` and `max_dim`:** `max_dim` is the largest edge in **physical**
   pixels — cell size times `gtk_widget_get_scale_factor`. The worker decodes to
   that size and the texture cache is keyed `(sha256, max_dim)`, so the same image

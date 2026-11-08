@@ -226,6 +226,7 @@ void worker_main(ThumbLoader& self) {
         if (req->sha256.empty()) {
             req->result = THUMB_MISS;
         } else if (!resolve(self, *req) || is_cancelled(*req)) {
+            // Drops req's texture on this thread, which is safe: GTK never saw it.
             continue;
         }
 
@@ -264,6 +265,7 @@ void thumb_loader_shutdown(ThumbLoader& self) {
 
 void thumb_loader_request(ThumbLoader& self, int64_t image_id, const char* sha256, guint32 max_dim,
                           GCancellable* cancellable, ThumbCallback cb, gpointer user_data) {
+    if (self.stopped.load()) return;
     if (cancellable != nullptr && g_cancellable_is_cancelled(cancellable)) return;
 
     if (GRef<GdkTexture> cached = cache_probe(self, sha256, max_dim)) {

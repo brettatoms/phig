@@ -49,10 +49,13 @@ void thumb_loader_shutdown(ThumbLoader& loader);
 // hashed the row). image_id is what generation needs; the caller has it on the
 // PhigImageRow, which saves reversing it from the sha.
 //
-// Asynchronous and cancellable, except on a texture-cache hit, which is
-// delivered before this returns. A rebind onto a texture already in memory
+// Call it on the main thread. It is asynchronous and cancellable, except on a
+// texture-cache hit, which calls back before this returns, so the callback runs
+// on whichever thread called this. A rebind onto a texture already in memory
 // costs no worker round-trip and no second decode, which matters because zoom
 // re-requests every visible cell at a new size.
+//
+// A request made after thumb_loader_shutdown is dropped without a callback.
 //
 // max_dim is the largest edge in PHYSICAL pixels (cell size times the scale
 // factor); 0 means the cache's native size. Textures are cached under
