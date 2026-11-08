@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <optional>
 #include <string>
 
 #include "catalog.h"
@@ -25,6 +26,21 @@ void write_file(const fs::path& p, const std::string& body) {
     std::ofstream(p) << body;
 }
 
+// One environment variable's state, so a test can restore "unset" as well as a value.
+struct SavedEnv {
+    std::string name;
+    std::optional<std::string> value;
+    explicit SavedEnv(const char* n) : name(n) {
+        if (const char* v = std::getenv(n)) value = v;
+    }
+    void restore() const {
+        if (value)
+            setenv(name.c_str(), value->c_str(), 1);
+        else
+            unsetenv(name.c_str());
+    }
+};
+
 std::string read_file(const fs::path& p) {
     std::ifstream in(p);
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -36,12 +52,12 @@ std::string read_file(const fs::path& p) {
 class LegacyMigrationTest : public ::testing::Test {
    protected:
     fs::path root;
-    std::string saved_data, saved_cache, saved_state;
+    std::optional<SavedEnv> saved_data, saved_cache, saved_state;
 
     void SetUp() override {
-        saved_data = std::getenv("XDG_DATA_HOME");
-        saved_cache = std::getenv("XDG_CACHE_HOME");
-        saved_state = std::getenv("XDG_STATE_HOME");
+        saved_data.emplace("XDG_DATA_HOME");
+        saved_cache.emplace("XDG_CACHE_HOME");
+        saved_state.emplace("XDG_STATE_HOME");
         root = make_temp_dir("legacy-migration");
         setenv("XDG_DATA_HOME", (root / "data").c_str(), 1);
         setenv("XDG_CACHE_HOME", (root / "cache").c_str(), 1);
@@ -49,9 +65,9 @@ class LegacyMigrationTest : public ::testing::Test {
         clear_catalog();
     }
     void TearDown() override {
-        setenv("XDG_DATA_HOME", saved_data.c_str(), 1);
-        setenv("XDG_CACHE_HOME", saved_cache.c_str(), 1);
-        setenv("XDG_STATE_HOME", saved_state.c_str(), 1);
+        saved_data->restore();
+        saved_cache->restore();
+        saved_state->restore();
         clear_catalog();
         std::error_code ec;
         fs::remove_all(root, ec);
@@ -271,18 +287,20 @@ TEST_F(OpenCatalogTest, TheMessageNamesTheCatalogDirectory) {
 
 namespace {
 
-// PHIG_CATALOG and XDG_DATA_HOME, restored afterwards.
+// XDG_DATA_HOME and PHIG_CATALOG are each restored to their prior value, or to
+// unset, afterwards.
 class ResolveCatalogTest : public ::testing::Test {
    protected:
-    std::string saved_data;
+    std::optional<SavedEnv> saved_data, saved_catalog;
     void SetUp() override {
-        saved_data = std::getenv("XDG_DATA_HOME");
+        saved_data.emplace("XDG_DATA_HOME");
+        saved_catalog.emplace("PHIG_CATALOG");
         setenv("XDG_DATA_HOME", "/xdg/data", 1);
         unsetenv("PHIG_CATALOG");
     }
     void TearDown() override {
-        setenv("XDG_DATA_HOME", saved_data.c_str(), 1);
-        unsetenv("PHIG_CATALOG");
+        saved_data->restore();
+        saved_catalog->restore();
     }
 };
 
@@ -392,7 +410,7 @@ TEST_F(CatalogCliTest, ReadsRefuseAnOutdatedCatalogAndLeaveItsVersion) {
     const int older = Database::expected_schema_version() - 1;
     stamp_schema_version(db_path, older);
     for (const char* args : {"search --count", "duplicates", "cp '/tmp/never' --dry-run",
-                             "rm --match '*' --dry-run"}) {
+                             "rm --match '*' --dry-run", "thumbs clean --dry-run"}) {
         PhigRun r = run(c, args);
         EXPECT_EQ(r.exit_code, 1) << args << ": " << r.output;
         Database after(db_path, /*read_only=*/true);

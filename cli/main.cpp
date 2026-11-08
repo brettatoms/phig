@@ -1244,7 +1244,8 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
 
         auto lock = acquire_writer_lock(no_wait);
 
-        auto db_owner = open_catalog_db(db_path, CatalogAccess::Write);
+        auto db_owner =
+            open_catalog_db(db_path, dry_run ? CatalogAccess::Read : CatalogAccess::Write);
         Database& db = *db_owner;
 
         auto known_hashes = db.get_all_sha256s();
