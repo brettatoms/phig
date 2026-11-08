@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -59,11 +60,15 @@ struct PhigRun {
 // (models_dir() is cache_dir() + "/models"), which is what lets a test drive
 // the models-missing path on a machine that has them installed.
 //
+// The child's stdin is /dev/null, or `stdin_line` as one line when given, so it
+// never sees the caller's terminal.
+//
 // `args` is appended to the binary path as a shell string, so quote anything
 // holding a space at the call site. The caller supplies `binary` from
 // phig_binary_path() and has already skipped if it came back empty.
 inline PhigRun run_phig(const std::filesystem::path& binary, const std::filesystem::path& scratch,
-                        const std::string& args) {
+                        const std::string& args,
+                        const std::optional<std::string>& stdin_line = std::nullopt) {
     namespace fs = std::filesystem;
     fs::path env_root = scratch / "xdg";
     for (const char* sub : {"config", "data", "cache", "state"}) {
@@ -71,11 +76,13 @@ inline PhigRun run_phig(const std::filesystem::path& binary, const std::filesyst
     }
     fs::path out_path = scratch / "phig-run-output.txt";
 
-    std::string cmd =
-        "HOME='" + env_root.string() + "' XDG_CONFIG_HOME='" + (env_root / "config").string() +
-        "' XDG_DATA_HOME='" + (env_root / "data").string() + "' XDG_CACHE_HOME='" +
-        (env_root / "cache").string() + "' XDG_STATE_HOME='" + (env_root / "state").string() +
-        "' " + binary.string() + " " + args + " > '" + out_path.string() + "' 2>&1";
+    std::string cmd = (stdin_line ? "printf '%s\\n' '" + *stdin_line + "' | " : std::string()) +
+                      "HOME='" + env_root.string() + "' XDG_CONFIG_HOME='" +
+                      (env_root / "config").string() + "' XDG_DATA_HOME='" +
+                      (env_root / "data").string() + "' XDG_CACHE_HOME='" +
+                      (env_root / "cache").string() + "' XDG_STATE_HOME='" +
+                      (env_root / "state").string() + "' " + binary.string() + " " + args +
+                      (stdin_line ? "" : " < /dev/null") + " > '" + out_path.string() + "' 2>&1";
     int rc = std::system(cmd.c_str());
 
     std::ifstream in(out_path);

@@ -2293,6 +2293,7 @@ TEST_F(DatabaseTest, CliMetadataWritesRefuseAnUnnamedSubject) {
         cli.set_gallery({(root / "img0.jpg").string()}, "keepgallery", false);
     }
 
+    const std::string catalog_arg = " --catalog '" + (root / "catalog").string() + "'";
     const std::vector<std::pair<std::string, std::string>> cases = {
         {"tag add holiday", "tag add requires --match or --path"},
         {"tag remove keepme", "tag remove requires --match or --path"},
@@ -2302,8 +2303,7 @@ TEST_F(DatabaseTest, CliMetadataWritesRefuseAnUnnamedSubject) {
         {"fav remove", "fav remove requires --match or --path"},
     };
     for (const auto& [args, expected] : cases) {
-        PhigRun run =
-            run_phig(phig_bin, root, args + " --catalog '" + (root / "catalog").string() + "'");
+        PhigRun run = run_phig(phig_bin, root, args + catalog_arg);
 
         EXPECT_EQ(run.exit_code, 1) << args << " output was:\n" << run.output;
         EXPECT_NE(run.output.find(expected), std::string::npos) << args << " output was:\n"

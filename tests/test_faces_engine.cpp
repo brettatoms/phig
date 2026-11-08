@@ -585,7 +585,6 @@ TEST(FacesEngineRun, CliRejectsAnUnknownFlagWithoutTouchingFaceData) {
     ASSERT_GT(person_id, 0);
     ASSERT_TRUE(coll.db->set_face_person(face_id, person_id));
 
-    fs::path out_path = coll.dir / "rebuild-out.txt";
     PhigRun run = run_phig(phig_bin, coll.dir,
                            "face rebuild --mtach '" + (coll.dir / "f0.jpg").string() +
                                "' --catalog '" + coll.dir.string() + "'");
@@ -630,7 +629,6 @@ TEST(FacesEngineRun, CliRebuildWarnsWhenItDropsALabel) {
     int64_t face_id = coll.db->insert_face(image_id, phantom);
     ASSERT_TRUE(coll.db->set_face_person(face_id, coll.db->get_or_create_person("Ada")));
 
-    fs::path out_path = coll.dir / "rebuild-out.txt";
     // The child's cache is redirected into coll.dir; give it the models this process found.
     fs::create_directories(coll.dir / "xdg" / "cache" / "phig");
     fs::create_directory_symlink(models_dir(), coll.dir / "xdg" / "cache" / "phig" / "models");

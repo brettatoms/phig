@@ -644,9 +644,9 @@ TEST_F(RemoveExecTest, CliRefusesNonInteractiveConfirmationEvenWithPipedYes) {
         }
     }
 
-    PhigRun run =
-        run_phig(phig_bin, cli_root,
-                 "rm --match '*' --hard --catalog '" + (cli_root / "catalog").string() + "'");
+    PhigRun run = run_phig(
+        phig_bin, cli_root,
+        "rm --match '*' --hard --catalog '" + (cli_root / "catalog").string() + "'", "yes");
     int exit_code = run.exit_code;
     const std::string& output = run.output;
 
