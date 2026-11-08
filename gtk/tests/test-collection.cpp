@@ -1,6 +1,7 @@
 #include <glib.h>
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "collection.h"
@@ -18,12 +19,14 @@ namespace {
 struct Fixture {
     fs::path dir;
     std::string db_path;
+    std::optional<std::string> saved_cache_home;  // XDG_CACHE_HOME before the fixture
 
     Fixture() {
         char* tmp = g_dir_make_tmp("phig-gtk-collection-XXXXXX", nullptr);
         g_assert_nonnull(tmp);
         dir = tmp;
         g_free(tmp);
+        if (const char* cache_home = g_getenv("XDG_CACHE_HOME")) saved_cache_home = cache_home;
         g_setenv("XDG_CACHE_HOME", (dir / "cache").c_str(), TRUE);
         db_path = (dir / "phig.db").string();
 
@@ -38,7 +41,10 @@ struct Fixture {
     ~Fixture() {
         std::error_code ec;
         fs::remove_all(dir, ec);
-        g_unsetenv("XDG_CACHE_HOME");
+        if (saved_cache_home)
+            g_setenv("XDG_CACHE_HOME", saved_cache_home->c_str(), TRUE);
+        else
+            g_unsetenv("XDG_CACHE_HOME");
     }
 
     Fixture(const Fixture&) = delete;
