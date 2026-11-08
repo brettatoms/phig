@@ -9,7 +9,7 @@ int main(void) {
     }
     phig_config cfg = {0};
     phig_ctx* ctx = NULL;
-    cfg.db_path = "/nonexistent/phig.db";
+    cfg.catalog_dir = "/nonexistent";
     cfg.mode = PHIG_READ_ONLY;
     if (phig_init(&cfg, &ctx) == PHIG_OK) {
         fprintf(stderr, "expected init failure on bad path\n");

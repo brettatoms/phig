@@ -210,8 +210,21 @@ TEST(Abi, InitFailsOnUnopenableDatabase) {
     phig_ctx* ctx = nullptr;
     cfg.catalog_dir = "/nonexistent-dir-xyz";
     cfg.mode = PHIG_READ_ONLY;
-    EXPECT_NE(phig_init(&cfg, &ctx), PHIG_OK);
+    EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_ERR_DB);
     EXPECT_EQ(ctx, nullptr);
+}
+
+TEST(Abi, ReadWriteInitCreatesAMissingCatalog) {
+    CatalogGuard guard;
+    TempDbPath tmp;
+    const std::string dir = tmp.dir + "/not-yet";
+    phig_config cfg{};
+    cfg.catalog_dir = dir.c_str();
+    cfg.mode = PHIG_READ_WRITE;
+    phig_ctx* ctx = nullptr;
+    ASSERT_EQ(phig_init(&cfg, &ctx), PHIG_OK);
+    EXPECT_TRUE(std::filesystem::exists(dir + "/phig.db"));
+    phig_shutdown(ctx);
 }
 
 TEST(Abi, InitSucceedsAndShutdownIsClean) {

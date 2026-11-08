@@ -24,17 +24,10 @@ namespace {
 struct OpFixture {
     fs::path dir;
     std::string db_path;
-    std::string orig_data;
-    bool had_data = false;
 
     explicit OpFixture(int images = 0) {
         dir = make_temp_dir("libphig-ops");
         db_path = (dir / "phig.db").string();
-
-        const char* xdg = std::getenv("XDG_DATA_HOME");
-        had_data = xdg != nullptr;
-        if (xdg) orig_data = xdg;
-        setenv("XDG_DATA_HOME", dir.c_str(), 1);
 
         Database db(db_path);
         db.init_schema();
@@ -55,11 +48,6 @@ struct OpFixture {
     }
 
     ~OpFixture() {
-        if (had_data) {
-            setenv("XDG_DATA_HOME", orig_data.c_str(), 1);
-        } else {
-            unsetenv("XDG_DATA_HOME");
-        }
         std::error_code ec;
         fs::remove_all(dir, ec);
     }

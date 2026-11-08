@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "paths.h"
@@ -61,8 +62,22 @@ class ScratchHome : public ::testing::Environment {
     fs::path root_;
 };
 
+// phig_init and set_catalog install process-wide state. Clearing it after every
+// test keeps a later test from inheriting a catalog inside a deleted temp dir.
+class ClearInstalledPaths : public ::testing::EmptyTestEventListener {
+    void OnTestEnd(const ::testing::TestInfo&) override {
+        clear_catalog();
+        set_models_dir(std::nullopt);
+    }
+};
+
 const ::testing::Environment* const kScratchHome =
     ::testing::AddGlobalTestEnvironment(new ScratchHome);
+
+const bool kClearInstalledPaths = [] {
+    ::testing::UnitTest::GetInstance()->listeners().Append(new ClearInstalledPaths);
+    return true;
+}();
 
 }  // namespace
 
