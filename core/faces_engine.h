@@ -15,8 +15,8 @@ struct FacesRebuildOptions {
     // re-derives face rows for everything it selects, carrying person labels
     // across by box overlap and dropping those it cannot match, so an unset
     // selection meaning "the whole collection" would be the worst possible
-    // default. cli/ resolves its
-    // --match/--exclude globs through Database::ids_matching before filling it.
+    // default. cli/ resolves its --match/--exclude globs through
+    // Database::ids_matching before filling it.
     std::vector<int64_t> ids;
     int parallel = -1;  // -1 = auto
 };
@@ -51,9 +51,9 @@ struct FacesResult {
     // be silent either — without this an unreadable file is indistinguishable
     // from one containing no faces.
     size_t errors = 0;
-    // Person labels on faces this run did not detect again. A rebuild carries
-    // each label to the new face whose box overlaps it most (carry_labels);
-    // these found no overlap at or above kLabelCarryMinOverlap and are gone.
+    // Person labels on faces this run did not detect again. A rebuild matches
+    // labels to new faces by box overlap (carry_labels); these found no match
+    // at or above kLabelCarryMinOverlap and are gone.
     size_t labels_dropped = 0;
     bool completed = true;
 };

@@ -184,12 +184,19 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
                     std::vector<LabelledFace> named = db_.get_labelled_faces_for_image(image_id);
                     LabelCarry carry = carry_labels(named, faces);
                     db_.delete_faces_for_image(image_id);
+                    // Carried labels are all written before any auto-label runs,
+                    // so auto_label_face sees them whatever the detection order.
+                    std::vector<int64_t> face_ids;
+                    face_ids.reserve(faces.size());
                     for (size_t i = 0; i < faces.size(); ++i) {
-                        int64_t face_id = db_.insert_face(image_id, faces[i]);
+                        face_ids.push_back(db_.insert_face(image_id, faces[i]));
                         if (carry.person_ids[i] >= 0) {
-                            db_.set_face_person(face_id, carry.person_ids[i]);
-                        } else {
-                            db_.auto_label_face(face_id, faces[i].embedding);
+                            db_.set_face_person(face_ids[i], carry.person_ids[i]);
+                        }
+                    }
+                    for (size_t i = 0; i < faces.size(); ++i) {
+                        if (carry.person_ids[i] < 0) {
+                            db_.auto_label_face(face_ids[i], faces[i].embedding);
                         }
                     }
                     db_.commit_transaction();
