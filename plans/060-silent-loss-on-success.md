@@ -317,11 +317,11 @@ Inside the per-image transaction `FacesEngine::run` already opens
 4. Call `auto_label_face` only for faces still unlabelled.
 
 Box overlap is the only test. An embedding-distance check was considered and
-rejected: rebuilt with the same model, the detector is deterministic and the
-embeddings are identical, so the check adds nothing; rebuilt with a different
-recognition model, the embeddings are not comparable, so the check would reject
-every match and drop every label in the one case a rebuild is most often run
-for.
+rejected: re-detecting with the same model over the same pixels reproduced
+every stored box exactly (measured; embeddings were not measured), so the check
+would add nothing; rebuilt with a different recognition model, the embeddings
+are not comparable, so the check would reject every match and drop every label
+in the one case a rebuild is most often run for.
 
 This removes the order dependence that made open question 1 hard. A label
 belongs to a face in one image and is matched within that image, so it no longer
@@ -352,7 +352,14 @@ To settle during implementation:
   is still dropped without it, and is reported afterwards. The rule keeps its
   statement and 060 keeps claiming it.
 
-The R60 fix shipped on branch `060-r60-label-carry`. Measured on 290 images
+- **Scan is not affected.** Both scan paths that write faces
+  (`core/scan_engine.cpp:255`, `:371`) skip an image that already has faces, so
+  `FacesEngine::run` is the only path that re-detects over labelled faces.
+  Scan does delete faces when a file's content changes (`core/database.cpp:661`),
+  which drops their labels too. That is a different case, an edited photo
+  rather than a re-detection, and is not covered by this decision.
+
+The R60 fix is implemented on branch `060-r60-label-carry`. Measured on 290 images
 (564 stored faces) of the real collection, re-detection with the same model
 reproduced every box exactly (overlap 1.0), so every label carried at the 0.5
 threshold. That data did not exercise the threshold itself. R60 is now
@@ -360,12 +367,6 @@ threshold. That data did not exercise the threshold itself. R60 is now
 reported afterwards, by a CLI warning, `FacesResult::labels_dropped` and
 `phig_faces_result.labels_dropped`. The execution record is
 `docs/plans/2026-11-07-060-r60-label-carry.md`.
-- **Scan is not affected.** Both scan paths that write faces
-  (`core/scan_engine.cpp:255`, `:371`) skip an image that already has faces, so
-  `FacesEngine::run` is the only path that re-detects over labelled faces.
-  Scan does delete faces when a file's content changes (`core/database.cpp:661`),
-  which drops their labels too. That is a different case, an edited photo
-  rather than a re-detection, and is not covered by this decision.
 
 ## Open
 

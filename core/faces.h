@@ -45,8 +45,9 @@ struct LabelCarry {
 };
 
 // Minimum box overlap (intersection over union) for a new detection to take an
-// old face's label. Confirmed against a real collection; see
-// docs/plans/2026-11-07-060-r60-label-carry.md, Task 3.
+// old face's label. Re-detecting 564 stored faces with the same model over the
+// same pixels reproduced every box exactly, so this value was not exercised by
+// that measurement; see docs/plans/2026-11-07-060-r60-label-carry.md.
 inline constexpr float kLabelCarryMinOverlap = 0.5f;
 
 // Per-thread face detector using OpenCV DNN (YuNet + SFace)
@@ -86,9 +87,9 @@ float box_overlap(const FaceInfo& a, const FaceInfo& b);
 // Matches an image's labelled faces to that image's new detections by box
 // overlap, greedily from the highest overlap down and one-to-one, accepting a
 // pair only at or above `min_overlap`. Box overlap is the only test: with the
-// same model the embeddings are identical, and with a different model they are
-// not comparable, so an embedding check would drop every label in a
-// model-change rebuild.
+// same model and pixels the boxes reproduce exactly (measured; embeddings were
+// not), and with a different model embeddings are not comparable, so an
+// embedding check would drop every label in a model-change rebuild.
 LabelCarry carry_labels(const std::vector<LabelledFace>& labelled,
                         const std::vector<FaceInfo>& detected,
                         float min_overlap = kLabelCarryMinOverlap);

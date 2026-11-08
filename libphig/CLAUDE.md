@@ -85,7 +85,7 @@ subject is files that have no row yet.
 
 **An empty id list selects nothing, not everything.** Before ids, an operation
 given no filter ran over the whole collection, so a caller that forgot to name a
-subject swept it — and a faces rebuild deletes person labels (R60). NULL/0 is
+subject swept it — and a faces rebuild drops the person labels it cannot carry (R60). NULL/0 is
 now a no-op. `cli/` preserves its own behaviour by resolving every id when no
 `--match` is given, which is what a caller asking for the whole collection has
 to do too: say so.

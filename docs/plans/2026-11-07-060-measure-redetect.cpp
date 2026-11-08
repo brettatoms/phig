@@ -1,7 +1,6 @@
 // Measures how closely a fresh face detection reproduces the faces a collection
-// already stores, to confirm kLabelCarryMinOverlap from data rather than choose
-// it. Treats every stored face as labelled, so "carried" is the share of faces
-// a rebuild would keep a label on.
+// already stores. Treats every stored face as labelled, so "carried" is the
+// share of faces a rebuild would keep a label on.
 //
 // Read-only: opens the database with SQLITE_OPEN_READONLY and never constructs
 // phig's Database, which opens read-write and migrates.
@@ -99,14 +98,14 @@ int main(int argc, char** argv) {
         return static_cast<size_t>(best.end() - std::lower_bound(best.begin(), best.end(), t));
     };
 
-    std::printf("images with faces: %zu, measured: %zu, unreadable: %zu\n", images.size(),
-                measured, unreadable);
+    std::printf("images with faces: %zu, measured: %zu, unreadable: %zu\n", images.size(), measured,
+                unreadable);
     std::printf("images whose face count changed: %zu\n", count_changed);
     std::printf("stored faces: %zu, carried at %.2f: %zu (%.2f%%)\n", stored_total,
                 kLabelCarryMinOverlap, carried,
                 stored_total ? 100.0 * carried / stored_total : 0.0);
-    std::printf("best overlap per stored face: p0.1 %.3f  p1 %.3f  p5 %.3f  p50 %.3f\n",
-                pct(0.001), pct(0.01), pct(0.05), pct(0.5));
+    std::printf("best overlap per stored face: p0.1 %.3f  p1 %.3f  p5 %.3f  p50 %.3f\n", pct(0.001),
+                pct(0.01), pct(0.05), pct(0.5));
     std::printf("  == 1.0: %zu\n", at_least(1.0f));
     for (float t : {0.9f, 0.7f, 0.5f, 0.3f, 0.0f}) {
         std::printf("  >= %.1f: %zu\n", t, at_least(t));

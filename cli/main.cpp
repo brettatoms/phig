@@ -1520,7 +1520,7 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         }
         if (result.labels_dropped > 0) {
             log_warn(std::to_string(result.labels_dropped) +
-                     " person label(s) dropped: their faces were not detected again");
+                     " person label(s) dropped: no re-detected face matched them");
         }
         return 0;
 

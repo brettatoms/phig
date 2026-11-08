@@ -53,7 +53,7 @@ struct FacesResult {
     size_t errors = 0;
     // Person labels on faces this run did not detect again. A rebuild matches
     // labels to new faces by box overlap (carry_labels); these found no match
-    // at or above kLabelCarryMinOverlap and are gone.
+    // at or above kLabelCarryMinOverlap to a re-detected face.
     size_t labels_dropped = 0;
     bool completed = true;
 };
