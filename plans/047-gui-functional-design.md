@@ -781,7 +781,10 @@ Out of scope for initial release.
   Organize and Scan dialogs depend on)
 - **042** — organize engine (cp/mv as ABI entry points with progress)
 - **043** — CLI primitive split (validates that scan/thumbs/faces are separable
-  operations the GUI can call independently)
+  operations a GUI can call independently). Not a dependency of the GTK client,
+  which calls the engines through `core/`.
+- **061** — the GTK client links `core/` directly, so it does not wait on
+  libphig coverage (053). The macOS and Windows clients still do.
 
 ## Open questions
 

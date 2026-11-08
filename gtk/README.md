@@ -2,8 +2,7 @@
 
 GTK4/libadwaita desktop client for phig, a C++ image-collection CLI, living
 alongside it in this monorepo (`gtk/` next to `core/`, `libphig/`, `cli/`).
-Talks to phig only through `libphig`'s C ABI (`<phig/phig.h>`) — never a
-`core/` header, never a `cv::Mat`.
+Links `phig-core` directly through one seam, `src/collection.h`.
 
 ## Setup
 
@@ -23,21 +22,16 @@ sudo pacman -S gtk4 libadwaita
 brew install gtk4 libadwaita
 ```
 
-phig-gtk links against `libphig`, discovered via `pkg-config`. Install phig to
-`~/.local` before the first build. `~/.local/lib/pkgconfig` is not on
-`pkg-config`'s default search path, so export `PKG_CONFIG_PATH` too (add it to
-your shell profile so it persists):
-
-```bash
-cd .. && cmake --install build --prefix ~/.local
-export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig:$PKG_CONFIG_PATH"
-```
+phig's own native libraries are needed too; see the root `README.md`.
 
 ## Build
 
 ```bash
-cmake -B build && cmake --build build -j
-./build/phig-gtk
+cd ..   # the repository root
+cmake -B build -DPHIG_BUILD_GTK=ON
+cmake --build build --target phig-gtk -j
+./build/gtk/phig-gtk [path/to/phig.db]
+ctest --test-dir build -L gtk
 ```
 
 ## Measured performance (Task 7)
@@ -46,7 +40,7 @@ Measured against the real collection (`~/.local/share/phig/phig.db`, 29,953
 rows) with a Wayland session, on this machine (12 cores, NVMe thumbnail
 cache, HDD-backed source photos). Startup is 5 runs (median shown); frame
 timing is via `gtk_widget_add_tick_callback` on the grid, driven by a
-`PHIG_MEASURE=1` scroll harness (see `src/main.c`) since no input-injection
+`PHIG_MEASURE=1` scroll harness (see `src/main.cpp`) since no input-injection
 path exists in this environment.
 
 | Metric | Value |
@@ -83,7 +77,7 @@ Taken together there is no evidence the grid misses 60 fps while visible and
 focused. The measured cost of the thumbnail path is also ~zero: with thumbnail
 loading stubbed out entirely, frame timing is unchanged.
 
-Chosen values (see comments in `src/main.c` and `src/gallery-model.c` for the
+Chosen values (see comments in `src/main.cpp` and `src/gallery-model.c` for the
 measurements behind each):
 
 | Value | Chosen | Rationale |

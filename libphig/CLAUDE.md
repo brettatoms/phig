@@ -1,13 +1,14 @@
 # libphig/
 
-The versioned C ABI (`libphig.so`) — the boundary for foreign callers
-(`gtk/`, and later Elixir). ABI 1.4, soname 1, 73 exported symbols. Hidden
-visibility by default; the exported surface is declared explicitly by a
-linker version script (`libphig/phig.version` on Linux,
-`libphig/phig.exported_symbols` on macOS), not inferred from headers.
+The versioned C ABI (`libphig.so`) — the boundary for clients that cannot link
+`core/`: the planned macOS and Windows clients. `gtk/` links `core/` directly,
+and the web tier is an HTTP client of `phigd` (plan 052). ABI 1.4, soname 1, 73
+exported symbols. Hidden visibility by default; the exported surface is
+declared explicitly by a linker version script (`libphig/phig.version` on
+Linux, `libphig/phig.exported_symbols` on macOS), not inferred from headers.
 
 Public header: `libphig/include/phig/phig.h`. This is the only header a
-client may include — see `gtk/CLAUDE.md`.
+foreign client may include.
 
 ## Coverage — and what it lags
 
@@ -100,9 +101,9 @@ wrapper around it** — it is phig running in a terminal, entitled to whatever
 `core/` has when core has it, which is the same standing plan 052 claims for
 `phigd`. Anything written as though the CLI sits on libphig is wrong.
 
-Pixel decoding is also absent. `gtk/CLAUDE.md` anticipates decode moving
-out-of-process; measurement (0 crashes in 12,684 probes) argues in-process is
-defensible. Unresolved, and out of scope for plan 031.
+Pixel decoding is also absent. `gtk/` decodes through `core/` in-process, on
+the measurement of 0 crashes in 12,684 probes. Whether the ABI exposes decode
+is open, and out of scope for plan 031.
 
 ## Rules
 

@@ -1,77 +1,89 @@
 #include <glib.h>
-#include <phig/phig.h>
+
+#include "fake-collection.h"
 #include "gallery-model.h"
 
+/* Five full pages of 200 and a short sixth of 50. */
+#define N_ROWS 1050
+
 typedef struct {
-    phig_ctx* ctx;
-    phig_query* query;
+    PhigCollection* coll;
     PhigGalleryModel* model;
-    int64_t total;
 } Fixture;
 
 static void fixture_set_up(Fixture* f, gconstpointer unused) {
     (void)unused;
-    const char* db = g_getenv("PHIG_TEST_DB");
-    g_assert_nonnull(db);
-    phig_config cfg = {0};
-    cfg.db_path = db;
-    cfg.mode = PHIG_READ_ONLY;
-    g_assert_cmpint(phig_init(&cfg, &f->ctx), ==, PHIG_OK);
-    g_assert_cmpint(phig_query_new(f->ctx, &f->query), ==, PHIG_OK);
-    phig_query_set_sort(f->query, PHIG_SORT_DATE, TRUE);
-    g_assert_cmpint(phig_query_count(f->ctx, f->query, &f->total), ==, PHIG_OK);
-    f->model = phig_gallery_model_new(f->ctx, f->query);
+    f->coll = fake_collection_new(N_ROWS);
+    f->model = phig_gallery_model_new(f->coll);
 }
 
+/* The model goes first: its dispose waits for any page fetch still using the
+ * collection. */
 static void fixture_tear_down(Fixture* f, gconstpointer unused) {
     (void)unused;
     g_clear_object(&f->model);
-    phig_query_free(f->query);
-    phig_shutdown(f->ctx);
+    phig_collection_close(f->coll);
 }
 
 static void test_n_items_matches_count(Fixture* f, gconstpointer unused) {
     (void)unused;
-    g_assert_cmpuint(g_list_model_get_n_items(G_LIST_MODEL(f->model)), ==,
-                     (guint)f->total);
+    g_assert_cmpuint(g_list_model_get_n_items(G_LIST_MODEL(f->model)), ==, N_ROWS);
 }
 
 static void test_out_of_range_returns_null(Fixture* f, gconstpointer unused) {
     (void)unused;
-    g_assert_null(g_list_model_get_item(G_LIST_MODEL(f->model), (guint)f->total));
-    g_assert_null(g_list_model_get_item(G_LIST_MODEL(f->model), (guint)f->total + 1000));
+    g_assert_null(g_list_model_get_item(G_LIST_MODEL(f->model), N_ROWS));
+    g_assert_null(g_list_model_get_item(G_LIST_MODEL(f->model), N_ROWS + 1000));
 }
 
 static void test_get_item_returns_a_row_without_blocking(Fixture* f, gconstpointer unused) {
     (void)unused;
-    /* A cold model has no resident page, so this exercises the placeholder path.
-     * It must return an object immediately rather than fetching synchronously.
-     * A synchronous implementation would have installed the page by the time
-     * get_item returns, so asserting the page is still non-resident right
-     * after the call is what actually distinguishes "returned a placeholder"
-     * from "blocked and returned the real row". */
+    /* A cold model has no resident page, so this takes the placeholder path. A
+     * synchronous implementation would have installed the page by the time
+     * get_item returns, so the page still being non-resident is what shows a
+     * placeholder came back rather than a blocking fetch. */
     GObject* item = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
     g_assert_nonnull(item);
     g_assert_true(PHIG_IS_IMAGE_ROW(item));
+    g_assert_true(phig_image_row_is_placeholder(PHIG_IMAGE_ROW(item)));
     g_assert_cmpuint(phig_gallery_model_resident_page_count(f->model), ==, 0);
     g_object_unref(item);
 }
 
+static void test_rows_carry_the_collections_fields(Fixture* f, gconstpointer unused) {
+    (void)unused;
+    phig_gallery_model_fetch_page_sync(f->model, 1);
+    PhigImageRow* row = PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(f->model), 250));
+    g_assert_false(phig_image_row_is_placeholder(row));
+
+    char sha[65];
+    fake_collection_sha(250, sha);
+    g_assert_cmpint(phig_image_row_get_id(row), ==, 251);
+    g_assert_cmpstr(phig_image_row_get_sha256(row), ==, sha);
+    g_assert_cmpstr(phig_image_row_get_path(row), ==, "/fake/250.jpg");
+    g_assert_cmpstr(phig_image_row_get_filename(row), ==, "250.jpg");
+    g_object_unref(row);
+}
+
+static void test_last_page_is_short(Fixture* f, gconstpointer unused) {
+    (void)unused;
+    phig_gallery_model_fetch_page_sync(f->model, 5);
+    PhigImageRow* row = PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(f->model), N_ROWS - 1));
+    g_assert_false(phig_image_row_is_placeholder(row));
+    g_assert_cmpint(phig_image_row_get_id(row), ==, N_ROWS);
+    g_object_unref(row);
+}
+
 static void test_row_strings_survive_page_eviction(Fixture* f, gconstpointer unused) {
     (void)unused;
-    /* The ownership rule: a row must own copies, so it stays valid after its
-     * page's phig_image_list is freed and after enough scrolling to evict it. */
-    PhigImageRow* row =
-        PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
-    g_assert_nonnull(row);
-    g_object_unref(row); /* placeholder from the cold lookup above; not the one under test */
-    phig_gallery_model_fetch_page_sync(f->model, 0);           /* test-only helper */
-    row = PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
+    /* A row owns copies of its strings, so it stays valid after its page is
+     * freed and evicted. */
+    phig_gallery_model_fetch_page_sync(f->model, 0);
+    PhigImageRow* row = PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
     char* sha_copy = g_strdup(phig_image_row_get_sha256(row));
 
-    /* Walk far enough to evict page 0 under any sane resident-window size. */
-    for (guint i = 0; i < (guint)f->total; i += 200)
-        phig_gallery_model_fetch_page_sync(f->model, i / 200);
+    for (guint page = 0; page * 200 < N_ROWS; page++)
+        phig_gallery_model_fetch_page_sync(f->model, page);
 
     g_assert_cmpstr(phig_image_row_get_sha256(row), ==, sha_copy);
     g_free(sha_copy);
@@ -81,24 +93,17 @@ static void test_row_strings_survive_page_eviction(Fixture* f, gconstpointer unu
 static void test_placeholders_are_unique_per_position(Fixture* f, gconstpointer unused) {
     (void)unused;
     /* GTK's list-item manager keys recycled widgets by item pointer identity
-     * (glib#3030): one placeholder object shared across positions makes it
-     * pick a widget for the wrong position at random, which is what shipped
-     * as 223 "Duplicate item detected" warnings and an empty-looking grid.
-     * GtkSelectionModel separately requires that repeated queries of the
-     * SAME position return the same object, or selection breaks. Both must
-     * hold at once: distinct positions get distinct placeholders, and asking
-     * for one position twice gets the same placeholder both times. */
+     * (glib#3030): one placeholder shared across positions makes it pick a
+     * widget for the wrong position. GtkSelectionModel separately requires the
+     * same object for repeated queries of one position. Both must hold. */
     GObject* a1 = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
     GObject* b1 = g_list_model_get_item(G_LIST_MODEL(f->model), 400);
     GObject* a2 = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
 
-    g_assert_true(PHIG_IS_IMAGE_ROW(a1));
-    g_assert_true(PHIG_IS_IMAGE_ROW(b1));
     g_assert_true(phig_image_row_is_placeholder(PHIG_IMAGE_ROW(a1)));
     g_assert_true(phig_image_row_is_placeholder(PHIG_IMAGE_ROW(b1)));
-
-    g_assert_true(a1 != b1);  /* distinct positions: distinct objects */
-    g_assert_true(a1 == a2);  /* same position asked twice: same object */
+    g_assert_true(a1 != b1);
+    g_assert_true(a1 == a2);
 
     g_object_unref(a1);
     g_object_unref(b1);
@@ -107,8 +112,8 @@ static void test_placeholders_are_unique_per_position(Fixture* f, gconstpointer 
 
 static void test_resident_pages_stay_bounded(Fixture* f, gconstpointer unused) {
     (void)unused;
-    for (guint i = 0; i < (guint)f->total; i += 200)
-        phig_gallery_model_fetch_page_sync(f->model, i / 200);
+    for (guint page = 0; page * 200 < N_ROWS; page++)
+        phig_gallery_model_fetch_page_sync(f->model, page);
     g_assert_cmpuint(phig_gallery_model_resident_page_count(f->model), <=,
                      phig_gallery_model_get_max_resident_pages(f->model));
 }
@@ -122,7 +127,7 @@ typedef struct {
 } ItemsChangedCapture;
 
 static void on_items_changed(GListModel* model, guint position, guint removed, guint added,
-                              gpointer user_data) {
+                             gpointer user_data) {
     (void)model;
     ItemsChangedCapture* capture = user_data;
     capture->fired = TRUE;
@@ -133,31 +138,30 @@ static void on_items_changed(GListModel* model, guint position, guint removed, g
 }
 
 static gboolean on_timeout(gpointer user_data) {
-    GMainLoop* loop = user_data;
-    g_main_loop_quit(loop);
+    g_main_loop_quit(user_data);
     return G_SOURCE_REMOVE;
+}
+
+static void disarm_timeout(guint timeout_id) {
+    if (g_main_context_find_source_by_id(NULL, timeout_id) != NULL)
+        g_source_remove(timeout_id);
 }
 
 static void test_async_fetch_emits_items_changed(Fixture* f, gconstpointer unused) {
     (void)unused;
-    /* The real path: get_item schedules a GTask fetch on a worker thread and
-     * returns a placeholder immediately. This drives an actual GMainLoop so
-     * the GTask's completion callback (fetch_page_done) can be dispatched,
-     * and asserts the exact items-changed arguments a GtkGridView relies on
-     * to re-query get_item for the range that just became resident. A 5s
-     * timeout guards against a hang if the callback never fires. */
+    /* The real path: get_item schedules a GTask fetch and returns a
+     * placeholder. The completion callback runs on the main loop and emits the
+     * items-changed a GtkGridView needs to re-query the range. */
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     ItemsChangedCapture capture = {.loop = loop, .fired = FALSE};
     gulong handler_id =
         g_signal_connect(f->model, "items-changed", G_CALLBACK(on_items_changed), &capture);
     guint timeout_id = g_timeout_add_seconds(5, on_timeout, loop);
 
-    GObject* placeholder = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
-    g_object_unref(placeholder);
-
+    g_object_unref(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
     g_main_loop_run(loop);
 
-    g_source_remove(timeout_id);
+    disarm_timeout(timeout_id);
     g_signal_handler_disconnect(f->model, handler_id);
     g_main_loop_unref(loop);
 
@@ -168,21 +172,54 @@ static void test_async_fetch_emits_items_changed(Fixture* f, gconstpointer unuse
     g_assert_cmpuint(phig_gallery_model_resident_page_count(f->model), ==, 1);
 }
 
+typedef struct {
+    GMainLoop* loop;
+    gboolean fired;
+} FailedCapture;
+
+static void on_page_fetch_failed(PhigGalleryModel* model, gpointer user_data) {
+    (void)model;
+    FailedCapture* capture = user_data;
+    capture->fired = TRUE;
+    g_main_loop_quit(capture->loop);
+}
+
+static void test_failed_fetch_emits_page_fetch_failed(Fixture* f, gconstpointer unused) {
+    (void)unused;
+    fake_collection_fail_pages(f->coll, TRUE);
+    GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    FailedCapture capture = {.loop = loop, .fired = FALSE};
+    gulong handler_id = g_signal_connect(f->model, "page-fetch-failed",
+                                         G_CALLBACK(on_page_fetch_failed), &capture);
+    guint timeout_id = g_timeout_add_seconds(5, on_timeout, loop);
+    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING, "gallery model: page 0 fetch failed*");
+
+    g_object_unref(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
+    g_main_loop_run(loop);
+
+    disarm_timeout(timeout_id);
+    g_signal_handler_disconnect(f->model, handler_id);
+    g_main_loop_unref(loop);
+
+    g_test_assert_expected_messages();
+    g_assert_true(capture.fired);
+    g_assert_cmpuint(phig_gallery_model_resident_page_count(f->model), ==, 0);
+}
+
 int main(int argc, char** argv) {
     g_test_init(&argc, &argv, NULL);
-    if (!g_getenv("PHIG_TEST_DB")) {
-        g_printerr("PHIG_TEST_DB unset; skipping\n");
-        return 77; /* automake/ctest skip convention */
-    }
 #define T(name, fn) \
     g_test_add("/gallery-model/" name, Fixture, NULL, fixture_set_up, fn, fixture_tear_down)
     T("n-items-matches-count", test_n_items_matches_count);
     T("out-of-range-returns-null", test_out_of_range_returns_null);
     T("get-item-no-block", test_get_item_returns_a_row_without_blocking);
+    T("rows-carry-the-collections-fields", test_rows_carry_the_collections_fields);
+    T("last-page-is-short", test_last_page_is_short);
     T("row-strings-survive-eviction", test_row_strings_survive_page_eviction);
     T("resident-pages-bounded", test_resident_pages_stay_bounded);
     T("placeholders-unique-per-position", test_placeholders_are_unique_per_position);
     T("async-fetch-emits-items-changed", test_async_fetch_emits_items_changed);
+    T("failed-fetch-emits-page-fetch-failed", test_failed_fetch_emits_page_fetch_failed);
 #undef T
     return g_test_run();
 }

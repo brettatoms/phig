@@ -225,6 +225,12 @@ core_internal = [
     "remove_media_with_sidecars",  # dispatches to the two actions above;
                                     # called only from cmd_rm
                                     # (remove.trash/remove.hard)
+    "ensure_thumb",                # thumbs.rebuild's single-row
+                                    # generation; writes one cache file. The
+                                    # exception to "no caller outside core/":
+                                    # libphig's phig_thumb_generate, a
+                                    # thumbs.rebuild surface, and the gtk
+                                    # client's collection seam both call it
     "ScanEngine::run",             # composition of scan.walk +
                                     # scan.reconcile with zero production
                                     # callers — cli/main.cpp and libphig/

@@ -2,12 +2,9 @@
 
 #include <cctype>
 #include <cstring>
-#include <filesystem>
 #include <string>
 
-#include "hasher.h"
 #include "internal.h"
-#include "types.h"
 
 namespace {
 bool is_hex64(const char* s) {
@@ -39,22 +36,16 @@ extern "C" phig_status phig_thumb_lookup(phig_ctx* ctx, const char* sha256, int 
 extern "C" phig_status phig_thumb_generate(phig_ctx* ctx, int64_t image_id, int size) {
     if (size <= 0) return PHIG_ERR_INVALID_ARG;
     PHIG_TRY(ctx)
-    ImageInfo img;
-    if (!ctx->db->get_image_for_thumb(image_id, img)) return PHIG_ERR_DB;
-    if (img.sha256.empty()) return PHIG_ERR_DB;
-
-    if (thumb_exists(img.sha256, size)) return PHIG_OK;
-
-    std::error_code ec;
-    if (!std::filesystem::exists(img.path, ec)) return PHIG_ERR_NOT_FOUND;
-
-    bool ok = false;
-    if (img.media_type == "video") {
-        auto kf = extract_video_keyframe(img.path);
-        if (!kf.frame.empty()) ok = generate_thumb(kf.frame, img.sha256, size);
-    } else {
-        ok = generate_thumb(img.path, img.sha256, size);
+    switch (ensure_thumb(*ctx->db, image_id, size)) {
+        case EnsureThumb::Ok:
+            return PHIG_OK;
+        case EnsureThumb::NoSuchRow:
+            return PHIG_ERR_DB;
+        case EnsureThumb::SourceMissing:
+            return PHIG_ERR_NOT_FOUND;
+        case EnsureThumb::Failed:
+            return PHIG_ERR_INTERNAL;
     }
-    return ok ? PHIG_OK : PHIG_ERR_INTERNAL;
+    return PHIG_ERR_INTERNAL;
     PHIG_CATCH(ctx)
 }

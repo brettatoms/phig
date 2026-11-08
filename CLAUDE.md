@@ -4,8 +4,8 @@ phig is an image-management engine: it scans image and video directories,
 builds a metadata/hash database, detects duplicates, and organizes files into
 a structured folder layout. Three consumers sit on top of the engine: the
 `cli/` command-line tool, the `gtk/` desktop client (M0 — a working thumbnail
-grid, not a finished app), and `libphig/`, the versioned C ABI for foreign
-callers such as a future Elixir web client.
+grid, not a finished app), and `libphig/`, the versioned C ABI for clients
+that cannot link `core/`, such as the planned macOS and Windows clients.
 
 This file is the single root guidance file for the monorepo. Each directory
 below has its own `CLAUDE.md` with directory-specific rules; this file covers
@@ -17,7 +17,7 @@ tools that look for that filename resolve to something.
 | Path | What it is | Stability |
 |---|---|---|
 | `core/` | C++ engine: scanning, hashing, EXIF, database, the five engines. | Internal, no promise |
-| `libphig/` | Versioned C ABI (`libphig.so`) for foreign callers. | Versioned boundary |
+| `libphig/` | Versioned C ABI (`libphig.so`) for clients that cannot link `core/`. | Versioned boundary |
 | `cli/` | `phig` command-line tool: argv parsing, output rendering. | — |
 | `gtk/` | GTK4/libadwaita desktop client. | M0, in progress |
 | `tests/` | GoogleTest suite (fast + perf) covering `core/`, `libphig/`. | — |
@@ -94,8 +94,12 @@ failed 2 of 6 parallel runs before this and 0 of 10 after. It costs about 5s of
 a 19s run. **A new wall-clock or ratio assertion belongs in `phig-perf-tests`
 for this reason, not only for runtime.**
 
-`gtk/` has its own build (`cmake -B build && cmake --build build -j` from
-inside `gtk/`) and 13 tests across two binaries — see `gtk/CLAUDE.md`.
+`gtk/` builds inside the root build when configured with
+`-DPHIG_BUILD_GTK=ON`. The option is off by default, so a plain build needs
+neither gtk4 nor libadwaita. `cmake --build build --target phig-gtk` then
+builds the client and `phig-core` only. Its 28 tests across three binaries
+carry the ctest label `gtk` (`ctest --test-dir build -L gtk`) and need no
+collection. See `gtk/CLAUDE.md`.
 
 ### Sanitizers
 
@@ -210,9 +214,9 @@ you have actually scanned and state where.
 - **CI:** `.github/workflows/ci.yml` runs four jobs — build + test on
   ubuntu-latest, ubuntu-26.04 and macos-latest (with `-DPHIG_WERROR=ON`, and
   the rules gate above split across the two ubuntu legs), ASan+UBSan and TSan
-  (see Sanitizers above), a gtk job that installs libphig and then builds and
-  tests `gtk/` against it through pkg-config, and the lint gate. GitHub Actions
-  are pinned to full commit SHAs.
+  (see Sanitizers above), a gtk job that configures the root build with
+  `-DPHIG_BUILD_GTK=ON` and builds and tests the client, and the lint gate.
+  GitHub Actions are pinned to full commit SHAs.
 
   **Two ubuntu legs, because OpenCV's version decides whether phig can detect a
   face.** `ubuntu-latest` is 24.04 and ships libopencv-dev 4.6.0, below the
@@ -261,15 +265,17 @@ you have actually scanned and state where.
 
 ## Interface discipline
 
-**Clients go through phig's defined interfaces only.** A client reads phig
-through `libphig`'s C ABI (`<phig/phig.h>`) when the collection is local, and
-through the phig wire protocol when it is remote — plan 052, `designing`;
-`phigd` does not exist yet, so `libphig` is the only interface that works
-today. No client reads phig's SQLite schema, table names, or thumbnail cache
-layout directly — those are private and change. The two interfaces cover the
-same capabilities deliberately: a client chooses a transport at connect time,
-it does not learn a second vocabulary. When a client needs something an
-interface lacks, the capability is added there and tracked in `plans/`.
+**Foreign clients go through phig's defined interfaces only.** A client that
+cannot link `core/` — the planned macOS (Swift) and Windows (C#/C++) clients —
+reads phig through `libphig`'s C ABI (`<phig/phig.h>`) when the collection is
+local, and through the phig wire protocol when it is remote — plan 052,
+`designing`; `phigd` does not exist yet, so `libphig` is the only interface
+that works today. No client reads phig's SQLite schema, table names, or
+thumbnail cache layout directly — those are private and change. The two
+interfaces cover the same capabilities deliberately: a client chooses a
+transport at connect time, it does not learn a second vocabulary. When a client
+needs something an interface lacks, the capability is added there and tracked
+in `plans/`.
 
 **libphig should reach all of phig's features, not the subset it reaches
 today.** A capability that exists only in `core/` and `cli/` is a gap with a
@@ -278,16 +284,17 @@ read the ABI's current coverage as the limit of what phig can offer.
 Deliberate exclusions are few and are named in `libphig/CLAUDE.md`, which also
 carries the inventory of what is missing; plan 053 tracks closing it.
 
-**Non-GUI functionality belongs in libphig, not the clients.** Logic that
+**Non-GUI functionality belongs in `core/`, not the clients.** Logic that
 isn't specific to rendering a UI — filtering, formatting, business rules —
-goes in `core/` behind a `libphig` entry point, not duplicated in `gtk/` or
-any other client.
+goes in `core/`, where `cli/` and `gtk/` call it directly and libphig
+exposes it to the clients that cannot. A client never holds its own copy.
 
-**`cli/` — and `phigd` when it exists — are peers of libphig over `core/`, not
-clients of it.** Both link `phig-core` and include `core/` headers directly,
-so both are entitled to whatever `core/` has the moment it lands. That
-standing comes from being phig rather than a foreign caller; it is not a
-licence for a client to do the same.
+**`cli/`, `gtk/` — and `phigd` when it exists — are peers of libphig over
+`core/`, not clients of it.** Each links `phig-core` and includes `core/`
+headers directly, so each is entitled to whatever `core/` has the moment it
+lands. That standing comes from being phig, built in this repository, rather
+than a foreign caller. `gtk/` makes every `core/` call from one file,
+`gtk/src/collection.cpp`; see `gtk/CLAUDE.md`.
 
 ## Platform boundaries
 
@@ -309,8 +316,9 @@ rather than one portable client.
 | `windows/` | Windows — WinUI 3. Planned, see 047 |
 
 Being platform-specific buys a client native UI and native performance work.
-It does not buy it a private path into phig's data: every client still reads
-phig through a defined interface only, per Interface discipline above.
+It does not buy it a private path into phig's data: a client reads phig through
+`core/`'s headers or a defined interface, never the database or the thumbnail
+cache directly, per Interface discipline above.
 
 Current state: macOS builds and tests green in CI. Windows is not yet a
 supported target — plan 039 tracks the remaining port, where `lockfile.cpp` is
