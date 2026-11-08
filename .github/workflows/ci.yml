@@ -369,9 +369,9 @@ jobs:
           path: sanlogs/
           if-no-files-found: ignore
 
-  # gtk/ is a separate CMake project that consumes phig through pkg-config
-  # rather than by source path, so this installs libphig first and points
-  # PKG_CONFIG_PATH at it. Linux only — gtk/ is the Linux client (see
+  # gtk/ builds inside the root build with -DPHIG_BUILD_GTK=ON. Building only
+  # the gtk targets keeps phig-tests and phig-perf-tests, which the ubuntu
+  # test job owns, out of this job. Linux only — gtk/ is the Linux client (see
   # "Platform boundaries" in CLAUDE.md).
   gtk:
     name: build & test (gtk)
@@ -399,29 +399,16 @@ jobs:
           key: ccache-gtk-${{ github.sha }}
           restore-keys: ccache-gtk-
 
-      # Only the two targets `cmake --install` needs. phig-tests and
-      # phig-perf-tests are half the build and belong to the ubuntu test job —
-      # measured on 12 cores, 35s for everything against 18s for these two. The
-      # phig CLI is here because install(TARGETS phig) fails without it, not
-      # because gtk/ has any use for it.
-      - name: Build and install libphig
-        run: |
-          cmake -B build -DPHIG_WERROR=ON \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build --parallel "$(getconf _NPROCESSORS_ONLN)" --target phig_abi phig
-          cmake --install build --prefix "$PWD/prefix"
-          ccache --show-stats
-
       - name: Build gtk client
         run: |
-          PKG_CONFIG_PATH="$PWD/prefix/lib/pkgconfig" \
-            cmake -S gtk -B gtk/build \
+          cmake -B build -DPHIG_WERROR=ON -DPHIG_BUILD_GTK=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build gtk/build --parallel "$(getconf _NPROCESSORS_ONLN)"
+          cmake --build build --parallel "$(getconf _NPROCESSORS_ONLN)" --target gtk-all
+          ccache --show-stats
 
       - name: Test gtk client
-        run: ctest --test-dir gtk/build --output-on-failure --parallel
+        run: ctest --test-dir build -L gtk --output-on-failure --parallel
 
   lint:
     name: lint (clang-format + clang-tidy)

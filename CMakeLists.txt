@@ -207,3 +207,12 @@ gtest_discover_tests(phig-perf-tests
     DISCOVERY_TIMEOUT 30
     PROPERTIES RUN_SERIAL TRUE
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# ---- GTK client ----
+# Off by default, so a plain build needs neither gtk4 nor libadwaita. With it
+# on, `cmake --build build --target phig-gtk` builds the client and the phig
+# libraries it links, and nothing else.
+option(PHIG_BUILD_GTK "Build the GTK4/libadwaita client in gtk/" OFF)
+if(PHIG_BUILD_GTK)
+    add_subdirectory(gtk)
+endif()
