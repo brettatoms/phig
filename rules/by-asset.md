@@ -35,7 +35,7 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R55 | concurrency | holds | libphig's metadata writes take the writer lock without waiting and report PHIG_ERR_BUSY when it is held, and its long-running operations take no lock at all. |
 | R56 | cancellation | holds (test gap) | Reconcile is not cancellable: run_reconcile takes no CancelToken, so a scan interrupted during its worker phase still relinks, demotes and deletes. |
 | R59 | authorization | partial (test gap) | Whether a planned decision may be overridden is a property of the decision type: an organize conflict resolution may be changed by the caller before apply, and reconcile's deletions may not. |
-| R60 | authorization | violated (test gap) | An operation that destroys user-authored metadata is authorized before it runs, by an explicit yes or by a plan the caller approves. |
+| R60 | authorization | partial (test gap) | An operation that destroys user-authored metadata is authorized before it runs, by an explicit yes or by a plan the caller approves. |
 | R61 | authorization | violated (test gap) | A destructive operation's preview is a value the caller can inspect, not text the engine prints. |
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R71 | concurrency | holds (test gap) | A face row's embedding is written only by the insert that creates the row, so identify's `embedding = ?` clause refuses no write that `id = ?` and `person_id IS NULL` have not already refused. |

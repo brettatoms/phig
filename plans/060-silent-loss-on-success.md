@@ -352,7 +352,14 @@ To settle during implementation:
   is still dropped without it, and is reported afterwards. The rule keeps its
   statement and 060 keeps claiming it.
 
-Executed via `docs/plans/2026-11-07-060-r60-label-carry.md`.
+The R60 fix shipped on branch `060-r60-label-carry`. Measured on 290 images
+(564 stored faces) of the real collection, re-detection with the same model
+reproduced every box exactly (overlap 1.0), so every label carried at the 0.5
+threshold. That data did not exercise the threshold itself. R60 is now
+`partial`: an unmatched label is still dropped without authorization and is
+reported afterwards, by a CLI warning, `FacesResult::labels_dropped` and
+`phig_faces_result.labels_dropped`. The execution record is
+`docs/plans/2026-11-07-060-r60-label-carry.md`.
 - **Scan is not affected.** Both scan paths that write faces
   (`core/scan_engine.cpp:255`, `:371`) skip an image that already has faces, so
   `FacesEngine::run` is the only path that re-detects over labelled faces.
