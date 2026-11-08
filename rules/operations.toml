@@ -39,9 +39,9 @@ read_only_abi = [
 # and neither is an operation — no core/ primitive backs either one.
 #
 # models mutates too — it writes the YuNet and SFace files into the models
-# cache under the writer lock — but touches none of the seven assets in
-# taxonomy.toml, so no operation covers it either. Same position as
-# phig_settings_save above. Face-model download is listed as missing from the
+# cache under a lock of its own in that directory — but touches none of the
+# seven assets in taxonomy.toml, so no operation covers it either. Same
+# position as phig_settings_save above. Face-model download is listed as missing from the
 # ABI in libphig/CLAUDE.md, owned by 053.
 read_only_cli = ["search", "duplicates", "help", "models"]
 

@@ -83,6 +83,13 @@ std::unique_ptr<Database> open_catalog_db(const std::string& db_path, CatalogAcc
     return db;
 }
 
+std::unique_ptr<WriterLock> acquire_catalog_lock(const CatalogPaths& catalog, bool no_wait,
+                                                 bool may_create) {
+    if (!may_create) require_catalog(catalog.db);
+    fs::create_directories(fs::path(catalog.lock).parent_path());
+    return std::make_unique<WriterLock>(catalog.lock, no_wait);
+}
+
 LegacyMigration migrate_legacy_catalog_files(const CatalogPaths& catalog) {
     LegacyMigration result;
     std::error_code ec;

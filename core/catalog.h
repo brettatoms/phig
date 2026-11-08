@@ -8,6 +8,7 @@
 
 #include "config.h"
 #include "database.h"
+#include "lockfile.h"
 #include "paths.h"
 
 // What migrate_legacy_catalog_files did. Paths are the legacy locations, so a
@@ -63,6 +64,13 @@ std::unique_ptr<Database> open_catalog_db(const std::string& db_path, CatalogAcc
 // commands that touch a catalog without opening its database, and before
 // taking the writer lock, whose file would otherwise create the directory.
 void require_catalog(const std::string& db_path);
+
+// Takes the writer lock of the catalog a command is about to write: the lock
+// file beside its database. Unless may_create is set, the catalog must already
+// exist (CatalogError otherwise), since creating the lock file would create its
+// directory. Throws LockBusy when no_wait is set and another process holds it.
+std::unique_ptr<WriterLock> acquire_catalog_lock(const CatalogPaths& catalog, bool no_wait,
+                                                 bool may_create);
 
 // Where a command's catalog came from.
 enum class CatalogSource { Flag, Environment, Config, Default };

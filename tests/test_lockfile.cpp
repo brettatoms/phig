@@ -6,10 +6,12 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "catalog.h"
 #include "database.h"
 #include "lockfile.h"
 #include "paths.h"
@@ -214,4 +216,120 @@ TEST_F(LockfileTest, CliLocksTheCatalogItWrites) {
         << "A was excluded by the default catalog's lock: " << free_a.output;
     ::flock(fd, LOCK_UN);
     ::close(fd);
+}
+
+// A dry run only reads (R70), so it takes no writer lock (R49): each of these
+// completes while another process holds the catalog's lock.
+TEST_F(LockfileTest, CliDryRunsTakeNoLock) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) GTEST_SKIP() << "phig binary not built";
+    const fs::path db_path = phig_scratch_db_path(dir);
+    fs::create_directories(db_path.parent_path());
+    const fs::path photo = dir / "a.jpg";
+    std::ofstream(photo) << "x";
+    {
+        Database db(db_path.string());
+        db.init_schema();
+        ImageInfo info;
+        info.path = photo.string();
+        info.filename = "a.jpg";
+        info.extension = "jpg";
+        info.file_size = 1;
+        info.sha256 = std::string(64, 'a');
+        info.metadata_json = "{}";
+        info.created_at = "2024-01-01T00:00:00Z";
+        info.modified_at = "2024-01-01T00:00:00Z";
+        db.insert(info);
+    }
+    const fs::path held = phig_scratch_lock_path(dir);
+    int other = ::open(held.c_str(), O_RDWR | O_CREAT, 0644);
+    ASSERT_GE(other, 0);
+    ASSERT_EQ(::flock(other, LOCK_EX | LOCK_NB), 0);
+
+    const std::string dest = (dir / "dest").string();
+    for (const std::string& args : {std::string("--no-wait rm --match '*' --dry-run"),
+                                    "--no-wait cp '" + dest + "' --dry-run",
+                                    std::string("--no-wait thumbs clean --dry-run")}) {
+        PhigRun r = run_phig(phig_bin, dir, args);
+        EXPECT_EQ(r.exit_code, 0) << args << " took the writer lock: " << r.output;
+    }
+    EXPECT_TRUE(fs::exists(photo));
+
+    // The control: the same command without --dry-run is refused, so the lock
+    // the dry runs ignored was the one a write takes.
+    PhigRun refused = run_phig(phig_bin, dir, "--no-wait thumbs clean");
+    EXPECT_EQ(refused.exit_code, 1) << refused.output;
+    EXPECT_NE(refused.output.find("Another phig operation is running"), std::string::npos)
+        << refused.output;
+
+    ::flock(other, LOCK_UN);
+    ::close(other);
+}
+
+// models download writes only the models directory, so it locks that and not
+// a catalog: it creates no catalog, a catalog's lock does not exclude it, and
+// another download's lock does. A directory at the first model's temporary
+// path makes the download fail before it reaches the network.
+TEST_F(LockfileTest, CliModelsDownloadLocksTheModelsDirectoryNotACatalog) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) GTEST_SKIP() << "phig binary not built";
+    const fs::path models = dir / "xdg" / "cache" / "phig" / "models";
+    fs::create_directories(models / "face_detection_yunet_2023mar.onnx.phig-tmp");
+    const fs::path missing = dir / "missing";
+
+    PhigRun r = run_phig(phig_bin, dir, "--catalog '" + missing.string() + "' models download");
+    EXPECT_EQ(r.exit_code, 1) << r.output;
+    EXPECT_NE(r.output.find("cannot create file"), std::string::npos)
+        << "the download did not fail where this test needs it to: " << r.output;
+    EXPECT_FALSE(fs::exists(missing)) << "models download created the catalog";
+    EXPECT_TRUE(fs::exists(models / ".download.lock"));
+
+    const fs::path catalog_lock = phig_scratch_lock_path(dir);
+    fs::create_directories(catalog_lock.parent_path());
+    int catalog_fd = ::open(catalog_lock.c_str(), O_RDWR | O_CREAT, 0644);
+    ASSERT_GE(catalog_fd, 0);
+    ASSERT_EQ(::flock(catalog_fd, LOCK_EX | LOCK_NB), 0);
+    PhigRun beside = run_phig(phig_bin, dir, "--no-wait models download");
+    EXPECT_EQ(beside.output.find("Another phig operation is running"), std::string::npos)
+        << "the catalog's lock excluded a download: " << beside.output;
+    ::flock(catalog_fd, LOCK_UN);
+    ::close(catalog_fd);
+
+    const std::string download_lock = (models / ".download.lock").string();
+    int download_fd = ::open(download_lock.c_str(), O_RDWR | O_CREAT, 0644);
+    ASSERT_GE(download_fd, 0);
+    ASSERT_EQ(::flock(download_fd, LOCK_EX | LOCK_NB), 0);
+    PhigRun refused = run_phig(phig_bin, dir, "--no-wait models download");
+    EXPECT_EQ(refused.exit_code, 1) << refused.output;
+    EXPECT_NE(refused.output.find("Another phig operation is running"), std::string::npos)
+        << refused.output;
+    ::flock(download_fd, LOCK_UN);
+    ::close(download_fd);
+}
+
+// acquire_catalog_lock takes lock_path of the catalog's own database, and
+// refuses a missing catalog before the lock file can create its directory.
+TEST_F(LockfileTest, AcquireCatalogLockTakesTheCatalogsOwnLock) {
+    const CatalogPaths missing = catalog_paths((dir / "missing").string());
+    EXPECT_THROW(acquire_catalog_lock(missing, /*no_wait=*/true, /*may_create=*/false),
+                 CatalogError);
+    EXPECT_FALSE(fs::exists(missing.dir));
+    {
+        auto created = acquire_catalog_lock(missing, /*no_wait=*/true, /*may_create=*/true);
+        EXPECT_TRUE(fs::exists(missing.lock));
+    }
+
+    const CatalogPaths c = catalog_paths((dir / "c").string());
+    fs::create_directories(c.dir);
+    {
+        Database db(c.db);
+        db.init_schema();
+    }
+    int other = ::open(c.lock.c_str(), O_RDWR | O_CREAT, 0644);
+    ASSERT_GE(other, 0);
+    ASSERT_EQ(::flock(other, LOCK_EX | LOCK_NB), 0);
+    EXPECT_THROW(acquire_catalog_lock(c, /*no_wait=*/true, /*may_create=*/false), LockBusy);
+    ::flock(other, LOCK_UN);
+    ::close(other);
+    EXPECT_NO_THROW(acquire_catalog_lock(c, /*no_wait=*/true, /*may_create=*/false));
 }

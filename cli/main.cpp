@@ -85,19 +85,20 @@ class ScopedInterruptHandler {
 };
 }  // namespace
 
-// Acquire the process-wide writer lock for a mutating command, on the catalog's
-// lock file. Prints a clear message and exits nonzero if --no-wait was given
-// and another op holds it. Unless may_create is set, the catalog must already
-// exist: creating the lock file would otherwise create the catalog directory.
+// Prints a clear message and exits nonzero for a lock that --no-wait found held.
+[[noreturn]] static void exit_lock_busy(const LockBusy& e) {
+    std::cerr << "Error: " << e.what() << " (use without --no-wait to wait)\n";
+    std::exit(1);
+}
+
+// Acquire the process-wide writer lock for a mutating command, on the installed
+// catalog's lock file (acquire_catalog_lock). Unless may_create is set, the
+// catalog must already exist.
 static std::unique_ptr<WriterLock> acquire_writer_lock(bool no_wait, bool may_create = false) {
-    const CatalogPaths catalog = current_catalog();
-    if (!may_create) require_catalog(catalog.db);
-    fs::create_directories(fs::path(catalog.lock).parent_path());
     try {
-        return std::make_unique<WriterLock>(catalog.lock, no_wait);
+        return acquire_catalog_lock(current_catalog(), no_wait, may_create);
     } catch (const LockBusy& e) {
-        std::cerr << "Error: " << e.what() << " (use without --no-wait to wait)\n";
-        std::exit(1);
+        exit_lock_busy(e);
     }
 }
 
@@ -1242,7 +1243,9 @@ int cmd_thumbs(int argc, char* argv[], const std::string& db_path, int default_p
             }
         }
 
-        auto lock = acquire_writer_lock(no_wait);
+        // A dry run only reads, so it takes no writer lock.
+        std::unique_ptr<WriterLock> lock;
+        if (!dry_run) lock = acquire_writer_lock(no_wait);
 
         auto db_owner =
             open_catalog_db(db_path, dry_run ? CatalogAccess::Read : CatalogAccess::Write);
@@ -2090,7 +2093,9 @@ int main(int argc, char* argv[]) {
         }
 
         try {
-            auto lock = acquire_writer_lock(no_wait);
+            // A dry run only reads, so it takes no writer lock.
+            std::unique_ptr<WriterLock> lock;
+            if (!dry_run) lock = acquire_writer_lock(no_wait);
 
             auto db_owner =
                 open_catalog_db(opts.db_path, dry_run ? CatalogAccess::Read : CatalogAccess::Write);
@@ -2176,7 +2181,9 @@ int main(int argc, char* argv[]) {
             return true;
         };
         try {
-            auto lock = acquire_writer_lock(no_wait);
+            // A dry run only reads, so it takes no writer lock.
+            std::unique_ptr<WriterLock> lock;
+            if (!opts.dry_run) lock = acquire_writer_lock(no_wait);
             return cmd_rm(opts, confirm);
         } catch (const std::exception& e) {
             log_error(std::string("rm: ") + e.what());
@@ -2237,7 +2244,16 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         try {
-            auto lock = acquire_writer_lock(no_wait, true);
+            // The models are user-level, not part of a catalog, so a download
+            // locks the models directory and excludes only another download.
+            const std::string dir = models_dir();
+            fs::create_directories(dir);
+            std::unique_ptr<WriterLock> lock;
+            try {
+                lock = std::make_unique<WriterLock>(dir + "/.download.lock", no_wait);
+            } catch (const LockBusy& e) {
+                exit_lock_busy(e);
+            }
             if (download_face_models()) {
                 std::cout << "All models downloaded successfully.\n";
                 return 0;
