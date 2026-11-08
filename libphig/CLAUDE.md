@@ -2,10 +2,10 @@
 
 The versioned C ABI (`libphig.so`) — the boundary for clients that cannot link
 `core/`: the planned macOS and Windows clients. `gtk/` links `core/` directly,
-and the web tier is an HTTP client of `phigd` (plan 052). ABI 1.4, soname 1, 73 exported symbols. Hidden
-visibility by default; the exported surface is declared explicitly by a
-linker version script (`libphig/phig.version` on Linux,
-`libphig/phig.exported_symbols` on macOS), not inferred from headers.
+and the web tier is an HTTP client of `phigd` (plan 052). ABI 1.4, soname 1, 73
+exported symbols. Hidden visibility by default; the exported surface is
+declared explicitly by a linker version script (`libphig/phig.version` on
+Linux, `libphig/phig.exported_symbols` on macOS), not inferred from headers.
 
 Public header: `libphig/include/phig/phig.h`. This is the only header a
 foreign client may include.

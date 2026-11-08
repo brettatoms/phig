@@ -97,7 +97,7 @@ for this reason, not only for runtime.**
 `gtk/` builds inside the root build when configured with
 `-DPHIG_BUILD_GTK=ON`. The option is off by default, so a plain build needs
 neither gtk4 nor libadwaita. `cmake --build build --target phig-gtk` then
-builds the client and `phig-core` only. Its 25 tests across three binaries
+builds the client and `phig-core` only. Its 28 tests across three binaries
 carry the ctest label `gtk` (`ctest --test-dir build -L gtk`) and need no
 collection. See `gtk/CLAUDE.md`.
 
@@ -214,10 +214,9 @@ you have actually scanned and state where.
 - **CI:** `.github/workflows/ci.yml` runs four jobs — build + test on
   ubuntu-latest, ubuntu-26.04 and macos-latest (with `-DPHIG_WERROR=ON`, and
   the rules gate above split across the two ubuntu legs), ASan+UBSan and TSan
-  (see Sanitizers above), a gtk job that configures
-  the root build with `-DPHIG_BUILD_GTK=ON` and builds and tests the client, and
-  the lint gate. GitHub Actions
-  are pinned to full commit SHAs.
+  (see Sanitizers above), a gtk job that configures the root build with
+  `-DPHIG_BUILD_GTK=ON` and builds and tests the client, and the lint gate.
+  GitHub Actions are pinned to full commit SHAs.
 
   **Two ubuntu legs, because OpenCV's version decides whether phig can detect a
   face.** `ubuntu-latest` is 24.04 and ships libopencv-dev 4.6.0, below the
@@ -269,14 +268,14 @@ you have actually scanned and state where.
 **Foreign clients go through phig's defined interfaces only.** A client that
 cannot link `core/` — the planned macOS (Swift) and Windows (C#/C++) clients —
 reads phig through `libphig`'s C ABI (`<phig/phig.h>`) when the collection is
-local, and
-through the phig wire protocol when it is remote — plan 052, `designing`;
-`phigd` does not exist yet, so `libphig` is the only interface that works
-today. No client reads phig's SQLite schema, table names, or thumbnail cache
-layout directly — those are private and change. The two interfaces cover the
-same capabilities deliberately: a client chooses a transport at connect time,
-it does not learn a second vocabulary. When a client needs something an
-interface lacks, the capability is added there and tracked in `plans/`.
+local, and through the phig wire protocol when it is remote — plan 052,
+`designing`; `phigd` does not exist yet, so `libphig` is the only interface
+that works today. No client reads phig's SQLite schema, table names, or
+thumbnail cache layout directly — those are private and change. The two
+interfaces cover the same capabilities deliberately: a client chooses a
+transport at connect time, it does not learn a second vocabulary. When a client
+needs something an interface lacks, the capability is added there and tracked
+in `plans/`.
 
 **libphig should reach all of phig's features, not the subset it reaches
 today.** A capability that exists only in `core/` and `cli/` is a gap with a
@@ -317,9 +316,9 @@ rather than one portable client.
 | `windows/` | Windows — WinUI 3. Planned, see 047 |
 
 Being platform-specific buys a client native UI and native performance work.
-It does not buy it a private path into phig's data: a client reads
-phig through `core/`'s headers or a defined interface, never the database or
-the thumbnail cache directly, per Interface discipline above.
+It does not buy it a private path into phig's data: a client reads phig through
+`core/`'s headers or a defined interface, never the database or the thumbnail
+cache directly, per Interface discipline above.
 
 Current state: macOS builds and tests green in CI. Windows is not yet a
 supported target — plan 039 tracks the remaining port, where `lockfile.cpp` is
