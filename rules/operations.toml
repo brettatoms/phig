@@ -33,10 +33,9 @@ read_only_abi = [
 ]
 
 # CLI top-level commands that map to no operation in this record set. Only help
-# mutates nothing. The other two mutate twice over, and both facts are recorded
-# rather than fixed here: they open the collection read-write and migrate its
-# schema (R70), and --output truncates whatever file it names (R69). They stay
-# on this list because the list's job is to account for every top-level command,
+# mutates nothing. The other two mutate through --output, which truncates
+# whatever file it names (R69), recorded rather than fixed here. They stay on
+# this list because the list's job is to account for every top-level command,
 # and neither is an operation — no core/ primitive backs either one.
 #
 # models mutates too — it writes the YuNet and SFace files into the models

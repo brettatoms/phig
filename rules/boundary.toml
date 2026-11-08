@@ -141,7 +141,7 @@ id = "R70"
 tier = "boundary"
 concern = "authorization"
 statement = "A command that only reads a collection neither creates its database nor migrates its schema."
-rationale = "open_catalog_db is the one open policy. Read opens read-only, so it can neither create the file nor migrate it, and it refuses a missing database and any schema version other than this build's with a CatalogError naming the catalog. Write and Create migrate; only Create makes a missing database. Which access a command passes is decided at its call site: every CLI command that only reads, including the dry runs of rm, cp and mv, passes Read, and libphig's read-only context does the same. A migration is forward-only and init_schema refuses a database newer than the build, so a read that migrated would make the catalog unopenable by an older phig on another machine. A read that created would turn a mistyped catalog path into an empty catalog reported as empty."
+rationale = "open_catalog_db is the one open policy. Read opens read-only, so it can neither create the file nor migrate it, and it refuses a missing database and any schema version other than this build's with a CatalogError naming the catalog. Write and Create migrate; only Create makes a missing database. Which access a command passes is decided at its call site: every CLI command that only reads, including the dry runs of rm, cp, mv and thumbs clean, passes Read. libphig's read-only context also opens read-only and refuses a missing database or another schema version; it moves onto open_catalog_db in a later task. A migration is forward-only and init_schema refuses a database newer than the build, so a read that migrated would make the catalog unopenable by an older phig on another machine. A read that created would turn a mistyped catalog path into an empty catalog reported as empty."
 enforced_at = [
     "core/catalog.cpp:open_catalog_db",
     "libphig/context.cpp:phig_init",
@@ -160,7 +160,7 @@ tests = [
 ]
 test_kind = "subprocess"
 status = "holds"
-test_gap = "The subprocess tests cover search, duplicates, the four list forms and the two dry runs; which access each remaining command passes is read off cli/main.cpp's call sites rather than asserted one by one."
+test_gap = "The subprocess tests cover search, duplicates, the four list forms and the dry runs of cp, rm and thumbs clean, which the outdated-catalog test covers; which access each remaining command passes is read off cli/main.cpp's call sites rather than asserted one by one."
 
 [[rule]]
 id = "R73"

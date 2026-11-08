@@ -409,10 +409,13 @@ TEST_F(CatalogCliTest, ReadsRefuseAnOutdatedCatalogAndLeaveItsVersion) {
     const std::string db_path = (c / "phig.db").string();
     const int older = Database::expected_schema_version() - 1;
     stamp_schema_version(db_path, older);
-    for (const char* args : {"search --count", "duplicates", "cp '/tmp/never' --dry-run",
-                             "rm --match '*' --dry-run", "thumbs clean --dry-run"}) {
+    const std::string dest = (dir / "never").string();
+    for (const std::string& args :
+         {std::string("search --count"), std::string("duplicates"), "cp '" + dest + "' --dry-run",
+          std::string("rm --match '*' --dry-run"), std::string("thumbs clean --dry-run")}) {
         PhigRun r = run(c, args);
         EXPECT_EQ(r.exit_code, 1) << args << ": " << r.output;
+        EXPECT_NE(r.output.find("schema version"), std::string::npos) << args << ": " << r.output;
         Database after(db_path, /*read_only=*/true);
         EXPECT_EQ(after.schema_version(), older) << args << " migrated the catalog";
     }
@@ -420,10 +423,13 @@ TEST_F(CatalogCliTest, ReadsRefuseAnOutdatedCatalogAndLeaveItsVersion) {
 
 TEST_F(CatalogCliTest, WritesRefuseAMissingCatalogAndCreateNothing) {
     const fs::path missing = dir / "missing";
-    for (const char* args :
-         {"tag add holiday --match '*'", "gallery set trip --match '*'", "fav add --match '*'",
-          "rm --match '*' --yes", "cp '/tmp/never'", "trash empty --yes", "thumbs rebuild",
-          "thumbs clean", "face rebuild", "face identify Ada"}) {
+    const std::string dest = (dir / "never").string();
+    for (const std::string& args :
+         {std::string("tag add holiday --match '*'"), std::string("gallery set trip --match '*'"),
+          std::string("fav add --match '*'"), std::string("rm --match '*' --yes"),
+          "cp '" + dest + "'", std::string("trash empty --yes"), std::string("thumbs rebuild"),
+          std::string("thumbs clean"), std::string("face rebuild"),
+          std::string("face identify Ada")}) {
         PhigRun r = run(missing, args);
         EXPECT_EQ(r.exit_code, 1) << args << ": " << r.output;
         EXPECT_FALSE(fs::exists(missing)) << args << " created the catalog";
@@ -440,7 +446,7 @@ TEST_F(CatalogCliTest, ScanCreatesAMissingCatalog) {
     EXPECT_TRUE(fs::exists(fresh / "phig.db"));
     PhigRun count = run(fresh, "search --count");
     EXPECT_EQ(count.exit_code, 0) << count.output;
-    EXPECT_NE(count.output.find('1'), std::string::npos) << count.output;
+    EXPECT_EQ(count.output, "1\n");
 }
 
 TEST_F(CatalogCliTest, RmTrashesIntoItsOwnCatalog) {
