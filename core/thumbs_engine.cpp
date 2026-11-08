@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <thread>
 
 #include "hasher.h"
@@ -128,4 +129,24 @@ ThumbsResult ThumbsEngine::run(const CancelToken& cancel, ProgressQueue<ThumbsPr
     result.skipped = skipped.load();
     result.errors = errors.load();
     return result;
+}
+
+EnsureThumb ensure_thumb(Database& db, int64_t image_id, int size) {
+    ImageInfo img;
+    if (!db.get_image_for_thumb(image_id, img) || img.sha256.empty()) {
+        return EnsureThumb::NoSuchRow;
+    }
+    if (thumb_exists(img.sha256, size)) return EnsureThumb::Ok;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(img.path, ec)) return EnsureThumb::SourceMissing;
+
+    bool ok = false;
+    if (img.media_type == "video") {
+        auto kf = extract_video_keyframe(img.path);
+        if (!kf.frame.empty()) ok = generate_thumb(kf.frame, img.sha256, size);
+    } else {
+        ok = generate_thumb(img.path, img.sha256, size);
+    }
+    return ok ? EnsureThumb::Ok : EnsureThumb::Failed;
 }

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 
 #include "cancel.h"
@@ -380,4 +381,93 @@ TEST(ThumbsEngineRun, AnEmptySelectionGeneratesNothing) {
 
     EXPECT_EQ(r.total_selected, 0u);
     EXPECT_EQ(r.generated, 0u);
+}
+
+// ---- ensure_thumb: one row's thumbnail, generated on demand ----
+
+class EnsureThumbTest : public ::testing::Test {
+   protected:
+    std::string orig_cache;
+    fs::path temp_dir;
+    std::unique_ptr<Database> db;
+
+    void SetUp() override {
+        const char* xdg = std::getenv("XDG_CACHE_HOME");
+        if (xdg) orig_cache = xdg;
+        temp_dir = make_temp_dir("ensure-thumb");
+        setenv("XDG_CACHE_HOME", temp_dir.c_str(), 1);
+        db = std::make_unique<Database>((temp_dir / "phig.db").string());
+        db->init_schema();
+    }
+
+    void TearDown() override {
+        db.reset();
+        if (orig_cache.empty()) {
+            unsetenv("XDG_CACHE_HOME");
+        } else {
+            setenv("XDG_CACHE_HOME", orig_cache.c_str(), 1);
+        }
+        fs::remove_all(temp_dir);
+    }
+
+    int64_t add_row(const std::string& path, const std::string& sha,
+                    const std::string& media_type = "image") {
+        ImageInfo info;
+        info.path = path;
+        info.filename = fs::path(path).filename().string();
+        info.extension = fs::path(path).extension().string().substr(1);
+        info.modified_at = "2021-01-01T00:00:00Z";
+        info.sha256 = sha;
+        info.media_type = media_type;
+        db->insert(info);
+        return db->get_image_id(path);
+    }
+};
+
+TEST_F(EnsureThumbTest, GeneratesAMissingThumbnail) {
+    std::string sha(64, 'a');
+    int64_t id = add_row("tests/data/faces_small.jpg", sha);
+    ASSERT_FALSE(thumb_exists(sha, 256));
+
+    EXPECT_EQ(ensure_thumb(*db, id, 256), EnsureThumb::Ok);
+    EXPECT_TRUE(thumb_exists(sha, 256));
+    EXPECT_EQ(get_thumb_path(sha, 256).rfind(temp_dir.string(), 0), 0u);
+}
+
+TEST_F(EnsureThumbTest, ACachedThumbnailNeedsNoSourceFile) {
+    // The cached check comes before the source check, so a row whose file has
+    // gone still reports its cached thumbnail.
+    std::string sha(64, 'b');
+    int64_t id = add_row("/nonexistent/b.jpg", sha);
+    fs::path thumb = get_thumb_path(sha, 256);
+    fs::create_directories(thumb.parent_path());
+    std::ofstream(thumb) << "cached";
+
+    EXPECT_EQ(ensure_thumb(*db, id, 256), EnsureThumb::Ok);
+}
+
+TEST_F(EnsureThumbTest, AnUnknownIdOrAnUnhashedRowIsNoSuchRow) {
+    int64_t unhashed = add_row("tests/data/faces_small.jpg", "");
+    EXPECT_EQ(ensure_thumb(*db, 999999, 256), EnsureThumb::NoSuchRow);
+    EXPECT_EQ(ensure_thumb(*db, unhashed, 256), EnsureThumb::NoSuchRow);
+}
+
+TEST_F(EnsureThumbTest, AMissingSourceIsSourceMissing) {
+    int64_t id = add_row("/nonexistent/c.jpg", std::string(64, 'c'));
+    EXPECT_EQ(ensure_thumb(*db, id, 256), EnsureThumb::SourceMissing);
+}
+
+TEST_F(EnsureThumbTest, AnUndecodableSourceIsFailed) {
+    fs::path junk = temp_dir / "junk.jpg";
+    std::ofstream(junk) << "not a jpeg";
+    int64_t id = add_row(junk.string(), std::string(64, 'd'));
+    EXPECT_EQ(ensure_thumb(*db, id, 256), EnsureThumb::Failed);
+    EXPECT_FALSE(thumb_exists(std::string(64, 'd'), 256));
+}
+
+TEST_F(EnsureThumbTest, AVideoRowIsGeneratedFromItsKeyframe) {
+    std::string sha(64, 'e');
+    int64_t id = add_row("tests/data/test_red.mov", sha, "video");
+    EXPECT_EQ(ensure_thumb(*db, id, 256), EnsureThumb::Ok);
+    EXPECT_TRUE(thumb_exists(sha, 256));
 }

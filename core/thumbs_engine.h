@@ -32,6 +32,17 @@ struct ThumbsOptions {
 // touching the thumbnail cache on disk.
 bool thumb_needs_generating(const ImageInfo& img, bool force, int size);
 
+// The outcome of ensure_thumb. NoSuchRow covers an unknown id and a row with no
+// sha256: neither has a cache key to write to.
+enum class EnsureThumb { Ok, NoSuchRow, SourceMissing, Failed };
+
+// Makes sure one row's thumbnail exists at `size` (> 0), generating it from the
+// row's file if it is not cached. A video is generated from its keyframe. This
+// is the single-row, on-demand counterpart to ThumbsEngine::run, for a client
+// that generates as cells scroll into view. Safe to call concurrently,
+// including for the same row.
+EnsureThumb ensure_thumb(Database& db, int64_t image_id, int size);
+
 // Progress carries either a finished file or the count of selected images,
 // published once before the parallel phase begins so a caller can size a
 // progress bar without pre-counting.
