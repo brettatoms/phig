@@ -124,15 +124,20 @@ struct PhigApp {
     ~PhigApp();
 };
 
-// Dropping the grid's model drops the model's last reference, so its dispose
-// waits for in-flight page fetches before coll closes.
+// The model's dispose waits for in-flight page fetches, and runs when its last
+// reference drops: here if the grid is still alive, or earlier, when GTK
+// finalized the grid with the last window. Either way it runs before member
+// destruction closes coll.
 PhigApp::~PhigApp() {
     if (relayout_id != 0) g_source_remove(relayout_id);
     if (loader) {
         thumb_loader_shutdown(*loader);
         loader.reset();
     }
-    if (grid != nullptr) gtk_grid_view_set_model(grid, nullptr);
+    if (grid != nullptr) {
+        g_object_remove_weak_pointer(G_OBJECT(grid), reinterpret_cast<gpointer*>(&grid));
+        gtk_grid_view_set_model(grid, nullptr);
+    }
 }
 
 /* Measurement harness (task-7-report.md). Entirely gated on PHIG_MEASURE=1,
@@ -809,6 +814,13 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
 static void on_activate(GtkApplication* gtk_app, gpointer user_data) noexcept {
     auto* app = static_cast<PhigApp*>(user_data);
 
+    /* org.phig.Gtk is a unique application, so a second launch re-emits activate
+     * here. A second window would replace coll and loader under the first. */
+    if (app->window != nullptr) {
+        gtk_window_present(GTK_WINDOW(app->window));
+        return;
+    }
+
     app->window = ADW_APPLICATION_WINDOW(adw_application_window_new(gtk_app));
     gtk_window_set_title(GTK_WINDOW(app->window), "phig");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 1100, 750);
@@ -826,6 +838,8 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) noexcept {
     adw_toolbar_view_add_top_bar(app->toolbar_view, GTK_WIDGET(header_bar));
 
     app->grid = GTK_GRID_VIEW(gtk_grid_view_new(NULL, NULL));
+    /* Cleared when the grid is finalized, so ~PhigApp can tell it is gone. */
+    g_object_add_weak_pointer(G_OBJECT(app->grid), reinterpret_cast<gpointer*>(&app->grid));
     /* Provisional until the first width notification; phig_default_columns_for_width
      * cannot run before the scroller has been allocated. */
     app->columns = 1; /* provisional until the first real viewport width */
