@@ -1350,7 +1350,7 @@ wants phig does not currently serve, not speculation.
 | **Star ratings (1–5) + filter/threshold** | 2 explicit, 3 implied — r/macapps (Cmd+1–5 then cull 1–3), r/AskPhotography (star, delete 1s and 2s), DPReview (rate/cull in Viewer) | phig has **no rating scale at all** — tags, galleries, and a binary favorite. Ratings are the specific mechanism users name for culling. Small, concrete. |
 | **Culling / side-by-side compare** | 3 — DPReview (light table, 8-up, histogram), r/AskPhotography (Photo Mechanic for bulk culling), r/macapps (split-view compare) | phig's phash grouping + `blur_score` cover the *selection* half; there is no compare UI. Several call a RAW histogram essential. |
 | **Geotag editing / location search** | 2 — r/Windows11, r/macapps (prefer existing metadata over recomputed) | phig parses GPS incidentally into the JSON blob but never indexes or searches it. Plan 013 is planned-only. |
-| **Portable / configurable DB location** | 1 strong (multiple askers in r/Windows11) | Wanted for external drives *and* for syncing the DB across machines via Syncthing. phig's `--db` flag already allows this; XDG default is fine. Cheap win. |
+| **Portable / configurable DB location** | 1 strong (multiple askers in r/Windows11) | Wanted for external drives *and* for syncing the DB across machines via Syncthing. phig's `--catalog` flag already allows this; XDG default is fine. Cheap win. |
 | **Background/incremental indexing without blocking the UI** | 2 — r/Windows11 (subfolders inaccessible until scan completes), r/macapps | Directly relevant to plan 031: a GUI running scan needs progress and cancellation, and must stay usable. |
 
 ## digiKam's large-library performance — unresolved, possibly an opening

@@ -163,10 +163,6 @@ A read against a catalog that does not exist now fails with `no phig catalog at
 <dir>` and creates nothing (R70), so `phig --catalog <dir> search --count` is a
 sound check against a catalog you have scanned.
 
-A real-run check against a live collection is still worth having. It needs a
-path that a read cannot bring into existence, so write it against a collection
-you have actually scanned and state where.
-
 ### Linting & CI
 
 - **Formatting:** clang-format, Google style / 4-space / 100-col
@@ -391,11 +387,12 @@ log (`phig.log`). Which catalog a command uses: `--catalog <dir>`, then
 `core/catalog.cpp`. User-level files stay in XDG locations: models at
 `~/.cache/phig/models`, config at `~/.config/phig/config.ini`. The first run
 against an existing default catalog moves thumbnails from
-`~/.cache/phig/thumbs` and the log from `~/.local/state/phig/` into it. A read never creates or migrates a
-catalog (R70): a read against a missing or outdated catalog fails, and only
-`scan` creates one. An optional INI config file (parsed in `core/config.cpp`
-via vendored inih) sets defaults; a global `--config <path>` flag overrides its
-location. Precedence: CLI flag > config > default.
+`~/.cache/phig/thumbs` and the log from `~/.local/state/phig/` into it. A read
+never creates or migrates a catalog (R70): a read against a missing or
+outdated catalog fails, and only `scan` creates one. An optional INI config
+file (parsed in `core/config.cpp` via vendored inih) sets defaults; a global
+`--config <path>` flag overrides its location. Precedence: CLI flag > config >
+default.
 
 ## Project structure
 
@@ -493,9 +490,10 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   IMMEDIATE transaction so concurrent first-runs don't re-apply DDL.
   Most mutating commands additionally take a process-wide advisory `flock`
   on the catalog's `phig.db.lock` (`core/lockfile.cpp`) so whole operations
-  serialize; reads never take it. Per-machine only. The `face` subcommands are the exception
-  — they run lock-free, matching libphig's faces operation, and defend
-  themselves instead: `faces.id` is AUTOINCREMENT so a deleted id is never
+  serialize; reads, dry runs included, never take it. Per-machine only.
+  `models download` locks `.download.lock` in the models directory instead.
+  The `face` subcommands are the exception — they run lock-free, matching
+  libphig's faces operation, and defend themselves instead: `faces.id` is AUTOINCREMENT so a deleted id is never
   reissued and a face deleted mid-run matches nothing, `identify` writes under
   `person_id IS NULL` so it refuses a face another labeler named first, and
   `rebuild` reads each image id inside the transaction that writes its

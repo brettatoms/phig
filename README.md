@@ -92,8 +92,10 @@ Notes:
 
 ### File locations
 
-phig follows the XDG base directory convention on all platforms (honoring
-`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME`/`XDG_STATE_HOME` when set):
+User-level files follow the XDG base directory convention on all platforms
+(honoring `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` when set). A
+catalog is not split across them: it is one directory, by default
+`$XDG_DATA_HOME/phig` (`~/.local/share/phig/` when that is unset).
 
 | What | Default location |
 |------|------------------|
@@ -106,6 +108,11 @@ A catalog is one directory holding `phig.db`, `phig.db.lock`, `trash/`,
 the `PHIG_CATALOG` environment variable, or `[paths] catalog` in the config
 file, in that order. For development, set `PHIG_CATALOG` in a `.envrc` to keep
 a scratch catalog apart from your real one.
+
+Earlier versions kept thumbnails in `~/.cache/phig/thumbs/` and the log in
+`~/.local/state/phig/`. The first command run against an existing default
+catalog moves both into it, once. A destination that already exists is left
+alone, and so is the old copy.
 
 The database is the source of truth for your collection; it always reflects the
 current file locations so other tools can read it.
