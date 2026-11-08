@@ -140,11 +140,15 @@ TEST(FacesEngineRun, RerunReplacesRatherThanAccumulatesFaceRows) {
     ScratchFaces coll(4);
     FacesRebuildOptions opts;
     opts.parallel = 2;
+    opts.ids = coll.all_ids();
     CancelToken tok;
 
     FacesResult first = FacesEngine(opts, *coll.db).run(tok, nullptr);
     FacesResult second = FacesEngine(opts, *coll.db).run(tok, nullptr);
 
+    // Without detections both runs report zero and the comparison below passes
+    // whether or not the delete happened.
+    ASSERT_GT(first.faces_detected, 0u);
     EXPECT_EQ(second.faces_detected, first.faces_detected);
 
     // And the stored rows match the reported count, not twice it. Database has
