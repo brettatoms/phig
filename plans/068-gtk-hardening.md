@@ -1,14 +1,14 @@
 ---
 name: GTK Hardening
-status: designing
+status: planned
 created: 2026-11-08
 description: >
   Make `gtk/` C++ throughout, including its collection seam and the remaining
   C files, and move the build to C++23 for `std::expected` and
   `std::move_only_function`. Also fix the startup race that frees app state
-  under the startup worker, stop `core/` redirecting the host process's stderr,
-  and close the loader leak and minor items 061 left open. Lands before GTK M1,
-  which adds many seam functions.
+  under the startup worker, and close the loader leak and minor items 061 left
+  open. Depends on 069, which stops `core/` redirecting the host's stderr.
+  Lands before GTK M1, which adds many seam functions.
 ---
 
 # 068 — GTK Hardening
@@ -37,16 +37,9 @@ was found during 061's execution or final review.
    - If the window closes first, `g_application_run` returns, and `main`
      frees `app` while the worker is still reading it.
    - The process can then also exit with that thread mid-open.
-3. **core/ redirects the host's stderr.** `StderrSuppressor` in
-   `core/hasher.cpp` points file descriptor 2 at `/dev/null` while OpenCV
-   decodes in `decode_image_with_warning` and `extract_video_keyframe`.
-   - **It hides other output.** Thumbnail generation and the faces engine
-     reach it, so in gtk it hides GTK warnings from every thread for the
-     length of a decode. That includes the warnings the real-run check counts,
-     and ASan reports. libphig hosts lose their stderr the same way.
-   - **It serializes decoding.** It also holds one process-wide mutex across
-     the decode, so concurrent decodes run one at a time. What that costs has
-     not been measured.
+3. **core/ redirects the host's stderr** during every OpenCV decode, which
+   hides GTK's warnings and serializes the loader's workers. Plan 069 removes
+   the redirect, and this plan depends on it.
 4. **The loader leaks a cancelled request's data.** `thumb_loader_request`
    takes a function pointer and a `gpointer`. A request cancelled before
    delivery never calls back. Its `ThumbResultData`, which holds a
@@ -205,21 +198,7 @@ The cost: closing the window during a slow schema migration delays exit until
 the migration finishes. SQLite would roll an interrupted migration back
 anyway, so the wait buys a clean exit, not safety.
 
-### 5. Only the CLI suppresses stderr
-
-`core/` gets a process-wide switch, `set_suppress_decoder_stderr(bool)`, off by
-default. `cli/main.cpp` turns it on at startup. gtk and libphig hosts keep
-their stderr. With the switch off, `StderrSuppressor` and its mutex are not
-constructed at all, so gtk's and libphig's decodes also stop being serialized.
-
-The CLI keeps today's behaviour, including the serialization. A measurement
-decides whether that matters: `phig scan --parallel N --force hash` over a
-fixed corpus, with the switch on and off. If the mutex costs a meaningful
-share of a parallel scan, a later plan captures decoder messages where they are
-produced instead: libjpeg-turbo with a per-call message handler, and FFmpeg's
-log callback. That removes both the redirect and the mutex. Not this plan.
-
-### 6. The loader owns its callbacks
+### 5. The loader owns its callbacks
 
 ```cpp
 using ThumbCallback = std::move_only_function<void(ThumbResult, GdkTexture*) noexcept>;
@@ -245,7 +224,7 @@ Each step lands green, and the ASan gtk build runs the gtk tests at each one.
    - Push a branch and run `gh workflow run CI --ref <branch>`, which covers
      macOS and both sanitizers. Pushing needs approval at the time.
    - Merge only when every job is green.
-2. **Loader callbacks (decision 6).** Test first: a cancelled request, a
+2. **Loader callbacks (decision 5).** Test first: a cancelled request, a
    request dropped at shutdown, and a request made after shutdown each destroy
    their callback exactly once, counted by a capture's destructor. The current
    API has no callback object to count, so the tests and the API change land
@@ -270,28 +249,17 @@ Each step lands green, and the ASan gtk build runs the gtk tests at each one.
    - Verify the hold/release path by hand under ASan with a display: break in
      `phig_collection_open` in gdb, close the window, continue, and check for
      a clean exit with status 0. GTK cannot run headless in CI.
-7. **Stderr switch (decision 5).** Add a test in `phig-tests`: with the switch
-   off, a write to fd 2 from another thread during a decode of a corrupt JPEG
-   fixture reaches a pipe. With it on, the same write is discarded, which is
-   the CLI's behaviour today. Then run the measurement and record the numbers
-   in this plan.
-8. **Minors.** Add the null check in `on_factory_bind`, the `thumb-loader.h`
+7. **Minors.** Add the null check in `on_factory_bind`, the `thumb-loader.h`
    wording and the `rules/README.md` wording. Run `rules.py --check --emit`.
-9. **Docs.** Update `gtk/CLAUDE.md` (the seam's signatures in the Rules list,
+8. **Docs.** Update `gtk/CLAUDE.md` (the seam's signatures in the Rules list,
    the signal helper, and the `ThumbLoader` callback contract), remove the
    "three remain" sentence once the C files are gone, and update
    `gtk/README.md`.
 
-## Open questions
-
-1. **Measure the mutex before or after 067?** The measurement is independent
-   of 067, but 067 changes how a scan names its collection. Measuring after
-   067 means the command recorded in this plan is the one that will still
-   work.
-
 ## Relationship to other plans
 
 - **061:** this plan closes the follow-ups its Outcome records.
+- **069:** removes the stderr redirect. Land it first.
 - **067:** changes `phig_collection_open`'s argument to a catalog directory.
   Whichever plan lands second carries that change into the seam.
 - **GTK M1 (not yet written):** builds on the C++ seam and the signal helper.
