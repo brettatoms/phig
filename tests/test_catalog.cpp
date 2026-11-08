@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 #include <sys/stat.h>
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 
 #include "catalog.h"
@@ -165,4 +167,101 @@ TEST_F(LegacyMigrationTest, MovesThumbnailsAcrossFilesystems) {
     EXPECT_FALSE(fs::exists(shm_cache / "phig" / "thumbs"));
     std::error_code ec;
     fs::remove_all(shm_cache, ec);
+}
+
+namespace {
+
+// Sets the version stamp in meta, leaving the tables as they are. Enough to
+// make a read see an older or newer catalog without building one.
+void stamp_schema_version(const std::string& db_path, int version) {
+    Database db(db_path);
+    const std::string sql =
+        "UPDATE meta SET value = '" + std::to_string(version) + "' WHERE key = 'schema_version'";
+    ASSERT_EQ(sqlite3_exec(db.db_ptr(), sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+}
+
+class OpenCatalogTest : public ::testing::Test {
+   protected:
+    fs::path dir;
+    std::string db_path;
+    void SetUp() override {
+        dir = make_temp_dir("open-catalog");
+        db_path = (dir / "phig.db").string();
+    }
+    void TearDown() override {
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+    }
+    void make_current() {
+        Database db(db_path);
+        db.init_schema();
+    }
+};
+
+CatalogError::Kind kind_of(const std::function<void()>& f) {
+    try {
+        f();
+    } catch (const CatalogError& e) {
+        return e.kind();
+    }
+    ADD_FAILURE() << "expected a CatalogError";
+    return CatalogError::Kind::Missing;
+}
+
+}  // namespace
+
+TEST_F(OpenCatalogTest, ReadAndWriteRefuseAMissingCatalogAndCreateNothing) {
+    const fs::path missing = dir / "nowhere";
+    const std::string missing_db = (missing / "phig.db").string();
+    EXPECT_EQ(kind_of([&] { open_catalog_db(missing_db, CatalogAccess::Read); }),
+              CatalogError::Kind::Missing);
+    EXPECT_EQ(kind_of([&] { open_catalog_db(missing_db, CatalogAccess::Write); }),
+              CatalogError::Kind::Missing);
+    EXPECT_EQ(kind_of([&] { require_catalog(missing_db); }), CatalogError::Kind::Missing);
+    EXPECT_FALSE(fs::exists(missing));
+}
+
+TEST_F(OpenCatalogTest, CreateMakesAMissingCatalog) {
+    const std::string fresh = (dir / "fresh" / "phig.db").string();
+    auto db = open_catalog_db(fresh, CatalogAccess::Create);
+    EXPECT_EQ(db->schema_version(), Database::expected_schema_version());
+    EXPECT_TRUE(fs::exists(fresh));
+}
+
+TEST_F(OpenCatalogTest, ReadRefusesAnOutdatedCatalogAndLeavesItsVersion) {
+    make_current();
+    const int older = Database::expected_schema_version() - 1;
+    stamp_schema_version(db_path, older);
+    EXPECT_EQ(kind_of([&] { open_catalog_db(db_path, CatalogAccess::Read); }),
+              CatalogError::Kind::Outdated);
+    Database after(db_path, /*read_only=*/true);
+    EXPECT_EQ(after.schema_version(), older);
+}
+
+TEST_F(OpenCatalogTest, EveryAccessRefusesANewerCatalog) {
+    make_current();
+    stamp_schema_version(db_path, Database::expected_schema_version() + 1);
+    for (CatalogAccess a : {CatalogAccess::Read, CatalogAccess::Write, CatalogAccess::Create}) {
+        EXPECT_EQ(kind_of([&] { open_catalog_db(db_path, a); }), CatalogError::Kind::Newer);
+    }
+}
+
+TEST_F(OpenCatalogTest, ReadOpensACurrentCatalogReadOnly) {
+    make_current();
+    auto db = open_catalog_db(db_path, CatalogAccess::Read);
+    EXPECT_EQ(db->schema_version(), Database::expected_schema_version());
+    EXPECT_NE(sqlite3_exec(db->db_ptr(), "CREATE TABLE should_fail (x INTEGER)", nullptr, nullptr,
+                           nullptr),
+              SQLITE_OK);
+}
+
+TEST_F(OpenCatalogTest, TheMessageNamesTheCatalogDirectory) {
+    const std::string missing_db = (dir / "nowhere" / "phig.db").string();
+    try {
+        open_catalog_db(missing_db, CatalogAccess::Read);
+        FAIL() << "expected a CatalogError";
+    } catch (const CatalogError& e) {
+        EXPECT_NE(std::string(e.what()).find((dir / "nowhere").string()), std::string::npos)
+            << e.what();
+    }
 }

@@ -40,7 +40,47 @@ bool same_path(const std::string& a, const std::string& b) {
     return fs::absolute(a).lexically_normal() == fs::absolute(b).lexically_normal();
 }
 
+std::string catalog_dir_of(const std::string& db_path) {
+    return fs::path(db_path).parent_path().string();
+}
+
 }  // namespace
+
+void require_catalog(const std::string& db_path) {
+    std::error_code ec;
+    if (fs::exists(db_path, ec)) return;
+    throw CatalogError(CatalogError::Kind::Missing,
+                       "no phig catalog at " + catalog_dir_of(db_path) +
+                           ": it has no phig.db. 'phig scan <directory>' creates one.");
+}
+
+std::unique_ptr<Database> open_catalog_db(const std::string& db_path, CatalogAccess access) {
+    if (access != CatalogAccess::Create) require_catalog(db_path);
+
+    auto db = std::make_unique<Database>(db_path, access == CatalogAccess::Read);
+    const int have = db->schema_version();
+    const int want = Database::expected_schema_version();
+    const std::string dir = catalog_dir_of(db_path);
+    if (have > want) {
+        throw CatalogError(CatalogError::Kind::Newer,
+                           "the catalog at " + dir + " is at schema version " +
+                               std::to_string(have) + ", newer than this build's " +
+                               std::to_string(want) + "; use a newer phig");
+    }
+    if (access == CatalogAccess::Read) {
+        if (have != want) {
+            throw CatalogError(CatalogError::Kind::Outdated,
+                               "the catalog at " + dir + " is at schema version " +
+                                   std::to_string(have) + " and this build reads version " +
+                                   std::to_string(want) +
+                                   "; a command that writes to it, such as 'phig scan', "
+                                   "upgrades it");
+        }
+        return db;
+    }
+    db->init_schema();
+    return db;
+}
 
 LegacyMigration migrate_legacy_catalog_files(const CatalogPaths& catalog) {
     LegacyMigration result;

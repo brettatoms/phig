@@ -1,8 +1,11 @@
 #pragma once
 
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "database.h"
 #include "paths.h"
 
 // What migrate_legacy_catalog_files did. Paths are the legacy locations, so a
@@ -22,3 +25,39 @@ struct LegacyMigration {
 // Never overwrites: a destination that already exists is left, and so is
 // the legacy path.
 LegacyMigration migrate_legacy_catalog_files(const CatalogPaths& catalog);
+
+// How a command opens its catalog's database.
+enum class CatalogAccess {
+    Read,    // read-only; the catalog must exist at this build's schema (R70)
+    Write,   // the catalog must exist; migrated to this build's schema
+    Create,  // created if missing, then migrated; only scan and libphig's
+             // read-write context create a catalog
+};
+
+// Why a catalog could not be opened.
+class CatalogError : public std::runtime_error {
+   public:
+    enum class Kind {
+        Missing,   // no database in the catalog directory
+        Outdated,  // older schema; a read cannot migrate it
+        Newer,     // schema newer than this build reads
+    };
+    CatalogError(Kind kind, const std::string& message)
+        : std::runtime_error(message), kind_(kind) {}
+    Kind kind() const { return kind_; }
+
+   private:
+    Kind kind_;
+};
+
+// Opens the catalog database at db_path. Read never creates or migrates
+// anything: a missing database, or one at another schema version, throws
+// CatalogError. Write throws on a missing database and migrates an older
+// one. Create makes a missing database and migrates. All three refuse a
+// database newer than this build.
+std::unique_ptr<Database> open_catalog_db(const std::string& db_path, CatalogAccess access);
+
+// Throws CatalogError(Missing) unless the database at db_path exists. For
+// commands that touch a catalog without opening its database, and before
+// taking the writer lock, whose file would otherwise create the directory.
+void require_catalog(const std::string& db_path);
