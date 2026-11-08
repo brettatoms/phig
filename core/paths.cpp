@@ -11,6 +11,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <random>
 #include <stdexcept>
 #include <system_error>
@@ -40,6 +41,9 @@ std::string xdg_base(const char* var, const char* home_fallback) {
     return std::string(home) + home_fallback;
 }
 
+// Guards g_catalog and g_models_override: thumbnail workers read them while
+// phig_init may install a catalog on another thread.
+std::mutex g_paths_mutex;
 std::optional<CatalogPaths> g_catalog;
 std::optional<std::string> g_models_override;
 
@@ -65,10 +69,20 @@ CatalogPaths catalog_paths(const std::string& dir) {
 
 std::string default_catalog_dir() { return data_dir(); }
 
-void set_catalog(const CatalogPaths& paths) { g_catalog = paths; }
-void clear_catalog() { g_catalog.reset(); }
+void set_catalog(const CatalogPaths& paths) {
+    std::lock_guard<std::mutex> guard(g_paths_mutex);
+    g_catalog = paths;
+}
+void clear_catalog() {
+    std::lock_guard<std::mutex> guard(g_paths_mutex);
+    g_catalog.reset();
+}
 CatalogPaths current_catalog() {
-    return g_catalog ? *g_catalog : catalog_paths(default_catalog_dir());
+    {
+        std::lock_guard<std::mutex> guard(g_paths_mutex);
+        if (g_catalog) return *g_catalog;
+    }
+    return catalog_paths(default_catalog_dir());
 }
 
 std::string default_db_path() { return current_catalog().db; }
@@ -77,11 +91,18 @@ std::string trash_dir() { return current_catalog().trash; }
 std::string default_log_path() { return current_catalog().log; }
 
 std::string models_dir() {
-    return g_models_override ? *g_models_override : cache_dir() + "/models";
+    {
+        std::lock_guard<std::mutex> guard(g_paths_mutex);
+        if (g_models_override) return *g_models_override;
+    }
+    return cache_dir() + "/models";
 }
 std::string config_path() { return config_dir() + "/config.ini"; }
 
-void set_models_dir(const std::optional<std::string>& dir) { g_models_override = dir; }
+void set_models_dir(const std::optional<std::string>& dir) {
+    std::lock_guard<std::mutex> guard(g_paths_mutex);
+    g_models_override = dir;
+}
 
 std::string trash_path_for(const std::string& filename) {
     namespace fs = std::filesystem;

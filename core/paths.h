@@ -45,7 +45,8 @@ std::string default_catalog_dir();
 // flags, environment and config, by phig_init and by the gtk client; one
 // process works on one catalog. Until one is installed, current_catalog()
 // is catalog_paths(default_catalog_dir()), computed on each call so a
-// test that changes XDG_DATA_HOME sees the change.
+// test that changes XDG_DATA_HOME sees the change. Safe from any thread: the
+// installed catalog and models directory are copied out under a mutex.
 void set_catalog(const CatalogPaths& paths);
 void clear_catalog();
 CatalogPaths current_catalog();
