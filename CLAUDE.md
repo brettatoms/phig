@@ -159,10 +159,6 @@ finding.
 ./build/phig --version                                          # phig 0.3.0
 ```
 
-A fixed `search --count` against the default catalog is not a sound check: the
-default catalog on the development machine holds schema v8 and zero images, so
-a count there says nothing about a real collection.
-
 A read against a catalog that does not exist now fails with `no phig catalog at
 <dir>` and creates nothing (R70), so `phig --catalog <dir> search --count` is a
 sound check against a catalog you have scanned.
@@ -394,8 +390,8 @@ log (`phig.log`). Which catalog a command uses: `--catalog <dir>`, then
 `~/.local/share/phig/`. All of it is resolved in `core/paths.cpp` and
 `core/catalog.cpp`. User-level files stay in XDG locations: models at
 `~/.cache/phig/models`, config at `~/.config/phig/config.ini`. The first run
-against the default catalog moves thumbnails from `~/.cache/phig/thumbs` and
-the log from `~/.local/state/phig/` into it. A read never creates or migrates a
+against an existing default catalog moves thumbnails from
+`~/.cache/phig/thumbs` and the log from `~/.local/state/phig/` into it. A read never creates or migrates a
 catalog (R70): a read against a missing or outdated catalog fails, and only
 `scan` creates one. An optional INI config file (parsed in `core/config.cpp`
 via vendored inih) sets defaults; a global `--config <path>` flag overrides its
@@ -496,8 +492,8 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   BUSY_SNAPSHOT, and schema migrations re-check the version inside an
   IMMEDIATE transaction so concurrent first-runs don't re-apply DDL.
   Most mutating commands additionally take a process-wide advisory `flock`
-  on the catalog's `phig.db.lock` (`core/lockfile.cpp`) so whole operations serialize; reads
-  never take it. Per-machine only. The `face` subcommands are the exception
+  on the catalog's `phig.db.lock` (`core/lockfile.cpp`) so whole operations
+  serialize; reads never take it. Per-machine only. The `face` subcommands are the exception
   — they run lock-free, matching libphig's faces operation, and defend
   themselves instead: `faces.id` is AUTOINCREMENT so a deleted id is never
   reissued and a face deleted mid-run matches nothing, `identify` writes under

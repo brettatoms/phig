@@ -296,7 +296,7 @@ The two real-run checks from the root `CLAUDE.md` must still hold on Linux
 after Phase 1 and Phase 2:
 
 ```bash
-./build/phig search --count --db ~/.local/share/phig/phig.db   # 29925
+./build/phig search --count --catalog ~/.local/share/phig   # 29925
 ./build/phig --version                                          # phig 0.3.0
 ```
 

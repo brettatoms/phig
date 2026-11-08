@@ -167,8 +167,8 @@ paths and any values your config overrides.
 
 Mutating commands (`scan`, `mv`, `cp`, `rm`, `tag`/`gallery`/`fav` writes,
 `face` writes, `thumbs rebuild`/`clean`, `models download`) take a process-wide
-advisory lock (the catalog's `phig.db.lock`) so two of them never run at once and interleave.
-If another mutating command is already running, phig prints
+advisory lock (the catalog's `phig.db.lock`) so two of them never run at once
+and interleave. If another mutating command is already running, phig prints
 `Another phig operation is running (pid N); waiting...` and waits. Pass
 `--no-wait` to fail immediately instead. Read commands (`search`,
 `duplicates`, `log`, the `list` subcommands) never take the lock and are never
