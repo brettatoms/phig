@@ -14,24 +14,24 @@ namespace fs = std::filesystem;
 
 class ThumbsTest : public ::testing::Test {
    protected:
-    std::string orig_cache;
+    std::string orig_data;
     std::string temp_dir;
 
     void SetUp() override {
-        // Save original XDG_CACHE_HOME and redirect to temp
-        const char* xdg = std::getenv("XDG_CACHE_HOME");
-        if (xdg) orig_cache = xdg;
+        // Save original XDG_DATA_HOME and redirect to temp
+        const char* xdg = std::getenv("XDG_DATA_HOME");
+        if (xdg) orig_data = xdg;
 
         temp_dir = make_temp_dir("thumbs");
-        setenv("XDG_CACHE_HOME", temp_dir.c_str(), 1);
+        setenv("XDG_DATA_HOME", temp_dir.c_str(), 1);
     }
 
     void TearDown() override {
         // Restore
-        if (orig_cache.empty()) {
-            unsetenv("XDG_CACHE_HOME");
+        if (orig_data.empty()) {
+            unsetenv("XDG_DATA_HOME");
         } else {
-            setenv("XDG_CACHE_HOME", orig_cache.c_str(), 1);
+            setenv("XDG_DATA_HOME", orig_data.c_str(), 1);
         }
         fs::remove_all(temp_dir);
     }

@@ -11,7 +11,7 @@ bool bad_tag(const char* t) { return t == nullptr || t[0] == '\0'; }
 }  // namespace
 
 void phig_acquire_write_lock(phig_ctx* ctx, std::unique_ptr<WriterLock>& out) {
-    out = std::make_unique<WriterLock>(ctx->db_path + ".lock", /*no_wait=*/true);
+    out = std::make_unique<WriterLock>(lock_path(ctx->db_path), /*no_wait=*/true);
 }
 
 extern "C" {

@@ -20,15 +20,47 @@ std::string data_dir();    // $XDG_DATA_HOME   or ~/.local/share, + /phig
 std::string cache_dir();   // $XDG_CACHE_HOME  or ~/.cache,       + /phig
 std::string state_dir();   // $XDG_STATE_HOME  or ~/.local/state, + /phig
 
-// Derived paths.
-std::string default_db_path();   // data_dir()  + /phig.db
-std::string lock_path();         // default_db_path() + ".lock"  (advisory writer lock)
-std::string models_dir();        // cache_dir() + /models
-std::string thumbs_dir();        // cache_dir() + /thumbs
-std::string config_path();       // config_dir() + /config.ini
-std::string default_log_path();  // state_dir() + /phig.log
+// A catalog is the directory holding what phig keeps about one collection:
+// its database, the database's writer lock, the trash, the thumbnail cache
+// and the diagnostic log. The images themselves live wherever they were
+// scanned. Face models and the config file are user-level and not part of it.
+struct CatalogPaths {
+    std::string dir;
+    std::string db;      // dir + "/phig.db"
+    std::string lock;    // lock_path(db)
+    std::string trash;   // dir + "/trash"
+    std::string thumbs;  // dir + "/thumbs"
+    std::string log;     // dir + "/phig.log", rotating to phig.1.log
+};
 
-std::string trash_dir();  // data_dir() + /trash  (phig-managed trash)
+// The advisory writer lock for the database at db_path: db_path + ".lock".
+std::string lock_path(const std::string& db_path);
+
+CatalogPaths catalog_paths(const std::string& dir);
+
+// The catalog used when none is named: data_dir().
+std::string default_catalog_dir();
+
+// The process's catalog. Installed once at startup, by the CLI from its
+// flags, environment and config, by phig_init and by the gtk client; one
+// process works on one catalog. Until one is installed, current_catalog()
+// is catalog_paths(default_catalog_dir()), computed on each call so a
+// test that changes XDG_DATA_HOME sees the change.
+void set_catalog(const CatalogPaths& paths);
+void clear_catalog();
+CatalogPaths current_catalog();
+
+// Paths inside current_catalog(), for code that needs only one of them.
+std::string default_db_path();
+std::string thumbs_dir();
+std::string trash_dir();
+std::string default_log_path();
+
+std::string models_dir();   // the set_models_dir() value, else cache_dir() + /models
+std::string config_path();  // config_dir() + /config.ini
+
+// Overrides models_dir(); std::nullopt restores the default.
+void set_models_dir(const std::optional<std::string>& dir);
 
 // A non-colliding absolute path inside trash_dir() for a file named `filename`:
 // trash_dir()/filename if free, else trash_dir()/filename.1, .2, … The returned
@@ -101,10 +133,9 @@ std::string resolve_conflict(const std::string& dest, const std::string& on_conf
                              std::set<std::string>& claimed,
                              const std::function<bool(const std::string&)>& is_protected);
 
-// Install process-wide path overrides (typically from the config file). When set,
-// default_db_path()/models_dir()/thumbs_dir() return the override instead of the
-// computed XDG path. Pass std::nullopt to leave a given path computed. Called once
-// at startup; also used by tests to reset state.
+// Installs a catalog whose database and thumbnails may sit outside its
+// directory, and the models directory. Kept for the callers that still name
+// paths one at a time; prefer set_catalog() and set_models_dir().
 void set_path_overrides(const std::optional<std::string>& db,
                         const std::optional<std::string>& models,
                         const std::optional<std::string>& thumbs);

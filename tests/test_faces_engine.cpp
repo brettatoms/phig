@@ -704,9 +704,9 @@ namespace {
 struct MissingModels {
     explicit MissingModels(const fs::path& empty_dir) {
         fs::create_directories(empty_dir);
-        set_path_overrides(std::nullopt, empty_dir.string(), std::nullopt);
+        set_models_dir(empty_dir.string());
     }
-    ~MissingModels() { set_path_overrides(std::nullopt, std::nullopt, std::nullopt); }
+    ~MissingModels() { set_models_dir(std::nullopt); }
 };
 
 // What a refusal has to name. Above the OpenCV floor the models are what is

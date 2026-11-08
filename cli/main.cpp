@@ -87,7 +87,7 @@ class ScopedInterruptHandler {
 // Acquire the process-wide writer lock for a mutating command. Prints a clear
 // message and exits nonzero if --no-wait was given and another op holds it.
 static std::unique_ptr<WriterLock> acquire_writer_lock(bool no_wait) {
-    std::string path = lock_path();
+    std::string path = current_catalog().lock;
     fs::create_directories(fs::path(path).parent_path());
     try {
         return std::make_unique<WriterLock>(path, no_wait);

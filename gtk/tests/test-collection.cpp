@@ -14,20 +14,20 @@ namespace {
 
 // A database of three rows dated 2021, 2023 and 2022 in insert order, so the
 // gallery's newest-first order differs from insertion order. The 2023 row is a
-// real JPEG, so a thumbnail can be generated from it. XDG_CACHE_HOME points
+// real JPEG, so a thumbnail can be generated from it. XDG_DATA_HOME points
 // into the temp dir, so generated thumbnails never reach the real cache.
 struct Fixture {
     fs::path dir;
     std::string db_path;
-    std::optional<std::string> saved_cache_home;  // XDG_CACHE_HOME before the fixture
+    std::optional<std::string> saved_data_home;  // XDG_DATA_HOME before the fixture
 
     Fixture() {
         char* tmp = g_dir_make_tmp("phig-gtk-collection-XXXXXX", nullptr);
         g_assert_nonnull(tmp);
         dir = tmp;
         g_free(tmp);
-        if (const char* cache_home = g_getenv("XDG_CACHE_HOME")) saved_cache_home = cache_home;
-        g_setenv("XDG_CACHE_HOME", (dir / "cache").c_str(), TRUE);
+        if (const char* data_home = g_getenv("XDG_DATA_HOME")) saved_data_home = data_home;
+        g_setenv("XDG_DATA_HOME", (dir / "cache").c_str(), TRUE);
         db_path = (dir / "phig.db").string();
 
         Database db(db_path);
@@ -41,10 +41,10 @@ struct Fixture {
     ~Fixture() {
         std::error_code ec;
         fs::remove_all(dir, ec);
-        if (saved_cache_home)
-            g_setenv("XDG_CACHE_HOME", saved_cache_home->c_str(), TRUE);
+        if (saved_data_home)
+            g_setenv("XDG_DATA_HOME", saved_data_home->c_str(), TRUE);
         else
-            g_unsetenv("XDG_CACHE_HOME");
+            g_unsetenv("XDG_DATA_HOME");
     }
 
     Fixture(const Fixture&) = delete;

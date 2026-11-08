@@ -24,17 +24,17 @@ namespace {
 struct OpFixture {
     fs::path dir;
     std::string db_path;
-    std::string orig_cache;
-    bool had_cache = false;
+    std::string orig_data;
+    bool had_data = false;
 
     explicit OpFixture(int images = 0) {
         dir = make_temp_dir("libphig-ops");
         db_path = (dir / "phig.db").string();
 
-        const char* xdg = std::getenv("XDG_CACHE_HOME");
-        had_cache = xdg != nullptr;
-        if (xdg) orig_cache = xdg;
-        setenv("XDG_CACHE_HOME", dir.c_str(), 1);
+        const char* xdg = std::getenv("XDG_DATA_HOME");
+        had_data = xdg != nullptr;
+        if (xdg) orig_data = xdg;
+        setenv("XDG_DATA_HOME", dir.c_str(), 1);
 
         Database db(db_path);
         db.init_schema();
@@ -55,10 +55,10 @@ struct OpFixture {
     }
 
     ~OpFixture() {
-        if (had_cache) {
-            setenv("XDG_CACHE_HOME", orig_cache.c_str(), 1);
+        if (had_data) {
+            setenv("XDG_DATA_HOME", orig_data.c_str(), 1);
         } else {
-            unsetenv("XDG_CACHE_HOME");
+            unsetenv("XDG_DATA_HOME");
         }
         std::error_code ec;
         fs::remove_all(dir, ec);
@@ -762,15 +762,7 @@ TEST(AbiOperations, PolledStringsStayValidUntilTheNextPoll) {
 
 TEST(AbiOperations, FacesResultReportsLabelsItCouldNotCarry) {
     if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
-    // OpFixture points XDG_CACHE_HOME into its scratch directory, which moves
-    // models_dir() away from the installed models. Resolve them first, then
-    // link them into the scratch cache. libphig.so keeps its own copy of the
-    // path overrides, so set_path_overrides() here would not reach it.
-    const std::string models = models_dir();
     OpFixture fx(1);
-    fs::create_directories(fx.dir / "phig");
-    fs::create_directory_symlink(models, fx.dir / "phig" / "models");
-
     {
         Database db(fx.db_path);
         int64_t image_id = db.get_image_id((fx.dir / "img0.jpg").string());

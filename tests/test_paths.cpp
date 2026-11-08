@@ -45,8 +45,9 @@ class PathsTest : public ::testing::Test {
         unsetenv("XDG_DATA_HOME");
         unsetenv("XDG_CACHE_HOME");
         unsetenv("XDG_STATE_HOME");
-        // No path overrides unless a test sets them.
-        set_path_overrides(std::nullopt, std::nullopt, std::nullopt);
+        // No installed catalog or models override unless a test sets one.
+        clear_catalog();
+        set_models_dir(std::nullopt);
     }
 
     void TearDown() override {
@@ -106,8 +107,8 @@ TEST_F(PathsTest, ModelsDirUnderCache) {
     EXPECT_EQ(models_dir(), "/home/tester/.cache/phig/models");
 }
 
-TEST_F(PathsTest, ThumbsDirUnderCache) {
-    EXPECT_EQ(thumbs_dir(), "/home/tester/.cache/phig/thumbs");
+TEST_F(PathsTest, ThumbsDirIsInsideTheDefaultCatalog) {
+    EXPECT_EQ(thumbs_dir(), "/home/tester/.local/share/phig/thumbs");
 }
 
 TEST_F(PathsTest, ConfigPathUnderConfig) {
@@ -123,8 +124,8 @@ TEST_F(PathsTest, StateDirFallsBackToHome) {
     EXPECT_EQ(state_dir(), "/home/tester/.local/state/phig");
 }
 
-TEST_F(PathsTest, DefaultLogPathUnderStateDir) {
-    EXPECT_EQ(default_log_path(), state_dir() + "/phig.log");
+TEST_F(PathsTest, DefaultLogPathIsInsideTheDefaultCatalog) {
+    EXPECT_EQ(default_log_path(), "/home/tester/.local/share/phig/phig.log");
 }
 
 // ---- Missing HOME with no XDG override throws ----
@@ -149,23 +150,45 @@ TEST_F(PathsTest, ExpandTildeOnlyLeadingTilde) { EXPECT_EQ(expand_tilde("/x/~/y"
 
 // ---- Path overrides (from config) take precedence over computed paths ----
 
-TEST_F(PathsTest, PathOverridesTakePrecedence) {
-    set_path_overrides("/opt/my.db", "/opt/models", "/opt/thumbs");
-    EXPECT_EQ(default_db_path(), "/opt/my.db");
-    EXPECT_EQ(models_dir(), "/opt/models");
-    EXPECT_EQ(thumbs_dir(), "/opt/thumbs");
+TEST_F(PathsTest, CatalogPathsLayOutOneDirectory) {
+    CatalogPaths p = catalog_paths("/srv/catalog");
+    EXPECT_EQ(p.dir, "/srv/catalog");
+    EXPECT_EQ(p.db, "/srv/catalog/phig.db");
+    EXPECT_EQ(p.lock, "/srv/catalog/phig.db.lock");
+    EXPECT_EQ(p.trash, "/srv/catalog/trash");
+    EXPECT_EQ(p.thumbs, "/srv/catalog/thumbs");
+    EXPECT_EQ(p.log, "/srv/catalog/phig.log");
 }
 
-TEST_F(PathsTest, UnsetOverridesFallBackToComputed) {
-    set_path_overrides(std::nullopt, std::nullopt, std::nullopt);
+TEST_F(PathsTest, LockPathBelongsToTheDatabase) {
+    EXPECT_EQ(lock_path("/a/b/other.db"), "/a/b/other.db.lock");
+}
+
+TEST_F(PathsTest, DefaultCatalogIsTheDataDirectory) {
+    setenv("XDG_DATA_HOME", "/custom/data", 1);
+    EXPECT_EQ(default_catalog_dir(), "/custom/data/phig");
+    EXPECT_EQ(current_catalog().db, "/custom/data/phig/phig.db");
+    EXPECT_EQ(trash_dir(), "/custom/data/phig/trash");
+}
+
+TEST_F(PathsTest, AnInstalledCatalogRedirectsEveryCatalogPath) {
+    set_catalog(catalog_paths("/srv/catalog"));
+    EXPECT_EQ(default_db_path(), "/srv/catalog/phig.db");
+    EXPECT_EQ(thumbs_dir(), "/srv/catalog/thumbs");
+    EXPECT_EQ(trash_dir(), "/srv/catalog/trash");
+    EXPECT_EQ(default_log_path(), "/srv/catalog/phig.log");
+    EXPECT_EQ(current_catalog().lock, "/srv/catalog/phig.db.lock");
+    EXPECT_EQ(models_dir(), "/home/tester/.cache/phig/models")
+        << "models are user-level, not part of a catalog";
+
+    clear_catalog();
     EXPECT_EQ(default_db_path(), "/home/tester/.local/share/phig/phig.db");
-    EXPECT_EQ(models_dir(), "/home/tester/.cache/phig/models");
-    EXPECT_EQ(thumbs_dir(), "/home/tester/.cache/phig/thumbs");
 }
 
-TEST_F(PathsTest, PartialOverrideOnlyAffectsSetPaths) {
-    set_path_overrides("/opt/only.db", std::nullopt, std::nullopt);
-    EXPECT_EQ(default_db_path(), "/opt/only.db");
+TEST_F(PathsTest, ModelsDirCanBeSetAndCleared) {
+    set_models_dir(std::string("/opt/models"));
+    EXPECT_EQ(models_dir(), "/opt/models");
+    set_models_dir(std::nullopt);
     EXPECT_EQ(models_dir(), "/home/tester/.cache/phig/models");
 }
 

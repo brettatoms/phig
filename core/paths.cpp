@@ -40,9 +40,8 @@ std::string xdg_base(const char* var, const char* home_fallback) {
     return std::string(home) + home_fallback;
 }
 
-std::optional<std::string> g_db_override;
+std::optional<CatalogPaths> g_catalog;
 std::optional<std::string> g_models_override;
-std::optional<std::string> g_thumbs_override;
 
 }  // namespace
 
@@ -51,18 +50,38 @@ std::string data_dir() { return xdg_base("XDG_DATA_HOME", "/.local/share") + "/p
 std::string cache_dir() { return xdg_base("XDG_CACHE_HOME", "/.cache") + "/phig"; }
 std::string state_dir() { return xdg_base("XDG_STATE_HOME", "/.local/state") + "/phig"; }
 
-std::string default_db_path() { return g_db_override ? *g_db_override : data_dir() + "/phig.db"; }
-std::string lock_path() { return default_db_path() + ".lock"; }
+std::string lock_path(const std::string& db_path) { return db_path + ".lock"; }
+
+CatalogPaths catalog_paths(const std::string& dir) {
+    CatalogPaths p;
+    p.dir = dir;
+    p.db = dir + "/phig.db";
+    p.lock = lock_path(p.db);
+    p.trash = dir + "/trash";
+    p.thumbs = dir + "/thumbs";
+    p.log = dir + "/phig.log";
+    return p;
+}
+
+std::string default_catalog_dir() { return data_dir(); }
+
+void set_catalog(const CatalogPaths& paths) { g_catalog = paths; }
+void clear_catalog() { g_catalog.reset(); }
+CatalogPaths current_catalog() {
+    return g_catalog ? *g_catalog : catalog_paths(default_catalog_dir());
+}
+
+std::string default_db_path() { return current_catalog().db; }
+std::string thumbs_dir() { return current_catalog().thumbs; }
+std::string trash_dir() { return current_catalog().trash; }
+std::string default_log_path() { return current_catalog().log; }
+
 std::string models_dir() {
     return g_models_override ? *g_models_override : cache_dir() + "/models";
 }
-std::string thumbs_dir() {
-    return g_thumbs_override ? *g_thumbs_override : cache_dir() + "/thumbs";
-}
 std::string config_path() { return config_dir() + "/config.ini"; }
-std::string default_log_path() { return state_dir() + "/phig.log"; }
 
-std::string trash_dir() { return data_dir() + "/trash"; }
+void set_models_dir(const std::optional<std::string>& dir) { g_models_override = dir; }
 
 std::string trash_path_for(const std::string& filename) {
     namespace fs = std::filesystem;
@@ -86,9 +105,18 @@ std::string trash_path_for(const std::string& filename) {
 void set_path_overrides(const std::optional<std::string>& db,
                         const std::optional<std::string>& models,
                         const std::optional<std::string>& thumbs) {
-    g_db_override = db;
-    g_models_override = models;
-    g_thumbs_override = thumbs;
+    if (!db && !thumbs) {
+        clear_catalog();
+    } else {
+        CatalogPaths p = catalog_paths(default_catalog_dir());
+        if (db) {
+            p.db = *db;
+            p.lock = lock_path(*db);
+        }
+        if (thumbs) p.thumbs = *thumbs;
+        set_catalog(p);
+    }
+    set_models_dir(models);
 }
 
 std::string expand_tilde(const std::string& path) {

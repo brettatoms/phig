@@ -29,24 +29,24 @@ ImageInfo with_sha(const std::string& sha) {
 
 class ThumbsEngineTest : public ::testing::Test {
    protected:
-    std::string orig_cache;
+    std::string orig_data;
     std::string temp_dir;
 
     void SetUp() override {
-        // Save original XDG_CACHE_HOME and redirect to temp
-        const char* xdg = std::getenv("XDG_CACHE_HOME");
-        if (xdg) orig_cache = xdg;
+        // Save original XDG_DATA_HOME and redirect to temp
+        const char* xdg = std::getenv("XDG_DATA_HOME");
+        if (xdg) orig_data = xdg;
 
         temp_dir = make_temp_dir("thumbs-engine");
-        setenv("XDG_CACHE_HOME", temp_dir.c_str(), 1);
+        setenv("XDG_DATA_HOME", temp_dir.c_str(), 1);
     }
 
     void TearDown() override {
         // Restore
-        if (orig_cache.empty()) {
-            unsetenv("XDG_CACHE_HOME");
+        if (orig_data.empty()) {
+            unsetenv("XDG_DATA_HOME");
         } else {
-            setenv("XDG_CACHE_HOME", orig_cache.c_str(), 1);
+            setenv("XDG_DATA_HOME", orig_data.c_str(), 1);
         }
         fs::remove_all(temp_dir);
     }
@@ -87,15 +87,15 @@ TEST_F(ThumbsEngineTest, UnhashedRowIsSkippedBeforeTheCacheIsConsulted) {
 namespace {
 // A scratch collection with N copies of a real fixture, scanned into a database.
 //
-// Redirects XDG_CACHE_HOME to a scratch directory for its lifetime: the fixed,
+// Redirects XDG_DATA_HOME to a scratch directory for its lifetime: the fixed,
 // low-entropy shas below (all-zeros plus an index) would otherwise collide
 // with the real thumbnail cache and with each other across test instances.
 struct ScratchThumbs {
     fs::path dir;
     std::string db_path;
     std::unique_ptr<Database> db;
-    std::string orig_cache;
-    bool had_orig_cache;
+    std::string orig_data;
+    bool had_orig_data;
 
     explicit ScratchThumbs(int n) {
         dir = fs::temp_directory_path() / ("phig_thumbs_engine_" + std::to_string(::getpid()) +
@@ -103,10 +103,10 @@ struct ScratchThumbs {
         fs::remove_all(dir);
         fs::create_directories(dir);
 
-        const char* xdg = std::getenv("XDG_CACHE_HOME");
-        had_orig_cache = xdg != nullptr;
-        if (xdg) orig_cache = xdg;
-        setenv("XDG_CACHE_HOME", dir.c_str(), 1);
+        const char* xdg = std::getenv("XDG_DATA_HOME");
+        had_orig_data = xdg != nullptr;
+        if (xdg) orig_data = xdg;
+        setenv("XDG_DATA_HOME", dir.c_str(), 1);
 
         db_path = (dir / "phig.db").string();
         db = std::make_unique<Database>(db_path);
@@ -138,10 +138,10 @@ struct ScratchThumbs {
 
     ~ScratchThumbs() {
         db.reset();
-        if (had_orig_cache) {
-            setenv("XDG_CACHE_HOME", orig_cache.c_str(), 1);
+        if (had_orig_data) {
+            setenv("XDG_DATA_HOME", orig_data.c_str(), 1);
         } else {
-            unsetenv("XDG_CACHE_HOME");
+            unsetenv("XDG_DATA_HOME");
         }
         std::error_code ec;
         fs::remove_all(dir, ec);
@@ -387,25 +387,25 @@ TEST(ThumbsEngineRun, AnEmptySelectionGeneratesNothing) {
 
 class EnsureThumbTest : public ::testing::Test {
    protected:
-    std::string orig_cache;
+    std::string orig_data;
     fs::path temp_dir;
     std::unique_ptr<Database> db;
 
     void SetUp() override {
-        const char* xdg = std::getenv("XDG_CACHE_HOME");
-        if (xdg) orig_cache = xdg;
+        const char* xdg = std::getenv("XDG_DATA_HOME");
+        if (xdg) orig_data = xdg;
         temp_dir = make_temp_dir("ensure-thumb");
-        setenv("XDG_CACHE_HOME", temp_dir.c_str(), 1);
+        setenv("XDG_DATA_HOME", temp_dir.c_str(), 1);
         db = std::make_unique<Database>((temp_dir / "phig.db").string());
         db->init_schema();
     }
 
     void TearDown() override {
         db.reset();
-        if (orig_cache.empty()) {
-            unsetenv("XDG_CACHE_HOME");
+        if (orig_data.empty()) {
+            unsetenv("XDG_DATA_HOME");
         } else {
-            setenv("XDG_CACHE_HOME", orig_cache.c_str(), 1);
+            setenv("XDG_DATA_HOME", orig_data.c_str(), 1);
         }
         fs::remove_all(temp_dir);
     }
