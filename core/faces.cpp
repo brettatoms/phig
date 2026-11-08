@@ -1,5 +1,6 @@
 #include "faces.h"
 
+#include <algorithm>
 #include <cmath>
 #include <mutex>
 #include <opencv2/imgcodecs.hpp>
@@ -162,4 +163,53 @@ float embedding_distance(const std::array<float, 128>& a, const std::array<float
         sum += diff * diff;
     }
     return std::sqrt(sum);
+}
+
+float box_overlap(const FaceInfo& a, const FaceInfo& b) {
+    if (a.width <= 0 || a.height <= 0 || b.width <= 0 || b.height <= 0) return 0.0f;
+    // 64-bit so a box near INT_MAX cannot overflow its far edge.
+    int64_t ix = std::min<int64_t>(int64_t{a.x} + a.width, int64_t{b.x} + b.width) -
+                 std::max<int64_t>(a.x, b.x);
+    int64_t iy = std::min<int64_t>(int64_t{a.y} + a.height, int64_t{b.y} + b.height) -
+                 std::max<int64_t>(a.y, b.y);
+    if (ix <= 0 || iy <= 0) return 0.0f;
+    double inter = static_cast<double>(ix) * static_cast<double>(iy);
+    double area_a = static_cast<double>(a.width) * a.height;
+    double area_b = static_cast<double>(b.width) * b.height;
+    return static_cast<float>(inter / (area_a + area_b - inter));
+}
+
+LabelCarry carry_labels(const std::vector<LabelledFace>& labelled,
+                        const std::vector<FaceInfo>& detected, float min_overlap) {
+    LabelCarry out;
+    out.person_ids.assign(detected.size(), -1);
+
+    struct Pair {
+        float overlap;
+        size_t old_i;
+        size_t new_i;
+    };
+    std::vector<Pair> pairs;
+    for (size_t i = 0; i < labelled.size(); ++i) {
+        for (size_t j = 0; j < detected.size(); ++j) {
+            float o = box_overlap(labelled[i].face, detected[j]);
+            if (o >= min_overlap) pairs.push_back({o, i, j});
+        }
+    }
+    // Stable, so equal overlaps resolve in index order and a run is repeatable.
+    std::stable_sort(pairs.begin(), pairs.end(),
+                     [](const Pair& x, const Pair& y) { return x.overlap > y.overlap; });
+
+    std::vector<bool> old_taken(labelled.size(), false);
+    std::vector<bool> new_taken(detected.size(), false);
+    for (const Pair& p : pairs) {
+        if (old_taken[p.old_i] || new_taken[p.new_i]) continue;
+        old_taken[p.old_i] = true;
+        new_taken[p.new_i] = true;
+        out.person_ids[p.new_i] = labelled[p.old_i].person_id;
+    }
+    for (bool taken : old_taken) {
+        if (!taken) ++out.dropped;
+    }
+    return out;
 }

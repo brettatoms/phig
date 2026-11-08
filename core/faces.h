@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <opencv2/core.hpp>
@@ -27,6 +28,26 @@ struct FaceInfo {
     std::array<float, 128> embedding;
     int x, y, width, height;  // bounding box
 };
+
+// A stored face that carries a person label, as a rebuild reads it before
+// replacing the image's faces.
+struct LabelledFace {
+    FaceInfo face;
+    int64_t person_id;
+};
+
+// The labels a rebuild carries onto an image's new detections. `person_ids` is
+// parallel to the detections: the label to write, or -1 for none. `dropped`
+// counts labelled faces that matched no detection.
+struct LabelCarry {
+    std::vector<int64_t> person_ids;
+    size_t dropped = 0;
+};
+
+// Minimum box overlap (intersection over union) for a new detection to take an
+// old face's label. Confirmed against a real collection; see
+// docs/plans/2026-11-07-060-r60-label-carry.md, Task 3.
+inline constexpr float kLabelCarryMinOverlap = 0.5f;
 
 // Per-thread face detector using OpenCV DNN (YuNet + SFace)
 class FaceDetector {
@@ -57,3 +78,17 @@ void preload_face_models();
 
 // Compute Euclidean distance between two embeddings
 float embedding_distance(const std::array<float, 128>& a, const std::array<float, 128>& b);
+
+// Intersection over union of two face boxes, in [0, 1]. Zero when either box
+// has no area.
+float box_overlap(const FaceInfo& a, const FaceInfo& b);
+
+// Matches an image's labelled faces to that image's new detections by box
+// overlap, greedily from the highest overlap down and one-to-one, accepting a
+// pair only at or above `min_overlap`. Box overlap is the only test: with the
+// same model the embeddings are identical, and with a different model they are
+// not comparable, so an embedding check would drop every label in a
+// model-change rebuild.
+LabelCarry carry_labels(const std::vector<LabelledFace>& labelled,
+                        const std::vector<FaceInfo>& detected,
+                        float min_overlap = kLabelCarryMinOverlap);

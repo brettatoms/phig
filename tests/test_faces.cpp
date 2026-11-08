@@ -251,3 +251,87 @@ TEST(EmbeddingTest, DistanceSymmetric) {
     }
     EXPECT_FLOAT_EQ(embedding_distance(a, b), embedding_distance(b, a));
 }
+
+// ---- Label carry across a rebuild ----
+
+namespace {
+FaceInfo box(int x, int y, int w, int h) {
+    FaceInfo f{};
+    f.x = x;
+    f.y = y;
+    f.width = w;
+    f.height = h;
+    return f;
+}
+
+LabelledFace labelled(int x, int y, int w, int h, int64_t person_id) {
+    return LabelledFace{box(x, y, w, h), person_id};
+}
+}  // namespace
+
+TEST(BoxOverlap, IdenticalBoxesOverlapCompletely) {
+    EXPECT_FLOAT_EQ(box_overlap(box(10, 20, 100, 100), box(10, 20, 100, 100)), 1.0f);
+}
+
+TEST(BoxOverlap, DisjointBoxesDoNotOverlap) {
+    EXPECT_FLOAT_EQ(box_overlap(box(0, 0, 10, 10), box(20, 20, 10, 10)), 0.0f);
+}
+
+TEST(BoxOverlap, IsIntersectionOverUnion) {
+    // Intersection 90x90 = 8100; union 2 * 10000 - 8100 = 11900.
+    EXPECT_NEAR(box_overlap(box(0, 0, 100, 100), box(10, 10, 100, 100)), 8100.0f / 11900.0f, 1e-6);
+}
+
+TEST(BoxOverlap, AZeroAreaBoxOverlapsNothing) {
+    EXPECT_FLOAT_EQ(box_overlap(box(0, 0, 0, 0), box(0, 0, 10, 10)), 0.0f);
+}
+
+TEST(CarryLabels, AnIdenticalBoxCarriesItsLabel) {
+    LabelCarry c = carry_labels({labelled(10, 10, 50, 50, 7)}, {box(10, 10, 50, 50)});
+    ASSERT_EQ(c.person_ids.size(), 1u);
+    EXPECT_EQ(c.person_ids[0], 7);
+    EXPECT_EQ(c.dropped, 0u);
+}
+
+TEST(CarryLabels, AShiftedBoxAboveTheThresholdCarriesItsLabel) {
+    // IoU 0.68.
+    LabelCarry c = carry_labels({labelled(0, 0, 100, 100, 7)}, {box(10, 10, 100, 100)});
+    EXPECT_EQ(c.person_ids[0], 7);
+    EXPECT_EQ(c.dropped, 0u);
+}
+
+TEST(CarryLabels, ABoxBelowTheThresholdDropsTheLabel) {
+    // IoU 2500 / 17500 = 0.14.
+    LabelCarry c = carry_labels({labelled(0, 0, 100, 100, 7)}, {box(50, 50, 100, 100)});
+    EXPECT_EQ(c.person_ids[0], -1);
+    EXPECT_EQ(c.dropped, 1u);
+}
+
+TEST(CarryLabels, TheLabelGoesToTheBestOverlappingFace) {
+    LabelCarry c =
+        carry_labels({labelled(0, 0, 100, 100, 7)}, {box(10, 10, 100, 100), box(0, 0, 100, 100)});
+    EXPECT_EQ(c.person_ids[0], -1);
+    EXPECT_EQ(c.person_ids[1], 7);
+    EXPECT_EQ(c.dropped, 0u);
+}
+
+TEST(CarryLabels, OneDetectedFaceTakesAtMostOneLabel) {
+    // Both labelled faces overlap the one detection; the closer one wins and
+    // the other is dropped rather than overwriting it.
+    LabelCarry c = carry_labels({labelled(10, 10, 100, 100, 7), labelled(0, 0, 100, 100, 8)},
+                                {box(0, 0, 100, 100)});
+    EXPECT_EQ(c.person_ids[0], 8);
+    EXPECT_EQ(c.dropped, 1u);
+}
+
+TEST(CarryLabels, NoDetectionsDropsEveryLabel) {
+    LabelCarry c = carry_labels({labelled(0, 0, 10, 10, 7), labelled(50, 50, 10, 10, 8)}, {});
+    EXPECT_TRUE(c.person_ids.empty());
+    EXPECT_EQ(c.dropped, 2u);
+}
+
+TEST(CarryLabels, NoLabelledFacesCarriesNothing) {
+    LabelCarry c = carry_labels({}, {box(0, 0, 10, 10), box(50, 50, 10, 10)});
+    EXPECT_EQ(c.person_ids, (std::vector<int64_t>{-1, -1}));
+    EXPECT_EQ(c.dropped, 0u);
+}
