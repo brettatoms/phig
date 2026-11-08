@@ -14,7 +14,7 @@ set(PHIG_GTK_WARNINGS -Wall -Wextra)
 
 pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk4 libadwaita-1)
 
-add_executable(phig-gtk src/main.c src/gallery-model.c src/thumb-loader.c src/collection.cpp
+add_executable(phig-gtk src/main.cpp src/gallery-model.c src/thumb-loader.c src/collection.cpp
                src/row-page.c)
 target_compile_options(phig-gtk PRIVATE ${PHIG_GTK_WARNINGS})
 target_link_libraries(phig-gtk PRIVATE phig-core PkgConfig::GTK)

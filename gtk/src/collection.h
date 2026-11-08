@@ -66,4 +66,13 @@ gboolean phig_collection_thumb_generate(PhigCollection* coll, int64_t image_id, 
 
 G_END_DECLS
 
+#ifdef __cplusplus
+#include <memory>
+
+struct PhigCollectionClose {
+    void operator()(PhigCollection* coll) const noexcept { phig_collection_close(coll); }
+};
+using CollectionPtr = std::unique_ptr<PhigCollection, PhigCollectionClose>;
+#endif
+
 #endif /* PHIG_GTK_COLLECTION_H */

@@ -1,10 +1,15 @@
 #include <adwaita.h>
 #include <gtk/gtk.h>
-#include <math.h>
-#include <stdlib.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "gallery-model.h"
 #include "collection.h"
+#include "gref.h"
 #include "thumb-loader.h"
 
 /* Grid zoom. The grid always divides the viewport width exactly — cell size is
@@ -82,59 +87,52 @@ static guint env_override_uint(const char* name, guint fallback) {
     return (guint)parsed;
 }
 
-typedef struct {
-    AdwApplicationWindow* window;
-    AdwToolbarView* toolbar_view;
-    GtkGridView* grid;
-    GtkScrolledWindow* scroller;
-    AdwToastOverlay* toast_overlay;
-    GtkLabel* failed_label; /* header-bar counter for THUMB_FAILED results */
-    char* db_path;
+struct PhigApp {
+    AdwApplicationWindow* window = nullptr;
+    AdwToolbarView* toolbar_view = nullptr;
+    GtkGridView* grid = nullptr;
+    GtkScrolledWindow* scroller = nullptr;
+    AdwToastOverlay* toast_overlay = nullptr;
+    GtkLabel* failed_label = nullptr;  // header-bar counter for THUMB_FAILED results
+    std::string db_path;
 
-    /* Owned once startup finishes; NULL until then. Freed in order by
-     * phig_app_free: the loader and the model both use them from worker
-     * threads. */
-    PhigCollection* coll;
-    ThumbLoader* loader;
+    // Set once startup finishes. The loader's workers and the model's page
+    // fetches both use coll from worker threads, so ~PhigApp stops both before
+    // coll closes. coll is declared before loader, but the destructor body
+    // releases the loader and drops the model first, then member destruction
+    // closes coll.
+    CollectionPtr coll;
+    ThumbLoader* loader = nullptr;
 
-    guint thumb_failed_count;
-    gboolean page_fetch_toast_shown; /* one toast per session, not one per failed page */
+    guint thumb_failed_count = 0;
+    bool page_fetch_toast_shown = false;  // one toast per session, not one per failed page
 
-    gint64 startup_start_us; /* g_get_monotonic_time() at process start, for PHIG_MEASURE */
+    gint64 startup_start_us = 0;  // g_get_monotonic_time() at process start, for PHIG_MEASURE
 
-    /* Zoom state. `columns` is the resting column count; `pinch_columns` tracks
-     * the fractional count during a live pinch so the snap decision can see
-     * which direction the gesture is going. */
-    guint target_cell_px;    /* what zoom sets; held constant across window resizes */
-    guint columns;           /* derived from target_cell_px and the viewport width */
-    guint relayout_id;       /* pending phig_relayout_idle, 0 if none */
-    gboolean relayout_needs_rebind; /* geometry changed: re-request textures at the new size */
-    double pinch_cell;      /* live target size during a pinch */
-    guint pinch_base_cell;  /* target size when the gesture began */
-} PhigApp;
+    // Zoom state. columns is the resting column count; pinch_cell tracks the
+    // live size during a pinch so the snap can see which way it is going.
+    guint target_cell_px = 0;     // what zoom sets; held across window resizes
+    guint columns = 0;            // derived from target_cell_px and the viewport width
+    guint relayout_id = 0;        // pending phig_relayout_idle, 0 if none
+    bool relayout_needs_rebind = false;  // geometry changed: re-request textures
+    double pinch_cell = 0.0;      // live target size during a pinch
+    guint pinch_base_cell = 0;    // target size when the gesture began
 
-/* Shutdown order matters: the loader's workers and the model's in-flight page
- * fetches both use the collection, so the loader is shut down and the model
- * dropped before phig_collection_close. thumb_loader_shutdown joins every
- * worker; dropping the grid's model then drops the model's last ref, running
- * phig_gallery_model_dispose (which waits on its in_flight counter)
- * synchronously before this function continues. */
-static void phig_app_free(PhigApp* app) {
-    if (app->relayout_id != 0) {
-        g_source_remove(app->relayout_id);
-        app->relayout_id = 0;
+    PhigApp() = default;
+    PhigApp(const PhigApp&) = delete;
+    PhigApp& operator=(const PhigApp&) = delete;
+    ~PhigApp();
+};
+
+// Dropping the grid's model drops the model's last reference, so its dispose
+// waits for in-flight page fetches before coll closes.
+PhigApp::~PhigApp() {
+    if (relayout_id != 0) g_source_remove(relayout_id);
+    if (loader != nullptr) {
+        thumb_loader_shutdown(loader);
+        g_object_unref(loader);
     }
-    if (app->loader != NULL)
-        thumb_loader_shutdown(app->loader);
-    g_clear_object(&app->loader);
-
-    if (app->grid != NULL)
-        gtk_grid_view_set_model(app->grid, NULL);
-
-    if (app->coll != NULL)
-        phig_collection_close(app->coll);
-    g_free(app->db_path);
-    g_free(app);
+    if (grid != nullptr) gtk_grid_view_set_model(grid, nullptr);
 }
 
 /* Measurement harness (task-7-report.md). Entirely gated on PHIG_MEASURE=1,
@@ -143,26 +141,21 @@ static void phig_app_free(PhigApp* app) {
  * is driven directly on the scrolled window's GtkAdjustment instead, from a
  * g_timeout_add step function, with frame timings recorded via a tick
  * callback on the grid. */
-typedef struct {
-    PhigApp* app;
-    GArray* frame_deltas_us; /* gint64, one per observed frame */
-    gint64 last_frame_time_us;
-    gboolean have_last_frame;
-    guint tick_id;
-    guint timeout_id;
-    double step; /* adjustment units per timeout tick */
-    gboolean returning; /* sweeping back down after reaching upper bound */
-    gint64 refresh_interval_us; /* from the frame clock; 0 until first sampled */
-} PhigMeasureState;
+struct PhigMeasureState {
+    PhigApp* app = nullptr;
+    std::vector<gint64> frame_deltas_us;  // one per observed frame
+    gint64 last_frame_time_us = 0;
+    bool have_last_frame = false;
+    guint tick_id = 0;
+    guint timeout_id = 0;
+    double step = 0.0;  // adjustment units per timeout tick
+    bool returning = false;  // sweeping back down after reaching upper bound
+    gint64 refresh_interval_us = 0;  // from the frame clock; 0 until first sampled
+};
 
-static void phig_measure_state_free(PhigMeasureState* state) {
-    g_array_free(state->frame_deltas_us, TRUE);
-    g_free(state);
-}
-
-static gboolean phig_measure_tick(GtkWidget* widget, GdkFrameClock* clock, gpointer user_data) {
+static gboolean phig_measure_tick(GtkWidget* widget, GdkFrameClock* clock, gpointer user_data) noexcept {
     (void)widget;
-    PhigMeasureState* state = user_data;
+    auto* state = static_cast<PhigMeasureState*>(user_data);
     gint64 now_us = gdk_frame_clock_get_frame_time(clock);
     if (state->refresh_interval_us == 0) {
         gint64 interval = 0, presentation = 0;
@@ -171,18 +164,13 @@ static gboolean phig_measure_tick(GtkWidget* widget, GdkFrameClock* clock, gpoin
     }
     if (state->have_last_frame) {
         gint64 delta = now_us - state->last_frame_time_us;
-        g_array_append_val(state->frame_deltas_us, delta);
+        state->frame_deltas_us.push_back(delta);
         if (g_getenv("PHIG_MEASURE_DEBUG") != NULL)
             g_printerr("PHIG_MEASURE_DEBUG tick delta_ms=%.3f\n", delta / 1000.0);
     }
     state->last_frame_time_us = now_us;
-    state->have_last_frame = TRUE;
+    state->have_last_frame = true;
     return G_SOURCE_CONTINUE;
-}
-
-static int phig_measure_cmp_us(const void* a, const void* b) {
-    gint64 x = *(const gint64*)a, y = *(const gint64*)b;
-    return x < y ? -1 : (x > y ? 1 : 0);
 }
 
 /* A frame is only late once it misses a whole refresh interval: a correctly
@@ -195,45 +183,38 @@ static int phig_measure_cmp_us(const void* a, const void* b) {
  * Percentiles are reported alongside the count because a single ratio hid that
  * bug for a whole milestone: a p50 sitting exactly on the refresh interval is
  * the tell that the grid is healthy and the threshold is wrong. */
-static void phig_measure_report(PhigMeasureState* state) {
-    GArray* deltas = state->frame_deltas_us;
-    if (deltas->len == 0) {
+static void phig_measure_report(const PhigMeasureState& state) {
+    const std::vector<gint64>& deltas = state.frame_deltas_us;
+    if (deltas.empty()) {
         g_printerr("PHIG_MEASURE scroll frames=0\n");
         return;
     }
-
-    gint64 interval_us = state->refresh_interval_us > 0 ? state->refresh_interval_us : 16667;
-
-    /* Late = missed the next vsync deadline. A small tolerance keeps jitter in
-     * the timestamp itself from reading as a drop. */
+    gint64 interval_us = state.refresh_interval_us > 0 ? state.refresh_interval_us : 16667;
+    // Late = missed the next vsync deadline. A small tolerance keeps jitter in
+    // the timestamp itself from reading as a drop.
     const gint64 tolerance_us = interval_us / 10;
-    guint late = 0;
-    for (guint i = 0; i < deltas->len; i++) {
-        if (g_array_index(deltas, gint64, i) > interval_us + tolerance_us)
-            late++;
-    }
+    auto late = static_cast<guint>(std::count_if(
+        deltas.begin(), deltas.end(), [&](gint64 d) { return d > interval_us + tolerance_us; }));
 
-    GArray* sorted = g_array_sized_new(FALSE, FALSE, sizeof(gint64), deltas->len);
-    g_array_append_vals(sorted, deltas->data, deltas->len);
-    qsort(sorted->data, sorted->len, sizeof(gint64), phig_measure_cmp_us);
-    gint64 p50 = g_array_index(sorted, gint64, sorted->len / 2);
-    gint64 p90 = g_array_index(sorted, gint64, (guint)(sorted->len * 0.90));
-    gint64 p99 = g_array_index(sorted, gint64, (guint)(sorted->len * 0.99));
-    gint64 worst = g_array_index(sorted, gint64, sorted->len - 1);
-    g_array_free(sorted, TRUE);
+    std::vector<gint64> sorted = deltas;
+    std::sort(sorted.begin(), sorted.end());
+    gint64 p50 = sorted[sorted.size() / 2];
+    gint64 p90 = sorted[static_cast<size_t>(sorted.size() * 0.90)];
+    gint64 p99 = sorted[static_cast<size_t>(sorted.size() * 0.99)];
+    gint64 worst = sorted.back();
 
     g_printerr("PHIG_MEASURE scroll frames=%u refresh_ms=%.3f p50_ms=%.3f p90_ms=%.3f "
                "p99_ms=%.3f worst_ms=%.3f late=%u (%.1f%%)\n",
-               deltas->len, interval_us / 1000.0, p50 / 1000.0, p90 / 1000.0, p99 / 1000.0,
-               worst / 1000.0, late, 100.0 * late / deltas->len);
+               static_cast<guint>(deltas.size()), interval_us / 1000.0, p50 / 1000.0, p90 / 1000.0, p99 / 1000.0,
+               worst / 1000.0, late, 100.0 * late / static_cast<double>(deltas.size()));
 }
 
 /* Advances the vertical adjustment one step per timeout firing: sweeps from
  * lower to upper, then back to lower, then stops and reports. Two passes
  * (down and back up) exercise both scroll directions over the same range in
  * one run. */
-static gboolean phig_measure_step(gpointer user_data) {
-    PhigMeasureState* state = user_data;
+static gboolean phig_measure_step(gpointer user_data) noexcept {
+    auto* state = static_cast<PhigMeasureState*>(user_data);
     GtkAdjustment* vadj = gtk_scrolled_window_get_vadjustment(state->app->scroller);
     double value = gtk_adjustment_get_value(vadj);
     double lower = gtk_adjustment_get_lower(vadj);
@@ -253,16 +234,16 @@ static gboolean phig_measure_step(gpointer user_data) {
         value += state->step;
         if (value >= upper) {
             value = upper;
-            state->returning = TRUE;
+            state->returning = true;
         }
     } else {
         value -= state->step;
         if (value <= lower) {
             value = lower;
             gtk_adjustment_set_value(vadj, value);
-            phig_measure_report(state);
+            phig_measure_report(*state);
             gtk_widget_remove_tick_callback(GTK_WIDGET(state->app->grid), state->tick_id);
-            phig_measure_state_free(state);
+            delete state;
             g_application_quit(g_application_get_default());
             return G_SOURCE_REMOVE;
         }
@@ -280,10 +261,9 @@ static void phig_measure_maybe_start(PhigApp* app) {
     if (g_getenv("PHIG_MEASURE") == NULL)
         return;
 
-    PhigMeasureState* state = g_new0(PhigMeasureState, 1);
+    auto* state = new PhigMeasureState{};
     state->app = app;
-    state->frame_deltas_us = g_array_new(FALSE, FALSE, sizeof(gint64));
-    state->step = (double)env_override_uint("PHIG_MEASURE_STEP_PX", 4000);
+    state->step = static_cast<double>(env_override_uint("PHIG_MEASURE_STEP_PX", 4000));
     state->tick_id =
         gtk_widget_add_tick_callback(GTK_WIDGET(app->grid), phig_measure_tick, state, NULL);
     state->timeout_id = g_timeout_add(8, phig_measure_step, state);
@@ -291,10 +271,9 @@ static void phig_measure_maybe_start(PhigApp* app) {
 
 /* Callback for gtk_file_launcher_launch async completion. On error, shows a
  * toast with the error message; on success, the system viewer has been started. */
-static void on_launched(GObject* source, GAsyncResult* result, gpointer user_data) {
-    (void)source;
+static void on_launched(GObject* source, GAsyncResult* result, gpointer user_data) noexcept {
     GtkFileLauncher* launcher = GTK_FILE_LAUNCHER(source);
-    PhigApp* app = user_data;
+    auto* app = static_cast<PhigApp*>(user_data);
     GError* error = NULL;
 
     if (!gtk_file_launcher_launch_finish(launcher, result, &error)) {
@@ -308,22 +287,23 @@ static void on_launched(GObject* source, GAsyncResult* result, gpointer user_dat
     g_object_unref(launcher);
 }
 
-/* Result of the worker startup sequence, handed to the main thread. On failure coll is NULL or closed by startup_done. */
-typedef struct {
-    PhigApp* app; /* borrowed; app outlives this, freed only at process exit */
-    PhigCollection* coll;
-} StartupResult;
+// Handed from the startup worker to startup_done. coll is moved onto app on
+// success, and closes with this struct otherwise.
+struct StartupResult {
+    PhigApp* app = nullptr;  // borrowed; app outlives the task
+    CollectionPtr coll;
+};
 
-/* The collection's error comes back as an owned copy. */
+// The collection's error comes back as an owned copy.
 static void startup_thread_func(GTask* task, gpointer source_object, gpointer task_data,
-                                 GCancellable* cancellable) {
+                                 GCancellable* cancellable) noexcept {
     (void)source_object;
     (void)cancellable;
-    StartupResult* result = task_data;
+    auto* result = static_cast<StartupResult*>(task_data);
 
-    char* error = NULL;
-    result->coll = phig_collection_open(result->app->db_path, &error);
-    if (result->coll == NULL) {
+    char* error = nullptr;
+    result->coll.reset(phig_collection_open(result->app->db_path.c_str(), &error));
+    if (!result->coll) {
         g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "%s", error);
         g_free(error);
         return;
@@ -451,7 +431,7 @@ static guint phig_snap_columns(double fractional, guint current) {
     if (lower == 0)
         return 1;
 
-    gboolean toward_fewer = fractional < (double)current; /* fewer columns = bigger cells */
+    bool toward_fewer = fractional < (double)current; /* fewer columns = bigger cells */
     double threshold = toward_fewer ? 0.4 : 0.6;
     return frac > threshold ? lower + 1 : lower;
 }
@@ -482,8 +462,8 @@ static void phig_resize_visible_cells(PhigApp* app) {
     }
 }
 
-static gboolean phig_relayout_idle(gpointer user_data) {
-    PhigApp* app = user_data;
+static gboolean phig_relayout_idle(gpointer user_data) noexcept {
+    auto* app = static_cast<PhigApp*>(user_data);
     app->relayout_id = 0;
 
     int width = phig_viewport_width(app);
@@ -499,7 +479,7 @@ static gboolean phig_relayout_idle(gpointer user_data) {
     guint derived = phig_clamp_columns(app, phig_columns_for_target(width, app->target_cell_px));
     if (derived != app->columns) {
         app->columns = derived;
-        app->relayout_needs_rebind = TRUE;
+        app->relayout_needs_rebind = true;
         phig_apply_columns(app);
     }
     phig_resize_visible_cells(app);
@@ -508,7 +488,7 @@ static gboolean phig_relayout_idle(gpointer user_data) {
      * too large and renders visibly blurry until the cell is recycled. Dropping
      * the model and re-setting it rebinds every visible cell at the new size. */
     if (app->relayout_needs_rebind) {
-        app->relayout_needs_rebind = FALSE;
+        app->relayout_needs_rebind = false;
         GtkSelectionModel* model = gtk_grid_view_get_model(app->grid);
         if (model != NULL) {
             g_object_ref(model);
@@ -525,33 +505,33 @@ static void phig_queue_relayout(PhigApp* app) {
         app->relayout_id = g_idle_add(phig_relayout_idle, app);
 }
 
-static void on_grid_width_changed(GObject* object, GParamSpec* pspec, gpointer user_data) {
+static void on_grid_width_changed(GObject* object, GParamSpec* pspec, gpointer user_data) noexcept {
     (void)object;
     (void)pspec;
-    phig_queue_relayout(user_data);
+    phig_queue_relayout(static_cast<PhigApp*>(user_data));
 }
 
-static void on_scale_factor_changed(GObject* object, GParamSpec* pspec, gpointer user_data) {
+static void on_scale_factor_changed(GObject* object, GParamSpec* pspec, gpointer user_data) noexcept {
     (void)object;
     (void)pspec;
     /* Moving between monitors changes how many physical pixels a cell needs, so
      * the sharpness clamp and the requested texture size both change. */
-    phig_queue_relayout(user_data);
+    phig_queue_relayout(static_cast<PhigApp*>(user_data));
 }
 
 /* Trackpad pinch. The gesture is continuous but the resting state is always a
  * whole column count: the scale is tracked live and snapped on release. */
-static void on_zoom_begin(GtkGesture* gesture, GdkEventSequence* sequence, gpointer user_data) {
+static void on_zoom_begin(GtkGesture* gesture, GdkEventSequence* sequence, gpointer user_data) noexcept {
     (void)gesture;
     (void)sequence;
-    PhigApp* app = user_data;
+    auto* app = static_cast<PhigApp*>(user_data);
     app->pinch_base_cell = app->target_cell_px;
     app->pinch_cell = (double)app->target_cell_px;
 }
 
-static void on_zoom_scale_changed(GtkGestureZoom* gesture, double scale, gpointer user_data) {
+static void on_zoom_scale_changed(GtkGestureZoom* gesture, double scale, gpointer user_data) noexcept {
     (void)gesture;
-    PhigApp* app = user_data;
+    auto* app = static_cast<PhigApp*>(user_data);
     if (scale <= 0.0)
         return;
     /* Pinching out (scale > 1) magnifies, i.e. bigger thumbnails. */
@@ -561,10 +541,10 @@ static void on_zoom_scale_changed(GtkGestureZoom* gesture, double scale, gpointe
 /* Snap on release so the resting state is a whole number of columns filling the
  * width, then adopt the cell size that count implies as the new target. Uses the
  * hysteresis rule so a pinch resting on a boundary does not oscillate. */
-static void on_zoom_end(GtkGesture* gesture, GdkEventSequence* sequence, gpointer user_data) {
+static void on_zoom_end(GtkGesture* gesture, GdkEventSequence* sequence, gpointer user_data) noexcept {
     (void)gesture;
     (void)sequence;
-    PhigApp* app = user_data;
+    auto* app = static_cast<PhigApp*>(user_data);
     int width = phig_viewport_width(app);
     if (width <= 0 || app->pinch_cell <= 0.0)
         return;
@@ -576,9 +556,9 @@ static void on_zoom_end(GtkGesture* gesture, GdkEventSequence* sequence, gpointe
 /* Ctrl+scroll, for mice. Discrete by nature, so it steps one column per notch
  * and needs no snapping. */
 static gboolean on_scroll(GtkEventControllerScroll* controller, double dx, double dy,
-                          gpointer user_data) {
+                          gpointer user_data) noexcept {
     (void)dx;
-    PhigApp* app = user_data;
+    auto* app = static_cast<PhigApp*>(user_data);
     GdkModifierType state =
         gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(controller));
     if ((state & GDK_CONTROL_MASK) == 0)
@@ -596,7 +576,7 @@ static gboolean on_scroll(GtkEventControllerScroll* controller, double dx, doubl
  * the frame gives every cell the same footprint whether or not it currently has
  * a picture. Size is applied at bind time, not here — see on_factory_setup. */
 static void on_factory_setup(GtkSignalListItemFactory* factory, GtkListItem* item,
-                              gpointer user_data) {
+                              gpointer user_data) noexcept {
     (void)factory;
     (void)user_data;
     GtkWidget* frame = gtk_frame_new(NULL);
@@ -616,10 +596,10 @@ static void on_factory_setup(GtkSignalListItemFactory* factory, GtkListItem* ite
  * the hop to a worker thread and back) and app (borrowed, to update the
  * failure counter). ThumbCallback has one user_data slot, so both travel in
  * this heap struct rather than one being smuggled onto the item. */
-typedef struct {
-    GtkListItem* item;
+struct ThumbResultData {
+    GRef<GtkListItem> item;
     PhigApp* app;
-} ThumbResultData;
+};
 
 /* Updates the header-bar failure counter and shows it once nonzero. Left
  * visible for the rest of the session once shown: a count dropping back out
@@ -638,17 +618,14 @@ static void phig_app_note_thumb_failed(PhigApp* app) {
  * stored on the item, not on the result: if the cell has since been unbound
  * (and its cancellable cancelled), a stale success for a now-different row
  * must not be shown. */
-static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer user_data) {
-    ThumbResultData* data = user_data;
-    GtkListItem* item = data->item;
+static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer user_data) noexcept {
+    std::unique_ptr<ThumbResultData> data(static_cast<ThumbResultData*>(user_data));
+    GtkListItem* item = data->item.get();
     PhigApp* app = data->app;
-    g_free(data);
 
-    GCancellable* cancellable = g_object_get_data(G_OBJECT(item), "phig-cancellable");
-    if (cancellable == NULL || g_cancellable_is_cancelled(cancellable)) {
-        g_object_unref(item);
+    auto* cancellable = static_cast<GCancellable*>(g_object_get_data(G_OBJECT(item), "phig-cancellable"));
+    if (cancellable == NULL || g_cancellable_is_cancelled(cancellable))
         return;
-    }
 
     GtkWidget* frame = gtk_list_item_get_child(item);
     GtkWidget* picture = gtk_frame_get_child(GTK_FRAME(frame));
@@ -665,8 +642,6 @@ static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer us
         gtk_picture_set_paintable(GTK_PICTURE(picture), NULL);
         gtk_widget_add_css_class(picture, "phig-thumb-placeholder");
     }
-
-    g_object_unref(item);
 }
 
 /* bind: a placeholder row (page not fetched yet) gets the grey state and
@@ -675,10 +650,10 @@ static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer us
  * it must survive the hop to a worker thread and back regardless of whether
  * GTK still wants it bound when the result arrives. */
 static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item,
-                             gpointer user_data) {
+                             gpointer user_data) noexcept {
     (void)factory;
-    PhigApp* app = user_data;
-    PhigImageRow* row = gtk_list_item_get_item(item);
+    auto* app = static_cast<PhigApp*>(user_data);
+    auto* row = PHIG_IMAGE_ROW(gtk_list_item_get_item(item));
 
     GtkWidget* frame = gtk_list_item_get_child(item);
     GtkWidget* picture = gtk_frame_get_child(GTK_FRAME(frame));
@@ -700,9 +675,7 @@ static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item
     GCancellable* cancellable = g_cancellable_new();
     g_object_set_data_full(G_OBJECT(item), "phig-cancellable", cancellable, g_object_unref);
 
-    ThumbResultData* data = g_new0(ThumbResultData, 1);
-    data->item = g_object_ref(item);
-    data->app = app;
+    auto* data = new ThumbResultData{gref(item), app};
 
     thumb_loader_request(app->loader, phig_image_row_get_id(row), phig_image_row_get_sha256(row),
                           phig_texture_size_for(app), cancellable, on_thumb_result, data);
@@ -712,10 +685,10 @@ static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item
  * picture, so a cell recycled onto a different row never flashes the
  * previous one's thumbnail while its own request is in flight. */
 static void on_factory_unbind(GtkSignalListItemFactory* factory, GtkListItem* item,
-                               gpointer user_data) {
+                               gpointer user_data) noexcept {
     (void)factory;
     (void)user_data;
-    GCancellable* cancellable = g_object_get_data(G_OBJECT(item), "phig-cancellable");
+    auto* cancellable = static_cast<GCancellable*>(g_object_get_data(G_OBJECT(item), "phig-cancellable"));
     if (cancellable != NULL)
         g_cancellable_cancel(cancellable);
     g_object_set_data(G_OBJECT(item), "phig-cancellable", NULL);
@@ -726,12 +699,12 @@ static void on_factory_unbind(GtkSignalListItemFactory* factory, GtkListItem* it
 }
 
 /* Activated when a cell is clicked. Launches the image in the system viewer. */
-static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_data) {
+static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_data) noexcept {
     (void)grid;
-    PhigApp* app = user_data;
+    auto* app = static_cast<PhigApp*>(user_data);
 
     GtkSelectionModel* selection = gtk_grid_view_get_model(app->grid);
-    GListModel* list_model = NULL;
+    GListModel* list_model = nullptr;
     g_object_get(selection, "model", &list_model, NULL);
 
     if (list_model == NULL)
@@ -760,22 +733,16 @@ static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_da
     g_object_unref(list_model);
 }
 
-/* Owns nothing: on success startup_done moves coll onto app, and on
- * failure it closes it. */
-static void startup_result_free(StartupResult* result) {
-    g_free(result);
-}
-
 /* One toast for the whole session, not one per failed page: a scroll that
  * outruns several page fetches would otherwise stack a toast per failure.
  * The affected cells already keep their placeholders (the model's contract
  * for this signal), so this is purely a "something is wrong" notice. */
-static void on_page_fetch_failed(PhigGalleryModel* model, gpointer user_data) {
+static void on_page_fetch_failed(PhigGalleryModel* model, gpointer user_data) noexcept {
     (void)model;
-    PhigApp* app = user_data;
+    auto* app = static_cast<PhigApp*>(user_data);
     if (app->page_fetch_toast_shown)
         return;
-    app->page_fetch_toast_shown = TRUE;
+    app->page_fetch_toast_shown = true;
 
     AdwToast* toast = adw_toast_new("Some images could not be loaded");
     adw_toast_overlay_add_toast(app->toast_overlay, toast);
@@ -792,30 +759,28 @@ static void show_startup_error(PhigApp* app, const char* message) {
     adw_toolbar_view_set_content(app->toolbar_view, status_page);
 }
 
-static void startup_done(GObject* source, GAsyncResult* result, gpointer user_data) {
+static void startup_done(GObject* source, GAsyncResult* result, gpointer user_data) noexcept {
     (void)source;
     (void)user_data;
     GTask* task = G_TASK(result);
-    StartupResult* startup = g_task_get_task_data(task);
+    auto* startup = static_cast<StartupResult*>(g_task_get_task_data(task));
     PhigApp* app = startup->app;
 
     GError* error = NULL;
     if (!g_task_propagate_boolean(task, &error)) {
         show_startup_error(app, error->message);
         g_error_free(error);
-        if (startup->coll != NULL)
-            phig_collection_close(startup->coll);
         return;
     }
 
-    app->coll = startup->coll;
+    app->coll = std::move(startup->coll);
     guint n_threads = env_override_uint("PHIG_THUMB_LOADER_THREADS", PHIG_THUMB_LOADER_THREADS);
     gsize cache_bytes =
         (gsize)env_override_uint("PHIG_THUMB_CACHE_BYTES", PHIG_THUMB_CACHE_BYTES);
-    app->loader = thumb_loader_new(app->coll, n_threads, cache_bytes);
+    app->loader = thumb_loader_new(app->coll.get(), n_threads, cache_bytes);
 
-    /* The model borrows coll, which app owns until phig_app_free. */
-    PhigGalleryModel* model = phig_gallery_model_new(app->coll);
+    /* The model borrows coll, which app owns until ~PhigApp. */
+    PhigGalleryModel* model = phig_gallery_model_new(app->coll.get());
     g_signal_connect(model, "page-fetch-failed", G_CALLBACK(on_page_fetch_failed), app);
     GtkSelectionModel* selection = GTK_SELECTION_MODEL(gtk_no_selection_new(G_LIST_MODEL(model)));
     gtk_grid_view_set_model(app->grid, selection);
@@ -841,8 +806,8 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
     phig_measure_maybe_start(app);
 }
 
-static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
-    PhigApp* app = user_data;
+static void on_activate(GtkApplication* gtk_app, gpointer user_data) noexcept {
+    auto* app = static_cast<PhigApp*>(user_data);
 
     app->window = ADW_APPLICATION_WINDOW(adw_application_window_new(gtk_app));
     gtk_window_set_title(GTK_WINDOW(app->window), "phig");
@@ -891,7 +856,8 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
     gtk_widget_add_controller(GTK_WIDGET(app->grid), GTK_EVENT_CONTROLLER(zoom));
 
     GtkEventController* scroll = gtk_event_controller_scroll_new(
-        GTK_EVENT_CONTROLLER_SCROLL_VERTICAL | GTK_EVENT_CONTROLLER_SCROLL_DISCRETE);
+        static_cast<GtkEventControllerScrollFlags>(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL |
+                                                   GTK_EVENT_CONTROLLER_SCROLL_DISCRETE));
     g_signal_connect(scroll, "scroll", G_CALLBACK(on_scroll), app);
     gtk_widget_add_controller(GTK_WIDGET(app->grid), scroll);
     adw_toolbar_view_set_content(app->toolbar_view, GTK_WIDGET(app->scroller));
@@ -905,41 +871,39 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) {
      * model is not attached until it finishes (startup_done, above). */
     gtk_window_present(GTK_WINDOW(app->window));
 
-    StartupResult* startup = g_new0(StartupResult, 1);
+    auto* startup = new StartupResult{};
     startup->app = app;
     GTask* task = g_task_new(NULL, NULL, startup_done, NULL);
-    g_task_set_task_data(task, startup, (GDestroyNotify)startup_result_free);
+    g_task_set_task_data(task, startup,
+                         [](gpointer data) noexcept { delete static_cast<StartupResult*>(data); });
     g_task_run_in_thread(task, startup_thread_func);
     g_object_unref(task);
 }
 
-/* $XDG_DATA_HOME/phig/phig.db, or ~/.local/share/phig/phig.db — phig's own
- * default (see phig/src/paths.cpp), duplicated here because phig_config.db_path
- * is required and libphig exposes no accessor for its default. */
-static char* default_db_path(void) {
-    const char* xdg = g_getenv("XDG_DATA_HOME");
-    if (xdg != NULL && xdg[0] != '\0')
-        return g_build_filename(xdg, "phig", "phig.db", NULL);
-    return g_build_filename(g_get_home_dir(), ".local", "share", "phig", "phig.db", NULL);
+// phig's own default, from core/ through the collection seam.
+static std::string default_db_path() {
+    char* path = phig_collection_default_path();
+    std::string out = path != nullptr ? path : "";
+    g_free(path);
+    return out;
 }
 
 int main(int argc, char** argv) {
-    PhigApp* app = g_new0(PhigApp, 1);
+    auto app = std::make_unique<PhigApp>();
     app->startup_start_us = g_get_monotonic_time();
-    app->db_path = (argc > 1) ? g_strdup(argv[1]) : default_db_path();
+    app->db_path = argc > 1 ? argv[1] : default_db_path();
 
-    /* argv is parsed above, not handed to GApplication: G_APPLICATION_DEFAULT_FLAGS
-     * treats a bare positional argument as a file to open, which a db path is not. */
-    AdwApplication* gtk_app = adw_application_new("org.phig.Gtk", G_APPLICATION_DEFAULT_FLAGS);
-    g_signal_connect(gtk_app, "activate", G_CALLBACK(on_activate), app);
-    int status = g_application_run(G_APPLICATION(gtk_app), 1, argv);
+    // argv is parsed above, not handed to GApplication: G_APPLICATION_DEFAULT_FLAGS
+    // treats a bare positional argument as a file to open, which a db path is not.
+    GRef<AdwApplication> gtk_app =
+        adopt(adw_application_new("org.phig.Gtk", G_APPLICATION_DEFAULT_FLAGS));
+    g_signal_connect(gtk_app.get(), "activate", G_CALLBACK(on_activate), app.get());
+    int status = g_application_run(G_APPLICATION(gtk_app.get()), 1, argv);
 
-    /* g_application_run stops pumping the main context the moment it
-     * returns, so any idle-source delivery not yet dispatched never will be.
-     * That is fine: phig_app_free stops and joins the loader's workers and
-     * tears down the model explicitly, rather than waiting on those
-     * deliveries or their refcounts to reach zero on their own. */
-    g_object_unref(gtk_app);
-    phig_app_free(app);
+    // g_application_run stops pumping the main context when it returns, so an
+    // undispatched delivery never will be. ~PhigApp stops the loader's workers
+    // and tears down the model explicitly rather than waiting on them.
+    gtk_app.reset();
+    app.reset();
     return status;
 }
