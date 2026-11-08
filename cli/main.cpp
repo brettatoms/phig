@@ -1518,6 +1518,10 @@ int cmd_face(int argc, char* argv[], const std::string& db_path, int default_par
         if (result.errors > 0) {
             std::cout << "  Errors: " << result.errors << " file(s) could not be read.\n";
         }
+        if (result.labels_dropped > 0) {
+            log_warn(std::to_string(result.labels_dropped) +
+                     " person label(s) dropped: their faces were not detected again");
+        }
         return 0;
 
     } else if (subcmd == "list") {

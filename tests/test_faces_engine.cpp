@@ -616,6 +616,37 @@ TEST(FacesEngineRun, CliRejectsAnUnknownFlagWithoutTouchingFaceData) {
     EXPECT_EQ(labeled_as, person_id);
 }
 
+TEST(FacesEngineRun, CliRebuildWarnsWhenItDropsALabel) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    ScratchFaces coll(1);
+    int64_t image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    ASSERT_GT(image_id, 0);
+    FaceInfo phantom{};
+    phantom.embedding.fill(0.5f);
+    phantom.width = 4;
+    phantom.height = 4;
+    int64_t face_id = coll.db->insert_face(image_id, phantom);
+    ASSERT_TRUE(coll.db->set_face_person(face_id, coll.db->get_or_create_person("Ada")));
+
+    fs::path out_path = coll.dir / "rebuild-out.txt";
+    std::string cmd = phig_bin.string() + " face rebuild --match '" +
+                      (coll.dir / "f0.jpg").string() + "' --db '" + coll.db_path + "' > '" +
+                      out_path.string() + "' 2>&1";
+    int rc = std::system(cmd.c_str());
+    int exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+    std::ifstream in(out_path);
+    std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    EXPECT_EQ(exit_code, 0) << "output was:\n" << output;
+    EXPECT_NE(output.find("1 person label(s) dropped"), std::string::npos) << "output was:\n"
+                                                                           << output;
+}
+
 // ---- Selection (R74) ----
 
 TEST(FacesEngineRun, AnExcludedImagesFacesAreLeftAlone) {
