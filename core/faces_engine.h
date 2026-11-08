@@ -12,9 +12,10 @@ enum class FacesStage { FileDone, Selected, LoadingFaceModels };
 
 struct FacesRebuildOptions {
     // The rows to act on. Empty selects nothing. This engine deletes and
-    // re-derives face rows for everything it selects, including the person
-    // labels R60 records as unrecoverable, so an unset selection meaning "the
-    // whole collection" would be the worst possible default. cli/ resolves its
+    // re-derives face rows for everything it selects, carrying person labels
+    // across by box overlap and dropping those it cannot match, so an unset
+    // selection meaning "the whole collection" would be the worst possible
+    // default. cli/ resolves its
     // --match/--exclude globs through Database::ids_matching before filling it.
     std::vector<int64_t> ids;
     int parallel = -1;  // -1 = auto
@@ -50,6 +51,10 @@ struct FacesResult {
     // be silent either — without this an unreadable file is indistinguishable
     // from one containing no faces.
     size_t errors = 0;
+    // Person labels on faces this run did not detect again. A rebuild carries
+    // each label to the new face whose box overlaps it most (carry_labels);
+    // these found no overlap at or above kLabelCarryMinOverlap and are gone.
+    size_t labels_dropped = 0;
     bool completed = true;
 };
 
@@ -94,6 +99,12 @@ IdentifyResult identify_person(Database& db, const std::string& person, float th
 // faces would be gone with no re-detection to restore them. The engine owns the
 // mutex serializing database access, so a caller must not touch `db` while
 // run() is executing.
+//
+// Person labels survive the replacement where they can. Inside the same
+// transaction the engine reads the image's labelled faces, matches them to the
+// new detections by box overlap (carry_labels), writes the matched labels, and
+// only then lets auto_label_face name the faces still unlabelled. A label whose
+// face is not detected again is dropped and counted in labels_dropped.
 //
 // Each worker gets its own FaceDetector: cv::FaceDetectorYN is not thread-safe
 // and holds ~150MB of mutable model state, so sharing one across workers is a

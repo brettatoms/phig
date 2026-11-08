@@ -103,6 +103,33 @@ size_t count_face_rows(const ScratchFaces& coll) {
     sqlite3_close(raw);
     return n;
 }
+
+struct FaceRow {
+    int64_t id;
+    int x, y, width, height;
+    int64_t person_id;  // -1 when unlabelled
+};
+
+// One image's face rows in id order, read straight from the table.
+std::vector<FaceRow> faces_of(Database& db, int64_t image_id) {
+    std::vector<FaceRow> out;
+    sqlite3_stmt* s = nullptr;
+    if (sqlite3_prepare_v2(db.db_ptr(),
+                           "SELECT id, x, y, width, height, COALESCE(person_id, -1) "
+                           "FROM faces WHERE image_id = ? ORDER BY id",
+                           -1, &s, nullptr) != SQLITE_OK) {
+        ADD_FAILURE() << "prepare failed: " << sqlite3_errmsg(db.db_ptr());
+        return out;
+    }
+    sqlite3_bind_int64(s, 1, image_id);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        out.push_back({sqlite3_column_int64(s, 0), sqlite3_column_int(s, 1),
+                       sqlite3_column_int(s, 2), sqlite3_column_int(s, 3), sqlite3_column_int(s, 4),
+                       sqlite3_column_int64(s, 5)});
+    }
+    sqlite3_finalize(s);
+    return out;
+}
 }  // namespace
 
 TEST(FacesEngineRun, DetectsFacesInEveryImageAcrossWorkers) {
@@ -156,6 +183,93 @@ TEST(FacesEngineRun, RerunReplacesRatherThanAccumulatesFaceRows) {
     // first — this opens a second connection to the same file.
     size_t stored = count_face_rows(coll);
     EXPECT_EQ(stored, second.faces_detected);
+}
+
+TEST(FacesEngineRun, RebuildKeepsALabelOnTheFaceItNamed) {
+    // R60. The named face is deleted and re-detected in the same transaction;
+    // the label has to land on the re-detected face with the same box, not on
+    // another face in the image and not nowhere.
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(2);  // one faces_small.jpg, one faces_large.jpg
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    opts.ids = coll.all_ids();
+    CancelToken tok;
+    ASSERT_GT(FacesEngine(opts, *coll.db).run(tok, nullptr).faces_detected, 0u);
+
+    // Name the second face of an image that has at least two, so a label that
+    // landed on the wrong face is distinguishable from one that landed right.
+    int64_t image_id = -1;
+    std::vector<FaceRow> before;
+    for (int64_t id : opts.ids) {
+        before = faces_of(*coll.db, id);
+        if (before.size() >= 2) {
+            image_id = id;
+            break;
+        }
+    }
+    ASSERT_GE(image_id, 0) << "no fixture image has two faces";
+    const FaceRow named = before[1];
+    int64_t ada = coll.db->get_or_create_person("Ada");
+    ASSERT_TRUE(coll.db->set_face_person(named.id, ada));
+
+    FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
+    EXPECT_EQ(r.labels_dropped, 0u);
+
+    std::vector<FaceRow> after = faces_of(*coll.db, image_id);
+    ASSERT_EQ(after.size(), before.size());
+    bool found = false;
+    for (const FaceRow& f : after) {
+        if (f.x == named.x && f.y == named.y && f.width == named.width &&
+            f.height == named.height) {
+            found = true;
+            EXPECT_EQ(f.person_id, ada) << "the re-detected face lost its label";
+            EXPECT_NE(f.id, named.id) << "the face row was not replaced";
+        }
+    }
+    EXPECT_TRUE(found) << "no re-detected face has the named face's box";
+}
+
+TEST(FacesEngineRun, RebuildCountsALabelItCouldNotCarry) {
+    // A labelled face no detection overlaps: the label is dropped, and the
+    // drop is counted rather than silent.
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(1);
+    int64_t image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    ASSERT_GT(image_id, 0);
+    FaceInfo phantom{};
+    phantom.embedding.fill(0.5f);
+    phantom.x = 0;
+    phantom.y = 0;
+    phantom.width = 4;
+    phantom.height = 4;
+    int64_t face_id = coll.db->insert_face(image_id, phantom);
+    ASSERT_TRUE(coll.db->set_face_person(face_id, coll.db->get_or_create_person("Ada")));
+
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    opts.ids = coll.all_ids();
+    CancelToken tok;
+    FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
+
+    EXPECT_GT(r.faces_detected, 0u);
+    EXPECT_EQ(r.labels_dropped, 1u);
+    for (const auto& p : coll.db->list_people()) {
+        if (p.name == "Ada") EXPECT_EQ(p.face_count, 0);
+    }
+}
+
+TEST(FacesEngineRun, RebuildOverUnlabelledFacesDropsNothing) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(2);
+    FacesRebuildOptions opts;
+    opts.parallel = 2;
+    opts.ids = coll.all_ids();
+    CancelToken tok;
+    FacesEngine(opts, *coll.db).run(tok, nullptr);
+    FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
+    EXPECT_GT(r.faces_detected, 0u);
+    EXPECT_EQ(r.labels_dropped, 0u);
 }
 
 TEST(FacesEngineRun, AlreadyCancelledDetectsNothingAndReportsIncomplete) {

@@ -113,6 +113,7 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
     std::atomic<size_t> total_faces{0};
     std::atomic<size_t> done{0};
     std::atomic<size_t> errors{0};
+    std::atomic<size_t> labels_dropped{0};
     std::mutex db_mutex;
 
     auto publish_done = [&](const ImageInfo& img_info, const std::string& error = "",
@@ -180,13 +181,20 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
                     db_.rollback_transaction();
                     skipped = "faces: " + img_info.path + " -- image no longer in the database";
                 } else {
+                    std::vector<LabelledFace> named = db_.get_labelled_faces_for_image(image_id);
+                    LabelCarry carry = carry_labels(named, faces);
                     db_.delete_faces_for_image(image_id);
-                    for (const auto& face : faces) {
-                        int64_t face_id = db_.insert_face(image_id, face);
-                        db_.auto_label_face(face_id, face.embedding);
+                    for (size_t i = 0; i < faces.size(); ++i) {
+                        int64_t face_id = db_.insert_face(image_id, faces[i]);
+                        if (carry.person_ids[i] >= 0) {
+                            db_.set_face_person(face_id, carry.person_ids[i]);
+                        } else {
+                            db_.auto_label_face(face_id, faces[i].embedding);
+                        }
                     }
                     db_.commit_transaction();
                     total_faces.fetch_add(faces.size());
+                    labels_dropped.fetch_add(carry.dropped);
                 }
             } catch (...) {
                 db_.rollback_transaction();
@@ -207,5 +215,6 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
     result.completed = parallel_for_each(images.size(), num_threads, cancel, worker);
     result.faces_detected = total_faces.load();
     result.errors = errors.load();
+    result.labels_dropped = labels_dropped.load();
     return result;
 }
