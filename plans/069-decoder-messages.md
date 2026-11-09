@@ -200,6 +200,18 @@ links it itself:
    the corpus holds 687, because Wikimedia Commons throttled the fetch, so the
    result records the shortfall and the check is worth repeating on a larger
    corpus.
+
+   **Result, 2026-11-09, OpenCV 5.0.0, built at `5b9e4c9` plus the test.** The
+   test is `JpegCorpus.EveryJpegMatchesOpenCv` in `tests/test_jpeg_decode.cpp`;
+   it skips unless `PHIG_JPEG_CORPUS` names a directory. It checked 718 JPEGs
+   by signature: 674 from the corpus and 44 RAW previews. `simple_dcraw -e`
+   extracted 56 previews from the 154 RAWs, of which 44 were JPEG and 12 were
+   PPM bitmaps, which the signature check skips. The other 98 RAWs yielded no
+   preview. Mismatches against `cv::imread` through `decode_jpeg_file`: 0.
+   Mismatches against `cv::imdecode` through `decode_jpeg_memory` on the same
+   bytes: 0. The check ran on 718 files against the 5,000 target, so the
+   shortfall stands and the check is worth repeating on a larger corpus. The
+   preview JPEGs are in `~/phig-corpus/previews/`, outside the repository.
 4. **Switch the call sites.** Move `decode_image_with_warning` and `core/raw.cpp`
    onto the new decoder. The existing scan, thumbnail and faces tests must pass
    unchanged.

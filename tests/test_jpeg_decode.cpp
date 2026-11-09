@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -117,4 +119,34 @@ TEST(JpegDecode, ConcurrentDecodesKeepTheirOwnMessages) {
     b.join();
     for (const auto& w : bad_warnings) EXPECT_FALSE(w.empty());
     for (const auto& w : good_warnings) EXPECT_TRUE(w.empty()) << w;
+}
+
+TEST(JpegCorpus, EveryJpegMatchesOpenCv) {
+    const char* dir = std::getenv("PHIG_JPEG_CORPUS");
+    if (dir == nullptr) GTEST_SKIP() << "PHIG_JPEG_CORPUS not set";
+    size_t checked = 0, mismatched = 0, memory_mismatched = 0;
+    for (const auto& e : fs::recursive_directory_iterator(dir)) {
+        if (!e.is_regular_file()) continue;
+        std::vector<unsigned char> bytes = read_all(e.path());
+        if (!is_jpeg_signature(bytes)) continue;
+        ++checked;
+        auto same_as = [](const cv::Mat& want, const cv::Mat& got) {
+            return want.empty() ? got.empty()
+                                : (want.type() == got.type() && want.size() == got.size() &&
+                                   cv::norm(want, got, cv::NORM_INF) == 0.0);
+        };
+        cv::Mat want = cv::imread(e.path().string(), cv::IMREAD_COLOR);
+        if (!same_as(want, decode_jpeg_file(e.path().string()).img)) {
+            ++mismatched;
+            ADD_FAILURE() << "file: " << e.path();
+        }
+        cv::Mat want_mem = cv::imdecode(bytes, cv::IMREAD_COLOR);
+        if (!same_as(want_mem, decode_jpeg_memory(bytes).img)) {
+            ++memory_mismatched;
+            ADD_FAILURE() << "memory: " << e.path();
+        }
+    }
+    std::cout << "checked " << checked << ", mismatched " << mismatched << ", memory mismatched "
+              << memory_mismatched << "\n";
+    EXPECT_GT(checked, 0u);
 }
