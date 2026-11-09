@@ -6,6 +6,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "av_log_capture.h"
 #include "exif.h"
 #include "live_photo_internal.h"
 #include "scanner.h"
@@ -41,12 +42,9 @@ constexpr const char* kContentIdentifierKey = "com.apple.quicktime.content.ident
 }  // namespace
 
 std::string live_photo_content_identifier(const std::string& video_path) try {
-    // core/metadata.cpp quiets FFmpeg inside extract_video_metadata, but this
-    // runs before any worker calls that (the scan pre-pass) and organize never
-    // calls it at all — so without this, a truncated or odd video leaks
-    // "moov atom not found" into scan and mv output.
-    static std::once_flag quiet_once;
-    std::call_once(quiet_once, [] { av_log_set_level(AV_LOG_QUIET); });
+    // This runs before any worker reads metadata (the scan pre-pass) and
+    // organize never does, so FFmpeg's callback is installed here too.
+    install_av_log_callback();
 
     AVFormatContext* fmt = nullptr;
     if (avformat_open_input(&fmt, video_path.c_str(), nullptr, nullptr) != 0) return {};

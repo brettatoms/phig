@@ -4,7 +4,9 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <vector>
 
+#include "capture_fd2.h"
 #include "database.h"
 #include "faces.h"
 #include "hasher.h"
@@ -623,4 +625,20 @@ TEST(MigrationTest, PreFaceRecognitionDatabaseGetsFaceSchema) {
     EXPECT_GE(person_id, 0);
 
     fs::remove_all(temp_root);
+}
+
+TEST(VideoKeyframe, ATruncatedVideosMessagesReachItsResultNotStderr) {
+    fs::path dir = make_temp_dir("video_log");
+    fs::path src = fs::path(__FILE__).parent_path() / "data" / "test_red.mov";
+    fs::path cut = dir / "cut.mov";
+    std::vector<char> bytes(fs::file_size(src));
+    std::ifstream(src, std::ios::binary)
+        .read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    std::ofstream(cut, std::ios::binary)
+        .write(bytes.data(), static_cast<std::streamsize>(bytes.size() / 2));
+    VideoKeyframe kf;
+    std::string err = capture_fd2([&] { kf = extract_video_keyframe(cut.string()); });
+    EXPECT_FALSE(kf.warning.empty());
+    EXPECT_TRUE(err.empty()) << err;
+    fs::remove_all(dir);
 }

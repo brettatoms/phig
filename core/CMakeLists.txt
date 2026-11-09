@@ -2,6 +2,7 @@
 add_library(phig-core STATIC
     scanner.cpp
     hasher.cpp
+    av_log_capture.cpp
     jpeg_decode.cpp
     exif.cpp
     database.cpp

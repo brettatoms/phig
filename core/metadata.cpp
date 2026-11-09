@@ -5,6 +5,8 @@
 
 #include <sstream>
 
+#include "av_log_capture.h"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -58,8 +60,8 @@ std::string json_escape(const std::string& s) {
 VideoMetadata extract_video_metadata(const std::string& path) {
     VideoMetadata meta;
 
-    // Suppress ffmpeg's stderr warnings (e.g., "moov atom not found")
-    av_log_set_level(AV_LOG_QUIET);
+    // FFmpeg messages ("moov atom not found") are dropped outside a capture.
+    install_av_log_callback();
 
     AVFormatContext* fmt_ctx = nullptr;
     if (avformat_open_input(&fmt_ctx, path.c_str(), nullptr, nullptr) != 0) {

@@ -72,6 +72,7 @@ struct VideoKeyframe {
     cv::Mat frame;  // empty if extraction failed
     int width = 0;
     int height = 0;
+    std::string warning;  // messages from the decoders while extracting the frame
 };
 
 // Extract a representative keyframe from a video: seeks to ~10% of duration

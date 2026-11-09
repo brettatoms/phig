@@ -13,6 +13,7 @@
 #include <mutex>
 #include <opencv2/core.hpp>
 #include <opencv2/core/utility.hpp>
+#include <opencv2/core/utils/logger.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
@@ -20,6 +21,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "av_log_capture.h"
 #include "image_codec.h"
 #include "jpeg_decode.h"
 #include "log.h"
@@ -402,6 +404,11 @@ PhashResult compute_phash(const std::string& path) {
 
 VideoKeyframe extract_video_keyframe(const std::string& path) {
     VideoKeyframe kf;
+
+    static std::once_flag opencv_log_once;
+    std::call_once(opencv_log_once,
+                   [] { cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_ERROR); });
+    ScopedAvLogCapture capture(kf.warning);
 
     cv::VideoCapture cap(path);
     if (!cap.isOpened()) {
