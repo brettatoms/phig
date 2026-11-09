@@ -12,6 +12,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -865,20 +866,13 @@ int64_t parse_duration(const std::string& s) {
     throw std::runtime_error("Unknown duration suffix: " + suffix + " (use ms, s, m, h)");
 }
 
-// Read stdin to a temp file, return the path. Caller should delete when done.
+// Reads stdin and stages it in a private temporary file, returning its path.
+// Empty stdin is refused before anything is created. The caller removes the
+// file.
 std::string read_stdin_to_temp() {
-    auto temp_path = fs::temp_directory_path() / "phig-stdin-image";
-    std::ofstream out(temp_path, std::ios::binary);
-    if (!out) {
-        throw std::runtime_error("Cannot create temp file: " + temp_path.string());
-    }
-    out << std::cin.rdbuf();
-    out.close();
-    if (fs::file_size(temp_path) == 0) {
-        fs::remove(temp_path);
-        throw std::runtime_error("No data received on stdin");
-    }
-    return temp_path.string();
+    std::string bytes((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
+    if (bytes.empty()) throw std::runtime_error("No data received on stdin");
+    return write_private_temp_file("phig-stdin-", bytes);
 }
 
 uint64_t parse_hex_phash(const std::string& hex) {

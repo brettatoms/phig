@@ -2,6 +2,7 @@
 
 #include <sys/wait.h>
 
+#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -60,16 +61,19 @@ struct PhigRun {
 // (models_dir() is cache_dir() + "/models"), which is what lets a test drive
 // the models-missing path on a machine that has them installed.
 //
-// The child's stdin is /dev/null, or `stdin_line` as one line when given, so it
-// never sees the caller's terminal.
+// The child's stdin is /dev/null, `stdin_line` as one line, or the bytes of
+// `stdin_file`, so it never sees the caller's terminal. Giving both is a test
+// bug.
 //
 // `args` is appended to the binary path as a shell string, so quote anything
 // holding a space at the call site. The caller supplies `binary` from
 // phig_binary_path() and has already skipped if it came back empty.
 inline PhigRun run_phig(const std::filesystem::path& binary, const std::filesystem::path& scratch,
                         const std::string& args,
-                        const std::optional<std::string>& stdin_line = std::nullopt) {
+                        const std::optional<std::string>& stdin_line = std::nullopt,
+                        const std::optional<std::filesystem::path>& stdin_file = std::nullopt) {
     namespace fs = std::filesystem;
+    assert(!(stdin_line && stdin_file) && "give run_phig a stdin line or a stdin file, not both");
     fs::path env_root = scratch / "xdg";
     for (const char* sub : {"config", "data", "cache", "state"}) {
         fs::create_directories(env_root / sub);
@@ -82,7 +86,10 @@ inline PhigRun run_phig(const std::filesystem::path& binary, const std::filesyst
                       (env_root / "data").string() + "' XDG_CACHE_HOME='" +
                       (env_root / "cache").string() + "' XDG_STATE_HOME='" +
                       (env_root / "state").string() + "' " + binary.string() + " " + args +
-                      (stdin_line ? "" : " < /dev/null") + " > '" + out_path.string() + "' 2>&1";
+                      (stdin_line   ? ""
+                       : stdin_file ? " < '" + stdin_file->string() + "'"
+                                    : " < /dev/null") +
+                      " > '" + out_path.string() + "' 2>&1";
     int rc = std::system(cmd.c_str());
 
     std::ifstream in(out_path);

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -90,8 +91,9 @@ class CliOutputTest : public ::testing::Test {
         fs::remove_all(dir, ec);
     }
 
-    PhigRun run(const std::string& args) {
-        return run_phig(phig_bin, dir, "--catalog '" + cat.string() + "' " + args);
+    PhigRun run(const std::string& args, const std::optional<fs::path>& stdin_file = std::nullopt) {
+        return run_phig(phig_bin, dir, "--catalog '" + cat.string() + "' " + args, std::nullopt,
+                        stdin_file);
     }
 
     const std::vector<std::string>& commands() {
@@ -168,4 +170,53 @@ TEST_F(CliOutputTest, OverwriteWithoutOutputIsAnError) {
     PhigRun r = run("search --overwrite");
     EXPECT_EQ(r.exit_code, 1) << r.output;
     EXPECT_NE(r.output.find("--overwrite needs --output"), std::string::npos) << r.output;
+}
+
+namespace {
+// TMPDIR pointed at a scratch directory for the scope, so a test can see what
+// the child creates in its temporary directory.
+struct ScopedTmpdir {
+    std::optional<std::string> saved;
+    explicit ScopedTmpdir(const fs::path& p) {
+        if (const char* v = std::getenv("TMPDIR")) saved = v;
+        fs::create_directories(p);
+        setenv("TMPDIR", p.c_str(), 1);
+    }
+    ~ScopedTmpdir() {
+        if (saved)
+            setenv("TMPDIR", saved->c_str(), 1);
+        else
+            unsetenv("TMPDIR");
+    }
+};
+}  // namespace
+
+TEST_F(CliOutputTest, StdinQueryNeverWritesThroughAPlantedPath) {
+    const fs::path tmp = dir / "tmp";
+    ScopedTmpdir scoped(tmp);
+    const fs::path victim = dir / "victim.txt";
+    std::ofstream(victim) << "IRREPLACEABLE USER DATA";
+    fs::create_symlink(victim, tmp / "phig-stdin-image");
+
+    PhigRun r = run("search --similar -", fs::path("tests/data/faces_small.jpg"));
+    EXPECT_EQ(r.exit_code, 0) << r.output;
+    std::ifstream in(victim);
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(content, "IRREPLACEABLE USER DATA");
+    EXPECT_TRUE(fs::is_symlink(tmp / "phig-stdin-image"));
+    size_t entries = 0;
+    for (const auto& e : fs::directory_iterator(tmp)) {
+        (void)e;
+        entries++;
+    }
+    EXPECT_EQ(entries, 1u) << "the staged file was not removed";
+}
+
+TEST_F(CliOutputTest, EmptyStdinCreatesNothing) {
+    const fs::path tmp = dir / "tmp";
+    ScopedTmpdir scoped(tmp);
+    PhigRun r = run("search --similar -");  // stdin is /dev/null
+    EXPECT_EQ(r.exit_code, 1) << r.output;
+    EXPECT_NE(r.output.find("No data received on stdin"), std::string::npos) << r.output;
+    EXPECT_TRUE(fs::is_empty(tmp));
 }
