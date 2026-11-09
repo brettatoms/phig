@@ -126,17 +126,17 @@ resolve_conflict's occupancy test has no self-exemption, so a file already sitti
 
 Writing a command's results to the path named by --output does not destroy what is already at that path.
 
-Results are rendered into a buffer and written through write_output_file, which writes a temporary sibling and renames it into place, so the path never holds a partial file. The rename refuses an occupied path, a symlink included (dangling or not), unless --overwrite was given; with it the rename replaces the link itself and never the file it points at. cmd_duplicates and all three branches of cmd_search (person, face, general) go through one ResultSink, and fav list reaches cmd_search, so no site opens the path itself. --count with --output and --overwrite without --output are refused before any work is done, as flags that would do nothing. cmd_search and cmd_duplicates also refuse an occupied path before the search runs, to save the work; the refusal in write_output_file is the one that holds. Every other write phig makes refuses an occupied destination (R01, R02, R41), and this one now does too. Libphig returns records and leaves the writing to its caller, so the write and its guard live in core/paths.cpp for any surface that renders results to a file.
+Results are rendered into a buffer and written through write_output_file, which creates a temporary sibling with O_CREAT | O_EXCL | O_NOFOLLOW and renames it into place, so the path never holds a partial file and a symlink planted at the temp's name is never written through. The parent directory must exist: none is created. The rename refuses an occupied path, a symlink included (dangling or not), unless --overwrite was given; with it the rename replaces the link itself and never the file it points at. cmd_duplicates and all three branches of cmd_search (person, face, general) go through one ResultSink, and fav list reaches cmd_search, so no site opens the path itself. --count with --output and --overwrite without --output are refused before any work is done, as flags that would do nothing. cmd_search and cmd_duplicates also refuse an occupied path before the search runs, to save the work; the refusal in write_output_file is the one that holds. Every other write phig makes refuses an occupied destination (R01, R02, R41), and this one now does too. Libphig returns records and leaves the writing to its caller, so the write and its guard live in core/paths.cpp for any surface that renders results to a file.
 
 | | |
 |---|---|
 | Enforced at | `core/paths.cpp:write_output_file` |
 | Binds | `cli` |
 | Protects | original-file |
-| Evidence | subprocess: `CliOutputTest.OutputRefusesAnOccupiedPath`, `CliOutputTest.OutputOverwriteReplacesTheFile`, `CliOutputTest.OutputCreatesAMissingFile`, `CliOutputTest.OutputOverwriteReplacesASymlinkNotItsTarget`, `CliOutputTest.OutputRefusesADanglingSymlink`, `CliOutputTest.CountWithOutputIsAnError`, `CliOutputTest.OverwriteWithoutOutputIsAnError`, `PathsTest.WriteOutputFileCreatesAMissingFile`, `PathsTest.WriteOutputFileRefusesAnExistingFile`, `PathsTest.WriteOutputFileRefusesADanglingSymlink`, `PathsTest.WriteOutputFileReplacesASymlinkNotItsTarget`, `PathsTest.WriteOutputFileReplacesAnExistingFileWhenAsked` |
+| Evidence | subprocess: `CliOutputTest.OutputRefusesAnOccupiedPath`, `CliOutputTest.OutputOverwriteReplacesTheFile`, `CliOutputTest.OutputCreatesAMissingFile`, `CliOutputTest.OutputOverwriteReplacesASymlinkNotItsTarget`, `CliOutputTest.OutputRefusesADanglingSymlink`, `CliOutputTest.CountWithOutputIsAnError`, `CliOutputTest.OverwriteWithoutOutputIsAnError`, `PathsTest.WriteOutputFileCreatesAMissingFile`, `PathsTest.WriteOutputFileRefusesAnExistingFile`, `PathsTest.WriteOutputFileRefusesADanglingSymlink`, `PathsTest.WriteOutputFileReplacesASymlinkNotItsTarget`, `PathsTest.WriteOutputFileReplacesAnExistingFileWhenAsked`, `PathsTest.WriteOutputFileFailsWhenTheParentIsMissing`, `PathsTest.WriteOutputFileNeverWritesThroughAPlantedTemp` |
 | Test gap | The face-search branch of cmd_search has no subprocess test, because a face search needs the models and a detectable face. It writes through the same ResultSink as the three tested sites. |
 
-### R81 — holds
+### R81 — holds (test gap)
 
 Staging a stdin query image does not destroy anything already on disk.
 
@@ -148,6 +148,7 @@ search --similar - and search --face - read stdin into memory first, so empty st
 | Binds | `cli` |
 | Protects | original-file |
 | Evidence | subprocess: `CliOutputTest.StdinQueryNeverWritesThroughAPlantedPath`, `CliOutputTest.EmptyStdinCreatesNothing`, `PathsTest.PrivateTempFilesAreUniqueAndOwnerOnly`, `PathsTest.PrivateTempFileNeverWritesThroughAPlantedSymlink` |
+| Test gap | The tests cannot plant a file at the name mkstemp will choose, so exclusivity rests on mkstemp's O_EXCL contract. The planted-symlink tests pin the old fixed name and that a fresh name is used. |
 
 ## reconcile
 
@@ -354,7 +355,7 @@ An item counts once, in applied or in errors, by its photo's outcome: apply incr
 | Enforced at | `core/organize_engine.cpp:OrganizeEngine::apply` |
 | Binds | `organize.copy`, `organize.move` |
 | Protects | attachment, activity-log |
-| Evidence | witness: `OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun` |
+| Evidence | witness: `OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun`, `OrganizeCarryNoClobber.OneRefusedAttachmentDoesNotStopTheOthers` |
 
 ### R62 — partial (test gap)
 
@@ -513,14 +514,14 @@ Plan 041's guard inventory names this as the third of three guards on the delete
 
 An operation that did not do everything it was asked to do is recorded with a terminal status that says so.
 
-cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply derives completed from three facts, not cancelled, no parent that failed (errors) and no attachment left behind (attachment_errors), and writes interrupted exactly when completed is false, so the same fact, some files did not make it, gives the same terminal status whichever command wrote the log. cancelled is reported separately, so a caller can tell a stopped run from one that failed. cmd_organize returns 1 whenever completed is false, as cmd_rm does, and phig_organize_result carries both flags while the operation itself ends PHIG_OP_DONE unless cancelled. Plan 053 is about what a client can reach through the ABI, not about what an operation destroys or how it counts, so it did not own this; plan 060 did.
+cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply checks a destination with the non-throwing exists, so a destination it cannot inspect counts as an error rather than escaping and leaving the operation in_progress. It derives completed from three facts, not cancelled, no parent that failed (errors) and no attachment left behind (attachment_errors), and writes interrupted exactly when completed is false, so the same fact, some files did not make it, gives the same terminal status whichever command wrote the log. cancelled is reported separately, so a caller can tell a stopped run from one that failed. cmd_organize returns 1 whenever completed is false, as cmd_rm does, and phig_organize_result carries both flags while the operation itself ends PHIG_OP_DONE unless cancelled. Plan 053 is about what a client can reach through the ABI, not about what an operation destroys or how it counts, so it did not own this; plan 060 did.
 
 | | |
 |---|---|
 | Enforced at | `core/remove_exec.cpp:cmd_rm`, `core/organize_engine.cpp:OrganizeEngine::apply` |
 | Binds | `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `organize.copy`, `organize.move` |
 | Protects | activity-log |
-| Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted`, `OrganizeEngineTest.AFileThatFailsInterruptsTheRun`, `OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun`, `CatalogCliTest.CopyExitsOneWhenAFileFails`, `AbiOrganizeTest.AFailedItemEndsTheOperationDoneNotCancelled` |
+| Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted`, `OrganizeEngineTest.AFileThatFailsInterruptsTheRun`, `OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun`, `CatalogCliTest.CopyExitsOneWhenAFileFails`, `AbiOrganizeTest.AFailedItemEndsTheOperationDoneNotCancelled`, `AbiOrganizeTest.ACancelledApplyEndsCancelledAndIncomplete`, `OrganizeEngineTest.ADestinationThatCannotBeCheckedCountsAsAnErrorAndTheRunEnds` |
 | Test gap | cmd_rm's own exit code on a per-file failure is not pinned: tests/test_remove_exec.cpp asserts its interrupted status when a delete throws, but no test reads the return value of a run in which only some files failed. |
 
 ### R83 — holds (test gap)
@@ -942,7 +943,7 @@ parallel_for_each checks the token at the top of its work loop, before it claims
 
 A run whose token is already cancelled does no work and reports itself incomplete.
 
-The four cancellable engines answer this differently. ThumbsEngine and FacesEngine each guard the empty-selection path on purpose — thumbs with 'images.empty() ? !cancel.stop() : parallel_for_each(...)' and faces with a token check placed ahead of its empty-selection return — because parallel_for_each returns true unconditionally for a zero-length range and would otherwise report an already-cancelled run over nothing as completed. ScanEngine and OrganizeEngine have no such guard: run_workers assigns result.completed only inside 'if (!files.empty())' and apply only inside its per-item loop, so a cancelled scan of a directory holding no media files, and a cancelled apply of an empty plan, both return completed = true. Through the ABI that is the difference between PHIG_OP_DONE and PHIG_OP_CANCELLED, since both spawn wrappers derive the terminal state from that flag. Read from the code and corroborated by the test asymmetry — thumbs and faces each have an empty-selection case, scan and organize have none — not measured, because nothing outside the engines can produce an already-cancelled run over an empty selection on demand. The claim is provisional: 056 is the open plan that owns what an operation reports about its own status, and it does not name this.
+The four cancellable engines answer this differently. ThumbsEngine and FacesEngine each guard the empty-selection path on purpose — thumbs with 'images.empty() ? !cancel.stop() : parallel_for_each(...)' and faces with a token check placed ahead of its empty-selection return — because parallel_for_each returns true unconditionally for a zero-length range and would otherwise report an already-cancelled run over nothing as completed. ScanEngine and OrganizeEngine have no such guard: run_workers assigns result.completed only inside 'if (!files.empty())', so a cancelled scan of a directory holding no media files returns completed = true. apply sets result.cancelled inside its per-item loop and derives completed after the loop from !cancelled and the error counts; a loop that never runs sees no cancel, so a cancelled apply of an empty plan returns cancelled = false and completed = true. Through the ABI that is the difference between PHIG_OP_DONE and PHIG_OP_CANCELLED: the scan wrapper derives the terminal state from completed, and organize's wrapper returns !cancelled. Read from the code and corroborated by the test asymmetry — thumbs and faces each have an empty-selection case, scan and organize have none — not measured, because nothing outside the engines can produce an already-cancelled run over an empty selection on demand. The claim is provisional: 056 is the open plan that owns what an operation reports about its own status, and it does not name this.
 
 | | |
 |---|---|

@@ -44,7 +44,7 @@ The POSIX surface, by file:
 | File | Surface | Windows |
 |---|---|---|
 | `core/lockfile.cpp` | `flock`, `pread`, `pwrite`, `ftruncate`, `open`, `getpid` | Rewrite (75 lines) |
-| `core/paths.cpp` | `$HOME`/XDG, `fsync`, `O_DIRECTORY`, `getpid`, `gmtime_r`, `EXDEV`, `link`, `renameat2`/`renamex_np` | Platform split |
+| `core/paths.cpp` | `$HOME`/XDG, `fsync`, `O_DIRECTORY`, `O_NOFOLLOW`, `mkstemp`, `::write`/`::close`, `ssize_t`, `getpid`, `gmtime_r`, `EXDEV`, `link`, `renameat2`/`renamex_np` | Platform split |
 | `core/hasher.cpp` | `dup`/`dup2`/`STDERR_FILENO`, `open("/dev/null")` | Mechanical |
 | `core/log.cpp` | `dup(STDERR_FILENO)` + `fdopen` | Mechanical |
 | `core/metadata.cpp` | **Dead includes** — includes `<fcntl.h>`/`<unistd.h>`, uses neither | Delete the includes |

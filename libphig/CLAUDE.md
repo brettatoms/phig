@@ -143,7 +143,9 @@ is open, and out of scope for plan 031.
   free only while nothing outside the repo links libphig (plan 040); that window
   closes the moment a client ships against it. Note `phig_op_stage` has the
   provision the struct lacks — "append only, never renumber" — so enums may grow
-  where the record may not.
+  where the record may not. `phig_organize_result` and the other caller-allocated
+  result structs have the same exposure, and change in place only while nothing
+  outside the repo links libphig (plan 040).
 - **The export lists match on the `phig_` prefix, not on a list of names.**
   `phig.version` is `global: phig_*` and `phig.exported_symbols` is `_phig_*`,
   so a new entry point is exported by being named `phig_something` and needs no

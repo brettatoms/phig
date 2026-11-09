@@ -323,7 +323,7 @@ surface (`unistd.h`) and has not been audited for portability.
 
 ## CLI command reference
 
-Derived from `cli/main.cpp`, which parses 52 distinct flags. Check it against
+Derived from `cli/main.cpp`, which parses 53 distinct flags. Check it against
 the source rather than trusting this block:
 `grep -oE '"--[a-z0-9-]+"' cli/main.cpp | tr -d '"' | sort -u`.
 

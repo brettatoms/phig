@@ -121,7 +121,7 @@ id = "R69"
 tier = "boundary"
 concern = "conflict"
 statement = "Writing a command's results to the path named by --output does not destroy what is already at that path."
-rationale = "Results are rendered into a buffer and written through write_output_file, which writes a temporary sibling and renames it into place, so the path never holds a partial file. The rename refuses an occupied path, a symlink included (dangling or not), unless --overwrite was given; with it the rename replaces the link itself and never the file it points at. cmd_duplicates and all three branches of cmd_search (person, face, general) go through one ResultSink, and fav list reaches cmd_search, so no site opens the path itself. --count with --output and --overwrite without --output are refused before any work is done, as flags that would do nothing. cmd_search and cmd_duplicates also refuse an occupied path before the search runs, to save the work; the refusal in write_output_file is the one that holds. Every other write phig makes refuses an occupied destination (R01, R02, R41), and this one now does too. Libphig returns records and leaves the writing to its caller, so the write and its guard live in core/paths.cpp for any surface that renders results to a file."
+rationale = "Results are rendered into a buffer and written through write_output_file, which creates a temporary sibling with O_CREAT | O_EXCL | O_NOFOLLOW and renames it into place, so the path never holds a partial file and a symlink planted at the temp's name is never written through. The parent directory must exist: none is created. The rename refuses an occupied path, a symlink included (dangling or not), unless --overwrite was given; with it the rename replaces the link itself and never the file it points at. cmd_duplicates and all three branches of cmd_search (person, face, general) go through one ResultSink, and fav list reaches cmd_search, so no site opens the path itself. --count with --output and --overwrite without --output are refused before any work is done, as flags that would do nothing. cmd_search and cmd_duplicates also refuse an occupied path before the search runs, to save the work; the refusal in write_output_file is the one that holds. Every other write phig makes refuses an occupied destination (R01, R02, R41), and this one now does too. Libphig returns records and leaves the writing to its caller, so the write and its guard live in core/paths.cpp for any surface that renders results to a file."
 enforced_at = ["core/paths.cpp:write_output_file"]
 binds_surface = ["cli"]
 # The bytes destroyed are on disk and irreplaceable, which is what
@@ -144,6 +144,8 @@ tests = [
     "PathsTest.WriteOutputFileRefusesADanglingSymlink",
     "PathsTest.WriteOutputFileReplacesASymlinkNotItsTarget",
     "PathsTest.WriteOutputFileReplacesAnExistingFileWhenAsked",
+    "PathsTest.WriteOutputFileFailsWhenTheParentIsMissing",
+    "PathsTest.WriteOutputFileNeverWritesThroughAPlantedTemp",
 ]
 test_kind = "subprocess"
 status = "holds"
@@ -215,3 +217,4 @@ tests = [
 ]
 test_kind = "subprocess"
 status = "holds"
+test_gap = "The tests cannot plant a file at the name mkstemp will choose, so exclusivity rests on mkstemp's O_EXCL contract. The planted-symlink tests pin the old fixed name and that a fresh name is used."

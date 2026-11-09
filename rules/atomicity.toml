@@ -171,7 +171,10 @@ rationale = "An item counts once, in applied or in errors, by its photo's outcom
 enforced_at = ["core/organize_engine.cpp:OrganizeEngine::apply"]
 binds = ["organize.copy", "organize.move"]
 protects = ["attachment", "activity-log"]
-tests = ["OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun"]
+tests = [
+    "OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun",
+    "OrganizeCarryNoClobber.OneRefusedAttachmentDoesNotStopTheOthers",
+]
 test_kind = "witness"
 status = "holds"
 

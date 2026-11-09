@@ -81,7 +81,7 @@ The bytes on disk.
 | R69 | conflict | holds (test gap) | Writing a command's results to the path named by --output does not destroy what is already at that path. |
 | R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
 | R77 | authorization | violated (test gap) | Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all. |
-| R81 | conflict | holds | Staging a stdin query image does not destroy anything already on disk. |
+| R81 | conflict | holds (test gap) | Staging a stdin query image does not destroy anything already on disk. |
 
 ## attachment — rebuildable: backup-only
 

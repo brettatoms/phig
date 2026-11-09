@@ -119,7 +119,7 @@ id = "R27"
 tier = "engine"
 concern = "recoverability"
 statement = "An operation that did not do everything it was asked to do is recorded with a terminal status that says so."
-rationale = "cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply derives completed from three facts, not cancelled, no parent that failed (errors) and no attachment left behind (attachment_errors), and writes interrupted exactly when completed is false, so the same fact, some files did not make it, gives the same terminal status whichever command wrote the log. cancelled is reported separately, so a caller can tell a stopped run from one that failed. cmd_organize returns 1 whenever completed is false, as cmd_rm does, and phig_organize_result carries both flags while the operation itself ends PHIG_OP_DONE unless cancelled. Plan 053 is about what a client can reach through the ABI, not about what an operation destroys or how it counts, so it did not own this; plan 060 did."
+rationale = "cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply checks a destination with the non-throwing exists, so a destination it cannot inspect counts as an error rather than escaping and leaving the operation in_progress. It derives completed from three facts, not cancelled, no parent that failed (errors) and no attachment left behind (attachment_errors), and writes interrupted exactly when completed is false, so the same fact, some files did not make it, gives the same terminal status whichever command wrote the log. cancelled is reported separately, so a caller can tell a stopped run from one that failed. cmd_organize returns 1 whenever completed is false, as cmd_rm does, and phig_organize_result carries both flags while the operation itself ends PHIG_OP_DONE unless cancelled. Plan 053 is about what a client can reach through the ABI, not about what an operation destroys or how it counts, so it did not own this; plan 060 did."
 enforced_at = ["core/remove_exec.cpp:cmd_rm", "core/organize_engine.cpp:OrganizeEngine::apply"]
 binds = ["remove.trash", "remove.hard", "remove.db-only", "remove.orphans", "organize.copy", "organize.move"]
 protects = ["activity-log"]
@@ -129,6 +129,8 @@ tests = [
     "OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun",
     "CatalogCliTest.CopyExitsOneWhenAFileFails",
     "AbiOrganizeTest.AFailedItemEndsTheOperationDoneNotCancelled",
+    "AbiOrganizeTest.ACancelledApplyEndsCancelledAndIncomplete",
+    "OrganizeEngineTest.ADestinationThatCannotBeCheckedCountsAsAnErrorAndTheRunEnds",
 ]
 test_kind = "witness"
 status = "holds"
