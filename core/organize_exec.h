@@ -29,6 +29,12 @@
 void execute_organize_action(Database& db, const std::string& source, const std::string& dest,
                              bool is_move, int64_t op_id, bool allow_overwrite = false);
 
+// What carry_sidecars did: files moved or copied, and one message per attachment it did not.
+struct CarryResult {
+    size_t carried = 0;                 // files actually moved or copied
+    std::vector<std::string> failures;  // "<attachment path>: <reason>"
+};
+
 // Move/copy every sidecar of `parent_source` to sit beside `parent_dest`,
 // deriving each sidecar's destination name from parent_dest's final name
 // (stem style: IMG_1234.xmp -> <dest-stem>.xmp; append style:
@@ -48,9 +54,5 @@ void execute_organize_action(Database& db, const std::string& source, const std:
 // carried. A file already moved when its log write fails counts in `carried`
 // and also appears in `failures`. A no-op carry (source and destination already
 // the same path) is not counted.
-struct CarryResult {
-    size_t carried = 0;                 // files actually moved or copied
-    std::vector<std::string> failures;  // "<attachment path>: <reason>"
-};
 CarryResult carry_sidecars(Database& db, const std::string& parent_source,
                            const std::string& parent_dest, bool is_move, int64_t op_id);

@@ -613,6 +613,7 @@ TEST_F(OrganizeEngineTest, CancellationPartwayMarksTheOperationInterrupted) {
     canceller.join();
 
     EXPECT_FALSE(result.completed);
+    EXPECT_TRUE(result.cancelled);
     EXPECT_LT(result.applied, 40u) << "cancellation must stop short of the whole batch";
 
     sqlite3_stmt* st = nullptr;
@@ -627,6 +628,106 @@ TEST_F(OrganizeEngineTest, CancellationPartwayMarksTheOperationInterrupted) {
     for (const auto& img : db.get_all_images()) {
         EXPECT_TRUE(fs::exists(img.path)) << img.path << " is recorded but missing";
     }
+}
+
+// ---- A run's counts and terminal status (R27, R48) ----
+
+namespace {
+std::string newest_operation_status(Database& db) {
+    sqlite3_stmt* st = nullptr;
+    EXPECT_EQ(sqlite3_prepare_v2(db.db_ptr(), "SELECT status FROM operations ORDER BY id DESC", -1,
+                                 &st, nullptr),
+              SQLITE_OK);
+    std::string out;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        out = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+}  // namespace
+
+TEST_F(OrganizeEngineTest, AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    std::ofstream(dir / "src" / "a.xmp") << "sidecar";
+
+    OrganizeOptions o = base_opts(db);
+    o.destination = (dir / "dest").string();
+    o.log_enabled = true;
+    OrganizeEngine engine(o, db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    ASSERT_EQ(plan.size(), 1u);
+    const fs::path occupied = fs::path(plan.at(0).dest).parent_path() / "a.xmp";
+    fs::create_directories(occupied.parent_path());
+    std::ofstream(occupied) << "OCCUPANT";
+
+    ProgressQueue<OrganizeProgress> q(1024);
+    OrganizeResult result = engine.apply(plan, false, cancel, &q);
+    q.close();
+
+    EXPECT_EQ(result.applied, 1u);
+    EXPECT_EQ(result.errors, 0u);
+    EXPECT_EQ(result.attachment_errors, 1u);
+    EXPECT_FALSE(result.completed);
+    EXPECT_FALSE(result.cancelled);
+
+    std::ifstream in(occupied);
+    std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(body, "OCCUPANT");
+
+    OrganizeProgress p;
+    size_t ticks = 0;
+    while (q.pop(p)) {
+        if (p.stage != OrganizeStage::FileDone) continue;
+        ticks++;
+        EXPECT_LE(p.done, p.total);
+    }
+    EXPECT_GE(ticks, 1u);
+    EXPECT_EQ(newest_operation_status(db), "interrupted");
+}
+
+TEST_F(OrganizeEngineTest, AFileThatFailsInterruptsTheRun) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    add_image(db, "b.jpg", "2019:07:04 10:00:00");
+
+    OrganizeOptions o = base_opts(db);
+    o.log_enabled = true;
+    OrganizeEngine engine(o, db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    ASSERT_EQ(plan.size(), 2u);
+    fs::remove(plan.at(0).source);
+
+    OrganizeResult result = engine.apply(plan, false, cancel, nullptr);
+    EXPECT_EQ(result.applied, 1u);
+    EXPECT_EQ(result.errors, 1u);
+    EXPECT_FALSE(result.completed);
+    EXPECT_FALSE(result.cancelled);
+    EXPECT_EQ(newest_operation_status(db), "interrupted");
+}
+
+TEST_F(OrganizeEngineTest, ACleanRunIsCompleted) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    add_image(db, "b.jpg", "2019:07:04 10:00:00");
+
+    OrganizeOptions o = base_opts(db);
+    o.log_enabled = true;
+    OrganizeEngine engine(o, db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    OrganizeResult result = engine.apply(plan, false, cancel, nullptr);
+    EXPECT_EQ(result.applied, 2u);
+    EXPECT_TRUE(result.completed);
+    EXPECT_FALSE(result.cancelled);
+    EXPECT_EQ(result.attachment_errors, 0u);
+    EXPECT_EQ(newest_operation_status(db), "completed");
 }
 
 // ---- The dry run below cli/ (R21, R74) ----

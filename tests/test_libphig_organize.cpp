@@ -196,6 +196,8 @@ TEST_F(AbiOrganizeTest, MoveAppliesThePlanAndTheSourceIsGone) {
     ASSERT_EQ(phig_op_organize_result(apply_op, &r), PHIG_OK);
     EXPECT_EQ(r.applied, 1u);
     EXPECT_EQ(r.errors, 0u);
+    EXPECT_EQ(r.attachment_errors, 0u);
+    EXPECT_FALSE(r.cancelled);
     EXPECT_TRUE(r.completed);
     EXPECT_FALSE(fs::exists(source));
     EXPECT_TRUE(fs::exists(fs::path(fx.out_dir) / "2019" / "img0.jpg"));

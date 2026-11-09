@@ -200,7 +200,9 @@ phig_status phig_op_organize_result(phig_op* op, phig_organize_result* out) {
     out->applied = op->organize_result.applied;
     out->skipped = op->organize_result.skipped;
     out->errors = op->organize_result.errors;
+    out->attachment_errors = op->organize_result.attachment_errors;
     out->files_written = op->organize_result.files_written;
+    out->cancelled = op->organize_result.cancelled;
     out->completed = op->organize_result.completed;
     return PHIG_OK;
 }

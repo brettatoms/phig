@@ -672,11 +672,13 @@ typedef struct {
 } phig_organize_options;
 
 typedef struct {
-    uint64_t applied; /* parents moved or copied */
-    uint64_t skipped; /* conflicts left alone, or destinations occupied since planning */
-    uint64_t errors;
-    uint64_t files_written; /* including sidecars and attached JPEGs */
-    bool completed;         /* false when cancelled partway */
+    uint64_t applied;           /* parents moved or copied */
+    uint64_t skipped;           /* conflicts left alone, or destinations occupied since planning */
+    uint64_t errors;            /* parents that failed */
+    uint64_t attachment_errors; /* attachments not carried; their parents count in applied */
+    uint64_t files_written;     /* including sidecars and attached JPEGs */
+    bool cancelled;             /* stopped by the caller partway */
+    bool completed;             /* false when cancelled, or when anything failed */
 } phig_organize_result;
 
 /* A plan the caller owns: what would happen, before anything happens.

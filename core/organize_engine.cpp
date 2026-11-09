@@ -133,7 +133,7 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
 
     for (size_t i = 0; i < plan.size(); i++) {
         if (cancel.stop()) {
-            result.completed = false;
+            result.cancelled = true;
             break;
         }
         const OrganizeAction& act = plan.at(i);
@@ -164,18 +164,37 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
             continue;
         }
 
+        bool parent_done = false;
         try {
             // Disk op, DB update and log entry commit together, with on-failure
             // compensation so disk and database never disagree.
             execute_organize_action(db_, act.source, act.dest, is_move, op_id,
                                     authorized_overwrite);
-            result.applied++;
-            result.files_written++;
-            result.files_written +=
-                carry_sidecars(db_, act.source, act.dest, is_move, op_id).carried;
+            parent_done = true;
         } catch (const std::exception& e) {
             result.errors++;
             p.error = "Failed to organize " + act.source + ": " + e.what();
+        }
+        if (parent_done) {
+            // The photo landed, so the item counts as applied whatever happens
+            // to its attachments; an attachment not carried is counted on its own.
+            result.applied++;
+            result.files_written++;
+            std::vector<std::string> failures;
+            try {
+                CarryResult carry = carry_sidecars(db_, act.source, act.dest, is_move, op_id);
+                result.files_written += carry.carried;
+                failures = std::move(carry.failures);
+            } catch (const std::exception& e) {
+                failures.push_back(e.what());
+            }
+            if (!failures.empty()) {
+                result.attachment_errors += failures.size();
+                std::string joined;
+                for (const auto& f : failures) joined += (joined.empty() ? "" : "; ") + f;
+                p.error = std::string(is_move ? "Moved " : "Copied ") + act.source +
+                          ", but did not carry: " + joined;
+            }
         }
 
         if (progress) {
@@ -187,6 +206,7 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
         }
     }
 
+    result.completed = !result.cancelled && result.errors == 0 && result.attachment_errors == 0;
     if (opts_.log_enabled) {
         db_.log_finish_operation(op_id, result.completed ? "completed" : "interrupted");
         db_.log_prune(opts_.log_max_entries);

@@ -679,13 +679,16 @@ int cmd_organize(Database& db, const OrganizeOptions& opts, bool is_move, bool d
     if (engine_error) std::rethrow_exception(engine_error);
 
     std::cout << "\n\n";
-    if (!result.completed) std::cout << "Interrupted. Stopped at a file boundary.\n";
+    if (result.cancelled) std::cout << "Interrupted. Stopped at a file boundary.\n";
     std::cout << "Done.\n"
               << "  Done: " << result.applied << "\n"
               << "  Skipped: " << to_skip << "\n"
               << "  Errors: " << result.errors << "\n";
+    if (result.attachment_errors != 0) {
+        std::cout << "  Attachments not carried: " << result.attachment_errors << "\n";
+    }
 
-    return 0;
+    return result.completed ? 0 : 1;
 }
 
 // ---- Remove command ----

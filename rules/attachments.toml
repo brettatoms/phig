@@ -3,7 +3,7 @@ id = "R41"
 tier = "engine"
 concern = "attachments"
 statement = "A carried attachment never overwrites an occupied destination, on copy as well as on move."
-rationale = "move_file declines and throws, but atomic_copy_file ends in a rename that replaces silently. An attachment has no row, so a destroyed one leaves no restore snapshot and no error — the run reports Errors: 0. An attachment's destination is derived from its parent's rather than chosen, and the conflict planner never sees it, so there is no skip/overwrite/rename policy to consult and nothing renames it aside: refusing is the only available answer. The guard sits at all three carry sites — metadata sidecars, a Live Photo's video, a RAW's attached JPEG — because they end in the same two primitives. Measured with the built binary: a cp whose planned destination directory already held the parent's .xmp left that file's contents intact and reported the failure."
+rationale = "move_file declines and throws, but atomic_copy_file ends in a rename that replaces silently. An attachment has no row, so a destroyed one leaves no restore snapshot and no error — the run reports Errors: 0. A refused carry is reported in CarryResult::failures and counted in attachment_errors. An attachment's destination is derived from its parent's rather than chosen, and the conflict planner never sees it, so there is no skip/overwrite/rename policy to consult and nothing renames it aside: refusing is the only available answer. The guard sits at all three carry sites — metadata sidecars, a Live Photo's video, a RAW's attached JPEG — because they end in the same two primitives. Measured with the built binary: a cp whose planned destination directory already held the parent's .xmp left that file's contents intact and reported the failure."
 enforced_at = [
     "core/organize_exec.cpp:refuse_occupied_carry_destination",
     "core/organize_exec.cpp:carry_sidecars",
@@ -69,7 +69,7 @@ id = "R44"
 tier = "engine"
 concern = "attachments"
 statement = "An attachment is carried only after its parent's own move or copy has returned and committed, so a parent that was skipped, or whose action failed, carries nothing."
-rationale = "Three kinds of file have no row and so cannot move themselves: a metadata sidecar, a RAW's same-basename JPEG, and a Live Photo's video. carry_sidecars moves all three, and it is the last statement in apply's try block, after execute_organize_action has moved the parent and committed its path update and log entry. Everything that declines to act on an item returns earlier: an item the planner resolved to no destination and an item whose destination became occupied since planning both continue before the try, and a throw from the parent's own action skips the carry entirely. That ordering is also why the carry can link its log entries to a parent id — the parent's row already names the destination by then. A dry run reaches none of this because it never calls apply, which is R21's clause, not a guard in this function."
+rationale = "Three kinds of file have no row and so cannot move themselves: a metadata sidecar, a RAW's same-basename JPEG, and a Live Photo's video. carry_sidecars moves all three, and apply calls it only once execute_organize_action has moved the parent and committed its path update and log entry. Everything that declines to act on an item returns earlier: an item the planner resolved to no destination and an item whose destination became occupied since planning both continue before the parent's action, and a throw from the parent's own action skips the carry entirely. That ordering is also why the carry can link its log entries to a parent id — the parent's row already names the destination by then. A dry run reaches none of this because it never calls apply, which is R21's clause, not a guard in this function."
 enforced_at = ["core/organize_engine.cpp:OrganizeEngine::apply"]
 binds = ["organize.copy", "organize.move"]
 protects = ["attachment", "original-file"]
@@ -82,7 +82,7 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "Both skip branches now carry a sidecar beside the source and assert it stays there with files_written at 0. The third arm of the statement is still untested: no test drives an item whose own move or copy throws, so 'a parent whose action failed carries nothing' rests on the carry sitting inside the try block after execute_organize_action rather than on a test."
+test_gap = "Both skip branches now carry a sidecar beside the source and assert it stays there with files_written at 0. The third arm of the statement is still untested: AFileThatFailsInterruptsTheRun drives an item whose own copy throws but gives it no attachment, so 'a parent whose action failed carries nothing' rests on the carry being gated on parent_done after execute_organize_action rather than on a test."
 
 [[rule]]
 id = "R45"

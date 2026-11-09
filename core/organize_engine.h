@@ -96,8 +96,10 @@ struct OrganizeProgress {
 
 struct OrganizeResult {
     size_t applied = 0, skipped = 0, errors = 0;
+    size_t attachment_errors = 0;  // attachments not carried; their parents count in applied
     size_t files_written = 0;
-    bool completed = true;
+    bool cancelled = false;  // stopped by the cancel token
+    bool completed = true;   // did everything asked: not cancelled, no error of either kind
 };
 
 // Plans and executes cp/mv. `is_move` is a parameter of apply() rather than of

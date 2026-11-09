@@ -99,7 +99,7 @@ Sidecar, paired JPEG, Live Photo MOV. Easier to orphan than an original.
 | R45 | attachments | holds | A carried attachment is renamed onto the parent's destination stem and keeps its own suffix, so an attachment stays attached to a parent that was renamed around a conflict. |
 | R46 | attachments | holds | Removing a photo removes its metadata sidecars with it and leaves every other file beside it alone, including the attached JPEG and the Live Photo video that belong to it. |
 | R47 | attachments | holds | A Live Photo's video is carried only when its still actually changes directory and the video has no row of its own. |
-| R48 | atomicity | violated (test gap) | A copy or move counts each selected item once: an item is reported as applied or as failed, never as both. |
+| R48 | atomicity | holds | A copy or move counts each selected item once: an item is reported as applied or as failed, never as both. |
 | R68 | authorization | violated (test gap) | Trash empty destroys its contents permanently and only after authorization: an empty trash returns without asking, --yes skips the prompt, and otherwise it refuses outright unless run at an interactive terminal where the operator types the literal string 'yes' in response to a prompt naming the item count and the trash directory. |
 
 ## db-row — rebuildable: rescan
@@ -165,7 +165,7 @@ The record of what happened.
 | R21 | authorization | holds (test gap) | The copy and move preview is OrganizeEngine::plan, which writes nothing to disk or to the database, and the command that calls it opens the catalog read-only, so the preview neither creates nor migrates it. |
 | R25 | recoverability | partial (test gap) | Deleting a row captures its restore snapshot whether the activity log is enabled or not. |
 | R26 | recoverability | holds | delete_paths_logged skips a path with no row: it deletes nothing, logs nothing, and does not count it toward the number it returns. |
-| R27 | recoverability | violated (test gap) | An operation that did not do everything it was asked to do is recorded with a terminal status that says so. |
+| R27 | recoverability | holds (test gap) | An operation that did not do everything it was asked to do is recorded with a terminal status that says so. |
 | R28 | atomicity | holds | Every write transaction opens with BEGIN IMMEDIATE, so a transaction that reads and then writes cannot fail with SQLITE_BUSY_SNAPSHOT. |
 | R29 | atomicity | holds (test gap) | Each schema migration takes the write lock before it reads the version and re-reads the version inside that transaction, so a step another process already applied is skipped rather than re-run. |
 | R31 | atomicity | holds (test gap) | log_begin_operation commits its operation row on its own before the first entry, so an interrupted run leaves an operation behind — marked interrupted by rm and by reconcile when the failure is an exception, and left in_progress when the process dies. |
@@ -173,7 +173,7 @@ The record of what happened.
 | R33 | atomicity | holds (test gap) | A change that touches only the disk — trashing a file, hard-deleting it, carrying a sidecar or an attached JPEG — is written to disk first and logged afterwards in its own autocommit, so an interruption between the two leaves the change done and unrecorded. |
 | R34 | atomicity | unenforced (test gap) | A committed transaction survives a process crash but not necessarily an operating-system crash or a power loss: the connection runs WAL with synchronous=NORMAL, which does not fsync the write-ahead log at every commit. |
 | R40 | metadata | violated (test gap) | Dropping a row because a move or a copy has taken its path writes a restore snapshot for it, so the tags and gallery that row carried can still be named afterwards. |
-| R48 | atomicity | violated (test gap) | A copy or move counts each selected item once: an item is reported as applied or as failed, never as both. |
+| R48 | atomicity | holds | A copy or move counts each selected item once: an item is reported as applied or as failed, never as both. |
 | R56 | cancellation | holds (test gap) | Reconcile is not cancellable: run_reconcile takes no CancelToken, so a scan interrupted during its worker phase still relinks, demotes and deletes. |
 | R58 | cancellation | partial (test gap) | A run whose token is already cancelled does no work and reports itself incomplete. |
 | R83 | recoverability | holds (test gap) | An operation that fails against the database reports the cause: the message it raises names what SQLite refused, not the state of the connection after the rollback that followed. |

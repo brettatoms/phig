@@ -440,6 +440,14 @@ TEST_F(CatalogCliTest, ReadsRefuseAnOutdatedCatalogAndLeaveItsVersion) {
     }
 }
 
+TEST_F(CatalogCliTest, CopyExitsOneWhenAFileFails) {
+    const fs::path c = make_catalog("c");
+    fs::remove(c / "photos" / "a.jpg");  // the row's file is gone, so its copy throws
+    PhigRun r = run(c, "cp '" + (dir / "dest").string() + "'");
+    EXPECT_EQ(r.exit_code, 1) << r.output;
+    EXPECT_NE(r.output.find("Errors: 1"), std::string::npos) << r.output;
+}
+
 TEST_F(CatalogCliTest, WritesRefuseAMissingCatalogAndCreateNothing) {
     const fs::path missing = dir / "missing";
     const std::string dest = (dir / "never").string();

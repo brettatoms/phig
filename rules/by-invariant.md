@@ -293,7 +293,7 @@ The two halves have different failure costs. A transfer copies two of its three 
 
 log_begin_operation commits its operation row on its own before the first entry, so an interrupted run leaves an operation behind — marked interrupted by rm and by reconcile when the failure is an exception, and left in_progress when the process dies.
 
-Opening the operation outside the work's transaction is what makes the row survive a rollback: delete_paths_logged rolls back its own transaction on failure and the operation row stays, so the run is not invisible. The cost is that the terminal status is a second write. Only two of the three callers close the loop: cmd_rm and run_reconcile catch, mark the operation interrupted on a best-effort basis and rethrow, while OrganizeEngine::apply has no such wrapper at all — it catches per file and still writes completed, which is R27's finding. A process that dies instead — a signal, a crash, the machine going away — leaves in_progress under every caller; plan 020 recorded that when it wrote log_finish_operation, noting the state is harmless for its own slice and meaningful for the deferred viewer that still does not exist.
+Opening the operation outside the work's transaction is what makes the row survive a rollback: delete_paths_logged rolls back its own transaction on failure and the operation row stays, so the run is not invisible. The cost is that the terminal status is a second write. Only two of the three callers close the loop: cmd_rm and run_reconcile catch, mark the operation interrupted on a best-effort basis and rethrow, while OrganizeEngine::apply catches per file and writes interrupted when any file or attachment failed (R27). A process that dies instead — a signal, a crash, the machine going away — leaves in_progress under every caller; plan 020 recorded that when it wrote log_finish_operation, noting the state is harmless for its own slice and meaningful for the deferred viewer that still does not exist.
 
 | | |
 |---|---|
@@ -301,7 +301,7 @@ Opening the operation outside the work's transaction is what makes the row survi
 | Binds | `scan.reconcile`, `organize.copy`, `organize.move`, `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans` |
 | Protects | activity-log |
 | Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted`, `DatabaseTest.LogBeginOperationCommitsItsRowBeforeAnyEntry`, `ScanEngine.ReconcileMarksItsOperationInterruptedWhenTheDeleteThrows`, `RemoveExecTest.RmMarksItsOperationInterruptedWhenTheDeleteThrows` |
-| Test gap | A killed process is not covered and cannot be: no test stops one. What stands in for it is the committed-and-unfinished row a second connection can already read, which is the state a kill leaves; nothing pins that a signal specifically produces it. OrganizeEngine::apply's clause — the caller that writes completed whatever happened — is R27's finding and is untested here. |
+| Test gap | A killed process is not covered and cannot be: no test stops one. What stands in for it is the committed-and-unfinished row a second connection can already read, which is the state a kill leaves; nothing pins that a signal specifically produces it. OrganizeEngine::apply's clause is pinned by R27's tests, not here. |
 
 ### R32 — holds
 
@@ -320,7 +320,7 @@ A rename cannot go inside a SQL transaction, so the disk action happens first an
 
 A change that touches only the disk — trashing a file, hard-deleting it, carrying a sidecar or an attached JPEG — is written to disk first and logged afterwards in its own autocommit, so an interruption between the two leaves the change done and unrecorded.
 
-A rename and a SQLite commit cannot be one transaction, so one of them goes first, and these paths put the disk action first. Nothing compensates for the gap: execute_organize_action moves a file back when its database write fails, and execute_trash_action and carry_sidecars have no equivalent — if log_add_entry throws, the file stays where it was put and the log does not mention it. For trash that means a file sitting in the trash directory under a random-hex name with nothing recording where it came from, which is the one case where the name alone does not say.
+A rename and a SQLite commit cannot be one transaction, so one of them goes first, and these paths put the disk action first. Nothing compensates for the gap: execute_organize_action moves a file back when its database write fails, and execute_trash_action and carry_sidecars have no equivalent — if log_add_entry throws, the file stays where it was put and the log does not mention it. carry_sidecars catches that failure per attachment, counts the file in carried and also lists it in failures, so the caller learns of the missing log entry through attachment_errors. For trash that means a file sitting in the trash directory under a random-hex name with nothing recording where it came from, which is the one case where the name alone does not say.
 
 | | |
 |---|---|
@@ -344,19 +344,18 @@ This is the durability the pragma buys and the cost it accepts, and no plan stat
 | Evidence | subprocess: none |
 | Test gap | Nothing tests durability across a power loss, and an ordinary test process cannot: it would need the machine to stop between the commit and the checkpoint. The statement is read from the pragma and SQLite's documented WAL behaviour, not from a measurement. |
 
-### R48 — violated (test gap)
+### R48 — holds
 
 A copy or move counts each selected item once: an item is reported as applied or as failed, never as both.
 
-The half-done state behind this is a media file that moved and an attachment that did not. OrganizeEngine::apply increments applied and files_written the moment execute_organize_action returns, then calls carry_sidecars inside the same try. A throw from the carry lands in the catch that increments errors, so an item whose photo moved, committed and logged is counted in both totals, and the error text names the parent as the thing that failed with the attachment's destination inside the message. The item is genuinely half done — R41 is what makes the carry throw rather than destroy, and R33 records that a carried file is logged outside the parent's transaction — so a caller needs to be told which half; instead applied and errors both go up and their sum exceeds the actionable count the progress ticks are denominated against. Measured with the built binary: a cp of one photo whose sidecar destination was occupied printed Done: 1, Skipped: 0, Errors: 1 with a [2/1] progress tick, exited 0, and left the destination row and the copy entry for the parent in place. Plan 060 owns it, the same shape as R27 and R60: an operation that finishes, reports success and exits 0 while its own counters are wrong about what happened.
+An item counts once, in applied or in errors, by its photo's outcome: apply increments applied and files_written when execute_organize_action returns, and a carry that fails afterwards cannot move the item into errors. carry_sidecars reports each attachment it could not carry in CarryResult::failures rather than throwing, and apply counts those in attachment_errors, so the caller is told which half of a half-done item is missing and applied + errors still never exceeds the actionable count the progress ticks are denominated against. The progress message names the parent and each attachment. R41 is what makes a carry refuse rather than destroy, and R33 records that a carried file is logged outside the parent's transaction. A run with any attachment_errors is not completed (R27).
 
 | | |
 |---|---|
 | Enforced at | `core/organize_engine.cpp:OrganizeEngine::apply` |
 | Binds | `organize.copy`, `organize.move` |
 | Protects | attachment, activity-log |
-| Evidence | witness: none |
-| Test gap | Nothing drives apply with a carry that fails. The three OrganizeCarryNoClobber tests call carry_sidecars directly and assert the occupant survives, so the throw is covered and its effect on the counters is not. No test anywhere asserts a non-zero organize error count — OrganizeEngineTest and tests/test_libphig_organize.cpp both only ever assert errors == 0 — so the double count was measured by running the binary. |
+| Evidence | witness: `OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun` |
 
 ### R62 — partial (test gap)
 
@@ -511,19 +510,19 @@ Plan 041's guard inventory names this as the third of three guards on the delete
 | Protects | db-row, activity-log |
 | Evidence | witness: `DatabaseTest.DeletePathsLoggedSkipsAPathWithNoRow` |
 
-### R27 — violated (test gap)
+### R27 — holds (test gap)
 
 An operation that did not do everything it was asked to do is recorded with a terminal status that says so.
 
-cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply writes interrupted only when result.completed is false, and that is false only for cancellation — a file whose move threw increments result.errors and leaves completed true. So the same fact, some files did not make it, produces two different terminal statuses depending on which command wrote the log, and a reader cannot tell a clean copy run from one that lost half its files. The CLI compounds it: cmd_organize prints the error count and then returns 0, so a cp that failed on every file exits successfully, while cmd_rm returns 1. Plan 060 owns it: the shared shape across R27, R48 and R60 is an operation that finishes, reports success and exits 0 while something that matters is wrong, and here that something is the terminal status itself. Plan 053 is about what a client can reach through the ABI, not about what an operation destroys or how it counts, so it cannot close this.
+cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply derives completed from three facts, not cancelled, no parent that failed (errors) and no attachment left behind (attachment_errors), and writes interrupted exactly when completed is false, so the same fact, some files did not make it, gives the same terminal status whichever command wrote the log. cancelled is reported separately, so a caller can tell a stopped run from one that failed. cmd_organize returns 1 whenever completed is false, as cmd_rm does, and phig_organize_result carries both flags. Plan 053 is about what a client can reach through the ABI, not about what an operation destroys or how it counts, so it did not own this; plan 060 did.
 
 | | |
 |---|---|
 | Enforced at | `core/remove_exec.cpp:cmd_rm`, `core/organize_engine.cpp:OrganizeEngine::apply` |
 | Binds | `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `organize.copy`, `organize.move` |
 | Protects | activity-log |
-| Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted` |
-| Test gap | The listed test pins the cancellation case, where organize does write interrupted. Nothing covers a run with per-file errors, which is where the two commands disagree, and nothing pins either command's exit code on that path. |
+| Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted`, `OrganizeEngineTest.AFileThatFailsInterruptsTheRun`, `OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun`, `CatalogCliTest.CopyExitsOneWhenAFileFails` |
+| Test gap | cmd_rm's own exit code on a per-file failure is not pinned: tests/test_remove_exec.cpp asserts its interrupted status when a delete throws, but no test reads the return value of a run in which only some files failed. |
 
 ### R83 — holds (test gap)
 
@@ -670,7 +669,7 @@ A person label is typed by a user and cannot be derived again from pixels, while
 
 A carried attachment never overwrites an occupied destination, on copy as well as on move.
 
-move_file declines and throws, but atomic_copy_file ends in a rename that replaces silently. An attachment has no row, so a destroyed one leaves no restore snapshot and no error — the run reports Errors: 0. An attachment's destination is derived from its parent's rather than chosen, and the conflict planner never sees it, so there is no skip/overwrite/rename policy to consult and nothing renames it aside: refusing is the only available answer. The guard sits at all three carry sites — metadata sidecars, a Live Photo's video, a RAW's attached JPEG — because they end in the same two primitives. Measured with the built binary: a cp whose planned destination directory already held the parent's .xmp left that file's contents intact and reported the failure.
+move_file declines and throws, but atomic_copy_file ends in a rename that replaces silently. An attachment has no row, so a destroyed one leaves no restore snapshot and no error — the run reports Errors: 0. A refused carry is reported in CarryResult::failures and counted in attachment_errors. An attachment's destination is derived from its parent's rather than chosen, and the conflict planner never sees it, so there is no skip/overwrite/rename policy to consult and nothing renames it aside: refusing is the only available answer. The guard sits at all three carry sites — metadata sidecars, a Live Photo's video, a RAW's attached JPEG — because they end in the same two primitives. Measured with the built binary: a cp whose planned destination directory already held the parent's .xmp left that file's contents intact and reported the failure.
 
 | | |
 |---|---|
@@ -710,7 +709,7 @@ The RAW and the JPEG are one shot, and the RAW is the one that keeps the pixels,
 
 An attachment is carried only after its parent's own move or copy has returned and committed, so a parent that was skipped, or whose action failed, carries nothing.
 
-Three kinds of file have no row and so cannot move themselves: a metadata sidecar, a RAW's same-basename JPEG, and a Live Photo's video. carry_sidecars moves all three, and it is the last statement in apply's try block, after execute_organize_action has moved the parent and committed its path update and log entry. Everything that declines to act on an item returns earlier: an item the planner resolved to no destination and an item whose destination became occupied since planning both continue before the try, and a throw from the parent's own action skips the carry entirely. That ordering is also why the carry can link its log entries to a parent id — the parent's row already names the destination by then. A dry run reaches none of this because it never calls apply, which is R21's clause, not a guard in this function.
+Three kinds of file have no row and so cannot move themselves: a metadata sidecar, a RAW's same-basename JPEG, and a Live Photo's video. carry_sidecars moves all three, and apply calls it only once execute_organize_action has moved the parent and committed its path update and log entry. Everything that declines to act on an item returns earlier: an item the planner resolved to no destination and an item whose destination became occupied since planning both continue before the parent's action, and a throw from the parent's own action skips the carry entirely. That ordering is also why the carry can link its log entries to a parent id — the parent's row already names the destination by then. A dry run reaches none of this because it never calls apply, which is R21's clause, not a guard in this function.
 
 | | |
 |---|---|
@@ -718,7 +717,7 @@ Three kinds of file have no row and so cannot move themselves: a metadata sideca
 | Binds | `organize.copy`, `organize.move` |
 | Protects | attachment, original-file |
 | Evidence | witness: `OrganizeEngineTest.SidecarsCountInFilesWrittenNotInApplied`, `OrganizeEngineTest.AttachedJpegForARawCountsInFilesWritten`, `OrganizeExecTest.CarryLogsSidecarEntryWithParentId`, `OrganizeEngineTest.ApplySkipsItemsWithNoDestination`, `OrganizeEngineTest.ApplySkipsAnItemWhoseDestinationBecameOccupied` |
-| Test gap | Both skip branches now carry a sidecar beside the source and assert it stays there with files_written at 0. The third arm of the statement is still untested: no test drives an item whose own move or copy throws, so 'a parent whose action failed carries nothing' rests on the carry sitting inside the try block after execute_organize_action rather than on a test. |
+| Test gap | Both skip branches now carry a sidecar beside the source and assert it stays there with files_written at 0. The third arm of the statement is still untested: AFileThatFailsInterruptsTheRun drives an item whose own copy throws but gives it no attachment, so 'a parent whose action failed carries nothing' rests on the carry being gated on parent_done after execute_organize_action rather than on a test. |
 
 ### R45 — holds
 
@@ -931,7 +930,7 @@ The phase mutates user-authored metadata inside one logged operation, and abando
 
 Cancellation is polled only between whole items, so a run stopped by it leaves every item either fully done or untouched, and whatever committed before the stop stays committed.
 
-parallel_for_each checks the token at the top of its work loop, before it claims the next index, so a worker never abandons an item it has started; scan, thumbs and faces inherit that by going through it. OrganizeEngine::apply has the same shape written by hand — the check is the first statement of its per-item loop, ahead of the destination re-check, execute_organize_action and carry_sidecars — so a cancellation cannot separate a media file from the attachment carried with it, even though a per-file error can (R48). Nothing is rolled back: rows and thumbnails already written stay, and the result reports completed = false, which is the only thing that distinguishes a stopped run from a finished one. The claim is about cancellation alone and is deliberately narrower than 'an item is never half done' — R33 records the disk-then-log window that no token controls.
+parallel_for_each checks the token at the top of its work loop, before it claims the next index, so a worker never abandons an item it has started; scan, thumbs and faces inherit that by going through it. OrganizeEngine::apply has the same shape written by hand — the check is the first statement of its per-item loop, ahead of the destination re-check, execute_organize_action and carry_sidecars — so a cancellation cannot separate a media file from the attachment carried with it, even though a per-file error can (R48). Nothing is rolled back: rows and thumbnails already written stay, and the result reports cancelled = true and completed = false, which is what distinguishes a stopped run from a finished one. The claim is about cancellation alone and is deliberately narrower than 'an item is never half done' — R33 records the disk-then-log window that no token controls.
 
 | | |
 |---|---|

@@ -76,7 +76,7 @@ id = "R31"
 tier = "engine"
 concern = "atomicity"
 statement = "log_begin_operation commits its operation row on its own before the first entry, so an interrupted run leaves an operation behind — marked interrupted by rm and by reconcile when the failure is an exception, and left in_progress when the process dies."
-rationale = "Opening the operation outside the work's transaction is what makes the row survive a rollback: delete_paths_logged rolls back its own transaction on failure and the operation row stays, so the run is not invisible. The cost is that the terminal status is a second write. Only two of the three callers close the loop: cmd_rm and run_reconcile catch, mark the operation interrupted on a best-effort basis and rethrow, while OrganizeEngine::apply has no such wrapper at all — it catches per file and still writes completed, which is R27's finding. A process that dies instead — a signal, a crash, the machine going away — leaves in_progress under every caller; plan 020 recorded that when it wrote log_finish_operation, noting the state is harmless for its own slice and meaningful for the deferred viewer that still does not exist."
+rationale = "Opening the operation outside the work's transaction is what makes the row survive a rollback: delete_paths_logged rolls back its own transaction on failure and the operation row stays, so the run is not invisible. The cost is that the terminal status is a second write. Only two of the three callers close the loop: cmd_rm and run_reconcile catch, mark the operation interrupted on a best-effort basis and rethrow, while OrganizeEngine::apply catches per file and writes interrupted when any file or attachment failed (R27). A process that dies instead — a signal, a crash, the machine going away — leaves in_progress under every caller; plan 020 recorded that when it wrote log_finish_operation, noting the state is harmless for its own slice and meaningful for the deferred viewer that still does not exist."
 enforced_at = [
     "core/database.cpp:log_begin_operation",
     "core/scan_engine.cpp:ScanEngine::run_reconcile",
@@ -96,7 +96,7 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "A killed process is not covered and cannot be: no test stops one. What stands in for it is the committed-and-unfinished row a second connection can already read, which is the state a kill leaves; nothing pins that a signal specifically produces it. OrganizeEngine::apply's clause — the caller that writes completed whatever happened — is R27's finding and is untested here."
+test_gap = "A killed process is not covered and cannot be: no test stops one. What stands in for it is the committed-and-unfinished row a second connection can already read, which is the state a kill leaves; nothing pins that a signal specifically produces it. OrganizeEngine::apply's clause is pinned by R27's tests, not here."
 
 [[rule]]
 id = "R32"
@@ -123,7 +123,7 @@ id = "R33"
 tier = "engine"
 concern = "atomicity"
 statement = "A change that touches only the disk — trashing a file, hard-deleting it, carrying a sidecar or an attached JPEG — is written to disk first and logged afterwards in its own autocommit, so an interruption between the two leaves the change done and unrecorded."
-rationale = "A rename and a SQLite commit cannot be one transaction, so one of them goes first, and these paths put the disk action first. Nothing compensates for the gap: execute_organize_action moves a file back when its database write fails, and execute_trash_action and carry_sidecars have no equivalent — if log_add_entry throws, the file stays where it was put and the log does not mention it. For trash that means a file sitting in the trash directory under a random-hex name with nothing recording where it came from, which is the one case where the name alone does not say."
+rationale = "A rename and a SQLite commit cannot be one transaction, so one of them goes first, and these paths put the disk action first. Nothing compensates for the gap: execute_organize_action moves a file back when its database write fails, and execute_trash_action and carry_sidecars have no equivalent — if log_add_entry throws, the file stays where it was put and the log does not mention it. carry_sidecars catches that failure per attachment, counts the file in carried and also lists it in failures, so the caller learns of the missing log entry through attachment_errors. For trash that means a file sitting in the trash directory under a random-hex name with nothing recording where it came from, which is the one case where the name alone does not say."
 enforced_at = [
     "core/remove_exec.cpp:execute_trash_action",
     "core/remove_exec.cpp:execute_hard_delete_action",
@@ -167,14 +167,13 @@ id = "R48"
 tier = "engine"
 concern = "atomicity"
 statement = "A copy or move counts each selected item once: an item is reported as applied or as failed, never as both."
-rationale = "The half-done state behind this is a media file that moved and an attachment that did not. OrganizeEngine::apply increments applied and files_written the moment execute_organize_action returns, then calls carry_sidecars inside the same try. A throw from the carry lands in the catch that increments errors, so an item whose photo moved, committed and logged is counted in both totals, and the error text names the parent as the thing that failed with the attachment's destination inside the message. The item is genuinely half done — R41 is what makes the carry throw rather than destroy, and R33 records that a carried file is logged outside the parent's transaction — so a caller needs to be told which half; instead applied and errors both go up and their sum exceeds the actionable count the progress ticks are denominated against. Measured with the built binary: a cp of one photo whose sidecar destination was occupied printed Done: 1, Skipped: 0, Errors: 1 with a [2/1] progress tick, exited 0, and left the destination row and the copy entry for the parent in place. Plan 060 owns it, the same shape as R27 and R60: an operation that finishes, reports success and exits 0 while its own counters are wrong about what happened."
+rationale = "An item counts once, in applied or in errors, by its photo's outcome: apply increments applied and files_written when execute_organize_action returns, and a carry that fails afterwards cannot move the item into errors. carry_sidecars reports each attachment it could not carry in CarryResult::failures rather than throwing, and apply counts those in attachment_errors, so the caller is told which half of a half-done item is missing and applied + errors still never exceeds the actionable count the progress ticks are denominated against. The progress message names the parent and each attachment. R41 is what makes a carry refuse rather than destroy, and R33 records that a carried file is logged outside the parent's transaction. A run with any attachment_errors is not completed (R27)."
 enforced_at = ["core/organize_engine.cpp:OrganizeEngine::apply"]
 binds = ["organize.copy", "organize.move"]
 protects = ["attachment", "activity-log"]
-tests = []
+tests = ["OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun"]
 test_kind = "witness"
-status = "violated"
-test_gap = "Nothing drives apply with a carry that fails. The three OrganizeCarryNoClobber tests call carry_sidecars directly and assert the occupant survives, so the throw is covered and its effect on the counters is not. No test anywhere asserts a non-zero organize error count — OrganizeEngineTest and tests/test_libphig_organize.cpp both only ever assert errors == 0 — so the double count was measured by running the binary."
+status = "holds"
 
 [[rule]]
 id = "R72"
