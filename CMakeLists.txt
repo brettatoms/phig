@@ -36,6 +36,7 @@ if(OpenCV_VERSION VERSION_LESS 4.5.4)
                          "4.5.4. (cv::imread has applied EXIF orientation by default "
                          "since 3.4, which also depends on this floor.)")
 endif()
+find_package(JPEG REQUIRED)
 find_package(PkgConfig REQUIRED)
 # 0.6.24: Debian bookworm's libexif-dev. No known dependency on anything newer.
 pkg_check_modules(EXIF REQUIRED libexif>=0.6.24)
@@ -118,6 +119,7 @@ add_executable(phig-tests
     tests/scratch_home.cpp
     tests/test_scanner.cpp
     tests/test_hasher.cpp
+    tests/test_jpeg_decode.cpp
     tests/test_image_codec.cpp
     tests/test_live_photo.cpp
     tests/test_exif.cpp

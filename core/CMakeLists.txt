@@ -2,6 +2,7 @@
 add_library(phig-core STATIC
     scanner.cpp
     hasher.cpp
+    jpeg_decode.cpp
     exif.cpp
     database.cpp
     selection.cpp
@@ -72,6 +73,7 @@ target_link_libraries(phig-core PUBLIC
     ${AVCODEC_LIBRARIES}
     ${AVUTIL_LIBRARIES}
     ${SWSCALE_LIBRARIES}
+    JPEG::JPEG
     SQLite::SQLite3
     CURL::libcurl
     spdlog::spdlog

@@ -80,13 +80,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential ccache cmake pkg-config \
-            libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
+            libopencv-dev libjpeg-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
             libgtest-dev libspdlog-dev libraw-dev libheif-dev libheif-plugin-libde265 libjxl-dev
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install ccache cmake pkg-config opencv sqlite libexif ffmpeg googletest spdlog libraw libheif jpeg-xl
+        run: brew install ccache cmake pkg-config opencv sqlite libexif ffmpeg googletest spdlog libraw libheif jpeg-xl jpeg-turbo
 
       # Compiling the same unchanged sources on every push is what makes the
       # build step the longest one in the job, so the object cache carries across
@@ -298,7 +298,7 @@ jobs:
           # libstdc++ headers clang uses as its standard library on Linux.
           sudo apt-get install -y --no-install-recommends \
             build-essential clang cmake pkg-config \
-            libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
+            libopencv-dev libjpeg-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
             libgtest-dev libspdlog-dev libraw-dev libheif-dev libheif-plugin-libde265 libjxl-dev
 
@@ -387,7 +387,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential ccache cmake pkg-config \
-            libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
+            libopencv-dev libjpeg-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
             libgtest-dev libspdlog-dev libraw-dev libheif-dev libheif-plugin-libde265 libjxl-dev \
             libgtk-4-dev libadwaita-1-dev
@@ -421,7 +421,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config \
-            libopencv-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
+            libopencv-dev libjpeg-dev libsqlite3-dev libexif-dev libcurl4-openssl-dev \
             libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
             libgtest-dev libspdlog-dev libraw-dev libheif-dev libheif-plugin-libde265 libjxl-dev
           # Pin clang tools to the version mise pins, so formatting/analysis is

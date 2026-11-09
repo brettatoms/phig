@@ -31,8 +31,8 @@ works, and lint-tool version drift only shows up as noise in
 
 ```bash
 # Debian / Ubuntu
-sudo apt install build-essential cmake pkg-config libopencv-dev libsqlite3-dev \
-    libexif-dev libcurl4-openssl-dev libavformat-dev libavcodec-dev \
+sudo apt install build-essential cmake pkg-config libopencv-dev libjpeg-dev \
+    libsqlite3-dev libexif-dev libcurl4-openssl-dev libavformat-dev libavcodec-dev \
     libavutil-dev libswscale-dev libgtest-dev libspdlog-dev libraw-dev \
     libheif-dev libheif-plugin-libde265 libjxl-dev
 
@@ -42,16 +42,16 @@ sudo apt install build-essential cmake pkg-config libopencv-dev libsqlite3-dev \
 # the codec library directly.
 
 # Fedora
-sudo dnf install gcc-c++ cmake make pkgconf-pkg-config opencv-devel sqlite-devel \
-    libexif-devel libcurl-devel ffmpeg-free-devel gtest-devel spdlog-devel LibRaw-devel \
-    libheif-devel libjxl-devel
+sudo dnf install gcc-c++ cmake make pkgconf-pkg-config opencv-devel libjpeg-turbo-devel \
+    sqlite-devel libexif-devel libcurl-devel ffmpeg-free-devel gtest-devel spdlog-devel \
+    LibRaw-devel libheif-devel libjxl-devel
 
 # Arch Linux
-sudo pacman -S base-devel cmake opencv sqlite libexif curl ffmpeg gtest spdlog libraw \
-    libheif libjxl
+sudo pacman -S base-devel cmake opencv libjpeg-turbo sqlite libexif curl ffmpeg gtest spdlog \
+    libraw libheif libjxl
 
 # macOS (Homebrew)
-brew install cmake pkg-config opencv sqlite libexif ffmpeg googletest spdlog libraw libheif jpeg-xl
+brew install cmake pkg-config opencv jpeg-turbo sqlite libexif ffmpeg googletest spdlog libraw libheif jpeg-xl
 ```
 
 Then build and install:
