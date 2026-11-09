@@ -105,10 +105,13 @@ DecodeResult decode_jpeg_memory(std::span<const unsigned char> bytes);
   image row's sha256 already identifies. Plan 060's open question 7 decision
   records this frame with each face; this plan is where the decoder learns to
   report it.
-- **Every other format stays on `cv::imread`, unsuppressed.** If the inventory
-  shows one of their libraries is noisy, it gets its own capture by the same
-  pattern. Until then, anything they print reaches stderr, which is the honest
-  default.
+- **Every other format stays on `cv::imread`, unsuppressed.** The inventory
+  found libtiff and libpng noisy only on malformed files, which test suites
+  build on purpose: 10 libtiff lines and no libpng lines on photo and video
+  sources. They get no capture of their own. OpenCV's own log is set to errors
+  only (decision 3), which silences what OpenCV routes through it; what libtiff
+  or libpng write directly reaches stderr, and says something true about a
+  broken file.
 
 **Pixels must match `cv::imread` exactly.** Scans store a perceptual hash
 computed from these pixels, and duplicate detection compares new hashes
@@ -191,9 +194,12 @@ links it itself:
    - two threads decoding different truncated files each get only their own
      message.
 3. **Pixel identity on the corpus.** A test can't carry the corpus, so this is
-   a recorded check, not a CI test. Decode at least 5,000 JPEGs from step 0's
-   corpus both ways, including the RAW previews and sidecars, and count
-   mismatches; the expected count is zero. Record the result here.
+   a recorded check, not a CI test. Decode every JPEG in step 0's corpus both
+   ways, including the RAW previews and sidecars, and count mismatches; the
+   expected count is zero. Record the result here. The target was 5,000 JPEGs;
+   the corpus holds 687, because Wikimedia Commons throttled the fetch, so the
+   result records the shortfall and the check is worth repeating on a larger
+   corpus.
 4. **Switch the call sites.** Move `decode_image_with_warning` and `core/raw.cpp`
    onto the new decoder. The existing scan, thumbnail and faces tests must pass
    unchanged.
