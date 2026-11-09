@@ -2,15 +2,31 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <thread>
 
+#include "dates.h"
 #include "faces.h"
 #include "hasher.h"
 #include "log.h"
 #include "parallel.h"
 #include "scan_engine.h"  // detector_for_worker
+
+namespace {
+// The row's sha256 describes the file only while its size and mtime still match the row,
+// the same trust a scan's skip uses; otherwise "" so the frame matches no other frame.
+std::string trusted_row_sha(const ImageInfo& img) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto size = fs::file_size(img.path, ec);
+    if (ec || static_cast<int64_t>(size) != img.file_size) return "";
+    auto mtime = fs::last_write_time(img.path, ec);
+    if (ec || format_time(mtime) != img.modified_at) return "";
+    return img.sha256;
+}
+}  // namespace
 
 IdentifyResult identify_person(Database& db, const std::string& person, float threshold) {
     IdentifyResult result;
@@ -161,7 +177,8 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
             if (progress == nullptr) log_warn(warning);
         }
         cv::Mat img = decoded.img;
-        const FaceProvenance current = face_provenance(decoded.frame, img_info.sha256, model_sha);
+        const FaceProvenance current =
+            face_provenance(decoded.frame, trusted_row_sha(img_info), model_sha);
 
         auto faces = detector_for_worker(detectors, worker_id)->detect(img);
 

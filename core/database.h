@@ -235,8 +235,8 @@ class Database {
     // Inserts a face row and returns its rowid. Returning the id directly means
     // callers need not follow with sqlite3_last_insert_rowid(), which is only
     // correct while no other statement runs on this connection in between.
-    // Every face writer in core/ passes provenance; the overload without it
-    // stores unknown provenance.
+    // Every face writer in core/ must pass provenance; the overload without it
+    // stores unknown provenance and exists for tests and rows of unknown origin.
     int64_t insert_face(int64_t image_id, const FaceInfo& face, const FaceProvenance& provenance);
     int64_t insert_face(int64_t image_id, const FaceInfo& face);
     bool has_faces(const std::string& path);

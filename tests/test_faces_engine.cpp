@@ -18,6 +18,7 @@
 
 #include "cancel.h"
 #include "database.h"
+#include "dates.h"
 #include "face_path.h"
 #include "faces.h"
 #include "faces_engine.h"
@@ -48,9 +49,6 @@ struct ScratchFaces {
         db_path = (dir / "phig.db").string();
         db = std::make_unique<Database>(db_path);
         db->init_schema();
-        // The sha prefix is unique per fixture instance (the pointer value
-        // baked into `dir`) so rows from different tests never collide.
-        std::string prefix = std::to_string(reinterpret_cast<uintptr_t>(this));
         for (int i = 0; i < n; ++i) {
             const char* src =
                 (i % 2 == 0) ? "tests/data/faces_small.jpg" : "tests/data/faces_large.jpg";
@@ -62,10 +60,9 @@ struct ScratchFaces {
             info.extension = "jpg";
             info.file_size = fs::file_size(p);
             info.media_type = "image";
-            std::string sha = prefix + std::to_string(i);
-            info.sha256 = sha.substr(0, 63) + std::to_string(i % 10);
+            info.sha256 = compute_sha256(p.string());
             info.created_at = "2024-01-01T00:00:00Z";
-            info.modified_at = "2024-01-01T00:00:00Z";
+            info.modified_at = format_time(fs::last_write_time(p));
             db->insert(info);
         }
     }
@@ -294,13 +291,6 @@ std::vector<ProvRow> provenance_of(Database& db, int64_t image_id) {
     return out;
 }
 
-// Gives the row of f0.jpg the real sha256 of its file, as a scan would.
-void set_real_sha(ScratchFaces& coll, const fs::path& file) {
-    std::string sql = "UPDATE images SET sha256 = '" + compute_sha256(file.string()) +
-                      "' WHERE path = '" + file.string() + "'";
-    ASSERT_EQ(sqlite3_exec(coll.db->db_ptr(), sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
-}
-
 // Rebuilds, names the first face "Ada", replaces f0.jpg with `replacement`, rebuilds again.
 FacesResult rebuild_after_replacing(ScratchFaces& coll, int64_t& image_id, int64_t& ada,
                                     const cv::Mat& replacement) {
@@ -323,7 +313,6 @@ TEST(FacesEngineRun, RebuildRecordsTheFrameAndModelOnEveryFace) {
     if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     ScratchFaces coll(1);
     const fs::path file = coll.dir / "f0.jpg";
-    set_real_sha(coll, file);
     cv::Mat decoded = cv::imread(file.string());
     ASSERT_FALSE(decoded.empty());
 
@@ -407,6 +396,73 @@ TEST(FacesEngineRun, RebuildDropsALabelFromAnotherModelInAnotherFrame) {
     FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
     EXPECT_EQ(r.labels_dropped, 1u);
     for (const ProvRow& p : provenance_of(*coll.db, image_id)) EXPECT_EQ(p.person_id, -1);
+}
+
+TEST(FacesEngineRun, RebuildDropsALabelWhenTheFileChangedUnderItsRowAndTheModelChanged) {
+    // The row's sha256 describes the file only while size and mtime match the row. A file
+    // rotated in place records an unknown frame, so a later model-change rebuild cannot
+    // carry a label by overlap onto boxes measured in a different orientation.
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(1);  // f0.jpg is faces_small.jpg, its face near the centre
+    const fs::path file = coll.dir / "f0.jpg";
+    int64_t image_id = coll.db->get_image_id(file.string());
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    opts.ids = {image_id};
+    CancelToken tok;
+    ASSERT_GT(FacesEngine(opts, *coll.db).run(tok, nullptr).faces_detected, 0u);
+    std::vector<FaceRow> faces = faces_of(*coll.db, image_id);
+    ASSERT_FALSE(faces.empty());
+    ASSERT_TRUE(coll.db->set_face_person(faces[0].id, coll.db->get_or_create_person("Ada")));
+
+    cv::Mat img = cv::imread(file.string()), rotated;
+    ASSERT_FALSE(img.empty());
+    // Mirrored, then shifted so the mirrored face lands on the old box: the same size and a
+    // detection that overlaps the old face, but different pixels.
+    cv::flip(img, rotated, 1);
+    cv::Mat shift = (cv::Mat_<double>(2, 3) << 1, 0, 32, 0, 1, 0);
+    cv::warpAffine(rotated, rotated, shift, rotated.size(), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    ASSERT_TRUE(cv::imwrite(file.string(), rotated));
+    ASSERT_EQ(sqlite3_exec(coll.db->db_ptr(),
+                           ("UPDATE faces SET model_sha256 = '" + std::string(64, 'b') +
+                            "' WHERE image_id = " + std::to_string(image_id))
+                               .c_str(),
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+
+    FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
+    EXPECT_GE(r.labels_dropped, 1u);
+    for (const ProvRow& p : provenance_of(*coll.db, image_id)) EXPECT_EQ(p.person_id, -1);
+}
+
+TEST(FacesEngineRun, RebuildCarriesALabelByOverlapWhenTheRecordedFrameMatches) {
+    // A frame recorded by one run lets the next run, under another model, carry by overlap.
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(2);
+    const fs::path file = coll.dir / "f1.jpg";
+    int64_t image_id = coll.db->get_image_id(file.string());
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    opts.ids = {image_id};
+    CancelToken tok;
+    ASSERT_GT(FacesEngine(opts, *coll.db).run(tok, nullptr).faces_detected, 0u);
+    std::vector<FaceRow> faces = faces_of(*coll.db, image_id);
+    ASSERT_FALSE(faces.empty());
+    int64_t ada = coll.db->get_or_create_person("Ada");
+    ASSERT_TRUE(coll.db->set_face_person(faces[0].id, ada));
+    ASSERT_EQ(sqlite3_exec(coll.db->db_ptr(),
+                           ("UPDATE faces SET model_sha256 = '" + std::string(64, 'b') +
+                            "' WHERE image_id = " + std::to_string(image_id))
+                               .c_str(),
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+
+    FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
+    EXPECT_EQ(r.labels_dropped, 0u);
+    bool found = false;
+    for (const ProvRow& p : provenance_of(*coll.db, image_id)) found |= p.person_id == ada;
+    EXPECT_TRUE(found) << "the label was not carried by overlap";
 }
 
 TEST(FacesEngineRun, RebuildOverUnlabelledFacesDropsNothing) {
