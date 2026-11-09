@@ -227,7 +227,8 @@ links it itself:
 
    **Result, 2026-11-09.** Two Release builds, one at the branch's base
    `d74485b` (the parent of the branch's first commit, `4e78a52`), which still
-   has `StderrSuppressor`, and one at `467c7ee`, the head. Each ran in its own
+   has `StderrSuppressor`, and one at `467c7ee`, the head: the commit measured, not the branch tip,
+   which has later commits. Each ran in its own
    git worktree. The two differ by this branch's commits: the plan 069 and 060
    documents, the decoder and its tests, the video log capture, and the
    suppressor's deletion. The machine is an AMD Ryzen 5 5600X (12 threads,
@@ -261,6 +262,10 @@ links it itself:
    load average at 9.1 before the runs and 6.6 after, and between 4.6 and 10.8
    during them. The head's times may be slightly pessimistic. Base and head
    alternated, so both saw the same load.
+
+   The expectation that the "without" column's scaling holds was met in kind
+   and not in size: it was 7.0 times on the one collection and is 5.7 times on
+   this corpus, and the difference is the corpus, as above.
 
    At `--parallel 1` the head matches the base, so the decoder is not slower
    per file.
@@ -307,8 +312,15 @@ state.
   as `[warning] <path> -- <message>` on stderr and in the log, where the
   suppressor hid it. This follows decision 2: messages are reported against
   their file rather than hidden. The plain scan of the 659-file measurement
-  corpus wrote 283 stderr lines at the head and 40 at the base. At the head,
-  124 are blank spacing lines and 159 are `[warning]` lines. Of those 159, 40
+  corpus wrote 283 stderr lines at the head and 40 at the base. The base's 40
+  contain no blank lines. At the head, 124 are blank lines and 159 are
+  `[warning]` lines. `decode_image` writes one `\n` to `std::cerr` before each
+  decoder message, to break out of the scan's progress line, which accounts
+  for 119 of the blank lines: re-running the head's scan at `--parallel 1`
+  and 2 gave exactly 119 blank lines. At the default worker count the blank
+  count varied from run to run (119 to 124 over eight runs at 12 workers), the extra ones
+  falling next to other blank lines or before a `Cannot decode image` line.
+  The source of those extra newlines was not found. Of those 159, 40
   are `Cannot decode image` for the same 40 undamaged files that fail at the
   base (the base's 40 lines are exactly these). The other 119 are decoder
   messages, each on a different file: no file produced more than one. 38 come
