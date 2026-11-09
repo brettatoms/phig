@@ -1097,8 +1097,10 @@ void Database::delete_paths(const std::vector<std::string>& paths) {
             sqlite3_reset(stmt);
             sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
             if (sqlite3_step(stmt) != SQLITE_DONE) {
-                const std::string err = sqlite3_errmsg(db_);
-                throw std::runtime_error("Failed to delete path '" + path + "': " + err);
+                std::string msg = "Failed to delete path '" + path;
+                msg += "': ";
+                msg += sqlite3_errmsg(db_);
+                throw std::runtime_error(msg);
             }
         }
 
