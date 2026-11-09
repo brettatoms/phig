@@ -354,12 +354,13 @@ TEST_F(OrganizeExecTest, CarryLeavesTheSidecarMovedAndUnloggedWhenTheLogWriteFai
     execute_organize_action(*db, src.string(), dst.string(), /*is_move=*/true, op);
 
     BlockedWrites blocked(db->db_ptr());
-    std::string err =
-        thrown_message([&] { carry_sidecars(*db, src.string(), dst.string(), true, op); });
+    CarryResult r = carry_sidecars(*db, src.string(), dst.string(), true, op);
     blocked.release();
 
-    EXPECT_NE(err.find(BlockedWrites::kMessage), std::string::npos)
-        << "the log write must be what failed, or nothing below proves anything: [" << err << "]";
+    ASSERT_EQ(r.failures.size(), 1u);
+    EXPECT_NE(r.failures[0].find(BlockedWrites::kMessage), std::string::npos)
+        << "the log write must be what failed, or nothing below proves anything: [" << r.failures[0]
+        << "]";
     EXPECT_TRUE(fs::exists(dir / "dest" / "IMG_1.xmp")) << "the carry happened and is not undone";
     EXPECT_FALSE(fs::exists(dir / "src" / "IMG_1.xmp"));
     EXPECT_EQ(count_entries("move_sidecar"), 0) << "the file moved and the log does not know";
@@ -536,9 +537,11 @@ TEST(OrganizeLivePhotoSafety, CopyRefusesToClobberAnExistingVideoAtTheDestinatio
 
     Database db((root / "phig.db").string());
     db.init_schema();
-    EXPECT_THROW(
-        carry_sidecars(db, (src / "shot.jpg").string(), (dst / "shot.jpg").string(), false, 0),
-        std::exception);
+    CarryResult r =
+        carry_sidecars(db, (src / "shot.jpg").string(), (dst / "shot.jpg").string(), false, 0);
+    EXPECT_EQ(r.carried, 0u);
+    ASSERT_EQ(r.failures.size(), 1u);
+    EXPECT_NE(r.failures[0].find((src / "shot.mov").string()), std::string::npos) << r.failures[0];
     EXPECT_EQ(fs::file_size(dst / "shot.mov"), victim_size)
         << "the pre-existing video was overwritten";
     fs::remove_all(root);
@@ -618,7 +621,8 @@ TEST(OrganizeLivePhotoSafety, CountsTheCarriedVideoInTheReturnedTotal) {
 
     Database db((root / "phig.db").string());
     db.init_schema();
-    EXPECT_EQ(carry_sidecars(db, (src / "shot.jpg").string(), (dst / "shot.jpg").string(), true, 0),
+    EXPECT_EQ(carry_sidecars(db, (src / "shot.jpg").string(), (dst / "shot.jpg").string(), true, 0)
+                  .carried,
               1u)
         << "the carried Live Photo video was not counted";
     fs::remove_all(root);
@@ -720,9 +724,11 @@ TEST(OrganizeCarryNoClobber, CopyRefusesToClobberAnExistingSidecar) {
 
     Database db((root / "phig.db").string());
     db.init_schema();
-    EXPECT_THROW(
-        carry_sidecars(db, (src / "IMG_1.jpg").string(), (dst / "IMG_1.jpg").string(), false, 0),
-        std::exception);
+    CarryResult r =
+        carry_sidecars(db, (src / "IMG_1.jpg").string(), (dst / "IMG_1.jpg").string(), false, 0);
+    EXPECT_EQ(r.carried, 0u);
+    ASSERT_EQ(r.failures.size(), 1u);
+    EXPECT_NE(r.failures[0].find((src / "IMG_1.xmp").string()), std::string::npos) << r.failures[0];
     EXPECT_EQ(get(dst / "IMG_1.xmp"), "PRECIOUS") << "an existing sidecar was overwritten";
     fs::remove_all(root);
 }
@@ -740,9 +746,11 @@ TEST(OrganizeCarryNoClobber, CopyRefusesToClobberAnExistingSiblingJpeg) {
 
     Database db((root / "phig.db").string());
     db.init_schema();
-    EXPECT_THROW(
-        carry_sidecars(db, (src / "IMG_2.cr2").string(), (dst / "IMG_2.cr2").string(), false, 0),
-        std::exception);
+    CarryResult r =
+        carry_sidecars(db, (src / "IMG_2.cr2").string(), (dst / "IMG_2.cr2").string(), false, 0);
+    EXPECT_EQ(r.carried, 0u);
+    ASSERT_EQ(r.failures.size(), 1u);
+    EXPECT_NE(r.failures[0].find((src / "IMG_2.jpg").string()), std::string::npos) << r.failures[0];
     EXPECT_EQ(get(dst / "IMG_2.jpg"), "PRECIOUS") << "an existing sibling JPEG was overwritten";
     fs::remove_all(root);
 }
@@ -761,9 +769,41 @@ TEST(OrganizeCarryNoClobber, StillCarriesWhenTheDestinationIsFree) {
 
     Database db((root / "phig.db").string());
     db.init_schema();
-    EXPECT_EQ(
-        carry_sidecars(db, (src / "IMG_3.jpg").string(), (dst / "IMG_3.jpg").string(), false, 0),
-        1u);
+    CarryResult r =
+        carry_sidecars(db, (src / "IMG_3.jpg").string(), (dst / "IMG_3.jpg").string(), false, 0);
+    EXPECT_EQ(r.carried, 1u);
+    EXPECT_TRUE(r.failures.empty());
     EXPECT_EQ(get(dst / "IMG_3.xmp"), "sidecar");
     fs::remove_all(root);
+}
+
+// One attachment's refusal is reported and the parent's other attachments are
+// still carried. A move leaves the refused one at its source.
+TEST(OrganizeCarryNoClobber, OneRefusedAttachmentDoesNotStopTheOthers) {
+    for (bool is_move : {false, true}) {
+        fs::path root = make_temp_dir("carry-partial");
+        fs::path src = root / "src";
+        fs::path dst = root / "dst";
+        fs::create_directories(src);
+        fs::create_directories(dst);
+        put(src / "IMG_1.jpg", "photo");
+        put(src / "IMG_1.xmp", "NEW XMP");
+        put(src / "IMG_1.pp3", "PP3");
+        put(dst / "IMG_1.jpg", "photo");
+        put(dst / "IMG_1.xmp", "PRECIOUS");
+
+        Database db((root / "phig.db").string());
+        db.init_schema();
+        CarryResult r = carry_sidecars(db, (src / "IMG_1.jpg").string(),
+                                       (dst / "IMG_1.jpg").string(), is_move, 0);
+        EXPECT_EQ(r.carried, 1u) << "is_move=" << is_move;
+        ASSERT_EQ(r.failures.size(), 1u) << "is_move=" << is_move;
+        EXPECT_NE(r.failures[0].find((src / "IMG_1.xmp").string()), std::string::npos)
+            << r.failures[0];
+        EXPECT_EQ(get(dst / "IMG_1.pp3"), "PP3");
+        EXPECT_EQ(get(dst / "IMG_1.xmp"), "PRECIOUS");
+        EXPECT_EQ(get(src / "IMG_1.xmp"), "NEW XMP") << "a refused attachment stays at its source";
+        EXPECT_EQ(fs::exists(src / "IMG_1.pp3"), !is_move);
+        fs::remove_all(root);
+    }
 }

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "database.h"
 
@@ -41,8 +42,15 @@ void execute_organize_action(Database& db, const std::string& source, const std:
 // stem-style to match (IMG_1234.JPG -> <dest-stem>.JPG, preserving the
 // JPEG's own extension/case), logged the same way as a sidecar.
 //
-// Returns how many files it actually moved or copied, so a caller can count the
-// work a parent dragged along without listing the directory a second time. A
-// no-op carry (source and destination already the same path) is not counted.
-size_t carry_sidecars(Database& db, const std::string& parent_source,
-                      const std::string& parent_dest, bool is_move, int64_t op_id);
+// Each attachment is carried on its own: one that cannot be carried (its
+// destination is occupied, the move or copy fails, or its log entry cannot be
+// written) is reported in `failures` rather than thrown, and the rest are still
+// carried. A file already moved when its log write fails counts in `carried`
+// and also appears in `failures`. A no-op carry (source and destination already
+// the same path) is not counted.
+struct CarryResult {
+    size_t carried = 0;                 // files actually moved or copied
+    std::vector<std::string> failures;  // "<attachment path>: <reason>"
+};
+CarryResult carry_sidecars(Database& db, const std::string& parent_source,
+                           const std::string& parent_dest, bool is_move, int64_t op_id);

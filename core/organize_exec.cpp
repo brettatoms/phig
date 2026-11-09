@@ -158,10 +158,10 @@ void refuse_occupied_carry_destination(const fs::path& dest) {
 
 }  // namespace
 
-size_t carry_sidecars(Database& db, const std::string& parent_source,
-                      const std::string& parent_dest, bool is_move, int64_t op_id) {
+CarryResult carry_sidecars(Database& db, const std::string& parent_source,
+                           const std::string& parent_dest, bool is_move, int64_t op_id) {
     const bool logging = op_id > 0;
-    size_t carried = 0;
+    CarryResult result;
     fs::path src_media(parent_source);
     fs::path dst_media(parent_dest);
     std::string src_stem = src_media.stem().string();      // IMG_1
@@ -191,18 +191,23 @@ size_t carry_sidecars(Database& db, const std::string& parent_source,
 
         if (src_media.parent_path() == dst_dir && side == side_dst) continue;  // no-op
 
-        refuse_occupied_carry_destination(side_dst);
-        if (is_move) {
-            move_file(side.string(), side_dst.string());
-        } else {
-            atomic_copy_file(side.string(), side_dst.string());
-        }
-        carried++;
-        if (logging) {
-            std::string rj =
-                parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}") : "";
-            db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar", side.string(),
-                                     side_dst.string(), rj});
+        try {
+            refuse_occupied_carry_destination(side_dst);
+            if (is_move) {
+                move_file(side.string(), side_dst.string());
+            } else {
+                atomic_copy_file(side.string(), side_dst.string());
+            }
+            result.carried++;
+            if (logging) {
+                std::string rj = parent_id > 0
+                                     ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
+                                     : "";
+                db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar", side.string(),
+                                         side_dst.string(), rj});
+            }
+        } catch (const std::exception& e) {
+            result.failures.push_back(side.string() + ": " + e.what());
         }
     }
 
@@ -232,22 +237,26 @@ size_t carry_sidecars(Database& db, const std::string& parent_source,
         if (!lp_src.empty() && db.get_image_id(lp_src.string()) < 0) {
             fs::path lp_dst = dst_dir / (dst_stem + lp_src.extension().string());
 
-            refuse_occupied_carry_destination(lp_dst);
-            if (is_move) {
-                move_file(lp_src.string(), lp_dst.string());
-            } else {
-                atomic_copy_file(lp_src.string(), lp_dst.string());
-            }
-            // Counted like any other carried file: OrganizeEngine adds this
-            // return value to result.files_written, so omitting it would report
-            // fewer files than were actually written.
-            carried++;
-            if (logging) {
-                std::string rj = parent_id > 0
-                                     ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
-                                     : "";
-                db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar", lp_src.string(),
-                                         lp_dst.string(), rj});
+            try {
+                refuse_occupied_carry_destination(lp_dst);
+                if (is_move) {
+                    move_file(lp_src.string(), lp_dst.string());
+                } else {
+                    atomic_copy_file(lp_src.string(), lp_dst.string());
+                }
+                // Counted like any other carried file: OrganizeEngine adds this
+                // to result.files_written, so omitting it would report fewer
+                // files than were actually written.
+                result.carried++;
+                if (logging) {
+                    std::string rj =
+                        parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
+                                      : "";
+                    db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar",
+                                             lp_src.string(), lp_dst.string(), rj});
+                }
+            } catch (const std::exception& e) {
+                result.failures.push_back(lp_src.string() + ": " + e.what());
             }
         }
     }
@@ -262,22 +271,27 @@ size_t carry_sidecars(Database& db, const std::string& parent_source,
             fs::path jpeg_dst = dst_dir / (dst_stem + jpeg_src.extension().string());
 
             if (!(src_media.parent_path() == dst_dir && jpeg_src == jpeg_dst)) {  // skip no-op
-                refuse_occupied_carry_destination(jpeg_dst);
-                if (is_move) {
-                    move_file(jpeg_src.string(), jpeg_dst.string());
-                } else {
-                    atomic_copy_file(jpeg_src.string(), jpeg_dst.string());
-                }
-                carried++;
-                if (logging) {
-                    std::string rj =
-                        parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
-                                      : "";
-                    db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar",
-                                             jpeg_src.string(), jpeg_dst.string(), rj});
+                try {
+                    refuse_occupied_carry_destination(jpeg_dst);
+                    if (is_move) {
+                        move_file(jpeg_src.string(), jpeg_dst.string());
+                    } else {
+                        atomic_copy_file(jpeg_src.string(), jpeg_dst.string());
+                    }
+                    result.carried++;
+                    if (logging) {
+                        std::string rj =
+                            parent_id > 0
+                                ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
+                                : "";
+                        db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar",
+                                                 jpeg_src.string(), jpeg_dst.string(), rj});
+                    }
+                } catch (const std::exception& e) {
+                    result.failures.push_back(jpeg_src.string() + ": " + e.what());
                 }
             }
         }
     }
-    return carried;
+    return result;
 }

@@ -171,7 +171,8 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
                                     authorized_overwrite);
             result.applied++;
             result.files_written++;
-            result.files_written += carry_sidecars(db_, act.source, act.dest, is_move, op_id);
+            result.files_written +=
+                carry_sidecars(db_, act.source, act.dest, is_move, op_id).carried;
         } catch (const std::exception& e) {
             result.errors++;
             p.error = "Failed to organize " + act.source + ": " + e.what();
