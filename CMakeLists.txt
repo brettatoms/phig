@@ -4,7 +4,7 @@ project(phig VERSION 0.3.0 LANGUAGES C CXX)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cli/version.h.in
                ${CMAKE_CURRENT_BINARY_DIR}/version.h @ONLY)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT CMAKE_BUILD_TYPE)

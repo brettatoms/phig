@@ -243,11 +243,19 @@ sound check against a catalog you have scanned.
 
 ## Tech stack
 
-- **Language:** C++20, in `core/`, `cli/`, `gtk/` and libphig's
+- **Language:** C++23, in `core/`, `cli/`, `gtk/` and libphig's
   implementation. C appears in one place: libphig's exported header,
   `<phig/phig.h>`, because it is the interface for clients written in other
   languages. No new C source files anywhere else; `gtk/` calls GTK's C API
   from C++.
+- **Library features newer than C++20 are `gtk/`-only for now.** `gtk/` may
+  use `std::expected` and `std::move_only_function`; `core/`, `libphig/` and
+  `cli/` use neither. The sanitizer jobs build those three with clang 18,
+  whose libstdc++ `<expected>` declares nothing because clang 18 reports an
+  older `__cpp_concepts`, and Apple's libc++ has no
+  `std::move_only_function`. `gtk/` builds only in the gtk job, with GCC 13.
+  Lifting this is a CI change plus this line. Plan 068 records the
+  toolchain survey.
 - **Build:** CMake
 - **Dev environment:** system-installed native libraries; `mise` (optional)
   pins `cmake`/`clang-format`/`clang-tidy` to the versions CI uses
