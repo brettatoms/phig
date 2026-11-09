@@ -63,10 +63,10 @@ inline constexpr float kLabelCarryMinOverlap = 0.5f;
 // taken to be the same person when a label is carried across a rebuild.
 inline constexpr float kLabelCarryMaxDistance = 1.128f;
 
-// sha256 of the recognition model file this process loads; computed once.
-// Throws if the model file cannot be read, so call it only once the models are
-// known to exist.
-const std::string& recognition_model_sha256();
+// sha256 of the recognition model file, read afresh on every call (the file can
+// be replaced while a process runs). Call it once per run, outside any lock.
+// Throws if the file cannot be read, so call it only once the models exist.
+std::string recognition_model_sha256();
 
 // Per-thread face detector using OpenCV DNN (YuNet + SFace)
 class FaceDetector {

@@ -449,7 +449,7 @@ Settled 2026-11-09, and built together with plan 069, which owns the decoder.
    `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79`, the
    only recognition model phig has downloaded, which `core/models.cpp` pins.
    Their frame is unknown and never equal to another.
-6. **The model is identified by its file's sha256,** computed once per process.
+6. **The model is identified by its file's sha256,** computed once per run, before any image is touched.
    The download URL points at opencv_zoo's `main` branch, so a file name alone
    does not identify a model.
 7. **The embedding threshold is SFace's published L2 threshold, 1.128, on
@@ -493,7 +493,7 @@ On synthetic data and the existing face fixtures, not on any one collection:
 
 Expected to be small. Recording the frame is a few values per face in a
 transaction that already inserts the face. Embedding matching compares a few
-vectors per image. The model hash is computed once per process. The one new
+vectors per image. The model hash is computed once per run. The one new
 per-image cost is hashing the sidecar JPEG or the preview when one is decoded
 and faces are found; the file itself and a full RAW decode reuse the image's
 sha256.

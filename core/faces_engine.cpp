@@ -110,6 +110,11 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
         detectors.push_back(std::make_unique<FaceDetector>());
     }
 
+    // Hashed once per run, outside the database lock and after the detectors load, before any image
+    // is touched.
+    FaceProvenance current;
+    current.model_sha256 = recognition_model_sha256();
+
     std::atomic<size_t> total_faces{0};
     std::atomic<size_t> done{0};
     std::atomic<size_t> errors{0};
@@ -182,8 +187,6 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
                     skipped = "faces: " + img_info.path + " -- image no longer in the database";
                 } else {
                     std::vector<LabelledFace> named = db_.get_labelled_faces_for_image(image_id);
-                    FaceProvenance current;
-                    current.model_sha256 = recognition_model_sha256();
                     LabelCarry carry = carry_labels(named, faces, current);
                     db_.delete_faces_for_image(image_id);
                     // Carried labels are all written before any auto-label runs,

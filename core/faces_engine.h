@@ -52,8 +52,8 @@ struct FacesResult {
     // from one containing no faces.
     size_t errors = 0;
     // Person labels on faces this run did not detect again. A rebuild matches
-    // labels to new faces by box overlap (carry_labels); these found no match
-    // at or above kLabelCarryMinOverlap to a re-detected face.
+    // labels to new faces (carry_labels) by embedding under the same model, by
+    // box overlap in an identical frame otherwise; these found no match.
     size_t labels_dropped = 0;
     bool completed = true;
 };
@@ -102,8 +102,8 @@ IdentifyResult identify_person(Database& db, const std::string& person, float th
 //
 // Person labels survive the replacement where they can. Inside the same
 // transaction the engine reads the image's labelled faces, matches them to the
-// new detections by box overlap (carry_labels), writes the matched labels, and
-// only then lets auto_label_face name the faces still unlabelled. A label whose
+// new detections (carry_labels: by embedding, or by overlap in an identical frame), writes the
+// matched labels, and only then lets auto_label_face name the faces still unlabelled. A label whose
 // face is not detected again is dropped and counted in labels_dropped.
 //
 // Each worker gets its own FaceDetector: cv::FaceDetectorYN is not thread-safe

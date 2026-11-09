@@ -421,6 +421,76 @@ TEST(CarryLabels, AnEmbeddingBeyondTheThresholdDoesNotMatch) {
     EXPECT_EQ(carry_labels({old}, {stranger}, cur).dropped, 1u);
 }
 
+TEST(CarryLabels, AnEmbeddingMatchAndAnOverlapMatchShareOneDetection) {
+    // p7 (same model as current) matches d0 by embedding; p8 (other model, same
+    // frame) would match d0 by overlap. The embedding pass runs first and its
+    // claim on d0 stands, so p8 drops.
+    FaceProvenance cur = prov(kModelA, "f", 100, 100);
+    LabelledFace p7{face_at(60, 60, 20, 20, 1.0f), 7, prov(kModelA, "g", 100, 100)};
+    LabelledFace p8{face_at(0, 0, 20, 20, 2.0f), 8, prov(kModelB, "f", 100, 100)};
+    FaceInfo d0 = face_at(0, 0, 20, 20, 1.0f);
+    LabelCarry c = carry_labels({p8, p7}, {d0}, cur);
+    EXPECT_EQ(c.person_ids.at(0), 7);
+    EXPECT_EQ(c.dropped, 1u);
+}
+
+TEST(CarryLabels, SameModelOneDetectionTakesAtMostOneLabel) {
+    FaceProvenance cur = prov(kModelA, "f", 100, 100);
+    FaceInfo d0 = face_at(0, 0, 20, 20, 1.0f);
+    LabelledFace far7{face_at(0, 0, 20, 20, 1.0f), 7, prov(kModelA, "f", 100, 100)};
+    far7.face.embedding = d0.embedding;
+    LabelledFace near8 = far7;
+    near8.person_id = 8;
+    near8.face.embedding[0] += 0.05f;  // close to d0, but not identical
+    LabelledFace far9 = far7;
+    far9.person_id = 9;
+    far9.face.embedding[0] += 0.3f;
+    LabelCarry c = carry_labels({far9, near8, far7}, {d0}, cur);
+    EXPECT_EQ(c.person_ids.at(0), 7);
+    EXPECT_EQ(c.dropped, 2u);
+}
+
+TEST(CarryLabels, AModelChangeInA180RotatedFrameDropsRatherThanMoves) {
+    FaceProvenance cur = prov(kModelB, "rot180", 100, 100);
+    LabelledFace p7{face_at(0, 0, 20, 20, 1.0f), 7, prov(kModelA, "orig", 100, 100)};
+    LabelledFace p8{face_at(80, 80, 20, 20, 2.0f), 8, prov(kModelA, "orig", 100, 100)};
+    FaceInfo a = face_at(80, 80, 20, 20, 5.0f);  // p7's old box rotated onto p8's
+    FaceInfo b = face_at(0, 0, 20, 20, 6.0f);
+    LabelCarry c = carry_labels({p7, p8}, {a, b}, cur);
+    EXPECT_EQ(c.person_ids, (std::vector<int64_t>{-1, -1}));
+    EXPECT_EQ(c.dropped, 2u);
+}
+
+TEST(CarryLabels, TheEmbeddingThresholdIsAppliedToNormalizedDistance) {
+    // b = cos(t) * a + sin(t) * u with u a unit vector orthogonal to a, so the
+    // normalized distance is 2 * sin(t / 2). Scaling b must not change the verdict.
+    FaceProvenance cur = prov(kModelA, "f", 100, 100);
+    auto at_distance = [](const FaceInfo& a, float dist) {
+        std::array<double, 128> u{};
+        double na = 0, dot = 0, nu = 0;
+        for (int i = 0; i < 128; ++i) na += double{a.embedding[i]} * a.embedding[i];
+        for (int i = 0; i < 128; ++i) u[i] = (i % 2 ? 1.0 : -1.0) * (i + 1);
+        for (int i = 0; i < 128; ++i) dot += u[i] * a.embedding[i];
+        for (int i = 0; i < 128; ++i) {
+            u[i] -= dot / na * a.embedding[i];
+            nu += u[i] * u[i];
+        }
+        double t = 2 * std::asin(dist / 2.0);
+        FaceInfo b = a;
+        for (int i = 0; i < 128; ++i)
+            b.embedding[i] =
+                static_cast<float>(3.0 * (std::cos(t) * a.embedding[i] / std::sqrt(na) +
+                                          std::sin(t) * u[i] / std::sqrt(nu)));
+        return b;
+    };
+    FaceInfo a = face_at(0, 0, 20, 20, 1.0f);
+    LabelledFace old{a, 7, prov(kModelA, "f", 100, 100)};
+    EXPECT_NEAR(normalized_embedding_distance(a.embedding, at_distance(a, 1.10f).embedding), 1.10f,
+                1e-3);
+    EXPECT_EQ(carry_labels({old}, {at_distance(a, 1.10f)}, cur).person_ids.at(0), 7);
+    EXPECT_EQ(carry_labels({old}, {at_distance(a, 1.16f)}, cur).dropped, 1u);
+}
+
 TEST(SameFrame, NeedsAKnownHashAndTheSameSize) {
     EXPECT_TRUE(same_frame(prov("", "h", 10, 20), prov("", "h", 10, 20)));
     EXPECT_FALSE(same_frame(prov("", "h", 10, 20), prov("", "h", 20, 10)));
