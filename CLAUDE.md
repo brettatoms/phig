@@ -53,14 +53,15 @@ CI pins — not required for a build, only for the lint gate to agree with CI.
 
 Performance tests live in a separate target so the everyday suite stays
 fast. Which tests skip depends on the machine, so a skip count only matches
-an environment, not the tree. A CI leg reports fewer than a local run — 846 on
-both ubuntu legs against 855 here — because fixtures those tests need are
-absent there, not because tests are missing.
+an environment, not the tree. A CI leg runs fewer tests than a local run
+because fixtures those tests need are absent there, not because tests are
+missing.
 
 Some tests need the face path — `ScanEngine.DetectsFacesWithMultipleWorkers`,
 most `FacesEngineRun` cases, and one each in the libphig operations suite and
-`FacesPerf` — and two more exist only to cover a way it can be unavailable. Two conditions gate them, checked in this order by
-`face_path_blocker()` in `tests/face_path.h`:
+`FacesPerf` — and two more exist only to cover a way it can be unavailable.
+Two conditions gate them, checked in this order by `face_path_blocker()` in
+`tests/face_path.h`:
 
 - **OpenCV ≥ 4.8.0.** Below it those skip naming the version, and
   `ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor` runs instead of

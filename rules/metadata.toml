@@ -196,7 +196,7 @@ enforced_at = [
     "core/faces.cpp:face_provenance",
     "core/scan_engine.cpp:ScanEngine::run_workers",
     "core/faces_engine.cpp:FacesEngine::run",
-    "core/faces_engine.cpp:trusted_row_sha",
+    "core/faces.cpp:trusted_row_sha",
 ]
 binds = ["faces.rebuild"]
 protects = ["user-metadata"]

@@ -671,7 +671,7 @@ kLabelCarryMaxDistance is 1.128, SFace's published same-identity threshold on un
 
 | | |
 |---|---|
-| Enforced at | `core/faces.cpp:carry_labels`, `core/faces.cpp:same_frame`, `core/faces.cpp:face_provenance`, `core/scan_engine.cpp:ScanEngine::run_workers`, `core/faces_engine.cpp:FacesEngine::run`, `core/faces_engine.cpp:trusted_row_sha` |
+| Enforced at | `core/faces.cpp:carry_labels`, `core/faces.cpp:same_frame`, `core/faces.cpp:face_provenance`, `core/scan_engine.cpp:ScanEngine::run_workers`, `core/faces_engine.cpp:FacesEngine::run`, `core/faces.cpp:trusted_row_sha` |
 | Binds | `faces.rebuild` |
 | Protects | user-metadata |
 | Evidence | witness: `CarryLabels.SameModelNeverMovesALabelToAnotherPersonsFace`, `CarryLabels.AModelChangeInASameSizedRotatedFrameDropsRatherThanMoves`, `CarryLabels.AModelChangeInA180RotatedFrameDropsRatherThanMoves`, `CarryLabels.ARowFromBeforeV10IsTakenAsTheSfaceModelWithAnUnknownFrame`, `CarryLabels.AnEmbeddingMatchAndAnOverlapMatchShareOneDetection`, `CarryLabels.SameModelOneDetectionTakesAtMostOneLabel`, `CarryLabels.AnEmbeddingBeyondTheThresholdDoesNotMatch`, `CarryLabels.TheEmbeddingThresholdIsAppliedToNormalizedDistance`, `FacesEngineRun.RebuildDropsALabelFromAnotherModelInAnotherFrame`, `FacesEngineRun.RebuildDropsALabelWhenTheFileChangedUnderItsRowAndTheModelChanged` |

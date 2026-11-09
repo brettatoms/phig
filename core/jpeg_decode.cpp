@@ -3,6 +3,7 @@
 #include <csetjmp>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <map>
 #include <opencv2/core.hpp>
