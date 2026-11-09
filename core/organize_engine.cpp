@@ -153,7 +153,25 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
         // explicitly authorized replacing what is there.
         const bool authorized_overwrite =
             act.overridden && act.resolution == ConflictResolution::Overwrite;
-        if (!authorized_overwrite && act.source != act.dest && fs::exists(act.dest)) {
+        std::error_code exists_ec;
+        const bool occupied =
+            !authorized_overwrite && act.source != act.dest && fs::exists(act.dest, exists_ec);
+        if (exists_ec) {
+            // The destination cannot be inspected (EACCES, ELOOP, ENAMETOOLONG):
+            // count the item as an error and carry on, so the run still ends.
+            result.errors++;
+            p.error = "Failed to organize " + act.source + ": cannot check " + act.dest + ": " +
+                      exists_ec.message();
+            if (progress) {
+                p.done = result.applied + result.errors;
+                p.skipped = result.skipped;
+                p.errors = result.errors;
+                p.files_written = result.files_written;
+                progress->push(p);
+            }
+            continue;
+        }
+        if (occupied) {
             result.skipped++;
             if (progress) {
                 p.done = result.applied + result.errors;

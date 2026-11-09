@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cstdint>
@@ -706,6 +707,38 @@ TEST_F(OrganizeEngineTest, AFileThatFailsInterruptsTheRun) {
     OrganizeResult result = engine.apply(plan, false, cancel, nullptr);
     EXPECT_EQ(result.applied, 1u);
     EXPECT_EQ(result.errors, 1u);
+    EXPECT_FALSE(result.completed);
+    EXPECT_FALSE(result.cancelled);
+    EXPECT_EQ(newest_operation_status(db), "interrupted");
+}
+
+// A destination whose directory cannot be searched makes the occupancy check
+// itself fail. That counts as an item error; it must not throw out of apply and
+// leave the operation in_progress.
+TEST_F(OrganizeEngineTest, ADestinationThatCannotBeCheckedCountsAsAnErrorAndTheRunEnds) {
+    if (::geteuid() == 0) GTEST_SKIP() << "root ignores directory permissions";
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    add_image(db, "b.jpg", "2020:07:04 10:00:00");
+
+    OrganizeOptions o = base_opts(db);
+    o.log_enabled = true;
+    OrganizeEngine engine(o, db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    ASSERT_EQ(plan.size(), 2u);
+
+    const fs::path locked = dir / "out" / "2019";
+    fs::create_directories(locked);
+    fs::permissions(locked, fs::perms::none);
+
+    OrganizeResult result;
+    EXPECT_NO_THROW(result = engine.apply(plan, false, cancel, nullptr));
+    fs::permissions(locked, fs::perms::owner_all);
+
+    EXPECT_EQ(result.errors, 1u);
+    EXPECT_EQ(result.applied, 1u);
     EXPECT_FALSE(result.completed);
     EXPECT_FALSE(result.cancelled);
     EXPECT_EQ(newest_operation_status(db), "interrupted");

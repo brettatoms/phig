@@ -228,6 +228,29 @@ TEST_F(AbiOrganizeTest, AFailedItemEndsTheOperationDoneNotCancelled) {
     phig_organize_plan_free(plan);
 }
 
+// Enough items that the cancel, issued straight after start, lands well before
+// the worker has copied them all.
+TEST_F(AbiOrganizeTest, ACancelledApplyEndsCancelledAndIncomplete) {
+    OrganizeFixture fx(300);
+    open(fx);
+    phig_organize_plan* plan = make_plan(fx);
+
+    phig_op* apply_op = nullptr;
+    ASSERT_EQ(phig_op_copy_start(ctx, plan, &apply_op), PHIG_OK);
+    phig_op_cancel(apply_op);
+    phig_op_wait(apply_op);
+    EXPECT_EQ(phig_op_status(apply_op), PHIG_OP_CANCELLED);
+
+    phig_organize_result r{};
+    ASSERT_EQ(phig_op_organize_result(apply_op, &r), PHIG_OK);
+    EXPECT_TRUE(r.cancelled);
+    EXPECT_FALSE(r.completed);
+    EXPECT_LT(r.applied, 300u);
+
+    phig_op_free(apply_op);
+    phig_organize_plan_free(plan);
+}
+
 TEST_F(AbiOrganizeTest, CopyAppliesThePlanAndTheSourceRemains) {
     OrganizeFixture fx(1);
     open(fx);
