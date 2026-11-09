@@ -226,46 +226,49 @@ links it itself:
    expectation is that the "without" column's scaling holds. Record it.
 
    **Result, 2026-11-09.** Two Release builds, one at the branch's base
-   `d2727f3`, which still has `StderrSuppressor`, and one at `7a31a76`. Each ran
-   in its own git worktree. The machine is an AMD Ryzen 5 5600X (12 threads,
+   `d74485b` (the parent of the branch's first commit, `4e78a52`), which still
+   has `StderrSuppressor`, and one at `467c7ee`, the head. Each ran in its own
+   git worktree. The two differ by this branch's commits: the plan 069 and 060
+   documents, the decoder and its tests, the video log capture, and the
+   suppressor's deletion. The machine is an AMD Ryzen 5 5600X (12 threads,
    32 GB), and the files were on tmpfs. The command was
-   `phig scan /dev/shm/phig-bench --force hash --parallel N`, after one plain
-   scan to create each catalog, with `HOME` and the four XDG directories in a
-   scratch directory. Three runs per cell, median shown. The base build takes
-   `--db`, where the head build takes `--catalog`; the catalogs held the same
-   619 rows.
+   `phig --catalog <scratch> scan /dev/shm/phig-bench --force hash --parallel N`,
+   after one plain scan to create each catalog, with `HOME` and the four XDG
+   directories in a scratch directory. Three runs per cell, median shown, base
+   and head alternating. Both builds reported 40 errors and 619 rows from the
+   plain scan.
 
    The corpus is 659 JPEGs by signature, 974 MB: the 619 undamaged files and
    the 40 damaged copies, from the sources in step 0, with no RAW previews.
    The 2026-11-08 table above is 600 JPEGs, 2.1 GB, from one personal
-   collection, so the two tables differ in source and in file size (about 1.5
-   MB per file here, 3.5 MB there) and are not like for like. Both builds reported 40
-   errors and 619 rows from the plain scan.
+   collection, so the two tables differ in source and in file size (about
+   1.5 MB per file here, 3.5 MB there) and are not like for like.
 
    | `--parallel` | base (suppressor) | head | base / head |
    |---|---|---|---|
-   | 1 | 21.45 s | 21.65 s | 0.99 |
-   | 4 | 13.97 s | 6.93 s | 2.02 |
-   | 12 | 14.36 s | 4.05 s | 3.55 |
+   | 1 | 21.13 s | 21.12 s | 1.00 |
+   | 4 | 12.98 s | 6.38 s | 2.03 |
+   | 12 | 13.35 s | 3.71 s | 3.60 |
 
-   Raw times, base then head, in seconds. `--parallel 1`: 21.45, 21.50, 21.12
-   and 21.65, 21.41, 21.65. `--parallel 4`: 13.34, 14.05, 13.97 and 7.26, 6.93,
-   6.75. `--parallel 12`: 14.63, 14.36, 14.10 and 4.15, 4.05, 4.04.
+   Raw times, base then head, in seconds. `--parallel 1`: 21.30, 21.13, 20.96
+   and 21.12, 21.20, 20.80. `--parallel 4`: 12.98, 12.91, 13.09 and 6.34, 6.45,
+   6.38. `--parallel 12`: 13.15, 13.68, 13.35 and 3.29, 3.71, 3.75.
 
-   Head scales from 21.65 s at one worker to 4.05 s at twelve, 5.3 times; the
-   base goes from 21.45 s to 14.36 s, 1.5 times, and does not improve between
+   The head goes from 21.12 s at one worker to 3.71 s at twelve, 5.7 times; the
+   base goes from 21.13 s to 13.35 s, 1.6 times, and does not improve between
    4 and 12 workers. The 2026-11-08 "without" column scaled 7.0 times over the
    same range. The machine was not idle: another process, not phig, held the
-   load average between 3 and 9 during the runs, and it rose through the
-   `--parallel 12` runs. The head's 12-worker time may therefore be slightly
-   pessimistic. The base and head runs alternated, so both saw the same load.
+   load average at 9.1 before the runs and 6.6 after, and between 4.6 and 10.8
+   during them. The head's times may be slightly pessimistic. Base and head
+   alternated, so both saw the same load.
 
-   At `--parallel 1` the head is within 1% of the base, so the decoder is not
-   slower per file.
+   At `--parallel 1` the head matches the base, so the decoder is not slower
+   per file.
 8. **Docs.**
    - Root `CLAUDE.md`: say which formats decode through phig's own code.
-   - `README.md` and CI: package lists.
-   - `core/log.cpp`'s comment.
+   - `README.md` and CI: package lists. Done in Task 2 of the execution
+     plan, commit `840e72b`.
+   - `core/log.cpp`'s comment. Done in Task 6, commit `8805780`.
 
 ## Outcome
 
@@ -300,10 +303,23 @@ state.
   where OpenCV bundles its own copy, such as Windows or vcpkg builds, and a
   different libjpeg-turbo build could differ in IDCT output. Homebrew's
   jpeg-turbo link on macOS is unverified until a manual macOS CI run.
-- **Decoder warnings now reach phig's own log.** A damaged JPEG's message is
-  reported as `[warning] <path> -- <message>` on stderr and in the log, where
-  the suppressor hid it. A scan of the measurement corpus printed 279 stderr
-  lines through this path, against 40 before.
+- **Decoder warnings now reach phig's own log.** A decoder message is reported
+  as `[warning] <path> -- <message>` on stderr and in the log, where the
+  suppressor hid it. This follows decision 2: messages are reported against
+  their file rather than hidden. The plain scan of the 659-file measurement
+  corpus wrote 283 stderr lines at the head and 40 at the base. At the head,
+  124 are blank spacing lines and 159 are `[warning]` lines. Of those 159, 40
+  are `Cannot decode image` for the same 40 undamaged files that fail at the
+  base (the base's 40 lines are exactly these). The other 119 are decoder
+  messages, each on a different file: no file produced more than one. 38 come
+  from the 40 damaged copies (the other 2 printed none) and 81
+  from undamaged files; none of the 40 undecodable files also produced one.
+  By message: 24 `Premature end of JPEG file`, 30 `Corrupt JPEG data` with
+  extraneous bytes before a marker, 10 `Corrupt JPEG data: premature end of
+  data segment`, and 55 others, either one other message or several joined by
+  `; ` (for example `Invalid component ID N in SOS`, `Bogus DAC index N`). These counts
+  come from one corpus, which is full of deliberately malformed files, and say
+  little about how often a photo collection prints them.
 
 ## Inventory
 

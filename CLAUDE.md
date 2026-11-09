@@ -259,8 +259,8 @@ sound check against a catalog you have scanned.
   containers only) — on macOS decode goes through Apple's ImageIO instead,
   and the two libraries are used only for the EXIF block there —
   libjpeg-turbo (JPEG decode, linked directly), LibRaw (RAW decode),
-  FFmpeg/libavformat (video metadata), SQLite (database), spdlog (diagnostic logging), GoogleTest
-  (tests)
+  FFmpeg/libavformat (video metadata), SQLite (database), spdlog (diagnostic
+  logging), GoogleTest (tests)
 
 ## Interface discipline
 
