@@ -20,7 +20,7 @@
 namespace fs = std::filesystem;
 
 // Schema version this code expects. Bump when adding migrations.
-static const int CURRENT_SCHEMA_VERSION = 9;
+static const int CURRENT_SCHEMA_VERSION = 10;
 
 // migrations()[N] upgrades from version N-1 to version N.
 // Version 1 = initial schema, created directly by init_schema().
@@ -188,6 +188,13 @@ static const std::vector<std::string>& migrations() {
        CREATE INDEX IF NOT EXISTS idx_path ON images(path);
        CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery);
        CREATE INDEX IF NOT EXISTS idx_effective_date ON images(effective_date DESC, id DESC);)",
+        // v10: where each face's box and embedding came from, for label carry.
+        // Existing rows keep NULL, which reads as unknown provenance.
+        R"(ALTER TABLE faces ADD COLUMN frame_source TEXT;
+       ALTER TABLE faces ADD COLUMN frame_width INTEGER;
+       ALTER TABLE faces ADD COLUMN frame_height INTEGER;
+       ALTER TABLE faces ADD COLUMN frame_sha256 TEXT;
+       ALTER TABLE faces ADD COLUMN model_sha256 TEXT;)",
     };
     return table;
 }
@@ -527,7 +534,12 @@ void Database::init_schema() {
                         y           INTEGER,
                         width       INTEGER,
                         height      INTEGER,
-                        person_id   INTEGER REFERENCES people(id)
+                        person_id   INTEGER REFERENCES people(id),
+                        frame_source TEXT,
+                        frame_width  INTEGER,
+                        frame_height INTEGER,
+                        frame_sha256 TEXT,
+                        model_sha256 TEXT
                     )
                 )");
                 exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
@@ -1779,7 +1791,8 @@ void Database::delete_faces_for_image(int64_t image_id) {
 
 std::vector<LabelledFace> Database::get_labelled_faces_for_image(int64_t image_id) {
     const char* sql = R"(
-        SELECT x, y, width, height, embedding, person_id
+        SELECT x, y, width, height, embedding, person_id,
+               frame_source, frame_width, frame_height, frame_sha256, model_sha256
         FROM faces
         WHERE image_id = ? AND person_id IS NOT NULL
         ORDER BY id
@@ -1807,6 +1820,16 @@ std::vector<LabelledFace> Database::get_labelled_faces_for_image(int64_t image_i
             std::memcpy(lf.face.embedding.data(), blob, sizeof(lf.face.embedding));
         }
         lf.person_id = sqlite3_column_int64(stmt, 5);
+        // NULL reads as empty text or zero, which is how unknown is spelled.
+        auto text = [&](int col) {
+            const unsigned char* t = sqlite3_column_text(stmt, col);
+            return t ? std::string(reinterpret_cast<const char*>(t)) : std::string();
+        };
+        lf.provenance.frame_source = text(6);
+        lf.provenance.frame_width = sqlite3_column_int(stmt, 7);
+        lf.provenance.frame_height = sqlite3_column_int(stmt, 8);
+        lf.provenance.frame_sha256 = text(9);
+        lf.provenance.model_sha256 = text(10);
         out.push_back(lf);
     }
     sqlite3_finalize(stmt);
@@ -1818,10 +1841,16 @@ std::vector<LabelledFace> Database::get_labelled_faces_for_image(int64_t image_i
 }
 
 int64_t Database::insert_face(int64_t image_id, const FaceInfo& face) {
+    return insert_face(image_id, face, FaceProvenance{});
+}
+
+int64_t Database::insert_face(int64_t image_id, const FaceInfo& face,
+                              const FaceProvenance& provenance) {
     // Insert into faces table
     const char* sql = R"(
-        INSERT INTO faces (image_id, embedding, x, y, width, height)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO faces (image_id, embedding, x, y, width, height,
+                           frame_source, frame_width, frame_height, frame_sha256, model_sha256)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -1836,6 +1865,26 @@ int64_t Database::insert_face(int64_t image_id, const FaceInfo& face) {
     sqlite3_bind_int(stmt, 4, face.y);
     sqlite3_bind_int(stmt, 5, face.width);
     sqlite3_bind_int(stmt, 6, face.height);
+    // Unknown provenance is stored as NULL, not as an empty string or zero.
+    auto bind_text = [&](int col, const std::string& v) {
+        if (v.empty()) {
+            sqlite3_bind_null(stmt, col);
+        } else {
+            sqlite3_bind_text(stmt, col, v.c_str(), -1, SQLITE_TRANSIENT);
+        }
+    };
+    auto bind_size = [&](int col, int v) {
+        if (v <= 0) {
+            sqlite3_bind_null(stmt, col);
+        } else {
+            sqlite3_bind_int(stmt, col, v);
+        }
+    };
+    bind_text(7, provenance.frame_source);
+    bind_size(8, provenance.frame_width);
+    bind_size(9, provenance.frame_height);
+    bind_text(10, provenance.frame_sha256);
+    bind_text(11, provenance.model_sha256);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

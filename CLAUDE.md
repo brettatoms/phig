@@ -454,7 +454,7 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   libavformat. Videos stored with `media_type = 'video'`,
   searchable/filterable.
 - **Schema migrations** — `meta` table tracks schema version. Forward-only.
-  Version check on startup bails if DB is newer than code. Current: v9.
+  Version check on startup bails if DB is newer than code. Current: v10.
   Migrations run with `PRAGMA foreign_keys=OFF` around each transaction, with
   `foreign_key_check` inside it before the commit: SQLite's `DROP TABLE`
   deletes every row first, so a rebuild of a table with `ON DELETE CASCADE`

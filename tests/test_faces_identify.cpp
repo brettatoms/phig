@@ -419,7 +419,9 @@ TEST(FacesMigrationV8, PreservesIdsLabelsAndVectorsAndStopsReuse) {
                 image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
                 embedding   BLOB NOT NULL,
                 x INTEGER, y INTEGER, width INTEGER, height INTEGER,
-                person_id   INTEGER REFERENCES people(id)
+                person_id   INTEGER REFERENCES people(id),
+                frame_source TEXT, frame_width INTEGER, frame_height INTEGER,
+                frame_sha256 TEXT, model_sha256 TEXT
             );
             CREATE INDEX idx_faces_image ON faces(image_id);
             UPDATE meta SET value = '7' WHERE key = 'schema_version';
@@ -460,6 +462,18 @@ TEST(FacesMigrationV8, PreservesIdsLabelsAndVectorsAndStopsReuse) {
         fi.x = fi.y = fi.width = fi.height = 1;
         ids.back() = db.insert_face(db.get_image_id("/p/again.jpg"), fi);
         ASSERT_EQ(ids.back(), top) << "the v7 rewind did not produce a reusing table";
+
+        // insert_face needed the provenance columns; a v7 table has none, and
+        // the v10 migration adds them.
+        const char* strip = R"(
+            ALTER TABLE faces DROP COLUMN frame_source;
+            ALTER TABLE faces DROP COLUMN frame_width;
+            ALTER TABLE faces DROP COLUMN frame_height;
+            ALTER TABLE faces DROP COLUMN frame_sha256;
+            ALTER TABLE faces DROP COLUMN model_sha256;
+        )";
+        ASSERT_EQ(sqlite3_exec(db.db_ptr(), strip, nullptr, nullptr, nullptr), SQLITE_OK)
+            << sqlite3_errmsg(db.db_ptr());
     }
 
     // Reopening runs the v8 migration, and every later one — the assertion is

@@ -29,11 +29,21 @@ struct FaceInfo {
     int x, y, width, height;  // bounding box
 };
 
+// Where a face's box and embedding came from. Empty strings and zero sizes
+// mean unknown, as on rows written before schema v10.
+struct FaceProvenance {
+    std::string frame_source;  // decode_source_name(), or empty
+    int frame_width = 0, frame_height = 0;
+    std::string frame_sha256;  // bytes decoded; empty if unknown
+    std::string model_sha256;  // recognition model file; empty if unknown
+};
+
 // A stored face that carries a person label, as a rebuild reads it before
 // replacing the image's faces.
 struct LabelledFace {
     FaceInfo face;
     int64_t person_id;
+    FaceProvenance provenance;
 };
 
 // The labels a rebuild carries onto an image's new detections. `person_ids` is

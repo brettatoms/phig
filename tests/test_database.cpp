@@ -181,6 +181,42 @@ TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
     EXPECT_TRUE(db->get_images_for_person("alice").empty());
 }
 
+TEST_F(DatabaseTest, FaceProvenanceRoundTrips) {
+    db->insert(make_image("/x/a.jpg", "sha_a"));
+    int64_t image_id = db->get_image_id("/x/a.jpg");
+    FaceInfo f{};
+    f.width = f.height = 10;
+    FaceProvenance p{"sidecar_jpeg", 640, 480, std::string(64, 'a'), std::string(64, 'b')};
+    int64_t id = db->insert_face(image_id, f, p);
+    ASSERT_TRUE(db->set_face_person(id, db->get_or_create_person("Ada")));
+    std::vector<LabelledFace> got = db->get_labelled_faces_for_image(image_id);
+    ASSERT_EQ(got.size(), 1u);
+    EXPECT_EQ(got[0].provenance.frame_source, "sidecar_jpeg");
+    EXPECT_EQ(got[0].provenance.frame_width, 640);
+    EXPECT_EQ(got[0].provenance.frame_height, 480);
+    EXPECT_EQ(got[0].provenance.frame_sha256, std::string(64, 'a'));
+    EXPECT_EQ(got[0].provenance.model_sha256, std::string(64, 'b'));
+}
+
+TEST_F(DatabaseTest, AFaceWithUnknownProvenanceReadsBackEmptyAndStoresNull) {
+    db->insert(make_image("/x/b.jpg", "sha_b"));
+    int64_t image_id = db->get_image_id("/x/b.jpg");
+    FaceInfo f{};
+    int64_t id = db->insert_face(image_id, f);
+    ASSERT_TRUE(db->set_face_person(id, db->get_or_create_person("Ada")));
+    FaceProvenance p = db->get_labelled_faces_for_image(image_id).at(0).provenance;
+    EXPECT_TRUE(p.frame_source.empty());
+    EXPECT_EQ(p.frame_width, 0);
+    EXPECT_EQ(p.frame_height, 0);
+    EXPECT_TRUE(p.frame_sha256.empty());
+    EXPECT_TRUE(p.model_sha256.empty());
+    EXPECT_EQ(count_rows(db->db_ptr(),
+                         "SELECT COUNT(*) FROM faces WHERE frame_source IS NULL AND "
+                         "frame_width IS NULL AND frame_height IS NULL AND "
+                         "frame_sha256 IS NULL AND model_sha256 IS NULL"),
+              1);
+}
+
 TEST_F(DatabaseTest, InsertFaceReturnsTheNewRowid) {
     db->insert(make_image("/test/face1.jpg", "sha1"));
     int64_t image_id = db->get_image_id("/test/face1.jpg");
@@ -1702,7 +1738,7 @@ TEST_F(DatabaseTest, ForeignKeyViolationsCountsAnOrphanedChildRow) {
 // Schema v9 made images.id AUTOINCREMENT; before it, deleting the highest row
 // handed its id straight to the next insert.
 TEST_F(DatabaseTest, ImageIdIsNotReusedAfterTheHighestRowIsDeleted) {
-    ASSERT_EQ(db->schema_version(), 9);
+    ASSERT_EQ(db->schema_version(), 10);
 
     db->insert(make_image("/p/a.jpg", "sha_a"));
     db->insert(make_image("/p/b.jpg", "sha_b"));
@@ -1817,6 +1853,17 @@ TEST(ImagesMigrationV9, PreservesRowsIdsTagsFavoritesFacesAndLabels) {
         fi2.embedding.fill(0.75f);
         fi2.x = fi2.y = fi2.width = fi2.height = 8;
         db.insert_face(top, fi2);
+
+        // A v8 faces table has no provenance columns; the v10 migration adds them.
+        const char* strip = R"(
+            ALTER TABLE faces DROP COLUMN frame_source;
+            ALTER TABLE faces DROP COLUMN frame_width;
+            ALTER TABLE faces DROP COLUMN frame_height;
+            ALTER TABLE faces DROP COLUMN frame_sha256;
+            ALTER TABLE faces DROP COLUMN model_sha256;
+        )";
+        ASSERT_EQ(sqlite3_exec(db.db_ptr(), strip, nullptr, nullptr, nullptr), SQLITE_OK)
+            << sqlite3_errmsg(db.db_ptr());
     }
 
     // Reopening runs the v9 migration.
@@ -1872,6 +1919,65 @@ TEST(ImagesMigrationV9, PreservesRowsIdsTagsFavoritesFacesAndLabels) {
     db.delete_paths({"/p/again.jpg"});
     EXPECT_GT(add_image(db, "/p/last.jpg", "sha_last"), top)
         << "the migrated table still reuses ids";
+}
+
+// The v10 migration adds provenance columns to faces. A v9 database's labelled
+// faces and their person ids must come through, with provenance unknown.
+TEST(FacesMigrationV10, MigrationToV10KeepsLabelledFacesWithUnknownProvenance) {
+    auto dir = make_temp_dir("faces-v10");
+    auto db_path = (dir / "test.db").string();
+
+    int64_t image_id = 0;
+    {
+        Database db(db_path);
+        db.init_schema();
+        ImageInfo info;
+        info.path = "/p/a.jpg";
+        info.filename = "a.jpg";
+        info.extension = "jpg";
+        info.file_size = 1000;
+        info.sha256 = "sha_a";
+        db.insert(info);
+        image_id = db.get_image_id("/p/a.jpg");
+        FaceInfo fi;
+        fi.embedding.fill(0.25f);
+        fi.x = fi.y = fi.width = fi.height = 4;
+        int64_t face = db.insert_face(image_id, fi);
+        ASSERT_TRUE(db.set_face_person(face, db.get_or_create_person("Alice")));
+
+        // Rewind to a v9 faces table: the v10 columns removed, version stamped 9.
+        const char* rewind = R"(
+            ALTER TABLE faces DROP COLUMN frame_source;
+            ALTER TABLE faces DROP COLUMN frame_width;
+            ALTER TABLE faces DROP COLUMN frame_height;
+            ALTER TABLE faces DROP COLUMN frame_sha256;
+            ALTER TABLE faces DROP COLUMN model_sha256;
+            UPDATE meta SET value = '9' WHERE key = 'schema_version';
+        )";
+        ASSERT_EQ(sqlite3_exec(db.db_ptr(), rewind, nullptr, nullptr, nullptr), SQLITE_OK)
+            << sqlite3_errmsg(db.db_ptr());
+        ASSERT_EQ(db.schema_version(), 9);
+    }
+
+    Database db(db_path);
+    db.init_schema();
+    EXPECT_EQ(db.schema_version(), 10);
+    EXPECT_EQ(db.foreign_key_violations(), 0);
+
+    auto people = db.list_people();
+    ASSERT_EQ(people.size(), 1u);
+    EXPECT_EQ(people[0].name, "Alice");
+    EXPECT_EQ(people[0].face_count, 1);
+
+    std::vector<LabelledFace> got = db.get_labelled_faces_for_image(image_id);
+    ASSERT_EQ(got.size(), 1u);
+    EXPECT_EQ(got[0].person_id, people[0].id);
+    EXPECT_EQ(got[0].face.width, 4);
+    EXPECT_TRUE(got[0].provenance.frame_source.empty());
+    EXPECT_EQ(got[0].provenance.frame_width, 0);
+    EXPECT_EQ(got[0].provenance.frame_height, 0);
+    EXPECT_TRUE(got[0].provenance.frame_sha256.empty());
+    EXPECT_TRUE(got[0].provenance.model_sha256.empty());
 }
 
 // ---- What the CLI's argv parser does with these writes (R74, R79) ----
