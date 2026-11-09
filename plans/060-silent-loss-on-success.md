@@ -427,8 +427,22 @@ after the R60 fix; R73 and open question 7 stay open.
   e142274 Stage stdin in a private temporary file (R81)
   ```
 
+  The final review fixes follow:
+
+  ```
+  71cd39c Create the --output temp exclusively without following symlinks
+  d8d0af8 Count an uncheckable organize destination as an item error
+  06f3773 Update rule records and docs for the final review fixes
+  ```
+
 - Left: R73, the layer move; R66, faces with no plan phase, which also stays on
-  053; and open question 7.
+  053; and open question 7. `cmd_organize` prints the plan-time skip count, not
+  `result.skipped`, so an item skipped because its destination became occupied
+  after planning appears in no count.
+- `--output` now refuses a path that exists and is not a regular file, such as
+  `/dev/stdout`, and cannot write into a directory where it cannot create a temp
+  file, such as `/dev`; a process substitution like `--output >(gzip >x)` fails
+  the same way. Omit `--output` to write to stdout.
 
 ## Open
 
