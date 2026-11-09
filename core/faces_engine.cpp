@@ -182,7 +182,9 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
                     skipped = "faces: " + img_info.path + " -- image no longer in the database";
                 } else {
                     std::vector<LabelledFace> named = db_.get_labelled_faces_for_image(image_id);
-                    LabelCarry carry = carry_labels(named, faces);
+                    FaceProvenance current;
+                    current.model_sha256 = recognition_model_sha256();
+                    LabelCarry carry = carry_labels(named, faces, current);
                     db_.delete_faces_for_image(image_id);
                     // Carried labels are all written before any auto-label runs,
                     // so auto_label_face sees them whatever the detection order.

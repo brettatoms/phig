@@ -179,34 +179,79 @@ float box_overlap(const FaceInfo& a, const FaceInfo& b) {
     return static_cast<float>(inter / (area_a + area_b - inter));
 }
 
+const std::string& recognition_model_sha256() {
+    static const std::string sha = compute_sha256(sface_model_path());
+    return sha;
+}
+
+float normalized_embedding_distance(const std::array<float, 128>& a,
+                                    const std::array<float, 128>& b) {
+    double na = 0, nb = 0;
+    for (int i = 0; i < 128; i++) {
+        na += double{a[i]} * a[i];
+        nb += double{b[i]} * b[i];
+    }
+    na = std::sqrt(na);
+    nb = std::sqrt(nb);
+    if (na == 0 || nb == 0) return 2.0f;
+    double sum = 0;
+    for (int i = 0; i < 128; i++) {
+        double d = a[i] / na - b[i] / nb;
+        sum += d * d;
+    }
+    return static_cast<float>(std::sqrt(sum));
+}
+
+bool same_frame(const FaceProvenance& a, const FaceProvenance& b) {
+    return !a.frame_sha256.empty() && a.frame_sha256 == b.frame_sha256 &&
+           a.frame_width == b.frame_width && a.frame_height == b.frame_height;
+}
+
 LabelCarry carry_labels(const std::vector<LabelledFace>& labelled,
-                        const std::vector<FaceInfo>& detected, float min_overlap) {
+                        const std::vector<FaceInfo>& detected, const FaceProvenance& current,
+                        float max_distance, float min_overlap) {
     LabelCarry out;
     out.person_ids.assign(detected.size(), -1);
 
     struct Pair {
-        float overlap;
+        float score;  // distance for embedding pairs, overlap for overlap pairs
         size_t old_i;
         size_t new_i;
     };
-    std::vector<Pair> pairs;
+    std::vector<Pair> by_embedding, by_overlap;
     for (size_t i = 0; i < labelled.size(); ++i) {
+        const FaceProvenance& stored = labelled[i].provenance;
+        const std::string& model =
+            stored.model_sha256.empty() ? std::string(kSfaceModelSha256) : stored.model_sha256;
+        bool same_model = model == current.model_sha256;
+        bool use_overlap = !same_model && same_frame(stored, current);
+        if (!same_model && !use_overlap) continue;
         for (size_t j = 0; j < detected.size(); ++j) {
-            float o = box_overlap(labelled[i].face, detected[j]);
-            if (o >= min_overlap) pairs.push_back({o, i, j});
+            if (same_model) {
+                float d = normalized_embedding_distance(labelled[i].face.embedding,
+                                                        detected[j].embedding);
+                if (d <= max_distance) by_embedding.push_back({d, i, j});
+            } else {
+                float o = box_overlap(labelled[i].face, detected[j]);
+                if (o >= min_overlap) by_overlap.push_back({o, i, j});
+            }
         }
     }
-    // Stable, so equal overlaps resolve in index order and a run is repeatable.
-    std::stable_sort(pairs.begin(), pairs.end(),
-                     [](const Pair& x, const Pair& y) { return x.overlap > y.overlap; });
+    // Stable, so equal scores resolve in index order and a run is repeatable.
+    std::stable_sort(by_embedding.begin(), by_embedding.end(),
+                     [](const Pair& x, const Pair& y) { return x.score < y.score; });
+    std::stable_sort(by_overlap.begin(), by_overlap.end(),
+                     [](const Pair& x, const Pair& y) { return x.score > y.score; });
 
     std::vector<bool> old_taken(labelled.size(), false);
     std::vector<bool> new_taken(detected.size(), false);
-    for (const Pair& p : pairs) {
-        if (old_taken[p.old_i] || new_taken[p.new_i]) continue;
-        old_taken[p.old_i] = true;
-        new_taken[p.new_i] = true;
-        out.person_ids[p.new_i] = labelled[p.old_i].person_id;
+    for (const std::vector<Pair>* pairs : {&by_embedding, &by_overlap}) {
+        for (const Pair& p : *pairs) {
+            if (old_taken[p.old_i] || new_taken[p.new_i]) continue;
+            old_taken[p.old_i] = true;
+            new_taken[p.new_i] = true;
+            out.person_ids[p.new_i] = labelled[p.old_i].person_id;
+        }
     }
     for (bool taken : old_taken) {
         if (!taken) ++out.dropped;

@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 #include <filesystem>
 
 #include "database.h"
 #include "faces.h"
+#include "models.h"
 #include "temp_dir.h"
 #include "types.h"
 
@@ -264,8 +266,27 @@ FaceInfo box(int x, int y, int w, int h) {
     return f;
 }
 
+const std::string kModelA(64, 'a'), kModelB(64, 'b');
+
+FaceProvenance prov(const std::string& model, const std::string& frame_sha, int w, int h) {
+    return {"file", w, h, frame_sha, model};
+}
+
+// Stored under model A in frame "f"; kCurrent is model B in the same frame, so
+// the overlap tests below exercise the model-change path.
 LabelledFace labelled(int x, int y, int w, int h, int64_t person_id) {
-    return LabelledFace{box(x, y, w, h), person_id};
+    return LabelledFace{box(x, y, w, h), person_id, prov(kModelA, "f", 100, 100)};
+}
+const FaceProvenance kCurrent = prov(kModelB, "f", 100, 100);
+
+FaceInfo face_at(int x, int y, int w, int h, float seed) {
+    FaceInfo f{};
+    for (int i = 0; i < 128; ++i) f.embedding[i] = std::sin(seed * (i + 1));
+    f.x = x;
+    f.y = y;
+    f.width = w;
+    f.height = h;
+    return f;
 }
 }  // namespace
 
@@ -287,7 +308,7 @@ TEST(BoxOverlap, AZeroAreaBoxOverlapsNothing) {
 }
 
 TEST(CarryLabels, AnIdenticalBoxCarriesItsLabel) {
-    LabelCarry c = carry_labels({labelled(10, 10, 50, 50, 7)}, {box(10, 10, 50, 50)});
+    LabelCarry c = carry_labels({labelled(10, 10, 50, 50, 7)}, {box(10, 10, 50, 50)}, kCurrent);
     ASSERT_EQ(c.person_ids.size(), 1u);
     EXPECT_EQ(c.person_ids[0], 7);
     EXPECT_EQ(c.dropped, 0u);
@@ -295,21 +316,21 @@ TEST(CarryLabels, AnIdenticalBoxCarriesItsLabel) {
 
 TEST(CarryLabels, AShiftedBoxAboveTheThresholdCarriesItsLabel) {
     // IoU 0.68.
-    LabelCarry c = carry_labels({labelled(0, 0, 100, 100, 7)}, {box(10, 10, 100, 100)});
+    LabelCarry c = carry_labels({labelled(0, 0, 100, 100, 7)}, {box(10, 10, 100, 100)}, kCurrent);
     EXPECT_EQ(c.person_ids[0], 7);
     EXPECT_EQ(c.dropped, 0u);
 }
 
 TEST(CarryLabels, ABoxBelowTheThresholdDropsTheLabel) {
     // IoU 2500 / 17500 = 0.14.
-    LabelCarry c = carry_labels({labelled(0, 0, 100, 100, 7)}, {box(50, 50, 100, 100)});
+    LabelCarry c = carry_labels({labelled(0, 0, 100, 100, 7)}, {box(50, 50, 100, 100)}, kCurrent);
     EXPECT_EQ(c.person_ids[0], -1);
     EXPECT_EQ(c.dropped, 1u);
 }
 
 TEST(CarryLabels, TheLabelGoesToTheBestOverlappingFace) {
-    LabelCarry c =
-        carry_labels({labelled(0, 0, 100, 100, 7)}, {box(10, 10, 100, 100), box(0, 0, 100, 100)});
+    LabelCarry c = carry_labels({labelled(0, 0, 100, 100, 7)},
+                                {box(10, 10, 100, 100), box(0, 0, 100, 100)}, kCurrent);
     EXPECT_EQ(c.person_ids[0], -1);
     EXPECT_EQ(c.person_ids[1], 7);
     EXPECT_EQ(c.dropped, 0u);
@@ -319,21 +340,106 @@ TEST(CarryLabels, OneDetectedFaceTakesAtMostOneLabel) {
     // Both labelled faces overlap the one detection; the closer one wins and
     // the other is dropped rather than overwriting it.
     LabelCarry c = carry_labels({labelled(10, 10, 100, 100, 7), labelled(0, 0, 100, 100, 8)},
-                                {box(0, 0, 100, 100)});
+                                {box(0, 0, 100, 100)}, kCurrent);
     EXPECT_EQ(c.person_ids[0], 8);
     EXPECT_EQ(c.dropped, 1u);
 }
 
 TEST(CarryLabels, NoDetectionsDropsEveryLabel) {
-    LabelCarry c = carry_labels({labelled(0, 0, 10, 10, 7), labelled(50, 50, 10, 10, 8)}, {});
+    LabelCarry c =
+        carry_labels({labelled(0, 0, 10, 10, 7), labelled(50, 50, 10, 10, 8)}, {}, kCurrent);
     EXPECT_TRUE(c.person_ids.empty());
     EXPECT_EQ(c.dropped, 2u);
 }
 
 TEST(CarryLabels, NoLabelledFacesCarriesNothing) {
-    LabelCarry c = carry_labels({}, {box(0, 0, 10, 10), box(50, 50, 10, 10)});
+    LabelCarry c = carry_labels({}, {box(0, 0, 10, 10), box(50, 50, 10, 10)}, kCurrent);
     EXPECT_EQ(c.person_ids, (std::vector<int64_t>{-1, -1}));
     EXPECT_EQ(c.dropped, 0u);
+}
+
+TEST(CarryLabels, SameModelMatchesByEmbeddingWhateverTheBoxes) {
+    FaceProvenance cur = prov(kModelA, "f2", 320, 240);
+    LabelledFace old{face_at(0, 0, 50, 50, 1.0f), 7, prov(kModelA, "f1", 640, 480)};
+    FaceInfo moved = face_at(200, 100, 25, 25, 1.0f);  // no overlap, same embedding
+    LabelCarry c = carry_labels({old}, {moved}, cur);
+    EXPECT_EQ(c.person_ids.at(0), 7);
+    EXPECT_EQ(c.dropped, 0u);
+}
+
+TEST(CarryLabels, SameModelNeverMovesALabelToAnotherPersonsFace) {
+    // A frame rotated 180 degrees: the old box of person 7 now sits exactly on
+    // person 8's new box. Embeddings decide, so each label stays with its person.
+    FaceProvenance cur = prov(kModelA, "rot", 100, 100);
+    LabelledFace p7{face_at(0, 0, 20, 20, 1.0f), 7, prov(kModelA, "orig", 100, 100)};
+    LabelledFace p8{face_at(80, 80, 20, 20, 2.0f), 8, prov(kModelA, "orig", 100, 100)};
+    FaceInfo new7 = face_at(80, 80, 20, 20, 1.0f);
+    FaceInfo new8 = face_at(0, 0, 20, 20, 2.0f);
+    LabelCarry c = carry_labels({p7, p8}, {new7, new8}, cur);
+    EXPECT_EQ(c.person_ids.at(0), 7);
+    EXPECT_EQ(c.person_ids.at(1), 8);
+}
+
+TEST(CarryLabels, AModelChangeInTheSameFrameMatchesByOverlap) {
+    FaceProvenance cur = prov(kModelB, "f", 100, 100);
+    LabelledFace old{face_at(10, 10, 30, 30, 1.0f), 7, prov(kModelA, "f", 100, 100)};
+    FaceInfo again = face_at(10, 10, 30, 30, 9.0f);  // new model, unrelated embedding
+    EXPECT_EQ(carry_labels({old}, {again}, cur).person_ids.at(0), 7);
+}
+
+TEST(CarryLabels, AModelChangeInASameSizedRotatedFrameDropsRatherThanMoves) {
+    // Square frame rotated 90 degrees: same size, different bytes. Under a model
+    // change nothing can match safely, so both labels drop.
+    FaceProvenance cur = prov(kModelB, "rot90", 100, 100);
+    LabelledFace p7{face_at(0, 0, 20, 20, 1.0f), 7, prov(kModelA, "orig", 100, 100)};
+    LabelledFace p8{face_at(80, 0, 20, 20, 2.0f), 8, prov(kModelA, "orig", 100, 100)};
+    FaceInfo a = face_at(80, 0, 20, 20, 5.0f);  // where p7's old box was rotated onto p8's
+    FaceInfo b = face_at(80, 80, 20, 20, 6.0f);
+    LabelCarry c = carry_labels({p7, p8}, {a, b}, cur);
+    EXPECT_EQ(c.person_ids.at(0), -1);
+    EXPECT_EQ(c.person_ids.at(1), -1);
+    EXPECT_EQ(c.dropped, 2u);
+}
+
+TEST(CarryLabels, ARowFromBeforeV10IsTakenAsTheSfaceModelWithAnUnknownFrame) {
+    FaceProvenance legacy{};  // what a pre-v10 row reads back as
+    LabelledFace old{face_at(0, 0, 20, 20, 1.0f), 7, legacy};
+    FaceInfo same = face_at(50, 50, 20, 20, 1.0f);
+    EXPECT_EQ(carry_labels({old}, {same}, prov(kSfaceModelSha256, "f", 100, 100)).person_ids.at(0),
+              7)
+        << "same model as the only one phig shipped: matched by embedding";
+    FaceInfo overlapping = face_at(0, 0, 20, 20, 9.0f);
+    EXPECT_EQ(carry_labels({old}, {overlapping}, prov(kModelB, "f", 100, 100)).dropped, 1u)
+        << "a different model with an unknown frame cannot use overlap";
+}
+
+TEST(CarryLabels, AnEmbeddingBeyondTheThresholdDoesNotMatch) {
+    FaceProvenance cur = prov(kModelA, "f", 100, 100);
+    LabelledFace old{face_at(0, 0, 20, 20, 1.0f), 7, prov(kModelA, "f", 100, 100)};
+    FaceInfo stranger = face_at(0, 0, 20, 20, 1.0f);
+    for (int i = 0; i < 128; ++i) stranger.embedding[i] = -stranger.embedding[i];  // distance 2
+    EXPECT_EQ(carry_labels({old}, {stranger}, cur).dropped, 1u);
+}
+
+TEST(SameFrame, NeedsAKnownHashAndTheSameSize) {
+    EXPECT_TRUE(same_frame(prov("", "h", 10, 20), prov("", "h", 10, 20)));
+    EXPECT_FALSE(same_frame(prov("", "h", 10, 20), prov("", "h", 20, 10)));
+    EXPECT_FALSE(same_frame(prov("", "h", 10, 20), prov("", "g", 10, 20)));
+    EXPECT_FALSE(same_frame(prov("", "", 10, 20), prov("", "", 10, 20)));
+}
+
+TEST(NormalizedEmbeddingDistance, IsZeroForItselfTwoForItsNegationAndScaleFree) {
+    FaceInfo a = face_at(0, 0, 1, 1, 1.0f);
+    std::array<float, 128> neg = a.embedding, scaled = a.embedding;
+    for (int i = 0; i < 128; ++i) {
+        neg[i] = -neg[i];
+        scaled[i] *= 5.0f;
+    }
+    EXPECT_NEAR(normalized_embedding_distance(a.embedding, a.embedding), 0.0f, 1e-6);
+    EXPECT_NEAR(normalized_embedding_distance(a.embedding, neg), 2.0f, 1e-5);
+    EXPECT_NEAR(normalized_embedding_distance(a.embedding, scaled), 0.0f, 1e-5);
+    std::array<float, 128> zero{};
+    EXPECT_FLOAT_EQ(normalized_embedding_distance(a.embedding, zero), 2.0f);
 }
 
 TEST_F(FaceDatabaseTest, LabelledFacesForImageReturnsOnlyLabelledFacesOfThatImage) {

@@ -55,10 +55,18 @@ struct LabelCarry {
 };
 
 // Minimum box overlap (intersection over union) for a new detection to take an
-// old face's label. Re-detecting 564 stored faces with the same model over the
-// same pixels reproduced every box exactly, so this value was not exercised by
-// that measurement; see docs/plans/2026-11-07-060-r60-label-carry.md.
+// old face's label, used only when the old face and the new detection come from
+// an identical decoded frame under different recognition models.
 inline constexpr float kLabelCarryMinOverlap = 0.5f;
+
+// Largest L2 distance between unit-normalized embeddings at which two faces are
+// taken to be the same person when a label is carried across a rebuild.
+inline constexpr float kLabelCarryMaxDistance = 1.128f;
+
+// sha256 of the recognition model file this process loads; computed once.
+// Throws if the model file cannot be read, so call it only once the models are
+// known to exist.
+const std::string& recognition_model_sha256();
 
 // Per-thread face detector using OpenCV DNN (YuNet + SFace)
 class FaceDetector {
@@ -94,12 +102,24 @@ float embedding_distance(const std::array<float, 128>& a, const std::array<float
 // has no area.
 float box_overlap(const FaceInfo& a, const FaceInfo& b);
 
-// Matches an image's labelled faces to that image's new detections by box
-// overlap, greedily from the highest overlap down and one-to-one, accepting a
-// pair only at or above `min_overlap`. Box overlap is the only test: with the
-// same model and pixels the boxes reproduce exactly (measured; embeddings were
-// not), and with a different model embeddings are not comparable, so an
-// embedding check would drop every label in a model-change rebuild.
+// L2 distance between the unit-normalized embeddings, in [0, 2]. A zero vector
+// has no direction and is at distance 2 from everything.
+float normalized_embedding_distance(const std::array<float, 128>& a,
+                                    const std::array<float, 128>& b);
+
+// True when both describe the same decoded bytes: a known hash and equal size.
+bool same_frame(const FaceProvenance& a, const FaceProvenance& b);
+
+// Matches an image's labelled faces to that image's new detections, one-to-one
+// and greedily. A labelled face stored under the model `current` names (an
+// empty stored model is taken as the SFace model phig first shipped) matches
+// detections by normalized embedding distance within `max_distance`, whatever
+// the boxes. Under a different model embeddings are not comparable, so it
+// matches by box overlap at or above `min_overlap`, and only when its stored
+// frame is the same frame as `current`'s; otherwise it matches nothing and
+// is counted in `dropped`. Embedding pairs are assigned first, nearest first,
+// then overlap pairs, largest first.
 LabelCarry carry_labels(const std::vector<LabelledFace>& labelled,
-                        const std::vector<FaceInfo>& detected,
+                        const std::vector<FaceInfo>& detected, const FaceProvenance& current,
+                        float max_distance = kLabelCarryMaxDistance,
                         float min_overlap = kLabelCarryMinOverlap);
