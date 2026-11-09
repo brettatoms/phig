@@ -48,7 +48,7 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R80 | atomicity | violated (test gap) | A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish. |
 | R84 | concurrency | holds | An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
 | R85 | metadata | holds (test gap) | A face rebuild carries each person label to a matching re-detected face in the same image, one label per face, and counts every label it does not carry. |
-| R86 | metadata | holds (test gap) | A person label carried across a face rebuild lands on a face of the same person, or is dropped and counted; it never moves to another person's face. |
+| R86 | metadata | holds (test gap) | Under an unchanged recognition model a carried face label lands only on a re-detected face whose unit-normalized embedding lies within kLabelCarryMaxDistance of the labelled face's; after a model change it lands only on a face overlapping at kLabelCarryMinOverlap within a frame recorded as identical (same bytes by sha256 and same size); any other label is dropped and counted, and a label never moves by box position across frames that are not recorded identical. |
 
 ## original-file — rebuildable: backup-only
 

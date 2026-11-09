@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite, 871 tests
-./build/phig-perf-tests   # performance suite (~2s), 4 tests
-ctest --test-dir build --parallel   # both — 875 (~19s; 48s without --parallel)
+./build/phig-tests        # fast suite, 1012 tests
+./build/phig-perf-tests   # performance suite (~2s), 6 tests
+ctest --test-dir build --parallel   # both — 1018 (~19s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -57,16 +57,16 @@ an environment, not the tree. A CI leg reports fewer than a local run — 846 on
 both ubuntu legs against 855 here — because fixtures those tests need are
 absent there, not because tests are missing.
 
-Ten tests need the face path — `ScanEngine.DetectsFacesWithMultipleWorkers`
-plus nine of the ten `FacesEngineRun` cases — and two more exist only to cover
-a way it can be unavailable. Two conditions gate them, checked in this order by
+Some tests need the face path — `ScanEngine.DetectsFacesWithMultipleWorkers`,
+most `FacesEngineRun` cases, and one each in the libphig operations suite and
+`FacesPerf` — and two more exist only to cover a way it can be unavailable. Two conditions gate them, checked in this order by
 `face_path_blocker()` in `tests/face_path.h`:
 
-- **OpenCV ≥ 4.8.0.** Below it the ten skip naming the version, and
+- **OpenCV ≥ 4.8.0.** Below it those skip naming the version, and
   `ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor` runs instead of
   skipping. `ScanEngine.FacesModeFailsClearlyWhenModelsAreMissing` also skips,
   because the version guard fires ahead of the models check.
-- **The models in `~/.cache/phig/models`.** Absent, the ten skip naming the
+- **The models in `~/.cache/phig/models`.** Absent, those skip naming the
   missing file and `FacesModeFailsClearlyWhenModelsAreMissing` runs.
 
 So on an above-floor machine with the models present — the everyday case, and

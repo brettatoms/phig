@@ -14,8 +14,7 @@
 // The result reports which tier produced the image and its frame. hash_source
 // also fills frame.source_sha256 for a sidecar JPEG or an embedded preview, at
 // the cost of a sha256 over those bytes; ask only when the frame will be
-// recorded. A tier that fails leaves its message in warning only if no later
-// tier succeeds.
+// recorded.
 DecodeResult raw_decode_result(const std::string& raw_path, bool hash_source = false);
 
 // raw_decode_result(raw_path).img

@@ -394,9 +394,11 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                                     try {
                                         int64_t image_id = db_.get_image_id(canonical);
                                         if (image_id >= 0) {
+                                            const auto rows = db_.get_images_by_ids({image_id});
                                             const FaceProvenance prov = face_provenance(
                                                 decoded.frame,
-                                                db_.get_sha256(canonical).value_or(""), model_sha);
+                                                rows.empty() ? "" : trusted_row_sha(rows[0]),
+                                                model_sha);
                                             for (const auto& face : faces) {
                                                 int64_t face_id =
                                                     db_.insert_face(image_id, face, prov);

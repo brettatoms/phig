@@ -7,7 +7,8 @@
 #include <functional>
 #include <string>
 
-// Captures what this process writes to fd 2 while `fn` runs.
+// Captures what this process writes to fd 2 while `fn` runs. It reads the pipe only after
+// `fn` returns, so `fn` must write less than a pipe buffer (16 KB on macOS).
 inline std::string capture_fd2(const std::function<void()>& fn) {
     int pipefd[2];
     EXPECT_EQ(pipe(pipefd), 0);

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "decode_result.h"
+#include "types.h"
 
 // The face path needs a newer OpenCV than the rest of phig does. YuNet
 // 2023mar — the detection model `phig models download` fetches — has an ONNX
@@ -46,6 +47,10 @@ struct FaceProvenance {
 // it takes the image's hash.
 FaceProvenance face_provenance(const DecodeFrame& frame, const std::string& image_sha256,
                                const std::string& model_sha256);
+
+// The row's sha256 describes the file only while its size and mtime still match the row,
+// the same trust a scan's skip uses; otherwise "" so the frame matches no other frame.
+std::string trusted_row_sha(const ImageInfo& img);
 
 // A stored face that carries a person label, as a rebuild reads it before
 // replacing the image's faces.

@@ -182,17 +182,19 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The engine, CLI and ABI witnesses skip wherever the face path cannot run, so ubuntu-26.04 is the only CI leg that runs them. Every witness rebuilds over the same model and pixels. Nothing exercises a partial-overlap match at the threshold or a rebuild whose decoded pixels differ from the detection's."
+test_gap = "The engine, CLI and ABI witnesses skip wherever the face path cannot run, so ubuntu-26.04 is the only CI leg that runs them. The original witnesses rebuild over the same model and pixels; differing decoded pixels are exercised by FacesEngineRun.RebuildCarriesALabelWhenTheImageIsReplacedByARescaledCopy, ...ByACroppedCopy and ...ByOverlapWhenTheRecordedFrameMatches, which R60 lists. Nothing exercises a partial-overlap match exactly at the threshold."
 
 [[rule]]
 id = "R86"
 tier = "engine"
 concern = "metadata"
-statement = "A person label carried across a face rebuild lands on a face of the same person, or is dropped and counted; it never moves to another person's face."
-rationale = "A rebuild re-detects faces and carries each image's labels onto the new detections. Box positions depend on the decoded frame, which can change without changing its size — a square image rotated 90 degrees, any image rotated 180 degrees or mirrored — so a box match can attach a name to the wrong person with no signal. carry_labels therefore matches by embedding when the recognition model is unchanged, since embeddings come from aligned face crops and do not depend on the frame, and by box overlap only when the model changed and the face rows record a frame identical to the new decode (same bytes by sha256, same size). Anything else is dropped and counted in labels_dropped. A wrong label is worse than a dropped one: a drop is reported, a wrong label is not. The two passes share one set of taken detections, so a detection takes at most one label across both. FacesEngine records a file's row sha256 as the frame hash only while the file's mtime and size still match the row; otherwise the frame hash is empty and the overlap pass cannot match."
+statement = "Under an unchanged recognition model a carried face label lands only on a re-detected face whose unit-normalized embedding lies within kLabelCarryMaxDistance of the labelled face's; after a model change it lands only on a face overlapping at kLabelCarryMinOverlap within a frame recorded as identical (same bytes by sha256 and same size); any other label is dropped and counted, and a label never moves by box position across frames that are not recorded identical."
+rationale = "kLabelCarryMaxDistance is 1.128, SFace's published same-identity threshold on unit-normalized embeddings. A rebuild re-detects faces and carries each image's labels onto the new detections. Box positions depend on the decoded frame, which can change without changing its size — a square image rotated 90 degrees, any image rotated 180 degrees or mirrored — so a box match can attach a name to the wrong person with no signal. carry_labels therefore matches by embedding when the recognition model is unchanged, since embeddings come from aligned face crops and do not depend on the frame, and by box overlap only when the model changed and the face rows record a frame identical to the new decode (same bytes by sha256, same size). Anything else is dropped and counted in labels_dropped. A wrong label is worse than a dropped one: a drop is reported, a wrong label is not. The two passes share one set of taken detections, so a detection takes at most one label across both. FacesEngine records a file's row sha256 as the frame hash only while the file's mtime and size still match the row; otherwise the frame hash is empty and the overlap pass cannot match. A same-model embedding match is a biometric threshold, not an identity: a lookalike within it, such as a relative when the labelled person is cropped out or not re-detected, can take the label."
 enforced_at = [
     "core/faces.cpp:carry_labels",
     "core/faces.cpp:same_frame",
+    "core/faces.cpp:face_provenance",
+    "core/scan_engine.cpp:ScanEngine::run_workers",
     "core/faces_engine.cpp:FacesEngine::run",
     "core/faces_engine.cpp:trusted_row_sha",
 ]
@@ -205,9 +207,11 @@ tests = [
     "CarryLabels.ARowFromBeforeV10IsTakenAsTheSfaceModelWithAnUnknownFrame",
     "CarryLabels.AnEmbeddingMatchAndAnOverlapMatchShareOneDetection",
     "CarryLabels.SameModelOneDetectionTakesAtMostOneLabel",
+    "CarryLabels.AnEmbeddingBeyondTheThresholdDoesNotMatch",
+    "CarryLabels.TheEmbeddingThresholdIsAppliedToNormalizedDistance",
     "FacesEngineRun.RebuildDropsALabelFromAnotherModelInAnotherFrame",
     "FacesEngineRun.RebuildDropsALabelWhenTheFileChangedUnderItsRowAndTheModelChanged",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The rotated-frame cases are unit tests over synthetic embeddings; no engine test rotates a real image, because the detector does not find faces turned 90 degrees reliably. The stale-row check trusts mtime and size like scan's skip, so a file rewritten with identical mtime and size passes as unchanged. The embedding threshold is SFace's published value, not one measured on phig's data. The engine witnesses skip without the face path, so ubuntu-26.04 is the only CI leg that runs them."
+test_gap = "The rotated-frame cases are unit tests over synthetic embeddings; no engine test rotates a real image, because the detector does not find faces turned 90 degrees reliably. The stale-row check trusts mtime and size like scan's skip, so a file rewritten with identical mtime and size passes as unchanged. The embedding threshold is SFace's published value, not one measured on phig's data, and a same-model match is a biometric threshold: a lookalike within it can take a label, and no test exercises that. Frame identity is bytes plus size, not decoder: the same JPEG decoded under OpenCV 4.x and 5.x can orient differently when its first APP1 is XMP, so under a model change across such an OpenCV upgrade the overlap pass could compare differently oriented boxes. The engine witnesses skip without the face path, so ubuntu-26.04 is the only CI leg that runs them."

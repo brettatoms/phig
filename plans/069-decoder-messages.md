@@ -320,7 +320,10 @@ state.
   and 2 gave exactly 119 blank lines. At the default worker count the blank
   count varied from run to run (119 to 124 over eight runs at 12 workers), the extra ones
   falling next to other blank lines or before a `Cannot decode image` line.
-  The source of those extra newlines was not found. Of those 159, 40
+  The source of those extra newlines was not measured. Likely cause, reasoned and not
+  measured: `scan_engine.cpp` and `hasher.cpp` write a bare `'\n'` and then call
+  `log_warn` as two separate writes, so two workers warning between progress
+  redraws interleave as `\n \n [w1] [w2]`. Of those 159, 40
   are `Cannot decode image` for the same 40 undamaged files that fail at the
   base (the base's 40 lines are exactly these). The other 119 are decoder
   messages, each on a different file: no file produced more than one. 38 come

@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <mutex>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/objdetect/face.hpp>
 #include <stdexcept>
 
+#include "dates.h"
 #include "hasher.h"
 #include "models.h"
 
@@ -177,6 +179,16 @@ float box_overlap(const FaceInfo& a, const FaceInfo& b) {
     double area_a = static_cast<double>(a.width) * a.height;
     double area_b = static_cast<double>(b.width) * b.height;
     return static_cast<float>(inter / (area_a + area_b - inter));
+}
+
+std::string trusted_row_sha(const ImageInfo& img) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto size = fs::file_size(img.path, ec);
+    if (ec || static_cast<int64_t>(size) != img.file_size) return "";
+    auto mtime = fs::last_write_time(img.path, ec);
+    if (ec || format_time(mtime) != img.modified_at) return "";
+    return img.sha256;
 }
 
 FaceProvenance face_provenance(const DecodeFrame& frame, const std::string& image_sha256,

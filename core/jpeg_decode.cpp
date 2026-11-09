@@ -3,7 +3,6 @@
 #include <csetjmp>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <exception>
 #include <map>
 #include <opencv2/core.hpp>
@@ -14,6 +13,10 @@
 
 extern "C" {
 #include <jpeglib.h>
+}
+
+extern "C" {
+#include <jerror.h>
 }
 
 namespace {
@@ -259,26 +262,12 @@ struct Decoder {
     bool ended_early = false;  // the source ran out before the last scanline
 };
 
-// Emits libjpeg's own "Premature end of JPEG file" warning. Its code is found
-// by text in the message table, since jerror.h's enum varies with how libjpeg
-// was built.
-void warn_premature_end(j_decompress_ptr cinfo) {
-    jpeg_error_mgr* err = cinfo->err;
-    for (int code = 1; code <= err->last_jpeg_message; ++code) {
-        if (std::strcmp(err->jpeg_message_table[code], "Premature end of JPEG file") == 0) {
-            err->msg_code = code;
-            (*err->emit_message)(reinterpret_cast<j_common_ptr>(cinfo), -1);
-            return;
-        }
-    }
-}
-
 // libjpeg's stdio source at end of file: warn, then supply an EOI so the decode
 // finishes with what it has. The buffer lives in the Decoder, whose address is
 // in cinfo.client_data.
 boolean source_fill_eof(j_decompress_ptr cinfo) {
     auto* d = static_cast<Decoder*>(cinfo->client_data);
-    warn_premature_end(cinfo);
+    WARNMS(cinfo, JWRN_JPEG_EOF);
     cinfo->src->next_input_byte = d->eoi;
     cinfo->src->bytes_in_buffer = 2;
     return TRUE;
