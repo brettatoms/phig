@@ -30,11 +30,9 @@ class LogTest : public ::testing::Test {
         return ss.str();
     }
 
-    // The stderr sink now writes through a dup of fd 2 taken at log_init, so
-    // it survives StderrSuppressor's later dup2 of fd 2 to /dev/null (that's
-    // the fix under test) and, for the same reason, gtest's CaptureStderr
-    // (which also dup2's fd 2). Redirect the real fd 2 to a file before
-    // log_init instead, so the dup log_init takes points at that file.
+    // The stderr sink writes to fd 2, which gtest's CaptureStderr also
+    // redirects. Redirecting the real fd 2 to a file keeps the capture
+    // independent of that.
     void RedirectStderrToFile() {
         stderr_capture_path_ = (dir_ / "stderr_capture.txt").string();
         fflush(stderr);

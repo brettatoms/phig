@@ -1,8 +1,5 @@
 #include "hasher.h"
 
-#include <fcntl.h>
-#include <unistd.h>
-
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -165,42 +162,6 @@ std::string sha256_final(Sha256Ctx& ctx) {
     return oss.str();
 }
 
-namespace {
-
-// RAII guard that redirects the process-global stderr to /dev/null for its
-// lifetime. Because STDERR_FILENO is shared across threads, concurrent scan
-// workers must not overlap save/restore or stderr can be left pointing at
-// /dev/null; a mutex serializes the whole suppressed region.
-class StderrSuppressor {
-   public:
-    StderrSuppressor() : lock_(mutex()) {
-        saved_ = dup(STDERR_FILENO);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDERR_FILENO);
-            close(devnull);
-        }
-    }
-    ~StderrSuppressor() {
-        if (saved_ >= 0) {
-            dup2(saved_, STDERR_FILENO);
-            close(saved_);
-        }
-    }
-    StderrSuppressor(const StderrSuppressor&) = delete;
-    StderrSuppressor& operator=(const StderrSuppressor&) = delete;
-
-   private:
-    static std::mutex& mutex() {
-        static std::mutex m;
-        return m;
-    }
-    std::lock_guard<std::mutex> lock_;
-    int saved_ = -1;
-};
-
-}  // anonymous namespace
-
 std::string compute_sha256(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
@@ -266,6 +227,14 @@ void install_cv_error_handler() {
     });
 }
 
+// OpenCV's own log (e.g. "imread_('x.gif'): can't open/read file") goes to
+// stderr unless its level is raised, so every OpenCV decode path sets it once.
+void ensure_opencv_log_level() {
+    static std::once_flag once;
+    std::call_once(once,
+                   [] { cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_ERROR); });
+}
+
 }  // namespace
 
 DecodeResult decode_image_with_warning(const std::string& path, bool hash_source) {
@@ -300,16 +269,13 @@ DecodeResult decode_image_with_warning(const std::string& path, bool hash_source
 
     install_cv_error_handler();
 
-    // Suppress OpenCV's internal warnings (e.g., "Invalid SOS parameters") and
-    // capture them for context via the thread-local buffer set by the handler.
-    t_cv_warning.clear();
+    ensure_opencv_log_level();
 
-    // Suppress libjpeg's direct stderr output (e.g., "Premature end of JPEG
-    // file") by redirecting stderr to /dev/null for the duration of the read.
-    {
-        StderrSuppressor suppress_stderr;
-        result.img = cv::imread(path, cv::IMREAD_COLOR);
-    }
+    // Capture OpenCV's error messages for context via the thread-local buffer
+    // set by the handler. What libtiff and libpng write directly to stderr is
+    // not captured.
+    t_cv_warning.clear();
+    result.img = cv::imread(path, cv::IMREAD_COLOR);
 
     result.warning = t_cv_warning;
     result.frame = {DecodeSource::File, result.img.cols, result.img.rows, {}};
@@ -405,18 +371,13 @@ PhashResult compute_phash(const std::string& path) {
 VideoKeyframe extract_video_keyframe(const std::string& path) {
     VideoKeyframe kf;
 
-    static std::once_flag opencv_log_once;
-    std::call_once(opencv_log_once,
-                   [] { cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_ERROR); });
+    ensure_opencv_log_level();
     ScopedAvLogCapture capture(kf.warning);
 
     cv::VideoCapture cap(path);
     if (!cap.isOpened()) {
         return kf;
     }
-
-    // Suppress noisy OpenCV/GStreamer stderr warnings during decode.
-    StderrSuppressor suppress_stderr;
 
     double total_frames = cap.get(cv::CAP_PROP_FRAME_COUNT);
     kf.width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));

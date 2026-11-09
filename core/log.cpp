@@ -4,7 +4,6 @@
 #include <spdlog/pattern_formatter.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_sinks.h>
-#include <unistd.h>
 
 #include <cstdio>
 #include <filesystem>
@@ -17,11 +16,6 @@
 namespace {
 
 std::shared_ptr<spdlog::logger> g_logger;
-
-// FILE* the stderr sink writes through, opened on a dup of fd 2 so it keeps
-// pointing at the original stderr target even while StderrSuppressor (see
-// hasher.cpp) redirects fd 2 itself to /dev/null during decode.
-FILE* g_stderr_file = nullptr;
 
 spdlog::level::level_enum to_spdlog(LogLevel level) {
     switch (level) {
@@ -68,12 +62,8 @@ void log_init(const std::string& path, bool file_enabled, LogLevel file_level,
               std::size_t max_bytes) {
     std::vector<spdlog::sink_ptr> sinks;
 
-    if (g_stderr_file) fclose(g_stderr_file);
-    int dup_fd = dup(STDERR_FILENO);
-    g_stderr_file = dup_fd >= 0 ? fdopen(dup_fd, "w") : nullptr;
     auto err_sink =
-        std::make_shared<spdlog::sinks::stdout_sink_base<spdlog::details::console_mutex>>(
-            g_stderr_file ? g_stderr_file : stderr);
+        std::make_shared<spdlog::sinks::stdout_sink_base<spdlog::details::console_mutex>>(stderr);
     err_sink->set_pattern("[%l] %v");
     err_sink->set_level(spdlog::level::warn);
     sinks.push_back(err_sink);
@@ -116,8 +106,4 @@ void log_error(const std::string& msg) {
 void log_close() {
     if (g_logger) g_logger->flush();
     g_logger.reset();
-    if (g_stderr_file) {
-        fclose(g_stderr_file);
-        g_stderr_file = nullptr;
-    }
 }

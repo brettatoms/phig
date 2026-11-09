@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -10,6 +11,7 @@
 #include <thread>
 #include <vector>
 
+#include "capture_fd2.h"
 #include "hasher.h"
 #include "temp_dir.h"
 
@@ -468,4 +470,51 @@ TEST(DecodeFrame, ANonJpegFileStillReportsItsFrame) {
     ASSERT_FALSE(r.img.empty());
     EXPECT_EQ(r.frame.source, DecodeSource::File);
     EXPECT_EQ(r.frame.width, 64);
+}
+
+namespace {
+
+// Writes 200 single bytes to fd 2 while another thread decodes `path` in a loop,
+// and returns how many arrived.
+size_t stderr_bytes_arriving_during_decode(const std::string& path) {
+    std::atomic<bool> stop{false};
+    std::thread decoder([&] {
+        while (!stop) decode_image_with_warning(path);
+    });
+    std::string got = capture_fd2([] {
+        for (int i = 0; i < 200; ++i) {
+            if (::write(2, "x", 1) != 1) break;
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+    });
+    stop = true;
+    decoder.join();
+    return got.size();
+}
+
+}  // namespace
+
+TEST(DecodeStderr, AnotherThreadsStderrIsNotHiddenDuringADecode) {
+    fs::path bad = fs::path(__FILE__).parent_path() / "data" / "jpeg" / "truncated.jpg";
+    EXPECT_EQ(stderr_bytes_arriving_during_decode(bad.string()), 200u);
+}
+
+TEST(DecodeStderr, AnotherThreadsStderrIsNotHiddenDuringANonJpegDecode) {
+    fs::path dir = make_temp_dir("decode_stderr");
+    fs::path png = dir / "cut.png";
+    cv::imwrite(png.string(), cv::Mat(64, 64, CV_8UC3, cv::Scalar(10, 120, 200)));
+    fs::resize_file(png, fs::file_size(png) / 2);
+    EXPECT_EQ(stderr_bytes_arriving_during_decode(png.string()), 200u);
+    fs::remove_all(dir);
+}
+
+TEST(DecodeStderr, ANonImageFileWritesNothingToStderr) {
+    fs::path dir = make_temp_dir("decode_stderr");
+    fs::path gif = dir / "x.gif";
+    std::ofstream(gif) << "not an image";
+    DecodeResult r;
+    std::string got = capture_fd2([&] { r = decode_image_with_warning(gif.string()); });
+    EXPECT_TRUE(r.img.empty());
+    EXPECT_EQ(got, "");
+    fs::remove_all(dir);
 }
