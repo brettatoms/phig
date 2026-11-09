@@ -111,10 +111,12 @@ class OutputExists : public std::runtime_error {
 };
 
 // Writes `contents` to `path` through a temporary sibling and a rename, so the
-// path never holds a partial file. Without `replace`, the rename refuses to
-// replace anything at `path`, a symlink included, and throws OutputExists.
-// With it, the rename replaces the directory entry: a symlink is replaced
-// itself, never the file it points at. Throws on any other failure.
+// path never holds a partial file. The temp is created exclusively and without
+// following symlinks, and the parent directory must exist: none is created.
+// Without `replace`, the rename refuses to replace anything at `path`, a
+// symlink included, and throws OutputExists. With it, the rename replaces the
+// directory entry: a symlink is replaced itself, never the file it points at.
+// Throws std::system_error on any other failure.
 void write_output_file(const std::string& path, std::string_view contents, bool replace);
 
 // Creates a new file in the temporary directory with a unique name starting

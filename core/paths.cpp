@@ -192,6 +192,21 @@ int rename_noreplace(const char* src, const char* dst) {
     if (::rename(src, dst) == 0) return 0;
     return errno;
 }
+
+// Writes every byte of `data` to `fd`, retrying on EINTR and short writes.
+// Returns 0 or the errno of the failing write.
+int write_all(int fd, std::string_view data) {
+    size_t written = 0;
+    while (written < data.size()) {
+        ssize_t n = ::write(fd, data.data() + written, data.size() - written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return errno;
+        }
+        written += static_cast<size_t>(n);
+    }
+    return 0;
+}
 }  // namespace
 
 void move_file(const std::string& source, const std::string& dest) {
@@ -315,23 +330,33 @@ bool atomic_write_file(const std::string& dest, const void* data, size_t size) {
 
 void write_output_file(const std::string& path, std::string_view contents, bool replace) {
     namespace fs = std::filesystem;
+    const std::string tmp = temp_sibling(fs::path(path)).string();
+    int fd;
+    do {
+        fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) {
+        throw std::system_error(errno, std::generic_category(), "Cannot write " + path);
+    }
+    int err = write_all(fd, contents);
+    if (::close(fd) != 0 && err == 0) err = errno;
+    if (err != 0) {
+        ::unlink(tmp.c_str());
+        throw std::system_error(err, std::generic_category(), "Cannot write " + path);
+    }
     if (replace) {
-        if (!atomic_write_file(path, contents.data(), contents.size())) {
-            throw std::runtime_error("Cannot write " + path);
+        if (::rename(tmp.c_str(), path.c_str()) != 0) {
+            err = errno;
+            ::unlink(tmp.c_str());
+            throw std::system_error(err, std::generic_category(), "Cannot write " + path);
         }
         return;
     }
-    const fs::path tmp = temp_sibling(fs::path(path));
-    if (!atomic_write_file(tmp.string(), contents.data(), contents.size())) {
-        throw std::runtime_error("Cannot write " + path);
-    }
-    try {
-        move_file(tmp.string(), path);  // never replaces what is there
-    } catch (const fs::filesystem_error& e) {
-        std::error_code ec;
-        fs::remove(tmp, ec);
-        if (e.code() == std::errc::file_exists) throw OutputExists(path);
-        throw;
+    err = rename_noreplace(tmp.c_str(), path.c_str());
+    if (err != 0) {
+        ::unlink(tmp.c_str());
+        if (err == EEXIST) throw OutputExists(path);
+        throw std::system_error(err, std::generic_category(), "Cannot write " + path);
     }
 }
 
@@ -344,24 +369,18 @@ std::string write_private_temp_file(const std::string& prefix, std::string_view 
     // path that already exists, so a planted file or symlink is never used.
     int fd = ::mkstemp(buf.data());
     if (fd < 0) {
+        int err = errno;
         throw std::system_error(
-            errno, std::generic_category(),
+            err, std::generic_category(),
             "Cannot create a temporary file in " + fs::temp_directory_path().string());
     }
     const std::string path(buf.data());
-    size_t written = 0;
-    while (written < contents.size()) {
-        ssize_t n = ::write(fd, contents.data() + written, contents.size() - written);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            int err = errno;
-            ::close(fd);
-            ::unlink(path.c_str());
-            throw std::system_error(err, std::generic_category(), "Cannot write " + path);
-        }
-        written += static_cast<size_t>(n);
-    }
+    int err = write_all(fd, contents);
     ::close(fd);
+    if (err != 0) {
+        ::unlink(path.c_str());
+        throw std::system_error(err, std::generic_category(), "Cannot write " + path);
+    }
     return path;
 }
 

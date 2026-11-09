@@ -820,6 +820,35 @@ TEST_F(PathsTest, WriteOutputFileReplacesAnExistingFileWhenAsked) {
     fs::remove_all(dir);
 }
 
+TEST_F(PathsTest, WriteOutputFileFailsWhenTheParentIsMissing) {
+    auto dir = make_temp_dir("wof-noparent");
+    const auto p = dir / "missing" / "out.txt";
+    EXPECT_THROW(write_output_file(p.string(), "x", false), std::system_error);
+    EXPECT_THROW(write_output_file(p.string(), "x", true), std::system_error);
+    EXPECT_EQ(entries_in(dir), 0u);
+    fs::remove_all(dir);
+}
+
+// temp_sibling numbers its names from a process-wide counter, so the name the
+// next call hands out is the one after the name this call returns.
+TEST_F(PathsTest, WriteOutputFileNeverWritesThroughAPlantedTemp) {
+    for (bool replace : {false, true}) {
+        auto dir = make_temp_dir("wof-planted");
+        const auto p = dir / "out.txt";
+        const auto target = dir / "target";
+        spit(target, "IRREPLACEABLE");
+        const std::string probe = temp_sibling(p).filename().string();
+        const auto dot = probe.rfind('.');
+        const unsigned long next = std::stoul(probe.substr(dot + 1)) + 1;
+        const auto planted = dir / (probe.substr(0, dot + 1) + std::to_string(next));
+        fs::create_symlink(target, planted);
+        EXPECT_THROW(write_output_file(p.string(), "payload", replace), std::system_error);
+        EXPECT_EQ(slurp(target), "IRREPLACEABLE");
+        EXPECT_FALSE(fs::exists(p));
+        fs::remove_all(dir);
+    }
+}
+
 TEST_F(PathsTest, PrivateTempFilesAreUniqueAndOwnerOnly) {
     const std::string prefix = "phig-test-private-";
     const auto a = write_private_temp_file(prefix, "aaa");
@@ -828,7 +857,7 @@ TEST_F(PathsTest, PrivateTempFilesAreUniqueAndOwnerOnly) {
     const auto tmp = fs::temp_directory_path();
     for (const auto& s : {a, b}) {
         const fs::path p(s);
-        EXPECT_EQ(p.parent_path(), tmp);
+        EXPECT_TRUE(fs::equivalent(p.parent_path(), tmp));
         EXPECT_EQ(p.filename().string().rfind(prefix, 0), 0u);
         EXPECT_EQ(fs::status(p).permissions() & fs::perms::all,
                   fs::perms::owner_read | fs::perms::owner_write);
