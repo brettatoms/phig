@@ -64,6 +64,10 @@ cv::Mat decode_image(const std::string& path);
 // hash_source: also fill frame.source_sha256 for a sidecar JPEG or an embedded
 // preview. Costs a sha256 over those bytes; ask only when the frame will be
 // recorded.
+// Raises OpenCV's own log level to errors, once per process, so imread and
+// VideoCapture warnings do not reach stderr. Call before any OpenCV decode.
+void ensure_opencv_log_level();
+
 DecodeResult decode_image_with_warning(const std::string& path, bool hash_source = false);
 
 // A representative video frame plus the source's reported dimensions

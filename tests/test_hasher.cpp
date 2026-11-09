@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <opencv2/core.hpp>
@@ -13,6 +14,7 @@
 
 #include "capture_fd2.h"
 #include "hasher.h"
+#include "raw.h"
 #include "temp_dir.h"
 
 namespace fs = std::filesystem;
@@ -474,8 +476,9 @@ TEST(DecodeFrame, ANonJpegFileStillReportsItsFrame) {
 
 namespace {
 
-// Writes 200 single bytes to fd 2 while another thread decodes `path` in a loop,
-// and returns how many arrived.
+// Writes 200 marker bytes to fd 2 while another thread decodes `path` in a loop,
+// and returns how many markers arrived. Other output (a library's own message)
+// is ignored.
 size_t stderr_bytes_arriving_during_decode(const std::string& path) {
     std::atomic<bool> stop{false};
     std::thread decoder([&] {
@@ -483,13 +486,13 @@ size_t stderr_bytes_arriving_during_decode(const std::string& path) {
     });
     std::string got = capture_fd2([] {
         for (int i = 0; i < 200; ++i) {
-            if (::write(2, "x", 1) != 1) break;
+            if (::write(2, "\x01", 1) != 1) break;
             std::this_thread::sleep_for(std::chrono::microseconds(50));
         }
     });
     stop = true;
     decoder.join();
-    return got.size();
+    return static_cast<size_t>(std::count(got.begin(), got.end(), '\x01'));
 }
 
 }  // namespace
@@ -515,6 +518,16 @@ TEST(DecodeStderr, ANonImageFileWritesNothingToStderr) {
     DecodeResult r;
     std::string got = capture_fd2([&] { r = decode_image_with_warning(gif.string()); });
     EXPECT_TRUE(r.img.empty());
+    EXPECT_EQ(got, "");
+    fs::remove_all(dir);
+}
+
+TEST(DecodeStderr, ARawsNonImageSidecarWritesNothingToStderr) {
+    fs::path dir = make_temp_dir("decode_stderr_raw");
+    fs::path raw = dir / "IMG_0001.CR2";
+    fs::copy_file(fs::path(__FILE__).parent_path() / "data" / "truncated_ojpeg.cr2", raw);
+    std::ofstream(dir / "IMG_0001.jpg") << "not an image";
+    std::string got = capture_fd2([&] { raw_decode_result(raw.string()); });
     EXPECT_EQ(got, "");
     fs::remove_all(dir);
 }

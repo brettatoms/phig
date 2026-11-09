@@ -60,6 +60,7 @@ DecodeResult try_sidecar_jpeg(const std::string& raw_path, bool hash_source) {
             result =
                 hash_source ? decode_jpeg_file_bytes(bytes) : decode_jpeg_file(candidate.string());
         } else {
+            ensure_opencv_log_level();
             result.img = cv::imread(candidate.string(), cv::IMREAD_COLOR);
             result.frame.width = result.img.cols;
             result.frame.height = result.img.rows;

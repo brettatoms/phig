@@ -228,6 +228,8 @@ void install_cv_error_handler() {
     });
 }
 
+}  // namespace
+
 // OpenCV's own log (e.g. "imread_('x.gif'): can't open/read file") goes to
 // stderr unless its level is raised, so every OpenCV decode path sets it once.
 void ensure_opencv_log_level() {
@@ -235,8 +237,6 @@ void ensure_opencv_log_level() {
     std::call_once(once,
                    [] { cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_ERROR); });
 }
-
-}  // namespace
 
 DecodeResult decode_image_with_warning(const std::string& path, bool hash_source) {
     DecodeResult result;
@@ -376,7 +376,8 @@ VideoKeyframe extract_video_keyframe(const std::string& path) {
     ScopedAvLogCapture capture(kf.warning);
 
     // One backend keeps a video's keyframe independent of which backends this
-    // OpenCV build carries, and keeps GStreamer's GLib output off stderr.
+    // OpenCV build carries, and keeps GStreamer's GLib output off stderr. A video
+    // FFmpeg cannot open gets no keyframe: an explicit backend has no fallback.
     const int backend =
         cv::videoio_registry::hasBackend(cv::CAP_FFMPEG) ? cv::CAP_FFMPEG : cv::CAP_ANY;
     cv::VideoCapture cap(path, backend);
