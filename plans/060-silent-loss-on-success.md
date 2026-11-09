@@ -518,16 +518,26 @@ was 2.6 to 5.7 during the runs, from a process outside the test.
 | `phig scan --faces` | 1.499 s | 1.584 s | +5.7% |
 | `phig face rebuild` | 1.446 s | 1.557 s | +7.7% |
 
-Both are inside the 10% limit. The extra cost sits in the work listed above and
-in recording provenance, and this run does not separate them.
+Both are inside the 10% limit. The model hash is a fixed per-run cost: hashing
+the 38.7 MB recognition model with `compute_sha256` takes a median of 108 ms
+over five runs (107.0 to 117.1 ms, load average about 1.2). The tip's extra time
+over the base is 85 ms for `scan --faces` and 111 ms for `face rebuild`, so the
+hash accounts for roughly all of it. It does not grow with the collection, so
+its share shrinks as the collection grows: against 200 images it is 7%, and
+against 20,000 it would be a fraction of a percent. The per-image costs (recording
+provenance, hashing a sidecar or preview, matching embeddings) are not separated
+from the rest by this measurement and are bounded only by the ratio test below.
 
-`FacesPerf.AFrameChangeDoesNotSlowARebuild` rebuilds 40 images with the frame
-unchanged (median 508 ms) and again after each file is rewritten at 60% of its
-size (median 462 ms), with every label carried and none dropped. The rewrite is
-60% rather than 50% because at half size the detector finds fewer faces in the
-small fixture and the labels on the lost faces are dropped, which makes the two
-runs do different work. The test asserts the changed median is at most 1.15
-times the unchanged one.
+`FacesPerf.AFrameChangeDoesNotSlowARebuild` rebuilds 40 images with files that
+match their rows (medians 483 to 494 ms) and again after every file is
+re-encoded before each timed run, at the same dimensions and with the JPEG
+quality alternating between 85 and 95, so each changed run decodes the same
+pixels and sees new bytes (medians 478 to 501 ms over three runs). Labels
+carry and none are dropped on every timed run. Within one recognition model
+labels match by embedding whether or not the frame changed, so the ratio bounds
+the cost of recording and comparing provenance plus re-decoding, not a different
+matching path. The test asserts the changed median is at most 1.15 times the
+unchanged one.
 
 ## Decisions for R27, R48, R69, R81 and R83
 

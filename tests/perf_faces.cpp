@@ -8,7 +8,6 @@
 #include <filesystem>
 #include <memory>
 #include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
 #include <string>
 #include <vector>
 
@@ -83,11 +82,12 @@ double median(std::vector<double> v) {
 }
 }  // namespace
 
-// Compares a rebuild whose frames match their recorded frames with one whose
-// every frame changed (each file rewritten at 60% size; half size loses faces,
-// which would drop labels and make the two runs do different work). The changed set has
-// fewer pixels, so it should be faster; the assertion bounds the matching
-// overhead from above.
+// Compares a rebuild whose files match their recorded rows with one whose files
+// were re-encoded since, so the frame differs. Re-encoding keeps the dimensions
+// and alternates the JPEG quality, so every changed run decodes the same pixel
+// count and sees new bytes. Within one recognition model labels carry by
+// embedding either way; the ratio bounds the cost of recording and comparing
+// provenance plus re-decoding.
 TEST(FacesPerf, AFrameChangeDoesNotSlowARebuild) {
     if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
     PerfFaces coll(40);
@@ -113,14 +113,19 @@ TEST(FacesPerf, AFrameChangeDoesNotSlowARebuild) {
     std::vector<double> unchanged, changed;
     for (int i = 0; i < 3; ++i) unchanged.push_back(time_rebuild());
 
+    std::vector<cv::Mat> decoded;
     for (const auto& p : coll.files) {
-        cv::Mat img = cv::imread(p.string());
-        ASSERT_FALSE(img.empty());
-        cv::Mat half;
-        cv::resize(img, half, cv::Size(), 0.6, 0.6, cv::INTER_AREA);
-        ASSERT_TRUE(cv::imwrite(p.string(), half));
+        decoded.push_back(cv::imread(p.string()));
+        ASSERT_FALSE(decoded.back().empty());
     }
-    for (int i = 0; i < 3; ++i) changed.push_back(time_rebuild());
+    for (int i = 0; i < 3; ++i) {
+        int quality = (i % 2 == 0) ? 85 : 95;
+        for (size_t f = 0; f < coll.files.size(); ++f) {
+            ASSERT_TRUE(cv::imwrite(coll.files[f].string(), decoded[f],
+                                    {cv::IMWRITE_JPEG_QUALITY, quality}));
+        }
+        changed.push_back(time_rebuild());
+    }
 
     double u = median(unchanged), c = median(changed);
     std::cout << "unchanged median " << u << " ms, changed median " << c << " ms\n";
