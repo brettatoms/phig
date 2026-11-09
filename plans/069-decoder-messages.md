@@ -1,7 +1,8 @@
 ---
 name: Decoder Messages Without Redirecting stderr
-status: planned
+status: completed
 created: 2026-11-08
+completed: 2026-11-09
 description: >
   Remove `StderrSuppressor`, which redirects the whole process's stderr and
   serializes every OpenCV decode behind one mutex. Capture decoder messages
@@ -223,10 +224,86 @@ links it itself:
 7. **Re-measure.** Repeat the table above on step 0's corpus, both before and
    after this plan, since the table above came from one collection. The
    expectation is that the "without" column's scaling holds. Record it.
+
+   **Result, 2026-11-09.** Two Release builds, one at the branch's base
+   `d2727f3`, which still has `StderrSuppressor`, and one at `7a31a76`. Each ran
+   in its own git worktree. The machine is an AMD Ryzen 5 5600X (12 threads,
+   32 GB), and the files were on tmpfs. The command was
+   `phig scan /dev/shm/phig-bench --force hash --parallel N`, after one plain
+   scan to create each catalog, with `HOME` and the four XDG directories in a
+   scratch directory. Three runs per cell, median shown. The base build takes
+   `--db`, where the head build takes `--catalog`; the catalogs held the same
+   619 rows.
+
+   The corpus is 659 JPEGs by signature, 974 MB: the 619 undamaged files and
+   the 40 damaged copies, from the sources in step 0, with no RAW previews.
+   The 2026-11-08 table above is 600 JPEGs, 2.1 GB, from one personal
+   collection, so the two tables differ in source and in file size (about 1.5
+   MB per file here, 3.5 MB there) and are not like for like. Both builds reported 40
+   errors and 619 rows from the plain scan.
+
+   | `--parallel` | base (suppressor) | head | base / head |
+   |---|---|---|---|
+   | 1 | 21.45 s | 21.65 s | 0.99 |
+   | 4 | 13.97 s | 6.93 s | 2.02 |
+   | 12 | 14.36 s | 4.05 s | 3.55 |
+
+   Raw times, base then head, in seconds. `--parallel 1`: 21.45, 21.50, 21.12
+   and 21.65, 21.41, 21.65. `--parallel 4`: 13.34, 14.05, 13.97 and 7.26, 6.93,
+   6.75. `--parallel 12`: 14.63, 14.36, 14.10 and 4.15, 4.05, 4.04.
+
+   Head scales from 21.65 s at one worker to 4.05 s at twelve, 5.3 times; the
+   base goes from 21.45 s to 14.36 s, 1.5 times, and does not improve between
+   4 and 12 workers. The 2026-11-08 "without" column scaled 7.0 times over the
+   same range. The machine was not idle: another process, not phig, held the
+   load average between 3 and 9 during the runs, and it rose through the
+   `--parallel 12` runs. The head's 12-worker time may therefore be slightly
+   pessimistic. The base and head runs alternated, so both saw the same load.
+
+   At `--parallel 1` the head is within 1% of the base, so the decoder is not
+   slower per file.
 8. **Docs.**
    - Root `CLAUDE.md`: say which formats decode through phig's own code.
    - `README.md` and CI: package lists.
    - `core/log.cpp`'s comment.
+
+## Outcome
+
+Facts that came out of the implementation and that the decisions above do not
+state.
+
+- **The EXIF rule follows the linked OpenCV.** The decoder reads
+  `cv::getVersionMajor()` at runtime. On 4.x it takes the orientation from the
+  first APP1 marker only. On 5.x it takes it from every `Exif\0\0` APP1 marker.
+  Pixels therefore match `cv::imread` on each machine. Only the 5.x branch has
+  run here (OpenCV 5.0.0); the first run of the 4.x branch is CI's ubuntu legs,
+  at 4.6 and 4.10.
+- **Truncated data decodes to an empty image from memory.**
+  `decode_jpeg_memory` returns an empty image when the data is truncated, at
+  every OpenCV version: 4.x `imdecode` returns uninitialised rows there, and
+  5.0.0 returns empty. A RAW's sidecar JPEG is decoded with file semantics
+  (`decode_jpeg_file`, `decode_jpeg_file_bytes`) and its embedded preview with
+  memory semantics, matching the `imread` and `imdecode` calls they replaced.
+- **What `warning` holds.** The first warning libjpeg would have printed
+  through its default handler, plus any fatal error. Later warnings are not
+  kept, as with the default handler. This narrows decision 2's "every message".
+- **Video keyframes open with `cv::CAP_FFMPEG`** when the OpenCV build has it,
+  and with `CAP_ANY` otherwise. A video FFmpeg cannot open gets no keyframe,
+  even if another backend could open it. The reason is that one backend makes a
+  video's keyframe independent of the OpenCV build, and keeps GStreamer's GLib
+  output off stderr: disposing the pipeline of a truncated file prints a
+  GStreamer-CRITICAL there.
+- **OpenCV's log level** is set to errors once, before any OpenCV decode, by
+  `ensure_opencv_log_level` in `core/hasher.h`.
+- **Pixel identity** was checked on 718 JPEGs against OpenCV 5.0.0 only (step
+  3). It assumes phig and OpenCV link the same libjpeg-turbo. That is unproven
+  where OpenCV bundles its own copy, such as Windows or vcpkg builds, and a
+  different libjpeg-turbo build could differ in IDCT output. Homebrew's
+  jpeg-turbo link on macOS is unverified until a manual macOS CI run.
+- **Decoder warnings now reach phig's own log.** A damaged JPEG's message is
+  reported as `[warning] <path> -- <message>` on stderr and in the log, where
+  the suppressor hid it. A scan of the measurement corpus printed 279 stderr
+  lines through this path, against 40 before.
 
 ## Inventory
 

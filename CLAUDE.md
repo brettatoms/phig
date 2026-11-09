@@ -250,13 +250,16 @@ sound check against a catalog you have scanned.
 - **Build:** CMake
 - **Dev environment:** system-installed native libraries; `mise` (optional)
   pins `cmake`/`clang-format`/`clang-tidy` to the versions CI uses
+- **JPEG decode:** JPEG decodes through phig's own libjpeg-turbo decoder
+  (`core/jpeg_decode.cpp`); other formats through OpenCV, libheif, libjxl or
+  ImageIO.
 - **Dependencies:** OpenCV (image decode + phash + video keyframes), libexif
   (EXIF extraction), libheif (HEIC/HEIF/AVIF decode and their EXIF block),
   libjxl (JPEG XL decode and its Exif box; libheif handles HEIF-family
   containers only) — on macOS decode goes through Apple's ImageIO instead,
   and the two libraries are used only for the EXIF block there —
-  LibRaw (RAW decode), FFmpeg/libavformat (video
-  metadata), SQLite (database), spdlog (diagnostic logging), GoogleTest
+  libjpeg-turbo (JPEG decode, linked directly), LibRaw (RAW decode),
+  FFmpeg/libavformat (video metadata), SQLite (database), spdlog (diagnostic logging), GoogleTest
   (tests)
 
 ## Interface discipline
