@@ -1,33 +1,58 @@
 # phig
 
-A command-line tool for managing image and video collections. Scan directories, build a metadata database, detect duplicates, recognize faces, and organize files into a folder structure.
+phig manages image and video collections. It scans directories into a catalog
+of metadata, hashes and thumbnails, finds duplicates, recognizes faces, and
+copies or moves files into a dated folder layout.
+
+The engine is a C++ library with three front ends:
+
+- `phig`, the command-line tool. The [Usage](#usage) section covers it.
+- `phig-gtk`, a GTK4 and libadwaita desktop client for Linux. It is at an
+  early stage: it shows a catalog as a thumbnail grid. See
+  [gtk/README.md](gtk/README.md).
+- libphig, a C library for programs that cannot link the C++ engine. See
+  [libphig](#libphig).
+
+Native macOS and Windows clients are planned. They will read phig through
+libphig.
 
 ## Features
 
-- **Scan** — recursively scan directories, computing SHA256 + perceptual hashes, extracting EXIF/container metadata, and storing everything in SQLite. Handles images and video.
-- **Duplicates** — find exact copies (same SHA256) and visually similar files (perceptual hash)
-- **Copy/Move** — copy or move files into a structured layout (e.g., `YYYY/MM/`) with configurable format strings, conflict resolution, and dry-run mode
-- **Search** — query the database by filename, date, EXIF data, file size, video duration, sharpness, tags, gallery, visual similarity, or face
-- **Face recognition** — detect faces, compute embeddings, name people, and search by person
-- **Tags, galleries, favorites** — label files with tags, assign a gallery, mark favorites, and use them in search and organize
-- **Thumbnails** — generate JPEG thumbnails (512px default) cached by SHA256 and size
-- **Activity log** — record `mv`/`cp`/`rm` in the database for an audit trail
-- **Remove** — remove images by glob pattern: trash (default, recoverable), permanently delete, drop the DB row only, or drop rows for missing files
-- **Match/exclude** — repeatable `--match` and `--exclude` globs across commands, matching against full paths, with exclude taking precedence
+- **Scan:** Scan directories recursively, compute SHA256 and perceptual hashes,
+  extract EXIF or container metadata, and store it all in SQLite. Images and
+  video are both supported.
+- **Duplicates:** Find exact copies by SHA256 and visually similar files by
+  perceptual hash.
+- **Copy and move:** Copy or move files into a layout such as `YYYY/MM/`, with
+  format strings, conflict handling, and a dry-run mode.
+- **Search:** Query by filename, date, EXIF data, file size, video duration,
+  sharpness, tags, gallery, visual similarity, or face.
+- **Face recognition:** Detect faces, compute embeddings, name people, and
+  search by person.
+- **Tags, galleries, and favorites:** Label files with tags, assign each a
+  gallery, mark favorites, and use all three in search and organize.
+- **Thumbnails:** Generate JPEG thumbnails, 512px by default, cached by SHA256
+  and size.
+- **Activity log:** Record `mv`, `cp`, and `rm` in the database as an audit
+  trail.
+- **Remove:** Remove files by glob pattern. You can move them to the trash
+  (the default, and recoverable), delete them permanently, drop only the
+  database row, or drop the rows for missing files.
+- **Match and exclude:** Use repeatable `--match` and `--exclude` globs across
+  commands. Globs match full paths, and an exclude wins over a match.
 
 ## Building
 
-phig builds against stock system libraries — OpenCV (core modules only; no
-`contrib` needed), SQLite3, libexif, libcurl, FFmpeg, spdlog, LibRaw,
-libheif, and libjxl.
-Install the dependencies with your package manager, then optionally install
-[mise](https://mise.jdx.dev/) and run `mise install` from the repo root to
-get the exact `cmake`, `clang-format`, and `clang-tidy` versions CI uses
-(`mise.toml`) — matching `clang-format`'s version matters, since a
-different version reformats code differently and would make the lint gate
-disagree between your machine and CI. mise is optional: any `cmake` >= 3.20
-works, and lint-tool version drift only shows up as noise in
-`clang-format --dry-run` output, not a broken build.
+phig builds against the system packages of OpenCV (core modules only, no
+`opencv_contrib`), libjpeg-turbo, SQLite3, libexif, libcurl, FFmpeg, spdlog,
+LibRaw, libheif, and libjxl. Install them with your package manager.
+
+[mise](https://mise.jdx.dev/) is optional. Run `mise install` from the
+repository root to get the `cmake`, `clang-format`, and `clang-tidy` versions
+that CI uses (`mise.toml`). The `clang-format` version matters for
+contributors, because another version formats code differently and the lint
+check then disagrees with CI. Without mise, any `cmake` 3.20 or later builds
+phig.
 
 ```bash
 # Debian / Ubuntu
@@ -38,8 +63,8 @@ sudo apt install build-essential cmake pkg-config libopencv-dev libjpeg-dev \
 
 # Debian/Ubuntu split libheif's codecs into plugins: libheif-dev alone decodes
 # AVIF but not HEIC, because HEVC decoding lives in libheif-plugin-libde265.
-# Installing libde265 by itself is not enough — libheif loads the plugin, not
-# the codec library directly.
+# Installing libde265 by itself is not enough, because libheif loads the
+# plugin, not the codec library.
 
 # Fedora
 sudo dnf install gcc-c++ cmake make pkgconf-pkg-config opencv-devel libjpeg-turbo-devel \
@@ -65,37 +90,38 @@ cmake --install build --prefix ~/.local        # installs to ~/.local/bin/phig
 ```
 
 Notes:
-- **OpenCV** — two different numbers, and one does not cover the other.
-  - **≥ 4.5.4 to build.** `cv::FaceDetectorYN::create` and
-    `cv::FaceRecognizerSF::create` are called unconditionally, so CMake fails
-    below that version.
-  - **≥ 4.8.0 to detect faces.** YuNet 2023mar, the model `phig models
-    download` fetches, has an ONNX graph that older importers accept and then
-    cannot run: `create()` succeeds and the first `detect()` throws
+- **OpenCV:** phig has two minimum versions.
+  - **4.5.4 to build.** phig calls `cv::FaceDetectorYN::create` and
+    `cv::FaceRecognizerSF::create` unconditionally, so CMake fails below that
+    version.
+  - **4.8.0 to detect faces.** YuNet 2023mar, the model that `phig models
+    download` fetches, has an ONNX graph that older importers accept but cannot
+    run. `create()` succeeds and the first `detect()` throws
     `(-204:Requested object was not found) Layer with requested id=-1 not
-    found`. Measured against that model file — 4.6.0 and 4.7.0 both throw,
-    4.8.0 and 4.10.0 both run it clean.
+    found`. Measured against that model file, 4.6.0 and 4.7.0 both throw, and
+    4.8.0 and 4.10.0 both run it.
 
-  Between the two, phig builds and everything that does not detect a face
-  works. What fails, with a message naming the version needed and the version
-  installed: `scan --faces`, `face rebuild`, `face name`, and `search --face`.
-  What still works: `face list`, `face identify`, and `search --person`, which
+  Between the two versions, phig builds and everything that does not detect a
+  face works. `scan --faces`, `face rebuild`, `face name`, and `search --face`
+  fail with a message that names the version needed and the version installed.
+  `face list`, `face identify`, and `search --person` still work, because they
   read stored embeddings and labels and build no detector. Ubuntu 22.04 ships
-  4.5.4 and 24.04 ships 4.6.0, so both are below the face floor; 25.10 and
-  26.04 ship 4.10.0. Only core modules are used — no `opencv_contrib`.
-- **FFmpeg on Fedora**: the official repos ship `ffmpeg-free-devel`, which is
-  sufficient. The fully-featured `ffmpeg-devel` lives in the third-party RPM Fusion
-  repo; you only need it if `ffmpeg-free-devel` is missing a codec you require.
+  4.5.4 and 24.04 ships 4.6.0, which are both below 4.8.0. Ubuntu 25.10 and
+  26.04 ship 4.10.0.
+- **FFmpeg on Fedora:** the official repositories ship `ffmpeg-free-devel`,
+  which is enough. The full `ffmpeg-devel` is in the third-party RPM Fusion
+  repository. You need it only if `ffmpeg-free-devel` lacks a codec that you
+  use.
 - Check your build with `phig --version`.
 
 ## Configuration
 
 ### File locations
 
-User-level files follow the XDG base directory convention on all platforms
-(honoring `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` when set). A
-catalog is not split across them: it is one directory, by default
-`$XDG_DATA_HOME/phig` (`~/.local/share/phig/` when that is unset).
+User-level files follow the XDG base directory convention on all platforms,
+and honor `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME` when they
+are set. A catalog is one directory, not split across them. By default it is
+`$XDG_DATA_HOME/phig`, or `~/.local/share/phig/` when that variable is unset.
 
 | What | Default location |
 |------|------------------|
@@ -114,15 +140,15 @@ Earlier versions kept thumbnails in `~/.cache/phig/thumbs/` and the log in
 catalog moves both into it, once. A destination that already exists is left
 alone, and so is the old copy.
 
-The database is the source of truth for your collection; it always reflects the
-current file locations so other tools can read it.
+The database is the record of your collection and always reflects current
+file locations.
 
 ### Config file
 
-If `~/.config/phig/config.ini` exists it is loaded automatically; point at a
-different file with the global `--config <path>` flag. Values set defaults;
-an explicit CLI flag always overrides the config, which overrides the built-in
-default. Leading `~` in path values is expanded.
+If `~/.config/phig/config.ini` exists, phig loads it. To use a different
+file, pass the global `--config <path>` flag. Config values set defaults. A
+command-line flag overrides the config, and the config overrides the built-in
+default. A leading `~` in a path value is expanded.
 
 ```ini
 [paths]
@@ -153,19 +179,20 @@ threshold = 0.6
 enabled = true         # record mv/cp/rm in an activity log for audit/rollback
 max_entries = 100000   # cap log size; 0 = unlimited, oldest operations pruned first
 file = true            # write the diagnostic log to <catalog>/phig.log
-file_level = info      # info | warn | error — minimum level written to the file
+file_level = info      # minimum level written to the file: info | warn | error
 ```
 
-`enabled` and `max_entries` control the activity log (`mv`/`cp`/`rm` history
-in the database); `file` and `file_level` control the diagnostic log — a
-separate spdlog logger that writes warnings/errors to stderr and, unless
-`file = false`, also to a rotating file at `<catalog>/phig.log`
-(5 MB rotation to `phig.1.log`).
+`enabled` and `max_entries` control the activity log, the history of `mv`,
+`cp`, and `rm` in the database. `file` and `file_level` control the diagnostic
+log. That is a separate spdlog logger that writes warnings and errors to
+stderr. Unless `file = false` is set, it also writes to a rotating file at
+`<catalog>/phig.log`, which rotates to `phig.1.log` at 5 MB.
 
-Destructive or per-invocation options are deliberately **not** configurable and
-must be given on the command line: `--force`, `--dry-run`, `--on-conflict`,
-`--ignore-mount-warning`, and the selection/query flags (`--match`, `--exclude`,
-etc.). Unknown keys produce a warning; invalid values are a hard error.
+Destructive and per-invocation options cannot be set in the config. Give
+them on the command line: `--force`, `--dry-run`, `--on-conflict`,
+`--ignore-mount-warning`, and the selection and query flags such as `--match`
+and `--exclude`. An unknown key produces a warning, and an invalid value is an
+error.
 
 `phig --help` prints an "Active configuration" summary showing the resolved
 paths and any values your config overrides.
@@ -227,12 +254,12 @@ phig_ctx *ctx = NULL;
 phig_init(&cfg, &ctx);
 ```
 
-Settings are addressed as `"section.name"` strings rather than struct fields,
-so a setting phig adds later is readable without recompiling. `PHIG_KEY_*`
+Settings are addressed as `"section.name"` strings, not struct fields, so a
+setting that phig adds later is readable without recompiling. `PHIG_KEY_*`
 macros cover the documented keys. Keys are matched the way the CLI matches
-them — lowercased, with `-` mapped to `_` — so a config written as `[General]`
-resolves to `general.parallel` and is rewritten in place rather than
-duplicated.
+them: lowercased, with `-` mapped to `_`. A config written as `[General]`
+therefore resolves to `general.parallel`, and a save rewrites it in place
+instead of adding a duplicate.
 
 `phig_settings_get` expands a leading `~`; `phig_settings_get_raw` returns the
 value exactly as stored. A settings dialog wants the raw form, so displaying a
@@ -268,10 +295,11 @@ a tracked file is gone but a byte-identical file exists at a new path, phig
 transfers the old file's tags, favorites, gallery, and faces to it before
 dropping the stale entry (reported as `Relinked: N`).
 
-RAW files (CR2, NEF, ARW, etc.) are indexed directly. If a same-basename JPEG
-sits beside a RAW, it isn't indexed separately — it's used as the RAW's pixel
-source (via LibRaw, falling back to the embedded preview or a full decode) and
-is carried alongside the RAW on `mv`/`cp`, the same way sidecars are.
+RAW files such as CR2, NEF, and ARW are indexed directly. A JPEG with the same
+basename beside a RAW file is not indexed separately. It becomes the RAW
+file's pixel source, and `mv` and `cp` carry it with the RAW file the way they
+carry sidecars. Without that JPEG, phig uses the RAW file's embedded preview,
+then a full decode through LibRaw.
 
 ### Finding Duplicates
 
@@ -361,7 +389,7 @@ cat photo.jpg | phig search --face -
 # List known people
 phig face list
 
-# Re-detect faces (e.g., after model update)
+# Re-detect faces, for example after a model update
 phig face rebuild
 phig face rebuild --match "*/2024/*"
 ```
@@ -438,10 +466,9 @@ overwriting.
 audit trail. Disable it with `[log] enabled = false`; cap its size with
 `[log] max_entries`.
 
-`mv`/`cp` also carry a file's metadata sidecars (xmp, pp3, dop, on1, aae, json,
-thm, lrv) along with it, renaming them to match; organize and search also fall
-back to a sidecar's date when a file has no EXIF date, before falling back to
-its modified time.
+`mv` and `cp` also carry a file's metadata sidecars (xmp, pp3, dop, on1, aae,
+json, thm, and lrv) and rename them to match. When a file has no EXIF date,
+organize and search use a sidecar's date, then the file's modified time.
 
 ### Removing Files
 
