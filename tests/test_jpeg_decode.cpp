@@ -150,3 +150,16 @@ TEST(JpegCorpus, EveryJpegMatchesOpenCv) {
               << memory_mismatched << "\n";
     EXPECT_GT(checked, 0u);
 }
+
+TEST(JpegDecodeFileBytes, MatchesImreadOnATruncatedFileAndAnOrientedOne) {
+    for (const char* name : {"truncated.jpg", "orient_6.jpg", "baseline.jpg"}) {
+        SCOPED_TRACE(name);
+        std::vector<unsigned char> bytes = read_all(fixture(name));
+        DecodeResult r = decode_jpeg_file_bytes(bytes);
+        cv::Mat expected = cv::imread(fixture(name).string(), cv::IMREAD_COLOR);
+        ASSERT_FALSE(expected.empty());
+        ASSERT_FALSE(r.img.empty());
+        expect_identical(r.img, expected);
+        EXPECT_EQ(r.warning, decode_jpeg_file(fixture(name).string()).warning);
+    }
+}

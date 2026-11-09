@@ -450,3 +450,22 @@ TEST_F(HasherTest, BlurScoreResolutionNormalized) {
     EXPECT_GT(b, 0.0);
     EXPECT_NEAR(b, l, b * 0.5);  // comparable, not orders of magnitude apart
 }
+
+TEST(DecodeFrame, APlainJpegReportsItsOwnFrame) {
+    fs::path p = fs::path(__FILE__).parent_path() / "data" / "jpeg" / "orient_6.jpg";
+    DecodeResult r = decode_image_with_warning(p.string(), /*hash_source=*/true);
+    ASSERT_FALSE(r.img.empty());
+    EXPECT_EQ(r.frame.source, DecodeSource::File);
+    EXPECT_EQ(r.frame.width, r.img.cols);
+    EXPECT_EQ(r.frame.height, r.img.rows);
+    EXPECT_EQ(r.frame.width, 48) << "orientation 6 transposes the 64x48 fixture";
+    EXPECT_TRUE(r.frame.source_sha256.empty()) << "a file's own bytes are its row's sha256";
+}
+
+TEST(DecodeFrame, ANonJpegFileStillReportsItsFrame) {
+    fs::path p = fs::path(__FILE__).parent_path() / "data" / "jpeg" / "png_named.jpg";
+    DecodeResult r = decode_image_with_warning(p.string());
+    ASSERT_FALSE(r.img.empty());
+    EXPECT_EQ(r.frame.source, DecodeSource::File);
+    EXPECT_EQ(r.frame.width, 64);
+}

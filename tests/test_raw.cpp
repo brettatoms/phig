@@ -5,6 +5,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 
+#include "hasher.h"
 #include "raw.h"
 #include "temp_dir.h"
 
@@ -80,4 +81,47 @@ TEST(RawStack, LibRawIsTooLargeToLiveOnAThreadStack) {
     EXPECT_GT(sizeof(LibRaw), 512u * 1024u)
         << "sizeof(LibRaw) = " << sizeof(LibRaw)
         << "; if this is now small, revisit the comment in raw_decode";
+}
+
+TEST_F(RawDecodeTest, ReportsTheSidecarFrameAndHashesItOnlyWhenAsked) {
+    std::string jpg = create_image("IMG_2.JPG", 64, 48, cv::Scalar(10, 20, 30));
+    fs::path fixture = fs::path(__FILE__).parent_path() / "data" / "truncated_ojpeg.cr2";
+    fs::path raw_path = fs::path(test_dir) / "IMG_2.CR2";
+    fs::copy_file(fixture, raw_path);
+
+    DecodeResult plain = raw_decode_result(raw_path.string());
+    EXPECT_EQ(plain.frame.source, DecodeSource::SidecarJpeg);
+    EXPECT_EQ(plain.frame.width, 64);
+    EXPECT_EQ(plain.frame.height, 48);
+    EXPECT_TRUE(plain.frame.source_sha256.empty());
+
+    DecodeResult hashed = raw_decode_result(raw_path.string(), /*hash_source=*/true);
+    EXPECT_EQ(hashed.frame.source_sha256, compute_sha256(jpg));
+    EXPECT_EQ(cv::norm(hashed.img, cv::imread(jpg, cv::IMREAD_COLOR), cv::NORM_INF), 0.0);
+}
+
+// A sidecar decodes to what cv::imread gave for the file: a truncated one to
+// its partial image, an oriented one with the orientation applied.
+TEST_F(RawDecodeTest, SidecarPixelsMatchImreadForTruncatedAndOrientedFiles) {
+    fs::path data = fs::path(__FILE__).parent_path() / "data";
+    for (const char* name : {"truncated.jpg", "orient_6.jpg"}) {
+        for (bool hash_source : {false, true}) {
+            SCOPED_TRACE(std::string(name) + (hash_source ? " hashed" : " plain"));
+            fs::path dir = fs::path(test_dir) / (std::string(name) + (hash_source ? "h" : "p"));
+            fs::create_directories(dir);
+            fs::path sidecar = dir / "IMG_3.JPG";
+            fs::copy_file(data / "jpeg" / name, sidecar);
+            fs::path raw_path = dir / "IMG_3.CR2";
+            fs::copy_file(data / "truncated_ojpeg.cr2", raw_path);
+
+            cv::Mat expected = cv::imread(sidecar.string(), cv::IMREAD_COLOR);
+            ASSERT_FALSE(expected.empty());
+            DecodeResult r = raw_decode_result(raw_path.string(), hash_source);
+            ASSERT_FALSE(r.img.empty());
+            EXPECT_EQ(r.frame.source, DecodeSource::SidecarJpeg);
+            ASSERT_EQ(r.img.size(), expected.size());
+            EXPECT_EQ(cv::norm(r.img, expected, cv::NORM_INF), 0.0);
+            if (hash_source) EXPECT_EQ(r.frame.source_sha256, compute_sha256(sidecar.string()));
+        }
+    }
 }

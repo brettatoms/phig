@@ -25,3 +25,7 @@ DecodeResult decode_jpeg_file(const std::string& path);
 // Bytes that end early fail with an empty image and the message, at every OpenCV
 // version: 4.x's imdecode returns uninitialised rows there, which is not copied.
 DecodeResult decode_jpeg_memory(std::span<const unsigned char> bytes);
+
+// The bytes of a file, decoded as decode_jpeg_file would: bytes that end early
+// decode to the same partial image, with the same message.
+DecodeResult decode_jpeg_file_bytes(std::span<const unsigned char> bytes);

@@ -16,10 +16,12 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 
 #include "image_codec.h"
+#include "jpeg_decode.h"
 #include "log.h"
 #include "raw.h"
 #include "scanner.h"
@@ -264,13 +266,13 @@ void install_cv_error_handler() {
 
 }  // namespace
 
-DecodeResult decode_image_with_warning(const std::string& path) {
+DecodeResult decode_image_with_warning(const std::string& path, bool hash_source) {
     DecodeResult result;
 
     const std::string ext = std::filesystem::path(path).extension().string();
 
     if (is_raw_extension(ext)) {
-        result.img = raw_decode(path);
+        result = raw_decode_result(path, hash_source);
         if (result.img.empty()) result.warning = "Cannot decode RAW file: " + path;
         return result;
     }
@@ -281,7 +283,17 @@ DecodeResult decode_image_with_warning(const std::string& path) {
     if (is_codec_extension(ext)) {
         result.img = codec_decode(path);
         if (result.img.empty()) result.warning = "Cannot decode image: " + path;
+        result.frame = {DecodeSource::File, result.img.cols, result.img.rows, {}};
         return result;
+    }
+
+    {
+        unsigned char head[3] = {0, 0, 0};
+        std::ifstream f(path, std::ios::binary);
+        f.read(reinterpret_cast<char*>(head), 3);
+        if (is_jpeg_signature(std::span<const unsigned char>(head, f.gcount()))) {
+            return decode_jpeg_file(path);
+        }
     }
 
     install_cv_error_handler();
@@ -298,6 +310,7 @@ DecodeResult decode_image_with_warning(const std::string& path) {
     }
 
     result.warning = t_cv_warning;
+    result.frame = {DecodeSource::File, result.img.cols, result.img.rows, {}};
     return result;
 }
 

@@ -246,7 +246,9 @@ void cmyk_to_bgr(const unsigned char* cmyk, unsigned char* bgr, int width) {
 // runs in a function holding no object with a destructor, so the jump skips
 // nothing that needs one; everything that does lives here.
 struct Decoder {
-    std::FILE* file = nullptr;  // decodes from bytes when null
+    std::FILE* file = nullptr;    // decodes from bytes when null
+    bool file_semantics = false;  // bytes that end early get an EOI, as a file's do
+    unsigned char eoi[2] = {0xFF, JPEG_EOI};
     std::span<const unsigned char> bytes;
     jpeg_decompress_struct cinfo{};
     ErrorManager err{};
@@ -257,6 +259,42 @@ struct Decoder {
     bool ended_early = false;  // the source ran out before the last scanline
 };
 
+// Emits libjpeg's own "Premature end of JPEG file" warning. Its code is found
+// by text in the message table, since jerror.h's enum varies with how libjpeg
+// was built.
+void warn_premature_end(j_decompress_ptr cinfo) {
+    jpeg_error_mgr* err = cinfo->err;
+    for (int code = 1; code <= err->last_jpeg_message; ++code) {
+        if (std::strcmp(err->jpeg_message_table[code], "Premature end of JPEG file") == 0) {
+            err->msg_code = code;
+            (*err->emit_message)(reinterpret_cast<j_common_ptr>(cinfo), -1);
+            return;
+        }
+    }
+}
+
+// libjpeg's stdio source at end of file: warn, then supply an EOI so the decode
+// finishes with what it has. The buffer lives in the Decoder, whose address is
+// in cinfo.client_data.
+boolean source_fill_eof(j_decompress_ptr cinfo) {
+    auto* d = static_cast<Decoder*>(cinfo->client_data);
+    warn_premature_end(cinfo);
+    cinfo->src->next_input_byte = d->eoi;
+    cinfo->src->bytes_in_buffer = 2;
+    return TRUE;
+}
+
+void source_skip_eof(j_decompress_ptr cinfo, long num_bytes) {
+    jpeg_source_mgr* src = cinfo->src;
+    if (num_bytes <= 0) return;
+    while (num_bytes > static_cast<long>(src->bytes_in_buffer)) {
+        num_bytes -= static_cast<long>(src->bytes_in_buffer);
+        src->fill_input_buffer(cinfo);
+    }
+    src->next_input_byte += num_bytes;
+    src->bytes_in_buffer -= num_bytes;
+}
+
 // The source imread uses for a file, or the one imdecode uses for bytes.
 void attach_source(Decoder& d) {
     if (d.file != nullptr) {
@@ -264,8 +302,8 @@ void attach_source(Decoder& d) {
         return;
     }
     d.memory_source.init_source = source_stub;
-    d.memory_source.fill_input_buffer = source_fill;
-    d.memory_source.skip_input_data = source_skip;
+    d.memory_source.fill_input_buffer = d.file_semantics ? source_fill_eof : source_fill;
+    d.memory_source.skip_input_data = d.file_semantics ? source_skip_eof : source_skip;
     d.memory_source.resync_to_restart = jpeg_resync_to_restart;
     d.memory_source.term_source = source_stub;
     d.memory_source.next_input_byte = d.bytes.data();
@@ -371,6 +409,7 @@ DecodeResult run_unchecked(Decoder& d) {
 // OpenCV or an allocation becomes an empty image and a message.
 DecodeResult run(Decoder& d) {
     d.cinfo.err = jpeg_std_error(&d.err.pub);
+    d.cinfo.client_data = &d;
     d.err.pub.error_exit = error_exit;
     d.err.pub.output_message = output_message;
     d.err.messages = &d.warning;
@@ -395,6 +434,13 @@ bool is_jpeg_signature(std::span<const unsigned char> head) {
 DecodeResult decode_jpeg_memory(std::span<const unsigned char> bytes) {
     Decoder d;
     d.bytes = bytes;
+    return run(d);
+}
+
+DecodeResult decode_jpeg_file_bytes(std::span<const unsigned char> bytes) {
+    Decoder d;
+    d.bytes = bytes;
+    d.file_semantics = true;
     return run(d);
 }
 

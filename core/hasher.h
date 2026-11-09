@@ -60,7 +60,11 @@ cv::Mat decode_image(const std::string& path);
 // Decode an image file, capturing any OpenCV-internal error message for this
 // specific decode. The warning is attributed correctly even when many threads
 // decode concurrently. Empty warning means no OpenCV-internal error.
-DecodeResult decode_image_with_warning(const std::string& path);
+//
+// hash_source: also fill frame.source_sha256 for a sidecar JPEG or an embedded
+// preview. Costs a sha256 over those bytes; ask only when the frame will be
+// recorded.
+DecodeResult decode_image_with_warning(const std::string& path, bool hash_source = false);
 
 // A representative video frame plus the source's reported dimensions
 // (which can differ from the decoded frame after scaling/rotation).
