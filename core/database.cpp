@@ -898,12 +898,11 @@ void Database::log_prune(int max_entries) {
             if (rc != SQLITE_DONE) fail("Failed to prune operations");
         }
 
+        exec("COMMIT");
     } catch (...) {
         rollback_if_open();
         throw;
     }
-
-    exec("COMMIT");
 }
 
 void Database::begin_transaction() { exec("BEGIN IMMEDIATE TRANSACTION"); }
@@ -1067,13 +1066,12 @@ void Database::delete_paths(const std::vector<std::string>& paths) {
     if (paths.empty()) return;
 
     exec("BEGIN IMMEDIATE TRANSACTION");
+    sqlite3_stmt* stmt = nullptr;
     try {
         const char* sql = "DELETE FROM images WHERE path = ?";
-        sqlite3_stmt* stmt;
         int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
         if (rc != SQLITE_OK) {
             const std::string err = sqlite3_errmsg(db_);
-            rollback_if_open();
             throw std::runtime_error("Failed to prepare delete: " + err);
         }
 
@@ -1088,15 +1086,15 @@ void Database::delete_paths(const std::vector<std::string>& paths) {
             sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
             if (sqlite3_step(stmt) != SQLITE_DONE) {
                 const std::string err = sqlite3_errmsg(db_);
-                sqlite3_finalize(stmt);
-                rollback_if_open();
                 throw std::runtime_error("Failed to delete path '" + path + "': " + err);
             }
         }
 
         sqlite3_finalize(stmt);
+        stmt = nullptr;
         exec("COMMIT");
     } catch (...) {
+        sqlite3_finalize(stmt);
         rollback_if_open();
         throw;
     }
@@ -1188,12 +1186,11 @@ int Database::delete_paths_logged(const std::vector<std::string>& paths, int64_t
             deleted++;
         }
 
+        exec("COMMIT");
     } catch (...) {
         rollback_if_open();
         throw;
     }
-
-    exec("COMMIT");
     return deleted;
 }
 
