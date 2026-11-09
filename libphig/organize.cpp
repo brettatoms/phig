@@ -79,7 +79,7 @@ phig_status start_apply(phig_ctx* ctx, const phig_organize_plan* plan, bool is_m
         OrganizeEngine engine(opts, *raw->db);
         raw->organize_result =
             engine.apply(raw->organize_plan, is_move, raw->cancel, &raw->organize_progress);
-        return raw->organize_result.completed;
+        return !raw->organize_result.cancelled;
     });
     *out = op.release();
     return PHIG_OK;

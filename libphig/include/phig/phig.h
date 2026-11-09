@@ -431,6 +431,8 @@ typedef struct phig_op phig_op;
 
 typedef enum {
     PHIG_OP_RUNNING = 0,
+    /* Finished without being cancelled. A copy or move that had failures still ends
+       here; its result's errors, attachment_errors and completed say so. */
     PHIG_OP_DONE = 1,
     /* Ran to completion but stopped early because the caller cancelled. */
     PHIG_OP_CANCELLED = 2,

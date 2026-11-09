@@ -206,6 +206,28 @@ TEST_F(AbiOrganizeTest, MoveAppliesThePlanAndTheSourceIsGone) {
     phig_organize_plan_free(plan);
 }
 
+TEST_F(AbiOrganizeTest, AFailedItemEndsTheOperationDoneNotCancelled) {
+    OrganizeFixture fx(2);
+    open(fx);
+    phig_organize_plan* plan = make_plan(fx);
+    fs::remove(phig_organize_plan_source_at(plan, 0));  // its copy will throw
+
+    phig_op* apply_op = nullptr;
+    ASSERT_EQ(phig_op_copy_start(ctx, plan, &apply_op), PHIG_OK);
+    phig_op_wait(apply_op);
+    EXPECT_EQ(phig_op_status(apply_op), PHIG_OP_DONE) << "nobody cancelled this run";
+
+    phig_organize_result r{};
+    ASSERT_EQ(phig_op_organize_result(apply_op, &r), PHIG_OK);
+    EXPECT_EQ(r.applied, 1u);
+    EXPECT_EQ(r.errors, 1u);
+    EXPECT_FALSE(r.cancelled);
+    EXPECT_FALSE(r.completed);
+
+    phig_op_free(apply_op);
+    phig_organize_plan_free(plan);
+}
+
 TEST_F(AbiOrganizeTest, CopyAppliesThePlanAndTheSourceRemains) {
     OrganizeFixture fx(1);
     open(fx);

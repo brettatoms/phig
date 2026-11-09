@@ -514,14 +514,14 @@ Plan 041's guard inventory names this as the third of three guards on the delete
 
 An operation that did not do everything it was asked to do is recorded with a terminal status that says so.
 
-cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply derives completed from three facts, not cancelled, no parent that failed (errors) and no attachment left behind (attachment_errors), and writes interrupted exactly when completed is false, so the same fact, some files did not make it, gives the same terminal status whichever command wrote the log. cancelled is reported separately, so a caller can tell a stopped run from one that failed. cmd_organize returns 1 whenever completed is false, as cmd_rm does, and phig_organize_result carries both flags. Plan 053 is about what a client can reach through the ABI, not about what an operation destroys or how it counts, so it did not own this; plan 060 did.
+cmd_rm counts its per-file failures and writes interrupted when there were any. OrganizeEngine::apply derives completed from three facts, not cancelled, no parent that failed (errors) and no attachment left behind (attachment_errors), and writes interrupted exactly when completed is false, so the same fact, some files did not make it, gives the same terminal status whichever command wrote the log. cancelled is reported separately, so a caller can tell a stopped run from one that failed. cmd_organize returns 1 whenever completed is false, as cmd_rm does, and phig_organize_result carries both flags while the operation itself ends PHIG_OP_DONE unless cancelled. Plan 053 is about what a client can reach through the ABI, not about what an operation destroys or how it counts, so it did not own this; plan 060 did.
 
 | | |
 |---|---|
 | Enforced at | `core/remove_exec.cpp:cmd_rm`, `core/organize_engine.cpp:OrganizeEngine::apply` |
 | Binds | `remove.trash`, `remove.hard`, `remove.db-only`, `remove.orphans`, `organize.copy`, `organize.move` |
 | Protects | activity-log |
-| Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted`, `OrganizeEngineTest.AFileThatFailsInterruptsTheRun`, `OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun`, `CatalogCliTest.CopyExitsOneWhenAFileFails` |
+| Evidence | witness: `OrganizeEngineTest.CancellationPartwayMarksTheOperationInterrupted`, `OrganizeEngineTest.AFileThatFailsInterruptsTheRun`, `OrganizeEngineTest.AnAttachmentNotCarriedCountsItsItemOnceAndInterruptsTheRun`, `CatalogCliTest.CopyExitsOneWhenAFileFails`, `AbiOrganizeTest.AFailedItemEndsTheOperationDoneNotCancelled` |
 | Test gap | cmd_rm's own exit code on a per-file failure is not pinned: tests/test_remove_exec.cpp asserts its interrupted status when a delete throws, but no test reads the return value of a run in which only some files failed. |
 
 ### R83 — holds (test gap)
