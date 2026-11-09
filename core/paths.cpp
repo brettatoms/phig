@@ -14,7 +14,9 @@
 #include <mutex>
 #include <random>
 #include <stdexcept>
+#include <string_view>
 #include <system_error>
+#include <vector>
 
 std::string iso_utc_now() {
     std::time_t t = std::time(nullptr);
@@ -309,6 +311,58 @@ bool atomic_write_file(const std::string& dest, const void* data, size_t size) {
         return false;
     }
     return true;
+}
+
+void write_output_file(const std::string& path, std::string_view contents, bool replace) {
+    namespace fs = std::filesystem;
+    if (replace) {
+        if (!atomic_write_file(path, contents.data(), contents.size())) {
+            throw std::runtime_error("Cannot write " + path);
+        }
+        return;
+    }
+    const fs::path tmp = temp_sibling(fs::path(path));
+    if (!atomic_write_file(tmp.string(), contents.data(), contents.size())) {
+        throw std::runtime_error("Cannot write " + path);
+    }
+    try {
+        move_file(tmp.string(), path);  // never replaces what is there
+    } catch (const fs::filesystem_error& e) {
+        std::error_code ec;
+        fs::remove(tmp, ec);
+        if (e.code() == std::errc::file_exists) throw OutputExists(path);
+        throw;
+    }
+}
+
+std::string write_private_temp_file(const std::string& prefix, std::string_view contents) {
+    namespace fs = std::filesystem;
+    std::string name = (fs::temp_directory_path() / (prefix + "XXXXXX")).string();
+    std::vector<char> buf(name.begin(), name.end());
+    buf.push_back('\0');
+    // mkstemp creates with O_CREAT | O_EXCL and mode 0600: it never opens a
+    // path that already exists, so a planted file or symlink is never used.
+    int fd = ::mkstemp(buf.data());
+    if (fd < 0) {
+        throw std::system_error(
+            errno, std::generic_category(),
+            "Cannot create a temporary file in " + fs::temp_directory_path().string());
+    }
+    const std::string path(buf.data());
+    size_t written = 0;
+    while (written < contents.size()) {
+        ssize_t n = ::write(fd, contents.data() + written, contents.size() - written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            int err = errno;
+            ::close(fd);
+            ::unlink(path.c_str());
+            throw std::system_error(err, std::generic_category(), "Cannot write " + path);
+        }
+        written += static_cast<size_t>(n);
+    }
+    ::close(fd);
+    return path;
 }
 
 SafeToDeleteResult paths_safe_to_delete(const std::vector<std::string>& db_paths) {

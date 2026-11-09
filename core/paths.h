@@ -4,7 +4,9 @@
 #include <functional>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Current UTC time as an ISO-8601 timestamp ("YYYY-MM-DDTHH:MM:SSZ"), for
@@ -95,6 +97,32 @@ std::string unique_backup_path(const std::string& dest);
 // Returns false on any I/O error (temp is removed); true once dest holds the
 // complete bytes. Creates dest's parent dirs.
 bool atomic_write_file(const std::string& dest, const void* data, size_t size);
+
+// Thrown by write_output_file when something is already at the path and the
+// caller did not ask to replace it.
+class OutputExists : public std::runtime_error {
+   public:
+    explicit OutputExists(const std::string& path)
+        : std::runtime_error(path + " already exists"), path_(path) {}
+    const std::string& path() const { return path_; }
+
+   private:
+    std::string path_;
+};
+
+// Writes `contents` to `path` through a temporary sibling and a rename, so the
+// path never holds a partial file. Without `replace`, the rename refuses to
+// replace anything at `path`, a symlink included, and throws OutputExists.
+// With it, the rename replaces the directory entry: a symlink is replaced
+// itself, never the file it points at. Throws on any other failure.
+void write_output_file(const std::string& path, std::string_view contents, bool replace);
+
+// Creates a new file in the temporary directory with a unique name starting
+// with `prefix`, exclusively and readable only by the owner, writes
+// `contents`, and returns its path. Never opens an existing path, so a file or
+// symlink planted in the temporary directory is never written through.
+// The caller removes the file.
+std::string write_private_temp_file(const std::string& prefix, std::string_view contents);
 
 // How `paths_safe_to_delete` classified a set of DB-tracked paths. Paths whose
 // file still exists are not collected: that's the normal case and there is

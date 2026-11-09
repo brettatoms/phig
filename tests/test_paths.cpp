@@ -11,6 +11,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -720,4 +721,138 @@ TEST(TempSiblingConcurrency, NoCollisionUnderThreads) {
 
     // Every generated temp path must be distinct.
     EXPECT_EQ(uniq.size(), total);
+}
+
+namespace {
+
+std::string slurp(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
+void spit(const fs::path& p, const std::string& s) {
+    std::ofstream out(p, std::ios::binary);
+    out << s;
+}
+
+size_t entries_in(const fs::path& dir) {
+    return static_cast<size_t>(
+        std::distance(fs::directory_iterator(dir), fs::directory_iterator{}));
+}
+
+// Sets TMPDIR for the guard's lifetime and restores the previous value.
+class TmpdirGuard {
+   public:
+    explicit TmpdirGuard(const std::string& value) {
+        const char* old = std::getenv("TMPDIR");
+        was_set_ = old != nullptr;
+        if (old) old_ = old;
+        ::setenv("TMPDIR", value.c_str(), 1);
+    }
+    ~TmpdirGuard() {
+        if (was_set_)
+            ::setenv("TMPDIR", old_.c_str(), 1);
+        else
+            ::unsetenv("TMPDIR");
+    }
+    TmpdirGuard(const TmpdirGuard&) = delete;
+    TmpdirGuard& operator=(const TmpdirGuard&) = delete;
+
+   private:
+    bool was_set_ = false;
+    std::string old_;
+};
+
+}  // namespace
+
+TEST_F(PathsTest, WriteOutputFileCreatesAMissingFile) {
+    auto dir = make_temp_dir("wof-create");
+    const auto p = (dir / "out.txt").string();
+    write_output_file(p, "hello", false);
+    EXPECT_EQ(slurp(p), "hello");
+    fs::remove_all(dir);
+}
+
+TEST_F(PathsTest, WriteOutputFileRefusesAnExistingFile) {
+    auto dir = make_temp_dir("wof-refuse");
+    const auto p = dir / "out.txt";
+    spit(p, "IRREPLACEABLE");
+    EXPECT_THROW(write_output_file(p.string(), "new", false), OutputExists);
+    EXPECT_EQ(slurp(p), "IRREPLACEABLE");
+    EXPECT_EQ(entries_in(dir), 1u);
+    for (const auto& e : fs::directory_iterator(dir))
+        EXPECT_EQ(e.path().string().find(".phig-tmp"), std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_F(PathsTest, WriteOutputFileRefusesADanglingSymlink) {
+    auto dir = make_temp_dir("wof-dangling");
+    const auto link = dir / "out.txt";
+    fs::create_symlink(dir / "missing", link);
+    EXPECT_THROW(write_output_file(link.string(), "new", false), OutputExists);
+    EXPECT_TRUE(fs::is_symlink(link));
+    EXPECT_FALSE(fs::exists(dir / "missing"));
+    EXPECT_EQ(entries_in(dir), 1u);
+    fs::remove_all(dir);
+}
+
+TEST_F(PathsTest, WriteOutputFileReplacesASymlinkNotItsTarget) {
+    auto dir = make_temp_dir("wof-symlink");
+    const auto victim = dir / "victim";
+    const auto link = dir / "out.txt";
+    spit(victim, "IRREPLACEABLE");
+    fs::create_symlink(victim, link);
+    write_output_file(link.string(), "new", true);
+    EXPECT_FALSE(fs::is_symlink(link));
+    EXPECT_TRUE(fs::is_regular_file(link));
+    EXPECT_EQ(slurp(link), "new");
+    EXPECT_EQ(slurp(victim), "IRREPLACEABLE");
+    fs::remove_all(dir);
+}
+
+TEST_F(PathsTest, WriteOutputFileReplacesAnExistingFileWhenAsked) {
+    auto dir = make_temp_dir("wof-replace");
+    const auto p = dir / "out.txt";
+    spit(p, "old");
+    write_output_file(p.string(), "new", true);
+    EXPECT_EQ(slurp(p), "new");
+    EXPECT_EQ(entries_in(dir), 1u);
+    fs::remove_all(dir);
+}
+
+TEST_F(PathsTest, PrivateTempFilesAreUniqueAndOwnerOnly) {
+    const std::string prefix = "phig-test-private-";
+    const auto a = write_private_temp_file(prefix, "aaa");
+    const auto b = write_private_temp_file(prefix, "bbb");
+    EXPECT_NE(a, b);
+    const auto tmp = fs::temp_directory_path();
+    for (const auto& s : {a, b}) {
+        const fs::path p(s);
+        EXPECT_EQ(p.parent_path(), tmp);
+        EXPECT_EQ(p.filename().string().rfind(prefix, 0), 0u);
+        EXPECT_EQ(fs::status(p).permissions() & fs::perms::all,
+                  fs::perms::owner_read | fs::perms::owner_write);
+    }
+    EXPECT_EQ(slurp(a), "aaa");
+    EXPECT_EQ(slurp(b), "bbb");
+    fs::remove(a);
+    fs::remove(b);
+}
+
+TEST_F(PathsTest, PrivateTempFileNeverWritesThroughAPlantedSymlink) {
+    auto dir = make_temp_dir("ptf-planted");
+    const auto target = dir / "target";
+    spit(target, "IRREPLACEABLE");
+    const std::string prefix = "phig-test-planted-";
+    fs::create_symlink(target, dir / (prefix + "XXXXXX"));
+    std::string result;
+    {
+        TmpdirGuard guard(dir.string());
+        result = write_private_temp_file(prefix, "payload");
+    }
+    EXPECT_FALSE(fs::is_symlink(result));
+    EXPECT_NE(fs::path(result), dir / (prefix + "XXXXXX"));
+    EXPECT_EQ(slurp(result), "payload");
+    EXPECT_EQ(slurp(target), "IRREPLACEABLE");
+    fs::remove_all(dir);
 }
