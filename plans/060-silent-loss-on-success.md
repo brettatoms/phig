@@ -506,6 +506,29 @@ This is measured, not assumed:
   `face rebuild` and of a plain `scan --faces` over the same synthetic set,
   written here.
 
+Measured 2026-11-09 on the Linux development machine, Release builds, at the
+base `d74485b` and at the tip of branch `069-060-decoder-face-frame` (commit
+`6f59030`, before the commit that adds the perf test). The set is 200 copies of
+the two face fixtures on tmpfs, 300 faces in all, under a scratch HOME. Each
+figure is the median of three runs, alternating base and tip. The load average
+was 2.6 to 5.7 during the runs, from a process outside the test.
+
+| Command | Base | Tip | Change |
+|---|---|---|---|
+| `phig scan --faces` | 1.499 s | 1.584 s | +5.7% |
+| `phig face rebuild` | 1.446 s | 1.557 s | +7.7% |
+
+Both are inside the 10% limit. The extra cost sits in the work listed above and
+in recording provenance, and this run does not separate them.
+
+`FacesPerf.AFrameChangeDoesNotSlowARebuild` rebuilds 40 images with the frame
+unchanged (median 508 ms) and again after each file is rewritten at 60% of its
+size (median 462 ms), with every label carried and none dropped. The rewrite is
+60% rather than 50% because at half size the detector finds fewer faces in the
+small fixture and the labels on the lost faces are dropped, which makes the two
+runs do different work. The test asserts the changed median is at most 1.15
+times the unchanged one.
+
 ## Decisions for R27, R48, R69, R81 and R83
 
 Decided 2026-11-08, answering open questions 3 to 6. These five land together,

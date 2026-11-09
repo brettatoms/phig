@@ -189,6 +189,7 @@ gtest_discover_tests(phig-tests
 add_executable(phig-perf-tests
     tests/scratch_home.cpp
     tests/perf_duplicates.cpp
+    tests/perf_faces.cpp
 )
 target_link_libraries(phig-perf-tests PRIVATE
     phig-core
