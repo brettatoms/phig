@@ -247,7 +247,9 @@ TEST(Abi, InitInstallsARelativeCatalogAsAnAbsolutePath) {
     bool exists = true;
     ASSERT_EQ(phig_thumb_lookup(ctx, std::string(64, 'a').c_str(), 512, buf, sizeof(buf), &exists),
               PHIG_OK);
-    const std::string thumbs = (fs::absolute(tmp.dir).lexically_normal() / "thumbs/").string();
+    // fs::relative resolves symlinks (macOS's /var is /private/var), so the
+    // expected prefix must be resolved the same way.
+    const std::string thumbs = (fs::weakly_canonical(tmp.dir) / "thumbs/").string();
     EXPECT_EQ(std::string(buf).rfind(thumbs, 0), 0u) << buf;
     phig_shutdown(ctx);
 }
