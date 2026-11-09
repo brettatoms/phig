@@ -838,55 +838,69 @@ void Database::log_finish_operation(int64_t op_id, const std::string& status) {
     step_write_or_throw(db_, stmt, "Failed to finish operation");
 }
 
+// Rolls back the open transaction, if there is one. A failed statement can
+// make SQLite roll back on its own, and a second ROLLBACK would then throw
+// "no transaction is active" over the error being reported, so this checks
+// first and never throws.
+void Database::rollback_if_open() noexcept {
+    if (sqlite3_get_autocommit(db_) != 0) return;
+    sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+}
+
 void Database::log_prune(int max_entries) {
     if (max_entries <= 0) return;  // unlimited
 
     exec("BEGIN IMMEDIATE TRANSACTION");
     auto fail = [&](const std::string& what) {
-        exec("ROLLBACK");
         throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
     };
 
-    // Walk operations newest-first, accumulating their entry counts. Keep the
-    // newest operations that fit under the cap; everything older is pruned in one
-    // bulk DELETE (entries cascade via the operation_entries FK). Two invariants:
-    //   - ALWAYS keep the newest operation, even if it alone exceeds the cap — the
-    //     just-recorded run must never delete its own rollback record (review [2]).
-    //   - Single pass + single delete, so pruning is O(n), not O(n^2) (review [8]).
-    int64_t cutoff = -1;  // delete operations with id <= cutoff; -1 = delete none
-    {
-        sqlite3_stmt* s = nullptr;
-        if (sqlite3_prepare_v2(db_, "SELECT id, entry_count FROM operations ORDER BY id DESC", -1,
-                               &s, nullptr) != SQLITE_OK)
-            fail("Failed to prepare prune scan");
-        int64_t kept = 0;
-        bool first = true;
-        while (sqlite3_step(s) == SQLITE_ROW) {
-            int64_t id = sqlite3_column_int64(s, 0);
-            int64_t entries = sqlite3_column_int64(s, 1);
-            // Keep the newest op unconditionally; keep further ops only while they
-            // still fit. The first op that would overflow becomes the cutoff, and
-            // every older op is pruned with it.
-            if (first || kept + entries <= max_entries) {
-                kept += entries;
-                first = false;
-            } else {
-                cutoff = id;
-                break;
+    try {
+        // Walk operations newest-first, accumulating their entry counts. Keep the
+        // newest operations that fit under the cap; everything older is pruned in one
+        // bulk DELETE (entries cascade via the operation_entries FK). Two invariants:
+        //   - ALWAYS keep the newest operation, even if it alone exceeds the cap — the
+        //     just-recorded run must never delete its own rollback record (review [2]).
+        //   - Single pass + single delete, so pruning is O(n), not O(n^2) (review [8]).
+        int64_t cutoff = -1;  // delete operations with id <= cutoff; -1 = delete none
+        {
+            sqlite3_stmt* s = nullptr;
+            if (sqlite3_prepare_v2(db_, "SELECT id, entry_count FROM operations ORDER BY id DESC",
+                                   -1, &s, nullptr) != SQLITE_OK)
+                fail("Failed to prepare prune scan");
+            int64_t kept = 0;
+            bool first = true;
+            while (sqlite3_step(s) == SQLITE_ROW) {
+                int64_t id = sqlite3_column_int64(s, 0);
+                int64_t entries = sqlite3_column_int64(s, 1);
+                // Keep the newest op unconditionally; keep further ops only while they
+                // still fit. The first op that would overflow becomes the cutoff, and
+                // every older op is pruned with it.
+                if (first || kept + entries <= max_entries) {
+                    kept += entries;
+                    first = false;
+                } else {
+                    cutoff = id;
+                    break;
+                }
             }
+            sqlite3_finalize(s);
         }
-        sqlite3_finalize(s);
-    }
 
-    if (cutoff >= 0) {
-        sqlite3_stmt* d = nullptr;
-        if (sqlite3_prepare_v2(db_, "DELETE FROM operations WHERE id <= ?", -1, &d, nullptr) !=
-            SQLITE_OK)
-            fail("Failed to prepare op delete");
-        sqlite3_bind_int64(d, 1, cutoff);
-        int rc = sqlite3_step(d);
-        sqlite3_finalize(d);
-        if (rc != SQLITE_DONE) fail("Failed to prune operations");
+        if (cutoff >= 0) {
+            sqlite3_stmt* d = nullptr;
+            if (sqlite3_prepare_v2(db_, "DELETE FROM operations WHERE id <= ?", -1, &d, nullptr) !=
+                SQLITE_OK)
+                fail("Failed to prepare op delete");
+            sqlite3_bind_int64(d, 1, cutoff);
+            int rc = sqlite3_step(d);
+            sqlite3_finalize(d);
+            if (rc != SQLITE_DONE) fail("Failed to prune operations");
+        }
+
+    } catch (...) {
+        rollback_if_open();
+        throw;
     }
 
     exec("COMMIT");
@@ -1053,118 +1067,130 @@ void Database::delete_paths(const std::vector<std::string>& paths) {
     if (paths.empty()) return;
 
     exec("BEGIN IMMEDIATE TRANSACTION");
-    const char* sql = "DELETE FROM images WHERE path = ?";
-    sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK) {
-        exec("ROLLBACK");
-        throw std::runtime_error("Failed to prepare delete: " + std::string(sqlite3_errmsg(db_)));
-    }
-
-    for (const auto& path : paths) {
-        // vec_faces is a vec0 virtual table and cannot be an FK child, so
-        // ON DELETE CASCADE never reaches it — clean it (and faces) explicitly
-        // before dropping the image row. image_tags cascades via foreign_keys.
-        int64_t id = get_image_id(path);
-        if (id >= 0) delete_faces_for_image(id);
-
-        sqlite3_reset(stmt);
-        sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(stmt) != SQLITE_DONE) {
-            sqlite3_finalize(stmt);
-            exec("ROLLBACK");
-            throw std::runtime_error("Failed to delete path '" + path +
-                                     "': " + std::string(sqlite3_errmsg(db_)));
+    try {
+        const char* sql = "DELETE FROM images WHERE path = ?";
+        sqlite3_stmt* stmt;
+        int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            const std::string err = sqlite3_errmsg(db_);
+            rollback_if_open();
+            throw std::runtime_error("Failed to prepare delete: " + err);
         }
-    }
 
-    sqlite3_finalize(stmt);
-    exec("COMMIT");
+        for (const auto& path : paths) {
+            // vec_faces is a vec0 virtual table and cannot be an FK child, so
+            // ON DELETE CASCADE never reaches it — clean it (and faces) explicitly
+            // before dropping the image row. image_tags cascades via foreign_keys.
+            int64_t id = get_image_id(path);
+            if (id >= 0) delete_faces_for_image(id);
+
+            sqlite3_reset(stmt);
+            sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) != SQLITE_DONE) {
+                const std::string err = sqlite3_errmsg(db_);
+                sqlite3_finalize(stmt);
+                rollback_if_open();
+                throw std::runtime_error("Failed to delete path '" + path + "': " + err);
+            }
+        }
+
+        sqlite3_finalize(stmt);
+        exec("COMMIT");
+    } catch (...) {
+        rollback_if_open();
+        throw;
+    }
 }
 
 int Database::delete_paths_logged(const std::vector<std::string>& paths, int64_t op_id) {
     if (paths.empty()) return 0;
     exec("BEGIN IMMEDIATE TRANSACTION");
     auto fail = [&](const std::string& what) {
-        exec("ROLLBACK");
         throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
     };
 
-    static const char* cols[] = {"path",        "filename",    "extension",  "file_size",
-                                 "created_at",  "modified_at", "sha256",     "phash",
-                                 "width",       "height",      "metadata",   "media_type",
-                                 "duration_ms", "gallery",     "blur_score", "effective_date"};
-    const int kNumCols = 16;
-
     int deleted = 0;
-    for (const auto& path : paths) {
-        // Snapshot the row (the columns insert/insert_copy carry) for restore.
-        std::string restore;
-        {
-            const char* sel =
-                "SELECT path, filename, extension, file_size, created_at, modified_at, "
-                "sha256, phash, width, height, metadata, media_type, duration_ms, gallery, "
-                "blur_score, effective_date FROM images WHERE path = ?";
-            sqlite3_stmt* s = nullptr;
-            if (sqlite3_prepare_v2(db_, sel, -1, &s, nullptr) != SQLITE_OK)
-                fail("Failed to prepare snapshot select");
-            sqlite3_bind_text(s, 1, path.c_str(), -1, SQLITE_TRANSIENT);
-            if (sqlite3_step(s) != SQLITE_ROW) {
-                sqlite3_finalize(s);
-                continue;  // not present — nothing to delete/log
-            }
-            restore = "{";
-            for (int i = 0; i < kNumCols; i++) {
-                if (i) restore += ",";
-                restore += "\"";
-                restore += cols[i];
-                restore += "\":";
-                const unsigned char* txt = sqlite3_column_text(s, i);
-                if (!txt) {
-                    restore += "null";
-                } else {
-                    restore += "\"";
-                    restore += json_escape(reinterpret_cast<const char*>(txt));
-                    restore += "\"";
-                }
-            }
-            sqlite3_finalize(s);
+    try {
+        static const char* cols[] = {"path",        "filename",    "extension",  "file_size",
+                                     "created_at",  "modified_at", "sha256",     "phash",
+                                     "width",       "height",      "metadata",   "media_type",
+                                     "duration_ms", "gallery",     "blur_score", "effective_date"};
+        const int kNumCols = 16;
 
-            // The snapshot captures only the images row, not the image's faces /
-            // vec_faces embeddings (deleted below). Record how many faces are lost
-            // so a future undo can honestly report the row is only partially
-            // restorable rather than silently dropping face data (review [4]).
-            int64_t fid = get_image_id(path);
-            int64_t face_count = 0;
-            if (fid >= 0) {
-                sqlite3_stmt* fs = nullptr;
-                if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM faces WHERE image_id = ?", -1,
-                                       &fs, nullptr) == SQLITE_OK) {
-                    sqlite3_bind_int64(fs, 1, fid);
-                    if (sqlite3_step(fs) == SQLITE_ROW) face_count = sqlite3_column_int64(fs, 0);
-                    sqlite3_finalize(fs);
+        for (const auto& path : paths) {
+            // Snapshot the row (the columns insert/insert_copy carry) for restore.
+            std::string restore;
+            {
+                const char* sel =
+                    "SELECT path, filename, extension, file_size, created_at, modified_at, "
+                    "sha256, phash, width, height, metadata, media_type, duration_ms, gallery, "
+                    "blur_score, effective_date FROM images WHERE path = ?";
+                sqlite3_stmt* s = nullptr;
+                if (sqlite3_prepare_v2(db_, sel, -1, &s, nullptr) != SQLITE_OK)
+                    fail("Failed to prepare snapshot select");
+                sqlite3_bind_text(s, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+                if (sqlite3_step(s) != SQLITE_ROW) {
+                    sqlite3_finalize(s);
+                    continue;  // not present — nothing to delete/log
                 }
+                restore = "{";
+                for (int i = 0; i < kNumCols; i++) {
+                    if (i) restore += ",";
+                    restore += "\"";
+                    restore += cols[i];
+                    restore += "\":";
+                    const unsigned char* txt = sqlite3_column_text(s, i);
+                    if (!txt) {
+                        restore += "null";
+                    } else {
+                        restore += "\"";
+                        restore += json_escape(reinterpret_cast<const char*>(txt));
+                        restore += "\"";
+                    }
+                }
+                sqlite3_finalize(s);
+
+                // The snapshot captures only the images row, not the image's faces /
+                // vec_faces embeddings (deleted below). Record how many faces are lost
+                // so a future undo can honestly report the row is only partially
+                // restorable rather than silently dropping face data (review [4]).
+                int64_t fid = get_image_id(path);
+                int64_t face_count = 0;
+                if (fid >= 0) {
+                    sqlite3_stmt* fs = nullptr;
+                    if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM faces WHERE image_id = ?", -1,
+                                           &fs, nullptr) == SQLITE_OK) {
+                        sqlite3_bind_int64(fs, 1, fid);
+                        if (sqlite3_step(fs) == SQLITE_ROW)
+                            face_count = sqlite3_column_int64(fs, 0);
+                        sqlite3_finalize(fs);
+                    }
+                }
+                if (face_count > 0) restore += ",\"_faces_omitted\":" + std::to_string(face_count);
+                restore += "}";
             }
-            if (face_count > 0) restore += ",\"_faces_omitted\":" + std::to_string(face_count);
-            restore += "}";
+
+            // vec_faces / faces are not reachable by cascade from a vec0 table; clear
+            // them explicitly first, mirroring delete_paths.
+            int64_t id = get_image_id(path);
+            if (id >= 0) delete_faces_for_image(id);
+
+            if (op_id > 0) log_add_entry(op_id, {"purge_row", path, "", restore});
+
+            const char* del = "DELETE FROM images WHERE path = ?";
+            sqlite3_stmt* d = nullptr;
+            if (sqlite3_prepare_v2(db_, del, -1, &d, nullptr) != SQLITE_OK)
+                fail("Failed to prepare delete");
+            sqlite3_bind_text(d, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+            int rc = sqlite3_step(d);
+            sqlite3_finalize(d);
+            if (rc != SQLITE_DONE) fail("Failed to delete path '" + path + "'");
+            deleted++;
         }
 
-        // vec_faces / faces are not reachable by cascade from a vec0 table; clear
-        // them explicitly first, mirroring delete_paths.
-        int64_t id = get_image_id(path);
-        if (id >= 0) delete_faces_for_image(id);
-
-        if (op_id > 0) log_add_entry(op_id, {"purge_row", path, "", restore});
-
-        const char* del = "DELETE FROM images WHERE path = ?";
-        sqlite3_stmt* d = nullptr;
-        if (sqlite3_prepare_v2(db_, del, -1, &d, nullptr) != SQLITE_OK)
-            fail("Failed to prepare delete");
-        sqlite3_bind_text(d, 1, path.c_str(), -1, SQLITE_TRANSIENT);
-        int rc = sqlite3_step(d);
-        sqlite3_finalize(d);
-        if (rc != SQLITE_DONE) fail("Failed to delete path '" + path + "'");
-        deleted++;
+    } catch (...) {
+        rollback_if_open();
+        throw;
     }
 
     exec("COMMIT");

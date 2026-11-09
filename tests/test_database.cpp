@@ -8,6 +8,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
@@ -2319,4 +2320,93 @@ TEST_F(DatabaseTest, CliMetadataWritesRefuseAnUnnamedSubject) {
     }
 
     fs::remove_all(root);
+}
+
+namespace {
+// A trigger that makes one statement fail with a recognizable message, the way
+// a full disk or a constraint would, without needing either.
+void add_fault(Database& db, const std::string& trigger_sql) {
+    char* err = nullptr;
+    ASSERT_EQ(sqlite3_exec(db.db_ptr(), trigger_sql.c_str(), nullptr, nullptr, &err), SQLITE_OK)
+        << (err ? err : "");
+    sqlite3_free(err);
+}
+
+std::string thrown_message(const std::function<void()>& f) {
+    try {
+        f();
+    } catch (const std::exception& e) {
+        return e.what();
+    }
+    return "";
+}
+}  // namespace
+
+TEST_F(DatabaseTest, DeletePathsReportsTheCauseItRolledBack) {
+    ImageInfo info;
+    info.path = (dir / "a.jpg").string();
+    info.filename = "a.jpg";
+    info.extension = "jpg";
+    info.metadata_json = "{}";
+    db->insert(info);
+    add_fault(*db,
+              "CREATE TRIGGER fault BEFORE DELETE ON images BEGIN "
+              "SELECT RAISE(ABORT, 'phig-test-fault: delete blocked'); END;");
+
+    std::string msg = thrown_message([&] { db->delete_paths({info.path}); });
+    EXPECT_NE(msg.find("phig-test-fault: delete blocked"), std::string::npos) << msg;
+    EXPECT_EQ(sqlite3_get_autocommit(db->db_ptr()), 1) << "the transaction was left open";
+    EXPECT_GT(db->get_image_id(info.path), 0) << "the rollback must keep the row";
+}
+
+TEST_F(DatabaseTest, DeletePathsLoggedReportsTheCauseItRolledBack) {
+    ImageInfo info;
+    info.path = (dir / "a.jpg").string();
+    info.filename = "a.jpg";
+    info.extension = "jpg";
+    info.metadata_json = "{}";
+    db->insert(info);
+    int64_t op = db->log_begin_operation("rm", "phig rm", "2026-11-08T00:00:00Z");
+    add_fault(*db,
+              "CREATE TRIGGER fault BEFORE DELETE ON images BEGIN "
+              "SELECT RAISE(ABORT, 'phig-test-fault: delete blocked'); END;");
+
+    std::string msg = thrown_message([&] { db->delete_paths_logged({info.path}, op); });
+    EXPECT_NE(msg.find("phig-test-fault: delete blocked"), std::string::npos) << msg;
+    EXPECT_EQ(sqlite3_get_autocommit(db->db_ptr()), 1);
+}
+
+TEST_F(DatabaseTest, DeletePathsLoggedClosesItsTransactionWhenAnEntryFails) {
+    ImageInfo info;
+    info.path = (dir / "a.jpg").string();
+    info.filename = "a.jpg";
+    info.extension = "jpg";
+    info.metadata_json = "{}";
+    db->insert(info);
+    int64_t op = db->log_begin_operation("rm", "phig rm", "2026-11-08T00:00:00Z");
+    add_fault(*db,
+              "CREATE TRIGGER fault BEFORE INSERT ON operation_entries BEGIN "
+              "SELECT RAISE(ABORT, 'phig-test-fault: entry blocked'); END;");
+
+    std::string msg = thrown_message([&] { db->delete_paths_logged({info.path}, op); });
+    EXPECT_NE(msg.find("phig-test-fault: entry blocked"), std::string::npos) << msg;
+    EXPECT_EQ(sqlite3_get_autocommit(db->db_ptr()), 1)
+        << "a throw from inside the loop must roll back, or the caller's terminal status "
+           "is written into a transaction that never commits";
+    EXPECT_GT(db->get_image_id(info.path), 0);
+}
+
+TEST_F(DatabaseTest, LogPruneReportsTheCauseItRolledBack) {
+    for (int i = 0; i < 3; i++) {
+        int64_t op = db->log_begin_operation("cp", "phig cp", "2026-11-08T00:00:00Z");
+        db->log_add_entry(op, {"copy", "/s" + std::to_string(i), "/d" + std::to_string(i), ""});
+        db->log_finish_operation(op, "completed");
+    }
+    add_fault(*db,
+              "CREATE TRIGGER fault BEFORE DELETE ON operations BEGIN "
+              "SELECT RAISE(ABORT, 'phig-test-fault: prune blocked'); END;");
+
+    std::string msg = thrown_message([&] { db->log_prune(1); });
+    EXPECT_NE(msg.find("phig-test-fault: prune blocked"), std::string::npos) << msg;
+    EXPECT_EQ(sqlite3_get_autocommit(db->db_ptr()), 1);
 }

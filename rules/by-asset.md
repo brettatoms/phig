@@ -176,7 +176,7 @@ The record of what happened.
 | R48 | atomicity | violated (test gap) | A copy or move counts each selected item once: an item is reported as applied or as failed, never as both. |
 | R56 | cancellation | holds (test gap) | Reconcile is not cancellable: run_reconcile takes no CancelToken, so a scan interrupted during its worker phase still relinks, demotes and deletes. |
 | R58 | cancellation | partial (test gap) | A run whose token is already cancelled does no work and reports itself incomplete. |
-| R83 | recoverability | violated (test gap) | An operation that fails against the database reports the cause: the message it raises names what SQLite refused, not the state of the connection after the rollback that followed. |
+| R83 | recoverability | holds (test gap) | An operation that fails against the database reports the cause: the message it raises names what SQLite refused, not the state of the connection after the rollback that followed. |
 
 ## thumb-cache — rebuildable: yes
 

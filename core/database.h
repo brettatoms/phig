@@ -311,6 +311,7 @@ class Database {
    private:
     sqlite3* db_ = nullptr;
     void exec(const std::string& sql);
+    void rollback_if_open() noexcept;
     int get_schema_version();
     void set_schema_version(int version);
 
