@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <string>
 #include <thread>
 #include <vector>
@@ -17,8 +19,10 @@
 #include "cancel.h"
 #include "database.h"
 #include "face_path.h"
+#include "faces.h"
 #include "faces_engine.h"
 #include "fault_injection.h"
+#include "hasher.h"
 #include "models.h"
 #include "paths.h"
 #include "phig_binary.h"
@@ -257,6 +261,152 @@ TEST(FacesEngineRun, RebuildCountsALabelItCouldNotCarry) {
     for (const auto& p : coll.db->list_people()) {
         if (p.name == "Ada") EXPECT_EQ(p.face_count, 0);
     }
+}
+
+namespace {
+struct ProvRow {
+    std::string source, frame_sha, model_sha;
+    int width, height;
+    int64_t person_id;
+};
+
+std::vector<ProvRow> provenance_of(Database& db, int64_t image_id) {
+    std::vector<ProvRow> out;
+    sqlite3_stmt* s = nullptr;
+    if (sqlite3_prepare_v2(db.db_ptr(),
+                           "SELECT COALESCE(frame_source,''), COALESCE(frame_sha256,''), "
+                           "COALESCE(model_sha256,''), COALESCE(frame_width,0), "
+                           "COALESCE(frame_height,0), COALESCE(person_id,-1) "
+                           "FROM faces WHERE image_id = ? ORDER BY id",
+                           -1, &s, nullptr) != SQLITE_OK) {
+        ADD_FAILURE() << "prepare failed: " << sqlite3_errmsg(db.db_ptr());
+        return out;
+    }
+    sqlite3_bind_int64(s, 1, image_id);
+    auto text = [&](int c) {
+        return std::string(reinterpret_cast<const char*>(sqlite3_column_text(s, c)));
+    };
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        out.push_back({text(0), text(1), text(2), sqlite3_column_int(s, 3),
+                       sqlite3_column_int(s, 4), sqlite3_column_int64(s, 5)});
+    }
+    sqlite3_finalize(s);
+    return out;
+}
+
+// Gives the row of f0.jpg the real sha256 of its file, as a scan would.
+void set_real_sha(ScratchFaces& coll, const fs::path& file) {
+    std::string sql = "UPDATE images SET sha256 = '" + compute_sha256(file.string()) +
+                      "' WHERE path = '" + file.string() + "'";
+    ASSERT_EQ(sqlite3_exec(coll.db->db_ptr(), sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+}
+
+// Rebuilds, names the first face "Ada", replaces f0.jpg with `replacement`, rebuilds again.
+FacesResult rebuild_after_replacing(ScratchFaces& coll, int64_t& image_id, int64_t& ada,
+                                    const cv::Mat& replacement) {
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    opts.ids = coll.all_ids();
+    CancelToken tok;
+    FacesEngine(opts, *coll.db).run(tok, nullptr);
+    image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    std::vector<FaceRow> faces = faces_of(*coll.db, image_id);
+    EXPECT_FALSE(faces.empty());
+    ada = coll.db->get_or_create_person("Ada");
+    EXPECT_TRUE(coll.db->set_face_person(faces[0].id, ada));
+    EXPECT_TRUE(cv::imwrite((coll.dir / "f0.jpg").string(), replacement));
+    return FacesEngine(opts, *coll.db).run(tok, nullptr);
+}
+}  // namespace
+
+TEST(FacesEngineRun, RebuildRecordsTheFrameAndModelOnEveryFace) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(1);
+    const fs::path file = coll.dir / "f0.jpg";
+    set_real_sha(coll, file);
+    cv::Mat decoded = cv::imread(file.string());
+    ASSERT_FALSE(decoded.empty());
+
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    opts.ids = coll.all_ids();
+    CancelToken tok;
+    ASSERT_GT(FacesEngine(opts, *coll.db).run(tok, nullptr).faces_detected, 0u);
+
+    int64_t image_id = coll.db->get_image_id(file.string());
+    std::vector<ProvRow> rows = provenance_of(*coll.db, image_id);
+    ASSERT_FALSE(rows.empty());
+    for (const ProvRow& r : rows) {
+        EXPECT_EQ(r.source, "file");
+        EXPECT_EQ(r.width, decoded.cols);
+        EXPECT_EQ(r.height, decoded.rows);
+        EXPECT_EQ(r.frame_sha, compute_sha256(file.string()));
+        EXPECT_EQ(r.model_sha, recognition_model_sha256());
+    }
+}
+
+TEST(FacesEngineRun, RebuildCarriesALabelWhenTheImageIsReplacedByARescaledCopy) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(1);
+    cv::Mat orig = cv::imread((coll.dir / "f0.jpg").string());
+    ASSERT_FALSE(orig.empty());
+    cv::Mat half;
+    cv::resize(orig, half, cv::Size(orig.cols / 2, orig.rows / 2));
+    int64_t image_id = -1, ada = -1;
+    FacesResult r = rebuild_after_replacing(coll, image_id, ada, half);
+    EXPECT_EQ(r.labels_dropped, 0u);
+    bool found = false;
+    for (const ProvRow& p : provenance_of(*coll.db, image_id)) found |= p.person_id == ada;
+    EXPECT_TRUE(found) << "no face of the rescaled image carries Ada's label";
+}
+
+TEST(FacesEngineRun, RebuildCarriesALabelWhenTheImageIsReplacedByACroppedCopy) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(1);
+    cv::Mat orig = cv::imread((coll.dir / "f0.jpg").string());
+    ASSERT_FALSE(orig.empty());
+    cv::Rect roi(orig.cols / 10, orig.rows / 10, orig.cols - orig.cols / 10,
+                 orig.rows - orig.rows / 10);
+    cv::Mat cropped = orig(roi).clone();
+    int64_t image_id = -1, ada = -1;
+    FacesResult r = rebuild_after_replacing(coll, image_id, ada, cropped);
+    EXPECT_EQ(r.labels_dropped, 0u);
+    bool found = false;
+    for (const ProvRow& p : provenance_of(*coll.db, image_id)) found |= p.person_id == ada;
+    EXPECT_TRUE(found) << "no face of the cropped image carries Ada's label";
+}
+
+TEST(FacesEngineRun, RebuildDropsALabelFromAnotherModelInAnotherFrame) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(1);
+    const std::string path = (coll.dir / "f0.jpg").string();
+    int64_t image_id = coll.db->get_image_id(path);
+    ASSERT_GT(image_id, 0);
+
+    // Detect once to learn where a real face is, then store a labelled face on that box
+    // under another model and frame.
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    opts.ids = coll.all_ids();
+    CancelToken tok;
+    ASSERT_GT(FacesEngine(opts, *coll.db).run(tok, nullptr).faces_detected, 0u);
+    std::vector<FaceRow> real = faces_of(*coll.db, image_id);
+    ASSERT_FALSE(real.empty());
+    coll.db->delete_faces_for_image(image_id);
+
+    FaceInfo old{};
+    old.embedding.fill(0.5f);
+    old.x = real[0].x;
+    old.y = real[0].y;
+    old.width = real[0].width;
+    old.height = real[0].height;
+    FaceProvenance other{"file", 1, 1, "other", std::string(64, 'b')};
+    int64_t face_id = coll.db->insert_face(image_id, old, other);
+    ASSERT_TRUE(coll.db->set_face_person(face_id, coll.db->get_or_create_person("Ada")));
+
+    FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
+    EXPECT_EQ(r.labels_dropped, 1u);
+    for (const ProvRow& p : provenance_of(*coll.db, image_id)) EXPECT_EQ(p.person_id, -1);
 }
 
 TEST(FacesEngineRun, RebuildOverUnlabelledFacesDropsNothing) {

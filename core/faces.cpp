@@ -179,6 +179,12 @@ float box_overlap(const FaceInfo& a, const FaceInfo& b) {
     return static_cast<float>(inter / (area_a + area_b - inter));
 }
 
+FaceProvenance face_provenance(const DecodeFrame& frame, const std::string& image_sha256,
+                               const std::string& model_sha256) {
+    return {decode_source_name(frame.source), frame.width, frame.height,
+            frame.source_sha256.empty() ? image_sha256 : frame.source_sha256, model_sha256};
+}
+
 std::string recognition_model_sha256() { return compute_sha256(sface_model_path()); }
 
 float normalized_embedding_distance(const std::array<float, 128>& a,

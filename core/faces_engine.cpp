@@ -112,8 +112,7 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
 
     // Hashed once per run, outside the database lock and after the detectors load, before any image
     // is touched.
-    FaceProvenance current;
-    current.model_sha256 = recognition_model_sha256();
+    const std::string model_sha = recognition_model_sha256();
 
     std::atomic<size_t> total_faces{0};
     std::atomic<size_t> done{0};
@@ -143,7 +142,7 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
         // OpenCV's message and discards it, which loses the reason from a worker
         // thread. Routing it to the caller keeps the warning and the progress
         // line together, on one thread, in order.
-        DecodeResult decoded = decode_image_with_warning(img_info.path);
+        DecodeResult decoded = decode_image_with_warning(img_info.path, /*hash_source=*/true);
         if (decoded.img.empty()) {
             errors.fetch_add(1);
             std::string text = "faces: " + img_info.path;
@@ -162,6 +161,7 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
             if (progress == nullptr) log_warn(warning);
         }
         cv::Mat img = decoded.img;
+        const FaceProvenance current = face_provenance(decoded.frame, img_info.sha256, model_sha);
 
         auto faces = detector_for_worker(detectors, worker_id)->detect(img);
 
@@ -194,7 +194,7 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
                     std::vector<int64_t> face_ids;
                     face_ids.reserve(faces.size());
                     for (size_t i = 0; i < faces.size(); ++i) {
-                        face_ids.push_back(db_.insert_face(image_id, faces[i]));
+                        face_ids.push_back(db_.insert_face(image_id, faces[i], current));
                         if (carry.person_ids[i] >= 0) {
                             db_.set_face_person(face_ids[i], carry.person_ids[i]);
                         }

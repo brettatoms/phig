@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -1362,6 +1363,54 @@ TEST(ScanEngine, DetectsFacesWithMultipleWorkers) {
     for (const auto& img : db.get_all_images()) {
         EXPECT_TRUE(db.has_faces(img.path)) << img.path << " got no faces";
     }
+}
+
+TEST(ScanEngine, ScanWithFacesRecordsProvenance) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchCollection c(0);
+    fs::copy_file("tests/data/faces_small.jpg", c.dir / "a.jpg");
+    fs::copy_file("tests/data/faces_large.jpg", c.dir / "b.jpg");
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+    ScanOptions o = c.options();
+    o.faces = true;
+    o.parallel = 1;
+
+    auto unprovenanced = [&]() {
+        sqlite3_stmt* s = nullptr;
+        EXPECT_EQ(sqlite3_prepare_v2(db.db_ptr(),
+                                     "SELECT COUNT(*) FROM faces WHERE frame_sha256 IS NULL OR "
+                                     "frame_sha256 = '' OR model_sha256 IS NULL OR "
+                                     "model_sha256 = '' OR frame_source IS NULL",
+                                     -1, &s, nullptr),
+                  SQLITE_OK);
+        sqlite3_step(s);
+        int n = sqlite3_column_int(s, 0);
+        sqlite3_finalize(s);
+        return n;
+    };
+    auto total = [&]() {
+        sqlite3_stmt* s = nullptr;
+        sqlite3_prepare_v2(db.db_ptr(), "SELECT COUNT(*) FROM faces", -1, &s, nullptr);
+        sqlite3_step(s);
+        int n = sqlite3_column_int(s, 0);
+        sqlite3_finalize(s);
+        return n;
+    };
+
+    ASSERT_EQ(ScanEngine(o, db).run_workers(cancel, nullptr).errors, 0u);
+    ASSERT_EQ(total(), 3);
+    EXPECT_EQ(unprovenanced(), 0) << "batch-insert path";
+
+    // The files are unchanged, so a rescan takes the faces-only path.
+    for (const auto& img : db.get_all_images()) {
+        db.delete_faces_for_image(db.get_image_id(img.path));
+    }
+    ASSERT_EQ(total(), 0);
+    ASSERT_EQ(ScanEngine(o, db).run_workers(cancel, nullptr).errors, 0u);
+    ASSERT_EQ(total(), 3);
+    EXPECT_EQ(unprovenanced(), 0) << "faces-only path";
 }
 
 // ---- Live Photo pairing (plan 038) ----

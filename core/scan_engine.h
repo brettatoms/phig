@@ -48,6 +48,7 @@ struct ScanOptions {
 struct ProcessResult {
     ImageInfo info;
     std::vector<FaceInfo> faces;  // empty if faces not requested
+    DecodeFrame frame;            // the decoded frame the faces were detected in
 };
 
 // Hashes, phashes, and extracts metadata for one file, optionally detecting

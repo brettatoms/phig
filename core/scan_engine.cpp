@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -67,7 +68,13 @@ ProcessResult process_file(const fs::path& filepath, FaceDetector* face_detector
         info.media_type = "image";
 
         // Decode image once
-        cv::Mat img = decode_image(info.path);
+        DecodeResult decoded = decode_image_with_warning(info.path, face_detector != nullptr);
+        if (!decoded.warning.empty()) {
+            std::cerr << '\n';  // break out of the scan progress line
+            log_warn(info.path + " -- " + decoded.warning);
+        }
+        cv::Mat img = decoded.img;
+        result.frame = decoded.frame;
         if (img.empty()) {
             throw std::runtime_error("Cannot decode image: " + info.path);
         }
@@ -219,11 +226,15 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
     // sharing an instance across workers is a data race. `process_one` indexes
     // this vector by worker_id, which is only sound while size() == num_threads.
     std::vector<std::unique_ptr<FaceDetector>> face_detectors;
+    // Hashed once, after the detectors load and before any worker starts, so the
+    // write lock is never held across it; every face this scan writes records it.
+    std::string model_sha;
     if (opts_.faces) {
         publish_stage(ScanStage::LoadingFaceModels, static_cast<size_t>(num_threads));
         for (int i = 0; i < num_threads; i++) {
             face_detectors.push_back(std::make_unique<FaceDetector>());
         }
+        model_sha = recognition_model_sha256();
     }
 
     if (!files.empty()) {
@@ -255,7 +266,9 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                         // path for forced re-detection.
                         if (image_id >= 0 && !db_.has_faces(r.info.path)) {
                             for (const auto& face : r.faces) {
-                                int64_t face_id = db_.insert_face(image_id, face);
+                                int64_t face_id = db_.insert_face(
+                                    image_id, face,
+                                    face_provenance(r.frame, r.info.sha256, model_sha));
                                 db_.auto_label_face(face_id, face.embedding);
                             }
                             face_count.fetch_add(r.faces.size());
@@ -359,7 +372,13 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                     processed.fetch_add(1);
                 } else if (needs_faces_only) {
                     // Only decode and detect faces — skip hash/phash/EXIF
-                    cv::Mat img = decode_image(canonical);
+                    DecodeResult decoded =
+                        decode_image_with_warning(canonical, /*hash_source=*/true);
+                    if (!decoded.warning.empty()) {
+                        std::cerr << '\n';  // break out of the scan progress line
+                        log_warn(canonical + " -- " + decoded.warning);
+                    }
+                    cv::Mat img = decoded.img;
                     if (!img.empty()) {
                         if (detector) {
                             auto faces = detector->detect(img);
@@ -375,8 +394,12 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                                     try {
                                         int64_t image_id = db_.get_image_id(canonical);
                                         if (image_id >= 0) {
+                                            const FaceProvenance prov = face_provenance(
+                                                decoded.frame,
+                                                db_.get_sha256(canonical).value_or(""), model_sha);
                                             for (const auto& face : faces) {
-                                                int64_t face_id = db_.insert_face(image_id, face);
+                                                int64_t face_id =
+                                                    db_.insert_face(image_id, face, prov);
                                                 db_.auto_label_face(face_id, face.embedding);
                                             }
                                             face_count.fetch_add(faces.size());
