@@ -163,8 +163,8 @@ test_gap = "The parser branch is now driven through the binary, both of its effe
 id = "R85"
 tier = "engine"
 concern = "metadata"
-statement = "A face rebuild carries each person label to the re-detected face in the same image whose box overlaps it at or above kLabelCarryMinOverlap, one label per face, and counts every label it does not carry."
-rationale = "A person label is typed by a user and cannot be derived again from pixels, while a rebuild replaces every face row of the images it selects. FacesEngine::run reads the image's labelled faces inside the per-image transaction before deleting them, carry_labels matches them to the new detections by intersection over union, greedy from the highest overlap down and one-to-one, and the matched labels are written before auto_label_face names the rest. Box overlap is the only test: embeddings from a different model are not comparable, so an embedding check would drop every label in a model-change rebuild. Labels with no match at or above the threshold are counted in FacesResult::labels_dropped. Re-detecting 564 stored faces with the same model over the same pixels reproduced every box exactly, so labels carry through such a rebuild."
+statement = "A face rebuild carries each person label to a matching re-detected face in the same image, one label per face, and counts every label it does not carry."
+rationale = "A person label is typed by a user and cannot be derived again from pixels, while a rebuild replaces every face row of the images it selects. FacesEngine::run reads the image's labelled faces inside the per-image transaction before deleting them, carry_labels matches them to the new detections, greedy and one-to-one, and the matched labels are written before auto_label_face names the rest. Matching is by embedding when the recognition model is unchanged and by intersection over union at kLabelCarryMinOverlap when the model changed and the recorded frame is identical to the new decode (R86). Labels with no match are counted in FacesResult::labels_dropped."
 enforced_at = [
     "core/faces_engine.cpp:FacesEngine::run",
     "core/faces.cpp:carry_labels",
@@ -183,3 +183,31 @@ tests = [
 test_kind = "witness"
 status = "holds"
 test_gap = "The engine, CLI and ABI witnesses skip wherever the face path cannot run, so ubuntu-26.04 is the only CI leg that runs them. Every witness rebuilds over the same model and pixels. Nothing exercises a partial-overlap match at the threshold or a rebuild whose decoded pixels differ from the detection's."
+
+[[rule]]
+id = "R86"
+tier = "engine"
+concern = "metadata"
+statement = "A person label carried across a face rebuild lands on a face of the same person, or is dropped and counted; it never moves to another person's face."
+rationale = "A rebuild re-detects faces and carries each image's labels onto the new detections. Box positions depend on the decoded frame, which can change without changing its size — a square image rotated 90 degrees, any image rotated 180 degrees or mirrored — so a box match can attach a name to the wrong person with no signal. carry_labels therefore matches by embedding when the recognition model is unchanged, since embeddings come from aligned face crops and do not depend on the frame, and by box overlap only when the model changed and the face rows record a frame identical to the new decode (same bytes by sha256, same size). Anything else is dropped and counted in labels_dropped. A wrong label is worse than a dropped one: a drop is reported, a wrong label is not. The two passes share one set of taken detections, so a detection takes at most one label across both. FacesEngine records a file's row sha256 as the frame hash only while the file's mtime and size still match the row; otherwise the frame hash is empty and the overlap pass cannot match."
+enforced_at = [
+    "core/faces.cpp:carry_labels",
+    "core/faces.cpp:same_frame",
+    "core/faces_engine.cpp:FacesEngine::run",
+    "core/faces_engine.cpp:trusted_row_sha",
+]
+binds = ["faces.rebuild"]
+protects = ["user-metadata"]
+tests = [
+    "CarryLabels.SameModelNeverMovesALabelToAnotherPersonsFace",
+    "CarryLabels.AModelChangeInASameSizedRotatedFrameDropsRatherThanMoves",
+    "CarryLabels.AModelChangeInA180RotatedFrameDropsRatherThanMoves",
+    "CarryLabels.ARowFromBeforeV10IsTakenAsTheSfaceModelWithAnUnknownFrame",
+    "CarryLabels.AnEmbeddingMatchAndAnOverlapMatchShareOneDetection",
+    "CarryLabels.SameModelOneDetectionTakesAtMostOneLabel",
+    "FacesEngineRun.RebuildDropsALabelFromAnotherModelInAnotherFrame",
+    "FacesEngineRun.RebuildDropsALabelWhenTheFileChangedUnderItsRowAndTheModelChanged",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "The rotated-frame cases are unit tests over synthetic embeddings; no engine test rotates a real image, because the detector does not find faces turned 90 degrees reliably. The stale-row check trusts mtime and size like scan's skip, so a file rewritten with identical mtime and size passes as unchanged. The embedding threshold is SFace's published value, not one measured on phig's data. The engine witnesses skip without the face path, so ubuntu-26.04 is the only CI leg that runs them."

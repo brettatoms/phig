@@ -607,7 +607,22 @@ after the R60 fix; R73 and open question 7 stay open.
   ```
 
 - Left: R73, the layer move; R66, faces with no plan phase, which also stays on
-  053; and the open question 7 decision, which is designed and not yet built.
+  053.
+- The open question 7 decision is built. A face rebuild carries a label by
+  embedding when the recognition model is unchanged, by box overlap when the
+  model changed and the recorded frame is identical, and otherwise drops and
+  counts it (R86; R60 stays `partial`, since an unmatched label is still dropped
+  without authorization). Plan 069 is completed on the same branch. Commits:
+
+  ```
+  4a4faa7 Record where each face came from (schema v10)
+  6d17ddc Carry face labels by embedding, and by overlap only in a recorded identical frame
+  4a1469b Hash the recognition model once per rebuild run; pin carry_labels pass interaction and threshold
+  d8b92d1 Record the frame and model on every face a scan or rebuild writes
+  6f59030 Trust a row's sha256 as a face frame hash only while the file still matches the row
+  d19d652 Measure label carry's cost on a face rebuild
+  ce510ac Make the face perf test change the frame on every timed run
+  ```
 - `cmd_organize` prints `result.skipped`, so an item skipped because its
   destination became occupied after planning is counted. The engine's count is
   pinned by `ApplySkipsAnItemWhoseDestinationBecameOccupied`; the CLI line has no
