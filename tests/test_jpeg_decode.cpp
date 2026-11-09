@@ -26,10 +26,33 @@ void expect_identical(const cv::Mat& a, const cv::Mat& b) {
     ASSERT_EQ(a.size(), b.size());
     EXPECT_EQ(cv::norm(a, b, cv::NORM_INF), 0.0);
 }
+// The exif_* fixtures pin which EXIF layouts OpenCV orients; make_fixtures.py
+// says what each one exercises.
 const char* kDecodable[] = {
-    "baseline.jpg", "progressive.jpg", "grayscale.jpg", "cmyk_adobe.jpg", "sub420.jpg",
-    "sub444.jpg",   "orient_1.jpg",    "orient_2.jpg",  "orient_3.jpg",   "orient_4.jpg",
-    "orient_5.jpg", "orient_6.jpg",    "orient_7.jpg",  "orient_8.jpg",
+    "baseline.jpg",
+    "progressive.jpg",
+    "grayscale.jpg",
+    "cmyk_adobe.jpg",
+    "sub422.jpg",
+    "sub444.jpg",
+    "orient_1.jpg",
+    "orient_2.jpg",
+    "orient_3.jpg",
+    "orient_4.jpg",
+    "orient_5.jpg",
+    "orient_6.jpg",
+    "orient_7.jpg",
+    "orient_8.jpg",
+    "exif_after_xmp.jpg",
+    "exif_intel.jpg",
+    "exif_tags_before.jpg",
+    "exif_make_out_of_range.jpg",
+    "exif_xres_out_of_range.jpg",
+    "exif_white_point_out_of_range.jpg",
+    "exif_chromaticities_out_of_range.jpg",
+    "exif_count_overrun.jpg",
+    "exif_two_markers.jpg",
+    "exif_second_marker_orients.jpg",
 };
 }  // namespace
 
@@ -49,6 +72,8 @@ TEST(JpegDecode, MemoryMatchesImdecodeOnEveryFixture) {
         std::vector<unsigned char> bytes = read_all(fixture(name));
         DecodeResult r = decode_jpeg_memory(bytes);
         expect_identical(r.img, cv::imdecode(bytes, cv::IMREAD_COLOR));
+        EXPECT_EQ(r.frame.width, r.img.cols);
+        EXPECT_EQ(r.frame.height, r.img.rows);
     }
 }
 
@@ -57,6 +82,12 @@ TEST(JpegDecode, TruncatedFileGivesImreadsPartialImageAndTheMessage) {
     DecodeResult r = decode_jpeg_file(p);
     expect_identical(r.img, cv::imread(p, cv::IMREAD_COLOR));
     EXPECT_NE(r.warning.find("Premature end of JPEG file"), std::string::npos) << r.warning;
+}
+
+TEST(JpegDecode, TruncatedBytesFailWithAnEmptyImageAndTheMessage) {
+    DecodeResult r = decode_jpeg_memory(read_all(fixture("truncated.jpg")));
+    EXPECT_TRUE(r.img.empty());
+    EXPECT_FALSE(r.warning.empty());
 }
 
 TEST(JpegDecode, ANonJpegIsNotClaimed) {

@@ -7,6 +7,7 @@
 #include <exception>
 #include <map>
 #include <opencv2/core.hpp>
+#include <opencv2/core/utility.hpp>
 #include <span>
 #include <string>
 #include <utility>
@@ -26,12 +27,17 @@ struct ErrorManager {
     std::string* messages;
 };
 
+// Called from inside libjpeg, so nothing may propagate out of it; a message
+// that cannot be stored is dropped.
 void append_message(j_common_ptr cinfo) {
     auto* err = reinterpret_cast<ErrorManager*>(cinfo->err);
     char buf[JMSG_LENGTH_MAX];
     (*cinfo->err->format_message)(cinfo, buf);
-    if (!err->messages->empty()) *err->messages += "; ";
-    *err->messages += buf;
+    try {
+        if (!err->messages->empty()) *err->messages += "; ";
+        *err->messages += buf;
+    } catch (...) {
+    }
 }
 
 // libjpeg's default emit_message stays in place, so this receives exactly what
@@ -169,13 +175,22 @@ class ExifIfd0 {
     bool intel_;
 };
 
-// The orientation OpenCV reads: the first 0x0112 tag across every APP1 marker
-// that starts with "Exif\0\0", in file order. 0 when there is none.
+// The orientation the linked OpenCV reads, 0 when there is none. OpenCV 5
+// takes the first 0x0112 tag across every APP1 marker that starts with
+// "Exif\0\0", in file order. OpenCV 4 parses only the first APP1 marker, past
+// its first 6 bytes, whatever it holds, so an XMP marker ahead of the Exif one
+// hides the orientation. The rule follows the runtime version because stored
+// hashes must match cv::imread on the machine that decodes.
 int exif_orientation(const jpeg_decompress_struct& cinfo) {
+    const bool first_app1_only = cv::getVersionMajor() < 5;
     std::map<uint16_t, uint16_t> seen;
     for (jpeg_saved_marker_ptr m = cinfo.marker_list; m != nullptr; m = m->next) {
-        if (m->marker != JPEG_APP0 + 1 || m->data_length <= 6) continue;
-        if (std::memcmp(m->data, "Exif\0\0", 6) != 0) continue;
+        if (m->marker != JPEG_APP0 + 1) continue;
+        if (first_app1_only) {
+            if (m->data_length > 6) ExifIfd0(m->data + 6, m->data_length - 6).parse(seen);
+            break;
+        }
+        if (m->data_length <= 6 || std::memcmp(m->data, "Exif\0\0", 6) != 0) continue;
         ExifIfd0(m->data + 6, m->data_length - 6).parse(seen);
     }
     auto it = seen.find(0x0112);
@@ -239,6 +254,7 @@ struct Decoder {
     std::string warning;
     cv::Mat img;
     int orientation = 0;
+    bool ended_early = false;  // the source ran out before the last scanline
 };
 
 // The source imread uses for a file, or the one imdecode uses for bytes.
@@ -282,14 +298,20 @@ bool read_pixels(Decoder& d) {
     if (!cmyk) {
         for (int y = 0; y < d.img.rows; ++y) {
             JSAMPROW row = d.img.ptr<unsigned char>(y);
-            if (jpeg_read_scanlines(&cinfo, &row, 1) != 1) return false;
+            if (jpeg_read_scanlines(&cinfo, &row, 1) != 1) {
+                d.ended_early = true;
+                return false;
+            }
         }
         return true;
     }
     JSAMPARRAY buffer = (*cinfo.mem->alloc_sarray)(reinterpret_cast<j_common_ptr>(&cinfo),
                                                    JPOOL_IMAGE, width * 4, 1);
     for (int y = 0; y < d.img.rows; ++y) {
-        if (jpeg_read_scanlines(&cinfo, buffer, 1) != 1) return false;
+        if (jpeg_read_scanlines(&cinfo, buffer, 1) != 1) {
+            d.ended_early = true;
+            return false;
+        }
         cmyk_to_bgr(buffer[0], d.img.ptr<unsigned char>(y), width);
     }
     return true;
@@ -312,12 +334,8 @@ void guarded_finish(Decoder& d) {
     jpeg_finish_decompress(&d.cinfo);
 }
 
-DecodeResult run(Decoder& d) {
+DecodeResult run_unchecked(Decoder& d) {
     DecodeResult result;
-    d.cinfo.err = jpeg_std_error(&d.err.pub);
-    d.err.pub.error_exit = error_exit;
-    d.err.pub.output_message = output_message;
-    d.err.messages = &d.warning;
     bool ok = guarded_header(d);
     if (ok) {
         const uint64_t pixels = uint64_t{d.cinfo.output_width} * d.cinfo.output_height;
@@ -331,6 +349,11 @@ DecodeResult run(Decoder& d) {
         d.img.create(static_cast<int>(d.cinfo.output_height),
                      static_cast<int>(d.cinfo.output_width), CV_8UC3);
         ok = guarded_pixels(d);
+        // A suspending source stops without a libjpeg message, so give one.
+        if (d.ended_early) {
+            if (!d.warning.empty()) d.warning += "; ";
+            d.warning += "JPEG data ends before the image does";
+        }
         if (ok) guarded_finish(d);
     }
     jpeg_destroy_decompress(&d.cinfo);
@@ -342,6 +365,25 @@ DecodeResult run(Decoder& d) {
     }
     result.warning = std::move(d.warning);
     return result;
+}
+
+// Decodes, destroying the decompressor whatever happens. An exception from
+// OpenCV or an allocation becomes an empty image and a message.
+DecodeResult run(Decoder& d) {
+    d.cinfo.err = jpeg_std_error(&d.err.pub);
+    d.err.pub.error_exit = error_exit;
+    d.err.pub.output_message = output_message;
+    d.err.messages = &d.warning;
+    try {
+        return run_unchecked(d);
+    } catch (const std::exception& e) {
+        jpeg_destroy_decompress(&d.cinfo);
+        DecodeResult result;
+        result.warning = std::move(d.warning);
+        if (!result.warning.empty()) result.warning += "; ";
+        result.warning += e.what();
+        return result;
+    }
 }
 
 }  // namespace
