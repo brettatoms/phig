@@ -436,9 +436,12 @@ after the R60 fix; R73 and open question 7 stay open.
   ```
 
 - Left: R73, the layer move; R66, faces with no plan phase, which also stays on
-  053; and open question 7. `cmd_organize` prints the plan-time skip count, not
-  `result.skipped`, so an item skipped because its destination became occupied
-  after planning appears in no count.
+  053; and open question 7.
+- `cmd_organize` prints `result.skipped`, so an item skipped because its
+  destination became occupied after planning is counted. The engine's count is
+  pinned by `ApplySkipsAnItemWhoseDestinationBecameOccupied`; the CLI line has no
+  test of its own, because the binary offers no point between plan and apply to
+  occupy a destination.
 - `--output` now refuses a path that exists and is not a regular file, such as
   `/dev/stdout`, and cannot write into a directory where it cannot create a temp
   file, such as `/dev`; a process substitution like `--output >(gzip >x)` fails
