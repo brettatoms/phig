@@ -368,6 +368,48 @@ reported afterwards, by a CLI warning, `FacesResult::labels_dropped` and
 `phig_faces_result.labels_dropped`. The execution record is
 `docs/plans/2026-11-07-060-r60-label-carry.md`.
 
+## Decisions for R27, R48, R69, R81 and R83
+
+Decided 2026-11-08, answering open questions 3 to 6. These five land together,
+after the R60 fix; R73 and open question 7 stay open.
+
+- **R27: a run that did not do everything is `interrupted` and exits 1.**
+  `OrganizeResult::completed` means the run did everything it was asked:
+  it is false on cancellation, on any file that failed, and on any attachment
+  that was not carried. A separate `cancelled` flag says which. The activity
+  log keeps its two statuses, `completed` and `interrupted`, as `rm` already
+  writes them; the per-file entries carry the detail, and 065's reader can
+  widen the vocabulary if it needs to. `cp` and `mv` exit 1 when `completed`
+  is false, as `rm` does. The exit-code change lands here rather than in 043,
+  which is about the scan split.
+- **R48: an item is counted once, by what happened to its photo.** A photo
+  that moved or copied counts in `applied`, whatever happened to its
+  attachments. Attachments are carried independently, so one that fails does
+  not stop the rest, and each failure counts in a new
+  `OrganizeResult::attachment_errors`, with its reason in the progress error.
+  `phig_organize_result` gains `attachment_errors` and `cancelled`; ABI
+  compatibility is not a constraint. The CLI prints the attachment count, and
+  an attachment that was not carried makes the run `interrupted`.
+- **R69: `--output` refuses an occupied path unless `--overwrite` is given.**
+  The results are written to a temporary file beside the target and renamed
+  into place, so a failed run never leaves a truncated file. Without
+  `--overwrite` the rename refuses to replace anything at the path, including a
+  symlink; with it, the rename replaces the link itself, never what it points
+  at. The write goes through one `core/` function, which all four open sites
+  and `fav list` reach. `--count` with `--output` is an error, since `--count`
+  writes nothing to the file. `--force` and `--on-conflict` were rejected as
+  the flag: the first already means "reprocess" on `scan`, and the second has
+  its own unresolved problem in 059.
+- **R81: stdin is staged in a private temporary file.** The bytes are read
+  first; empty stdin is refused before anything is created. The file is
+  created with a unique name, exclusively and with mode 0600, through one
+  `core/` function, so no existing path or symlink is ever opened.
+- **R83: the message is read before the rollback**, at the three sites. The
+  open transaction left by a throw from `delete_faces_for_image` or
+  `log_add_entry` inside `delete_paths_logged`, and by the same throw inside
+  `delete_paths`, is closed in the same change: any throw rolls back once, and
+  the rollback never replaces the original error.
+
 ## Open
 
 1. **What authorizes a face rebuild.** Answered by the R60 decision above. Three
@@ -392,12 +434,12 @@ reported afterwards, by a CLI warning, `FacesResult::labels_dropped` and
    references are being deleted by the same run. Snapshotting the labelled
    embeddings before the run and matching against the snapshot is one candidate
    and is not costed here.
-3. **Whether `cp`/`mv` change their exit code.** Making `cmd_organize` return
+3. **Whether `cp`/`mv` change their exit code.** Answered by the decisions above. Making `cmd_organize` return
    non-zero on errors is the obvious half of R27, and it is a user-visible
    change to a shipped command that scripts depend on. It also lands in `cli/`,
    which plan 043 owns. Whether it belongs here or there is a scoping question,
    not a design one.
-4. **What a half-done item is counted as.** `OrganizeResult` has `applied`,
+4. **What a half-done item is counted as.** Answered by the decisions above. `OrganizeResult` has `applied`,
    `skipped`, `errors`, `files_written` and `completed`
    (`core/organize_engine.h:94-98`), with no bucket for "the photo landed, the
    attachment did not". Counting it only in `errors` loses the fact that the
@@ -407,12 +449,12 @@ reported afterwards, by a CLI warning, `FacesResult::labels_dropped` and
    caller-allocated with no size or version member, the same shape
    `libphig/CLAUDE.md` says makes `phig_op_progress` unable to gain a field, so
    the same hazard applies and a new field there is not free.
-5. **Whether R27's terminal status is binary.** `interrupted` for a cancelled
+5. **Whether R27's terminal status is binary.** Answered by the decisions above: it stays binary. `interrupted` for a cancelled
    run and `interrupted` for a run where 3 of 900 files failed are different
    facts sharing one word. Widening the status vocabulary touches every writer
    and the reader that does not exist yet, so it may be right to keep it binary
    and let the entry count carry the detail.
-6. **What `--output` does when the path is occupied.** Refusing unless a flag
+6. **What `--output` does when the path is occupied.** Answered by the decisions above. Refusing unless a flag
    says otherwise matches what organize does three times over (R01, R02, R41),
    and it breaks `phig search --output results.txt` run twice, which is the
    ordinary use. A flag (`--force`, or `--on-conflict` reused) keeps that
