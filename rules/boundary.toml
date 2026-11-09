@@ -121,8 +121,8 @@ id = "R69"
 tier = "boundary"
 concern = "conflict"
 statement = "Writing a command's results to the path named by --output does not destroy what is already at that path."
-rationale = "It does. cmd_search and cmd_duplicates hand the path to a default std::ofstream::open, whose mode truncates, and there is no --on-conflict for --output, no prompt, no backup and no activity-log entry, so the destroyed bytes leave no record anywhere. There are four such open sites, not one: cli/main.cpp:584 in cmd_duplicates, and :962, :991 and :1040 in cmd_search's person, face and general branches, so a fix written against one of them leaves the other three truncating. Measured against a scratch two-image collection with the built binary, a 14-byte file reading IRREPLACEABLE came back as search results from 'phig search --output' (exit 0, nothing on stdout), as duplicate groups from 'phig duplicates --output' (exit 0), as a path and a Found 1 images line from 'phig search --person Alice --output', and as 'Found 0 matching faces' from 'phig search --face <image> --output'. What was there is gone in every case; the sizes are not quoted because they are not properties of the rule — each of those outputs prints collection paths, so its length follows where the scratch collection lives. A search that matches nothing truncates the file the same way — '--ext nosuchext' left 15 bytes reading 'Found 0 images'. 'fav list --output' is the same code, since cmd_fav's list branch fills a SearchOptions and calls cmd_search (cli/main.cpp:1749); it reaches the :1040 site only, and measured, it left the same 15 bytes. Two cases leave the file alone on a run that exits 0. --count prints the count and returns before any stream is opened, on all three search branches (cli/main.cpp:950-952, :983-985 and :1032-1035), so 'phig search --count --output' left the 14-byte file at 14 bytes and did nothing else with the flag, and 'fav list --count --output' did the same. And a person search that matches nobody prints its No images found line and returns at cli/main.cpp:954-957, before the :962 open — measured, 14 bytes unchanged, exit 0. cmd_duplicates has no equivalent: with nothing to report it truncates all the same, '--type exact' against a collection with no exact duplicates leaving 85 bytes of empty summary. The other survivals are error paths that exit 1 — either command's empty-database guard, and a --face query image phig cannot decode or finds no face in. Whether a command destroys the file at --output therefore turns on flags that have nothing to do with output. Every other write phig makes refuses an occupied destination — the resolver renames around a protected one (R01), move_file refuses at the syscall (R02), and a carried attachment refuses outright (R41) — so this is the one write path with no resolution at all. Anchored at cli/main.cpp deliberately: no core/ primitive renders a result to a file, so both the write and any guard on it exist only in the CLI and no other surface could inherit a fix; libphig returns records and leaves the writing to its caller. Plan 060 owns it. The shape is 060's thesis exactly — the run finishes, reports success, exits 0, and something that mattered is gone with no signal and no record — and what has to be decided is whether a successful run may destroy silently, which is a data-safety question rather than the parser question 043 handles. The fix lands in cli/, so it carries the same scoping question 060's open question 3 already raises for cmd_organize's exit code."
-enforced_at = ["cli/main.cpp:cmd_search", "cli/main.cpp:cmd_duplicates"]
+rationale = "Results are rendered into a buffer and written through write_output_file, which writes a temporary sibling and renames it into place, so the path never holds a partial file. The rename refuses an occupied path, a symlink included (dangling or not), unless --overwrite was given; with it the rename replaces the link itself and never the file it points at. cmd_duplicates and all three branches of cmd_search (person, face, general) go through one ResultSink, and fav list reaches cmd_search, so no site opens the path itself. --count with --output and --overwrite without --output are refused before any work is done, as flags that would do nothing. cmd_search and cmd_duplicates also refuse an occupied path before the search runs, to save the work; the refusal in write_output_file is the one that holds. Every other write phig makes refuses an occupied destination (R01, R02, R41), and this one now does too. Libphig returns records and leaves the writing to its caller, so the write and its guard live in core/paths.cpp for any surface that renders results to a file."
+enforced_at = ["core/paths.cpp:write_output_file"]
 binds_surface = ["cli"]
 # The bytes destroyed are on disk and irreplaceable, which is what
 # original-file names, but they sit outside the collection: no row points at
@@ -131,10 +131,23 @@ binds_surface = ["cli"]
 # by-asset row a reader consults for 'what can destroy a file' holds every rule
 # that can; the strain is that every other rule in that row means tracked media.
 protects = ["original-file"]
-tests = []
+tests = [
+    "CliOutputTest.OutputRefusesAnOccupiedPath",
+    "CliOutputTest.OutputOverwriteReplacesTheFile",
+    "CliOutputTest.OutputCreatesAMissingFile",
+    "CliOutputTest.OutputOverwriteReplacesASymlinkNotItsTarget",
+    "CliOutputTest.OutputRefusesADanglingSymlink",
+    "CliOutputTest.CountWithOutputIsAnError",
+    "CliOutputTest.OverwriteWithoutOutputIsAnError",
+    "PathsTest.WriteOutputFileCreatesAMissingFile",
+    "PathsTest.WriteOutputFileRefusesAnExistingFile",
+    "PathsTest.WriteOutputFileRefusesADanglingSymlink",
+    "PathsTest.WriteOutputFileReplacesASymlinkNotItsTarget",
+    "PathsTest.WriteOutputFileReplacesAnExistingFileWhenAsked",
+]
 test_kind = "subprocess"
-status = "violated"
-test_gap = "Nothing tests --output at all: no test in tests/ passes the flag, and none calls cmd_search or cmd_duplicates, which are cli/ functions no fixture drives. Every fact above was measured by running the built binary. Only a subprocess test could pin it, on the model of RemoveExecTest.CliRefusesNonInteractiveConfirmationEvenWithPipedYes."
+status = "holds"
+test_gap = "The face-search branch of cmd_search has no subprocess test, because a face search needs the models and a detectable face. It writes through the same ResultSink as the three tested sites."
 
 [[rule]]
 id = "R70"

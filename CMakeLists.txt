@@ -143,6 +143,7 @@ add_executable(phig-tests
     tests/test_raw.cpp
     tests/test_lockfile.cpp
     tests/test_catalog.cpp
+    tests/test_cli_output.cpp
     tests/test_parallel.cpp
     tests/test_progress_queue.cpp
     tests/test_scan_engine.cpp

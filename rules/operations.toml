@@ -105,8 +105,11 @@ mutating_cli_flags = [
     "--ignore-mount-warning",
     # scan. `fail` aborts the run before its destructive reconcile phase (R80).
     "--on-error",
-    # duplicates, search and fav list. Truncates whatever file it names (R69).
+    # duplicates, search and fav list. Names the file the results are written
+    # to; an occupied path is refused unless --overwrite is given (R69).
     "--output",
+    # duplicates, search and fav list. Lets --output replace an existing file (R69).
+    "--overwrite",
     # cp and mv. The destination path format, so it decides what gets written
     # where and which destinations collide (R01, R03).
     "--format",

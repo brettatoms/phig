@@ -78,7 +78,7 @@ The bytes on disk.
 | R61 | authorization | violated (test gap) | A destructive operation's preview is a value the caller can inspect, not text the engine prints. |
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R68 | authorization | violated (test gap) | Trash empty destroys its contents permanently and only after authorization: an empty trash returns without asking, --yes skips the prompt, and otherwise it refuses outright unless run at an interactive terminal where the operator types the literal string 'yes' in response to a prompt naming the item count and the trash directory. |
-| R69 | conflict | violated (test gap) | Writing a command's results to the path named by --output does not destroy what is already at that path. |
+| R69 | conflict | holds (test gap) | Writing a command's results to the path named by --output does not destroy what is already at that path. |
 | R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
 | R77 | authorization | violated (test gap) | Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all. |
 | R81 | conflict | violated (test gap) | Staging a stdin query image does not destroy anything already on disk. |

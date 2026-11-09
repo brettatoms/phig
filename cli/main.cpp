@@ -161,6 +161,7 @@ void print_usage() {
         << "  --threshold [0-64]       Hamming distance for near duplicates (default: 5)\n"
         << "  --format text|csv|json   Output format (default: text)\n"
         << "  --output <path>          Write to file instead of stdout\n"
+        << "  --overwrite              Replace the --output file if it exists\n"
         << "  --match <glob>           Show groups containing matching files (repeatable, matches "
            "path)\n"
         << "  --exclude <glob>          Exclude matching files (repeatable, wins over --match)\n"
@@ -213,6 +214,7 @@ void print_usage() {
         << "  --print0                 Null-separated paths\n"
         << "  --format text|csv|json   Output format (default: text)\n"
         << "  --output <path>          Write to file\n"
+        << "  --overwrite              Replace the --output file if it exists\n"
         << "\nThumbs rebuild flags:\n"
         << "  --match <glob>           Only matching files (repeatable)\n"
         << "  --exclude <glob>          Exclude matching files (repeatable)\n"
@@ -384,11 +386,63 @@ int cmd_scan(const ScanOptions& opts) {
 
 // ---- Duplicates command ----
 
+namespace {
+
+// Where a command's results go: stdout, or a buffer written to --output in one
+// piece when the command finishes, through write_output_file, which refuses
+// an occupied path unless --overwrite was given.
+class ResultSink {
+   public:
+    ResultSink(const std::string& path, bool overwrite) : path_(path), overwrite_(overwrite) {}
+    std::ostream& out() { return path_.empty() ? std::cout : buffer_; }
+    // Writes the buffer to --output, if one was named. Returns the exit code.
+    int finish() {
+        if (path_.empty()) return 0;
+        try {
+            write_output_file(path_, buffer_.str(), overwrite_);
+            return 0;
+        } catch (const OutputExists&) {
+            std::cerr << "Error: " << path_ << " already exists. Pass --overwrite to replace it.\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Error: cannot write " << path_ << ": " << e.what() << "\n";
+        }
+        return 1;
+    }
+
+   private:
+    std::string path_;
+    bool overwrite_;
+    std::ostringstream buffer_;
+};
+
+// Refuses --output flags that would do nothing or destroy a file, before any
+// work is done. write_output_file refuses an occupied path again at the end.
+int check_output_flags(const std::string& output, bool overwrite, bool count_only) {
+    if (count_only && !output.empty()) {
+        std::cerr << "Error: --count prints a number and writes no file; drop --output\n";
+        return 1;
+    }
+    if (overwrite && output.empty()) {
+        std::cerr << "Error: --overwrite needs --output\n";
+        return 1;
+    }
+    std::error_code ec;
+    if (!output.empty() && !overwrite &&
+        fs::symlink_status(output, ec).type() != fs::file_type::not_found) {
+        std::cerr << "Error: " << output << " already exists. Pass --overwrite to replace it.\n";
+        return 1;
+    }
+    return 0;
+}
+
+}  // namespace
+
 struct DuplicatesOptions {
     std::string type = "all";     // exact, near, all
     int threshold = 5;            // hamming distance for near duplicates
     std::string format = "text";  // text, csv, json
     std::string output;           // empty = stdout
+    bool overwrite = false;       // let --output replace an existing file
     std::vector<std::string> matches;
     std::vector<std::string> excludes;
     std::string media;  // "image", "video", or "" (all)
@@ -502,6 +556,7 @@ std::vector<DuplicateGroup> select_groups(const std::vector<DuplicateGroup>& gro
 }
 
 int cmd_duplicates(const DuplicatesOptions& opts) {
+    if (int rc = check_output_flags(opts.output, opts.overwrite, false)) return rc;
     auto db_owner = open_catalog_db(opts.db_path, CatalogAccess::Read);
     Database& db = *db_owner;
 
@@ -584,15 +639,8 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
     }
 
     // Output
-    std::ofstream file_out;
-    if (!opts.output.empty()) {
-        file_out.open(opts.output);
-        if (!file_out) {
-            std::cerr << "Error: cannot open output file: " << opts.output << "\n";
-            return 1;
-        }
-    }
-    std::ostream& out = opts.output.empty() ? std::cout : file_out;
+    ResultSink sink(opts.output, opts.overwrite);
+    std::ostream& out = sink.out();
 
     if (opts.format == "csv") {
         output_csv(out, exact_groups, near_groups);
@@ -602,7 +650,7 @@ int cmd_duplicates(const DuplicatesOptions& opts) {
         output_text(out, exact_groups, near_groups);
     }
 
-    return 0;
+    return sink.finish();
 }
 
 // ---- Organize command ----
@@ -758,6 +806,7 @@ struct SearchOptions {
     bool print0 = false;
     std::string format = "text";
     std::string output;
+    bool overwrite = false;  // let --output replace an existing file
     std::string db_path;
 };
 
@@ -851,6 +900,7 @@ uint64_t parse_hex_phash(const std::string& hex) {
 }  // anonymous namespace
 
 int cmd_search(const SearchOptions& opts) {
+    if (int rc = check_output_flags(opts.output, opts.overwrite, opts.count_only)) return rc;
     auto db_owner = open_catalog_db(opts.db_path, CatalogAccess::Read);
     Database& db = *db_owner;
 
@@ -956,15 +1006,8 @@ int cmd_search(const SearchOptions& opts) {
         }
 
         // Output
-        std::ofstream file_out;
-        if (!opts.output.empty()) {
-            file_out.open(opts.output);
-            if (!file_out) {
-                std::cerr << "Error: cannot open output file\n";
-                return 1;
-            }
-        }
-        std::ostream& out = opts.output.empty() ? std::cout : file_out;
+        ResultSink sink(opts.output, opts.overwrite);
+        std::ostream& out = sink.out();
 
         if (opts.print0) {
             for (const auto& p : paths) out << p << '\0';
@@ -974,7 +1017,7 @@ int cmd_search(const SearchOptions& opts) {
             for (const auto& p : paths) out << p << "\n";
             out << "\nFound " << paths.size() << " images of \"" << opts.person << "\"\n";
         }
-        return 0;
+        return sink.finish();
     }
 
     if (is_face_search) {
@@ -985,15 +1028,8 @@ int cmd_search(const SearchOptions& opts) {
         }
 
         // Convert to output — face search has its own output since it includes distance
-        std::ofstream file_out;
-        if (!opts.output.empty()) {
-            file_out.open(opts.output);
-            if (!file_out) {
-                std::cerr << "Error: cannot open output file: " << opts.output << "\n";
-                return 1;
-            }
-        }
-        std::ostream& out = opts.output.empty() ? std::cout : file_out;
+        ResultSink sink(opts.output, opts.overwrite);
+        std::ostream& out = sink.out();
 
         if (opts.print0) {
             for (const auto& r : face_results) {
@@ -1023,7 +1059,7 @@ int cmd_search(const SearchOptions& opts) {
             }
             out << "Found " << face_results.size() << " matching faces\n";
         }
-        return 0;
+        return sink.finish();
     }
 
     const auto& results = result.images;
@@ -1034,15 +1070,8 @@ int cmd_search(const SearchOptions& opts) {
     }
 
     // Output
-    std::ofstream file_out;
-    if (!opts.output.empty()) {
-        file_out.open(opts.output);
-        if (!file_out) {
-            std::cerr << "Error: cannot open output file: " << opts.output << "\n";
-            return 1;
-        }
-    }
-    std::ostream& out = opts.output.empty() ? std::cout : file_out;
+    ResultSink sink(opts.output, opts.overwrite);
+    std::ostream& out = sink.out();
 
     if (opts.print0) {
         for (const auto& img : results) {
@@ -1102,7 +1131,7 @@ int cmd_search(const SearchOptions& opts) {
         out << "Found " << results.size() << " images\n";
     }
 
-    return 0;
+    return sink.finish();
 }
 
 // ---- Thumbs command ----
@@ -1762,6 +1791,8 @@ int cmd_fav(int argc, char* argv[], const std::string& db_path, bool no_wait) {
                 opts.format = argv[++i];
             } else if (arg == "--output" && i + 1 < argc) {
                 opts.output = argv[++i];
+            } else if (arg == "--overwrite") {
+                opts.overwrite = true;
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 return 1;
@@ -2016,6 +2047,8 @@ int main(int argc, char* argv[]) {
                 }
             } else if (arg == "--output" && i + 1 < argc) {
                 opts.output = argv[++i];
+            } else if (arg == "--overwrite") {
+                opts.overwrite = true;
             } else if (arg == "--match" && i + 1 < argc) {
                 opts.matches.push_back(expand_tilde(argv[++i]));
             } else if (arg == "--exclude" && i + 1 < argc) {
@@ -2355,6 +2388,8 @@ int main(int argc, char* argv[]) {
                 }
             } else if (arg == "--output" && i + 1 < argc) {
                 opts.output = argv[++i];
+            } else if (arg == "--overwrite") {
+                opts.overwrite = true;
             } else {
                 std::cerr << "Unknown option: " << arg << "\n";
                 print_usage();
