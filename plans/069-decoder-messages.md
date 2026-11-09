@@ -227,7 +227,9 @@ extension (40 of those are damaged copies made locally). It fell short of the
 5,000 JPEGs step 0 asks for. The reachable public sources held fewer, and
 Wikimedia Commons answered 429 with `Retry-After: 600` after about 30 MB and kept
 doing so for the rest of a 30-minute attempt, so it contributed 25 files, of
-which 8 are JPEG. Most of the corpus comes from `drewnoakes/metadata-extractor-images`
+which 8 are JPEG. It contributed no video and no WebP, although step 0 asks for
+both; the FFmpeg FATE suite and exiftool's `t/images/` supplied the videos
+instead. Most of the corpus comes from `drewnoakes/metadata-extractor-images`
 (2.9 GB, 430 JPEGs, and many PNG, TIFF, GIF, BMP and fuzzing files) and
 raw.pixls.us (154 RAWs, 77 makes). The scan processed 2,088 files (2,018 images, 70
 videos), skipped 5 and reported 525 errors, mostly formats OpenCV cannot decode.
@@ -250,8 +252,10 @@ measured by scanning each file alone into its own directory.
 | blank (spacing inside multi-line messages) | 303 | | |
 
 The FFmpeg line count is not stable: the same corpus gave 561 lines in the full
-scan and 678 summed over per-directory scans (the split below uses the 678). The libjpeg,
-libtiff, libpng, OpenCV and GStreamer counts were identical across the two runs.
+scan and 678 summed over per-directory scans. The table above uses the full scan,
+561, as the canonical figure. The split below comes from the per-directory scans,
+so its FFmpeg cells sum to 678, not 561. The libjpeg, libtiff, libpng, OpenCV and
+GStreamer counts were identical across the two runs.
 
 **By source.** libjpeg's 108 lines: 38 from the damaged copies, 61 from
 `metadata-extractor-images/jpg`, 7 from `Pillow`, 1 from `exif-samples`, 1 from a
@@ -259,26 +263,30 @@ RAW preview. So about 70 lines in roughly 650 real JPEGs, one line per affected
 file. libtiff's 5,930 lines come from the TIFF files in two test suites:
 5,375 from `metadata-extractor-images/tif` and 545 from `Pillow`. libpng's 296 come
 almost entirely from `metadata-extractor-images/png` and `Pillow`, which hold
-deliberately malformed files. 517 of FFmpeg's lines come from `ffmpeg-fate`,
-which is also a conformance suite.
+deliberately malformed files. In the per-directory scans (678 FFmpeg lines),
+517 come from `ffmpeg-fate`, which is also a conformance suite, and 161 from the
+other video sources.
 
 Splitting the corpus by what its sources are for:
 
 | | libjpeg | FFmpeg | libtiff | libpng | OpenCV | GStreamer |
 |---|---|---|---|---|---|---|
-| Photo and video sources | 63 | 678 | 10 | 0 | 0 | 13 |
+| Photo and video sources (`exif-samples`, `exif-orientation-examples`, `libjpeg-turbo`, `exiftool`, `raw-pixls-us`, `metadata-extractor-images` jpg, raw and video directories) | 63 | 161 | 10 | 0 | 0 | 6 |
 | Damaged JPEG copies | 38 | 0 | 0 | 0 | 0 | 0 |
-| Format test suites (`Pillow`, `metadata-extractor-images` tif, png, gif, bmp, jp2) | 7 | 0 | 5,920 | 296 | 217 | 0 |
+| Format and codec test suites (`Pillow`, `ffmpeg-fate`, `metadata-extractor-images` tif, png, gif, bmp, jp2) | 7 | 517 | 5,920 | 296 | 217 | 7 |
+| Sum of per-directory scans | 108 | 678 | 5,930 | 296 | 217 | 13 |
 
 **Result against decisions 2 and 3.** The decisions assume libjpeg is the
-largest group and video is second. Neither holds on this corpus: by lines libtiff
-is first, FFmpeg second and libpng third, and libjpeg is fifth, ahead of
-only GStreamer and libwebp. By files, libtiff (238) and libpng (190) also lead
-libjpeg (108). The libtiff and libpng lines come from test-suite files built to
-be malformed. On the photo and video sources alone, FFmpeg's lines outnumber
-libjpeg's 678 to 63, and libjpeg's 108 lines are one line per file. libtiff
-and libpng print nothing on those sources apart from 10 libtiff lines.
-This plan's decisions are unchanged here; whether they stand, or whether decision 2's
+largest group and video is second. Neither holds on this corpus. By lines in the
+full scan, libtiff is first (5,930), FFmpeg second (561) and libpng third (296);
+libjpeg is fifth, ahead of only GStreamer and libwebp, not counting phig's own
+`[warning]` row, which is not a library. By files, libtiff (238) and libpng (190)
+also lead libjpeg (108). The libtiff, libpng and most of the FFmpeg lines come
+from test suites built to be malformed or to exercise codecs. On the photo and
+video sources alone, FFmpeg has 161 lines (per-directory scans) against libjpeg's
+63, so video is still ahead of libjpeg there, by a smaller margin; libjpeg's 108
+lines are one line per file. libtiff prints 10 lines on those sources and libpng
+none. This plan's decisions are unchanged here; whether they stand, or whether decision 2's
 "every other format stays on `cv::imread`, unsuppressed" needs a TIFF or PNG capture
 before the suppressor is deleted, is open.
 
@@ -290,12 +298,13 @@ are:
 - https://github.com/recurser/exif-orientation-examples (18 JPEG, orientations 1 to 8)
 - https://github.com/libjpeg-turbo/libjpeg-turbo, `testimages/` only
 - https://github.com/drewnoakes/metadata-extractor-images (430 JPEG, 26 video)
-- https://github.com/exiftool/exiftool, `t/images/` only (41 JPEG)
+- https://github.com/exiftool/exiftool, `t/images/` only (41 JPEG, 8 video)
 - https://github.com/python-pillow/Pillow, `Tests/images/` only (55 JPEG)
 - https://github.com/mozilla/mozjpeg, `test/` only (no images)
 - https://raw.pixls.us/data/, 154 RAWs from 77 makes (listed in `SOURCES.md`)
 - https://fate-suite.ffmpeg.org/, 54 videos (16 mp4, 15 webm, 7 mkv, 7 mov, 3 flv, 3 ts, 2 mpg, 1 avi)
 - https://commons.wikimedia.org/, 25 files through the API (8 JPEG, 16 PNG, 1 TIFF), originals
+- Of the 88 video-extension files on disk (26 + 8 + 54), the scan processed 70 as video; the rest were skipped or counted among the errors.
 - 40 damaged JPEGs derived locally: 20 truncated, 20 with 20 bytes flipped
 
 ## Risks
