@@ -215,6 +215,8 @@ void thumb_loader_request(ThumbLoader&, int64_t image_id, std::string sha256,
 
 ## Steps
 
+Execution plan: `docs/plans/2026-11-09-068-gtk-hardening.md`.
+
 Each step lands green, and the ASan gtk build runs the gtk tests at each one.
 
 1. **C++23 (decision 1).**
