@@ -1,6 +1,6 @@
 ---
 name: Silent Loss on a Successful Run
-status: designing
+status: in-progress
 created: 2026-08-10
 closes_rules: [R27, R48, R60, R66, R69, R73, R81, R83]
 description: >
@@ -409,6 +409,26 @@ after the R60 fix; R73 and open question 7 stay open.
   `log_add_entry` inside `delete_paths_logged`, and by the same throw inside
   `delete_paths`, is closed in the same change: any throw rolls back once, and
   the rollback never replaces the original error.
+
+## Progress
+
+- R60 is `partial`, as its own section records.
+- R27, R48, R69, R81 and R83 now hold, by these commits:
+
+  ```
+  ad04ac7 Record plan 060's decisions for R27, R48, R69, R81 and R83, and its execution plan
+  f68ab4c Report why a delete failed and close its transaction on any throw (R83)
+  32c76c1 Close the delete transactions on a failed commit too (R83)
+  fd57327 Carry each attachment independently and report the ones refused
+  9edd62b Count a copy or move by its photo and mark an unfinished run interrupted (R27, R48)
+  ef252d8 Report an organize run that failed as done, not cancelled, through libphig
+  fe7aead Add core writers for output files and private temporary files
+  76c7a5b Refuse to replace an existing --output file without --overwrite (R69)
+  e142274 Stage stdin in a private temporary file (R81)
+  ```
+
+- Left: R73, the layer move; R66, faces with no plan phase, which also stays on
+  053; and open question 7.
 
 ## Open
 

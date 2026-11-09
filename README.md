@@ -283,6 +283,9 @@ phig duplicates --match "*/Photos/*"            # only in Photos directory
 phig duplicates --format json --output dupes.json
 ```
 
+`--output` refuses a path that already exists unless you add `--overwrite`; the
+same holds for `search` and `fav list`. `--count` with `--output` is an error.
+
 ### Searching
 
 ```bash
@@ -317,7 +320,8 @@ phig search --ext jpg --count
 phig search --porcelain                         # tab-separated
 phig search --print0                            # null-separated (for xargs -0)
 phig search --format json
-phig search --format csv --output results.csv
+phig search --format csv --output results.csv            # refuses an existing file
+phig search --format csv --output results.csv --overwrite
 
 # View results in an image viewer
 phig search --match "*/Vacation/*" --print0 | xargs -0 eog
@@ -422,6 +426,9 @@ phig cp ~/Photos/Organized --on-conflict rename   # auto-rename around conflicts
 ```
 
 Format tokens: `%Y` (year), `%m` (month), `%d` (day), `%camera` (EXIF model), `%make` (EXIF make), `%gallery` (assigned gallery), `%fav` (favorite state), `%original` (original filename).
+
+`cp` and `mv` exit 1 when any file or attachment was not carried, and print
+the number of attachments that were not.
 
 `--on-conflict overwrite` will not destroy an existing file: if the destination
 path is already taken on disk, it renames around the conflict rather than

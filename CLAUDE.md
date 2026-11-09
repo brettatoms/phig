@@ -340,7 +340,7 @@ phig thumbs rebuild [--match <glob>] [--exclude <glob>] [--force] [--parallel N]
 phig thumbs clean [--dry-run]
 
 # Find duplicate images
-phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--match <glob>] [--exclude <glob>] [--media image|video|all] [--fav]
+phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--overwrite] [--match <glob>] [--exclude <glob>] [--media image|video|all] [--fav]
 
 # Copy files into YYYY/MM structure
 phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename]
@@ -349,7 +349,7 @@ phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [-
 phig mv <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename]
 
 # Search the collection
-phig search [--ext <ext>] [--after <date>] [--before <date>] [--camera <s>] [--make <s>] [--min-size <n>] [--max-size <n>] [--media image|video|all] [--min-duration <d>] [--max-duration <d>] [--similar <image>] [--similar-hash <hex>] [--threshold 0-64] [--face <image>] [--face-threshold <f>] [--person <name>] [--tag <name>] [--gallery <name>] [--fav] [--blurry] [--min-sharpness <n>] [--max-sharpness <n>] [--match <glob>] [--exclude <glob>] [--limit N] [--count] [--porcelain] [--print0] [--format text|csv|json] [--output <path>]
+phig search [--ext <ext>] [--after <date>] [--before <date>] [--camera <s>] [--make <s>] [--min-size <n>] [--max-size <n>] [--media image|video|all] [--min-duration <d>] [--max-duration <d>] [--similar <image>] [--similar-hash <hex>] [--threshold 0-64] [--face <image>] [--face-threshold <f>] [--person <name>] [--tag <name>] [--gallery <name>] [--fav] [--blurry] [--min-sharpness <n>] [--max-sharpness <n>] [--match <glob>] [--exclude <glob>] [--limit N] [--count] [--porcelain] [--print0] [--format text|csv|json] [--output <path>] [--overwrite]
 
 # Remove images from the database and/or disk
 phig rm [--match <glob>] [--exclude <glob>] [--hard|--db-only|--orphans] [--ignore-mount-warning] [--dry-run] [--yes]
@@ -362,7 +362,7 @@ phig gallery set <name> [--no-overwrite] [--match <glob>] [--exclude <glob>] [--
 phig gallery clear [--match <glob>] [--exclude <glob>] [--path <dir>]
 phig gallery list
 phig fav add|remove [--match <glob>] [--exclude <glob>] [--path <dir>]
-phig fav list [--count] [--limit N] [--porcelain] [--print0] [--format text|csv|json] [--output <path>]
+phig fav list [--count] [--limit N] [--porcelain] [--print0] [--format text|csv|json] [--output <path>] [--overwrite]
 
 # Faces
 phig face name <image> <name>
@@ -373,6 +373,8 @@ phig face list
 # Download the face detection/recognition models
 phig models download
 ```
+
+`--output` refuses an existing file unless `--overwrite` is given, and `--count` with `--output` is an error.
 
 `--path <dir>` narrows by directory prefix on `tag`, `gallery` and `fav` only.
 `duplicates`, `cp` and `mv` reject it — measured, `Unknown option: --path` and
