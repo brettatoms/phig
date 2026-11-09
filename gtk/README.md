@@ -1,8 +1,8 @@
 # phig-gtk
 
-GTK4/libadwaita desktop client for phig, a C++ image-collection CLI, living
-alongside it in this monorepo (`gtk/` next to `core/`, `libphig/`, `cli/`).
-Links `phig-core` directly through one seam, `src/collection.h`.
+GTK4 and libadwaita desktop client for phig. It lives in this monorepo beside
+`core/`, `libphig/`, and `cli/`, and links `phig-core` directly through one
+seam, `src/collection.h`.
 
 ## Setup
 

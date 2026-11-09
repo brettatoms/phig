@@ -114,6 +114,23 @@ Notes:
   use.
 - Check your build with `phig --version`.
 
+### Desktop client
+
+The GTK client is off by default, so a plain build needs neither gtk4 nor
+libadwaita. To build it, install those two libraries and configure with
+`-DPHIG_BUILD_GTK=ON`. [gtk/README.md](gtk/README.md) lists their package
+names.
+
+```bash
+cmake -B build -DPHIG_BUILD_GTK=ON
+cmake --build build --target phig-gtk
+./build/gtk/phig-gtk [CATALOG_DIR]
+```
+
+`CATALOG_DIR` is optional. Without it, the client uses the default catalog,
+and `PHIG_CATALOG` and the config file apply as they do for the CLI.
+`cmake --install` does not install the client.
+
 ## Configuration
 
 ### File locations
@@ -199,14 +216,17 @@ paths and any values your config overrides.
 
 ### Concurrency
 
-Mutating commands (`scan`, `mv`, `cp`, `rm`, `tag`/`gallery`/`fav` writes,
-`face` writes, `thumbs rebuild`/`clean`, `models download`) take a process-wide
-advisory lock (the catalog's `phig.db.lock`) so two of them never run at once
-and interleave. If another mutating command is already running, phig prints
-`Another phig operation is running (pid N); waiting...` and waits. Pass
-`--no-wait` to fail immediately instead. Read commands (`search`,
-`duplicates`, `log`, the `list` subcommands) never take the lock and are never
-blocked.
+Most mutating commands take a process-wide advisory lock, the catalog's
+`phig.db.lock`, so two of them never run at once. These are `scan`, `mv`, `cp`,
+`rm`, `trash empty`, `thumbs rebuild`, `thumbs clean`, and the writes of `tag`,
+`gallery`, and `fav`. If another of them is already running, phig prints
+`Another phig operation is running (pid N); waiting...` and waits. To fail
+immediately instead, pass `--no-wait`. Read commands (`search`, `duplicates`,
+and the `list` subcommands) never take the lock and are never blocked.
+
+`models download` takes its own lock in the models directory. The `face`
+subcommands take no lock. They guard their writes in the database instead, so
+two labelers cannot both name the same face.
 
 The lock is per-machine (POSIX `flock`) and released automatically if phig
 crashes or is killed. It does not coordinate phig instances on different hosts
@@ -214,28 +234,41 @@ sharing one database over a network filesystem.
 
 ## libphig
 
-phig's functionality is available to other programs through `libphig`, a C ABI
-shared library installed alongside the CLI (`libphig.so` plus
-`include/phig/phig.h`). It covers paginated queries, per-image metadata,
-thumbnail path lookup, and tag/gallery/favorite writes.
+Other programs reach phig through libphig, a C library that installs alongside
+the CLI as `libphig.so` and `include/phig/phig.h`. It covers:
 
-Clients link it instead of reading phig's database directly: the SQLite schema
-and the thumbnail cache layout are private and may change, while the header is
-a versioned contract (`phig_abi_version()`).
+- Paged queries filtered by extension, date, camera, size, media type, tags,
+  gallery, sharpness, and path globs, plus per-image metadata.
+- Thumbnail lookup and on-demand generation at any size.
+- Tag, gallery, and favorite writes.
+- Reading and writing phig's config file. See [Settings](#settings).
+- Background operations: indexing, thumbnail generation, face detection, and
+  planning and running a copy or move.
 
-Long-running operations — scan, organize, remove, face detection — are not yet
-in the ABI. Run them through the CLI, which holds the writer lock and records
-the activity log. The engines live in `core/`; giving them ABI surface, with
-progress reporting and cancellation, is plan 031.
+A client links libphig instead of reading phig's database. The SQLite schema
+and the thumbnail cache layout are private and can change. The header is a
+versioned contract, and `phig_abi_version()` reports its version.
 
-libphig's own metadata writes take the same writer lock as the CLI (see
-Concurrency, above), scoped to the database the caller opened, so they cannot
-interleave with a running CLI job. The call is non-blocking: a contended lock
-returns `PHIG_ERR_DB` immediately rather than freezing the caller.
+Each background operation runs on its own thread. The caller starts it, polls
+it for progress from any thread, can cancel it, and reads the result when it
+finishes. libphig never calls back into the caller. A copy or move runs from a
+plan that the caller computes first and can edit, so the caller answers each
+conflict before any file moves.
 
-Pixel decoding is deliberately absent: phig decodes arbitrary user files with
-OpenCV, FFmpeg, and LibRaw, which can crash on malformed input, so a client
-that needs decoded images should run it out-of-process.
+Indexing adds new and changed files but does not reconcile: unlike `phig scan`,
+it does not remove rows for deleted files or re-link moved ones. Remove,
+duplicates, and face labelling and search are not in libphig yet.
+`libphig/CLAUDE.md` lists what is missing.
+
+Metadata writes take the same writer lock as the CLI (see
+[Concurrency](#concurrency)) and do not wait for it. When another process holds
+the lock, they return `PHIG_ERR_BUSY` immediately and write nothing. The
+background operations do not take the lock, and SQLite serializes their
+writes.
+
+`phig_thumb_generate` and the background operations decode pixels in the
+caller's process. Call them off a UI thread, because a large RAW file takes
+hundreds of milliseconds.
 
 ### Settings
 
@@ -400,11 +433,11 @@ New scans with `--faces` automatically label detected faces that match known peo
 
 Thumbnails are JPEGs cached under `<catalog>/thumbs/<size>/`, keyed by
 SHA256 and size, so identical files share one thumbnail and several sizes can
-coexist. 512px is the default; `--size` writes another without disturbing it.
+coexist. The CLI writes 512px thumbnails. A libphig client can generate another
+size on demand without replacing them.
 
 ```bash
 phig thumbs rebuild                             # generate missing thumbnails (512px)
-phig thumbs rebuild --size 768                  # fill another size; leaves 512px alone
 phig thumbs rebuild --match "*/2024/*"          # only for matching files
 phig thumbs clean                               # remove orphaned thumbnails
 ```
@@ -502,5 +535,12 @@ phig rm --match "*/old-backup/*"
 ## Running Tests
 
 ```bash
-cmake --build build && ./build/phig-tests
+cmake --build build
+ctest --test-dir build --parallel    # fast and performance suites
+./build/phig-tests                   # fast suite only
+ctest --test-dir build -L gtk        # GTK client tests; needs -DPHIG_BUILD_GTK=ON
 ```
+
+The tests run against a scratch home directory and never touch your catalog.
+Which tests skip depends on the machine. The face tests skip unless OpenCV is
+4.8.0 or later and `phig models download` has run.
