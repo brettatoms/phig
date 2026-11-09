@@ -14,6 +14,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
+#include <opencv2/videoio/registry.hpp>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -374,7 +375,11 @@ VideoKeyframe extract_video_keyframe(const std::string& path) {
     ensure_opencv_log_level();
     ScopedAvLogCapture capture(kf.warning);
 
-    cv::VideoCapture cap(path);
+    // One backend keeps a video's keyframe independent of which backends this
+    // OpenCV build carries, and keeps GStreamer's GLib output off stderr.
+    const int backend =
+        cv::videoio_registry::hasBackend(cv::CAP_FFMPEG) ? cv::CAP_FFMPEG : cv::CAP_ANY;
+    cv::VideoCapture cap(path, backend);
     if (!cap.isOpened()) {
         return kf;
     }
