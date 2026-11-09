@@ -316,12 +316,19 @@ Inside the per-image transaction `FacesEngine::run` already opens
    one-to-one: one new face takes at most one label.
 4. Call `auto_label_face` only for faces still unlabelled.
 
-Box overlap is the only test. An embedding-distance check was considered and
+Box overlap was the only test. An embedding-distance check was considered and
 rejected: re-detecting with the same model over the same pixels reproduced
 every stored box exactly (measured; embeddings were not measured), so the check
 would add nothing; rebuilt with a different recognition model, the embeddings
 are not comparable, so the check would reject every match and drop every label
 in the one case a rebuild is most often run for.
+
+Amended 2026-11-09 by the open question 7 decision below. That measurement came
+from one collection and says nothing about other collections. Box overlap is
+sound only when the old and new boxes are in the same frame, and nothing records
+the frame, so a rebuild after a frame change can drop a label or attach it to
+the wrong face. Overlap stays the test within an unchanged frame; embedding
+matching takes over when the frame changed and the recognition model did not.
 
 This removes the order dependence that made open question 1 hard. A label
 belongs to a face in one image and is matched within that image, so it no longer
@@ -342,7 +349,9 @@ matter, it can be added later.
 To settle during implementation:
 
 - **Threshold.** The overlap threshold is measured on real images, not chosen
-  by reasoning.
+  by reasoning. Superseded by the open question 7 decision: the threshold is
+  pinned by tests on synthetic images whose boxes move, not by any one
+  collection.
 - **Plan 046.** This fix runs through `delete_faces_for_image`, which 046's
   failures reach. As of 2026-11-07 they do not reproduce on the Linux machine
   they were found on: all three pass after a clean rebuild with no change to the
@@ -367,6 +376,108 @@ threshold. That data did not exercise the threshold itself. R60 is now
 reported afterwards, by a CLI warning, `FacesResult::labels_dropped` and
 `phig_faces_result.labels_dropped`. The execution record is
 `docs/plans/2026-11-07-060-r60-label-carry.md`.
+
+## Open question 7 decision: record the frame the boxes were measured in
+
+Decided 2026-11-09. Label carry does not infer a face box's frame from the image
+size. It records the frame when faces are written and compares frames
+explicitly.
+
+### Why the image size cannot stand in for the frame
+
+Normalizing boxes by the image row's `width` and `height` was the candidate. It
+fails for three reasons, read from the code:
+
+1. **The row's size can describe a different decode from the boxes.** `width`
+   and `height` are written only when a full scan inserts or updates the row
+   (`core/database.cpp:672-683`). Faces are also written by the faces-only scan
+   path (`core/scan_engine.cpp:~361`) and by `FacesEngine::run`
+   (`core/faces_engine.cpp:141`), which both decode again and never update the
+   row. After one rebuild over a changed source, the boxes are in the new frame
+   and the row still holds the old size.
+2. **A RAW's three decode sources need not share an orientation.** The sidecar
+   JPEG goes through `cv::imread`, which applies its EXIF orientation. A full
+   LibRaw decode applies the RAW's rotation by default. The embedded preview
+   goes through `cv::imdecode`, which rotates only if the preview carries its
+   own orientation tag, and RAW formats normally keep orientation in the RAW's
+   own metadata. Not yet verified: `tests/data` has no RAW with an embedded
+   preview.
+3. **Size does not identify orientation or crop.** A 90° rotation of a square
+   image, and a 180° rotation or a mirror of any image, leave width and height
+   unchanged. A camera set to a 16:9 or 1:1 JPEG writes a cropped JPEG beside a
+   full-frame RAW, and an exported JPEG can be cropped to the same aspect ratio.
+
+Reason 3 makes the failure worse than a drop. In a frame that is rotated but the
+same size, an old box can overlap a different person's new box, and the label
+moves to the wrong person with no warning. The current overlap test already has
+this flaw, because it compares boxes without knowing their frames.
+
+### The decision
+
+1. **Record the frame with each face row:** the decode source (sidecar JPEG,
+   embedded preview, full RAW decode, or the file itself), the orientation
+   applied, the decoded width and height, and an identifier for the
+   recognition model. Per face rather than per image, because faces move
+   between rows by `UPDATE faces SET image_id` (`core/database.cpp:1356`) on
+   relink and demotion, and per-face columns move with them. This is a schema
+   migration to v10.
+2. **Same frame:** match by box overlap, as now.
+3. **Different frame, same recognition model:** match within the image by
+   embedding distance, greedy and one-to-one, accepted only within a
+   threshold. Embeddings are computed on aligned face crops, so they do not
+   depend on the frame's size, orientation or crop.
+4. **Different frame and different model:** the label is dropped and counted in
+   `labels_dropped`, as now. This is the one remaining loss, and it is
+   reported.
+5. **Rows written before v10 have no recorded frame.** They are treated as a
+   different frame, so they match by embedding if the model is unchanged.
+   Whether a missing model identifier is treated as unchanged is settled during
+   implementation.
+
+Every path that writes faces records the frame: both scan paths and
+`FacesEngine::run`.
+
+Making the embedded preview decode upright is a separate fix. If reason 2 is
+confirmed, a RAW's phash, sharpness score, thumbnail and face boxes all depend on
+whether a same-named JPEG sits beside it, and its thumbnail can be sideways.
+That is recorded as its own finding once verified. Label carry does not depend
+on it.
+
+### Testing
+
+On synthetic images, not on any one collection:
+
+- a square image re-detected after a 90° rotation;
+- two faces placed so a rotated box lands on the other person, asserting the
+  label does not move to the wrong face;
+- a cropped frame;
+- a rebuild with a different model identifier, asserting the drop is counted;
+- rows written before v10;
+- the overlap threshold, with boxes moved across it.
+
+A RAW fixture with an embedded preview and an orientation tag verifies reason 2.
+It has to be small and freely licensed.
+
+### Performance
+
+Expected to be negligible. Recording the frame is a few integers per face in a
+transaction that already inserts the face. Embedding matching compares a few
+vectors per image, runs only in a rebuild, and only when the frame changed.
+Turning the preview upright is one rotation of an already-decoded preview. A
+plain scan does no new work.
+
+This is measured, not assumed. A `phig-perf-tests` case times `face rebuild` over
+a synthetic set with and without a frame change against the current code, and a
+plain scan is checked for no change. It goes in the perf target because it
+asserts on wall-clock time.
+
+To settle during implementation:
+
+- the model identifier, which nothing stores today: the model file's sha256 or
+  its file name;
+- the embedding threshold, and whether `auto_label_face`'s threshold applies;
+- whether R60 needs a companion rule that a carried label lands on the same
+  person's face, since that is a claim R60's statement does not make.
 
 ## Decisions for R27, R48, R69, R81 and R83
 
@@ -436,7 +547,7 @@ after the R60 fix; R73 and open question 7 stay open.
   ```
 
 - Left: R73, the layer move; R66, faces with no plan phase, which also stays on
-  053; and open question 7.
+  053; and the open question 7 decision, which is designed and not yet built.
 - `cmd_organize` prints `result.skipped`, so an item skipped because its
   destination became occupied after planning is counted. The engine's count is
   pinned by `ApplySkipsAnItemWhoseDestinationBecameOccupied`; the CLI line has no
@@ -499,7 +610,9 @@ after the R60 fix; R73 and open question 7 stay open.
    the formats are whole documents, and a JSON array concatenated onto another
    is not JSON. Whichever way it goes, it has to reach all four open sites, and
    `--count` should stop accepting a flag it ignores.
-7. **Whether label carry compares boxes as fractions of the image.** Found
+7. **Whether label carry compares boxes as fractions of the image.** Answered
+   by the open question 7 decision above: it does not, and records the frame
+   instead. Found
    2026-11-07, after the R60 fix shipped. Face boxes are stored in the pixel
    coordinates of whatever `raw_decode` produced: for a RAW, the sidecar JPEG,
    then the embedded preview, then a full decode. If that source changes between
