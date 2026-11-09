@@ -210,6 +210,94 @@ links it itself:
    - `README.md` and CI: package lists.
    - `core/log.cpp`'s comment.
 
+## Inventory
+
+Run 2026-11-09 at `4e78a52`. The build differs from the tree in two ways, neither
+committed: `StderrSuppressor`'s constructor and destructor are empty, and both
+`av_log_set_level(AV_LOG_QUIET)` calls (`core/metadata.cpp`, `core/live_photo.cpp`)
+are `AV_LOG_WARNING`, because with FFmpeg's log silenced process-wide the
+inventory could not see its messages. The command was
+`phig --catalog <scratch> scan /home/brett/phig-corpus --recursive --media all --hidden`
+with `HOME` and the four XDG directories in a scratch directory and stderr
+redirected to a file. No `--faces`.
+
+**The corpus** is 6.2 GB: 5,671 files that are not text, of which 2,618 are
+files the scanner takes as images or video, and 687 carry a `.jpg`/`.jpeg`
+extension (40 of those are damaged copies made locally). It fell short of the
+5,000 JPEGs step 0 asks for. The reachable public sources held fewer, and
+Wikimedia Commons answered 429 with `Retry-After: 600` after about 30 MB and kept
+doing so for the rest of a 30-minute attempt, so it contributed 25 files, of
+which 8 are JPEG. Most of the corpus comes from `drewnoakes/metadata-extractor-images`
+(2.9 GB, 430 JPEGs, and many PNG, TIFF, GIF, BMP and fuzzing files) and
+raw.pixls.us (154 RAWs, 77 makes). The scan processed 2,088 files (2,018 images, 70
+videos), skipped 5 and reported 525 errors, mostly formats OpenCV cannot decode.
+
+**Lines on stderr:** 8,104 in total, classified by the library that wrote them.
+"Files" is the number of files that produced at least one line of that kind,
+measured by scanning each file alone into its own directory.
+
+| Library | Lines | Files | Example |
+|---|---|---|---|
+| libtiff (through OpenCV's TIFF reader) | 5,930 | 238 | `TIFF_Warning TIFFFetchNormalTag: ASCII value for tag "Make" does not end in null byte` |
+| FFmpeg | 561 | 23 | `[mov,mp4,m4a,3gp,3g2,mj2 @ 0x...] st: 0 edit list: 1 Missing key frame while searching for timestamp: 0` |
+| libpng | 296 | 190 | `libpng warning: Invalid bit depth in IHDR` |
+| OpenCV's own log (`[ERROR:`, `[ WARN:`, `> ` continuations) | 217 | 105 | `imread_('...gif'): can't open/read file` |
+| libjpeg | 108 | 108 | `Premature end of JPEG file`, `Corrupt JPEG data: N extraneous bytes before marker 0xd9` |
+| GStreamer (through OpenCV) | 13 | 4 | `GStreamer warning: Embedded video playback halted` |
+| libwebp | 0 | 0 | |
+| phig's own `[warning]` | 670 | 525 | `[warning] ... Cannot decode image` |
+| unclassified | 6 | | OpenJPEG and RAW reader lines |
+| blank (spacing inside multi-line messages) | 303 | | |
+
+The FFmpeg line count is not stable: the same corpus gave 561 lines in the full
+scan and 678 summed over per-directory scans (the split below uses the 678). The libjpeg,
+libtiff, libpng, OpenCV and GStreamer counts were identical across the two runs.
+
+**By source.** libjpeg's 108 lines: 38 from the damaged copies, 61 from
+`metadata-extractor-images/jpg`, 7 from `Pillow`, 1 from `exif-samples`, 1 from a
+RAW preview. So about 70 lines in roughly 650 real JPEGs, one line per affected
+file. libtiff's 5,930 lines come from the TIFF files in two test suites:
+5,375 from `metadata-extractor-images/tif` and 545 from `Pillow`. libpng's 296 come
+almost entirely from `metadata-extractor-images/png` and `Pillow`, which hold
+deliberately malformed files. 517 of FFmpeg's lines come from `ffmpeg-fate`,
+which is also a conformance suite.
+
+Splitting the corpus by what its sources are for:
+
+| | libjpeg | FFmpeg | libtiff | libpng | OpenCV | GStreamer |
+|---|---|---|---|---|---|---|
+| Photo and video sources | 63 | 678 | 10 | 0 | 0 | 13 |
+| Damaged JPEG copies | 38 | 0 | 0 | 0 | 0 | 0 |
+| Format test suites (`Pillow`, `metadata-extractor-images` tif, png, gif, bmp, jp2) | 7 | 0 | 5,920 | 296 | 217 | 0 |
+
+**Result against decisions 2 and 3.** The decisions assume libjpeg is the
+largest group and video is second. Neither holds on this corpus: by lines libtiff
+is first, FFmpeg second and libpng third, and libjpeg is fifth, ahead of
+only GStreamer and libwebp. By files, libtiff (238) and libpng (190) also lead
+libjpeg (108). The libtiff and libpng lines come from test-suite files built to
+be malformed. On the photo and video sources alone, FFmpeg's lines outnumber
+libjpeg's 678 to 63, and libjpeg's 108 lines are one line per file. libtiff
+and libpng print nothing on those sources apart from 10 libtiff lines.
+This plan's decisions are unchanged here; whether they stand, or whether decision 2's
+"every other format stays on `cv::imread`, unsuppressed" needs a TIFF or PNG capture
+before the suppressor is deleted, is open.
+
+**Corpus contents.** `/home/brett/phig-corpus/SOURCES.md` lists every file
+fetched with its URL and a count per source. It is not committed. The sources
+are:
+
+- https://github.com/ianare/exif-samples (91 JPEG)
+- https://github.com/recurser/exif-orientation-examples (18 JPEG, orientations 1 to 8)
+- https://github.com/libjpeg-turbo/libjpeg-turbo, `testimages/` only
+- https://github.com/drewnoakes/metadata-extractor-images (430 JPEG, 26 video)
+- https://github.com/exiftool/exiftool, `t/images/` only (41 JPEG)
+- https://github.com/python-pillow/Pillow, `Tests/images/` only (55 JPEG)
+- https://github.com/mozilla/mozjpeg, `test/` only (no images)
+- https://raw.pixls.us/data/, 154 RAWs from 77 makes (listed in `SOURCES.md`)
+- https://fate-suite.ffmpeg.org/, 54 videos (16 mp4, 15 webm, 7 mkv, 7 mov, 3 flv, 3 ts, 2 mpg, 1 avi)
+- https://commons.wikimedia.org/, 25 files through the API (8 JPEG, 16 PNG, 1 TIFF), originals
+- 40 damaged JPEGs derived locally: 20 truncated, 20 with 20 bytes flipped
+
 ## Risks
 
 - **OpenCV versions differ across CI.** ubuntu-latest ships OpenCV 4.6.0,
