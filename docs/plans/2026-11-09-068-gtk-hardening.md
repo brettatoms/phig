@@ -170,8 +170,8 @@ env -u DISPLAY -u WAYLAND_DISPLAY ctest --test-dir build/with-gtk --parallel 2>&
 python3 scripts/rules.py --check
 ```
 
-Expected: `100% tests passed, 0 tests failed out of 1047` (1018 phig tests
-and 29 gtk tests) and `rules: 84 rules, 18 operations, OK`. Record both in the
+Expected: `100% tests passed, 0 tests failed out of 1021` (1018 phig tests
+and 3 gtk test binaries; ctest counts a gtk binary as one test) and `rules: 84 rules, 18 operations, OK`. Record both in the
 ledger.
 
 - [ ] **Configure the clang and ASan gtk builds** if they are absent or stale:
@@ -237,7 +237,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY ctest --test-dir build/with-gtk --parallel 2>&
 ```
 
 Expected: no output from the grep, and `100% tests passed, 0 tests failed out
-of 1047`. If the build stops on a `-Wstringop-overflow` in
+of 1021`. If the build stops on a `-Wstringop-overflow` in
 `tests/test_live_photo.cpp`, check out `master`, build it the same way under
 C++20, and confirm the same warning stops it there. If it does, record it in
 the task report as pre-existing and build this task with `-DPHIG_WERROR=OFF`;
@@ -4054,8 +4054,8 @@ $CF --dry-run --Werror gtk/src/connect.h gtk/src/startup.h gtk/src/startup.cpp \
   gtk/tests/fake-collection.h gtk/tests/fake-collection.cpp
 ```
 
-Expected: no warning lines; `1018` phig tests and `1062` with gtk (1018 +
-44), all passing; the clang and ASan gtk runs at `100%`; rules OK with a
+Expected: no warning lines; `1018` phig tests and `1023` with gtk (1018 +
+five gtk binaries), all passing; the clang and ASan gtk runs at `100%`; rules OK with a
 clean tree; clang-tidy exit 0; clang-format silent.
 
 - [ ] Nothing outside `gtk/` uses the gtk-only library features:
