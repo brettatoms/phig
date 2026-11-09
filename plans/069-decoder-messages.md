@@ -65,7 +65,7 @@ Linux.
 ### 1. Measure what prints before deciding what to capture
 
 Nothing records which libraries actually write to stderr during a decode, or
-how often. Step 1 finds out. It scans a real corpus with the suppressor
+how often. Step 1 finds out. It scans step 0's corpus with the suppressor
 removed, using a mix of JPEG, PNG, TIFF, WebP and video, and classifies every
 stderr line by the library that produced it. The decisions below assume
 libjpeg dominates and video is second. If the inventory shows otherwise, the
@@ -97,6 +97,14 @@ DecodeResult decode_jpeg_memory(std::span<const unsigned char> bytes);
 - **Selection is by content, not extension.** A file is treated as JPEG when it
   starts with the JPEG SOI marker, `FF D8 FF`, as `imread` itself chooses. A
   `.jpg` that is really a PNG then still decodes.
+- **The result reports its frame.** `DecodeResult` gains a `DecodeFrame`: which
+  source was decoded (the file itself, a RAW's sidecar JPEG, its embedded
+  preview, or a full RAW decode), the decoded width and height, and, for the
+  sidecar JPEG and the embedded preview, the sha256 of the bytes decoded. The
+  file itself and a full RAW decode read the image file's own bytes, which the
+  image row's sha256 already identifies. Plan 060's open question 7 decision
+  records this frame with each face; this plan is where the decoder learns to
+  report it.
 - **Every other format stays on `cv::imread`, unsuppressed.** If the inventory
   shows one of their libraries is noisy, it gets its own capture by the same
   pattern. Until then, anything they print reaches stderr, which is the honest
@@ -150,10 +158,20 @@ links it itself:
 
 ## Steps
 
+0. **The corpus.** phig is a general-purpose tool, so steps 1, 3 and 7 run on a
+   corpus assembled from public sources, not on one person's collection. It
+   covers cameras, phones and editors from several makers, every EXIF
+   orientation, progressive and baseline files, grayscale and CMYK, and
+   damaged files. Candidate sources: `ianare/exif-samples` and
+   `recurser/exif-orientation-examples` on GitHub, libjpeg-turbo's
+   `testimages`, raw.pixls.us for RAWs with embedded previews, and Wikimedia
+   Commons for volume across cameras and editors. The list of what was
+   fetched, with URLs, is recorded here; the files themselves are not
+   committed. A copy of a personal collection may be added to it, never used in
+   its place.
 1. **Inventory (decision 1).**
    - Build with the suppressor removed.
-   - Scan a mixed corpus copied from a real collection, read-only, into a
-     scratch catalog, with stderr captured.
+   - Scan the corpus from step 0 into a scratch catalog, with stderr captured.
    - Classify the lines by library and record the counts in this plan. Revise
      decisions 2 and 3 if the counts disagree with them.
 2. **The JPEG decoder, test first (decision 2).** Add fixtures under
@@ -172,10 +190,10 @@ links it itself:
      libjpeg message in `warning`;
    - two threads decoding different truncated files each get only their own
      message.
-3. **Pixel identity on a real corpus.** A test can't carry a real collection, so
-   this is a recorded check, not a CI test. Decode every JPEG in a copied
-   sample of at least 5,000 files both ways and count mismatches; the expected
-   count is zero. Record the result here.
+3. **Pixel identity on the corpus.** A test can't carry the corpus, so this is
+   a recorded check, not a CI test. Decode at least 5,000 JPEGs from step 0's
+   corpus both ways, including the RAW previews and sidecars, and count
+   mismatches; the expected count is zero. Record the result here.
 4. **Switch the call sites.** Move `decode_image_with_warning` and `core/raw.cpp`
    onto the new decoder. The existing scan, thumbnail and faces tests must pass
    unchanged.
@@ -184,8 +202,9 @@ links it itself:
 6. **Delete the suppressor (decision 4).** Add a test: while another thread
    decodes a truncated JPEG in a loop, a write to fd 2 from the test thread
    arrives through a pipe. This fails today.
-7. **Re-measure.** Repeat the table above on the same kind of corpus. The
-   expectation is the "without" column. Record it.
+7. **Re-measure.** Repeat the table above on step 0's corpus, both before and
+   after this plan, since the table above came from one collection. The
+   expectation is that the "without" column's scaling holds. Record it.
 8. **Docs.**
    - Root `CLAUDE.md`: say which formats decode through phig's own code.
    - `README.md` and CI: package lists.
@@ -215,6 +234,11 @@ decision of its own.
 ## Relationship to other plans
 
 - **068:** depends on this. It no longer needs its stderr switch.
+- **060:** built together with 060's open question 7 decision, on one branch.
+  This plan adds the decode frame to `DecodeResult`; 060 records it with each
+  face. The embedded preview stays unrotated here, because pixels match
+  `cv::imdecode`; turning it upright moves stored hashes and is its own
+  finding.
 - **039:** the Windows port gains libjpeg-turbo as a dependency.
 - **067:** step 1's inventory scan uses a scratch catalog. If 067 has landed,
   that is `--catalog`; otherwise it is `--db` with the XDG directories

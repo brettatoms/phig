@@ -327,8 +327,9 @@ Amended 2026-11-09 by the open question 7 decision below. That measurement came
 from one collection and says nothing about other collections. Box overlap is
 sound only when the old and new boxes are in the same frame, and nothing records
 the frame, so a rebuild after a frame change can drop a label or attach it to
-the wrong face. Overlap stays the test within an unchanged frame; embedding
-matching takes over when the frame changed and the recognition model did not.
+the wrong face. Embedding matching is now the test whenever the recognition
+model is unchanged, and box overlap is used only after a model change, and only
+within a frame recorded as identical.
 
 This removes the order dependence that made open question 1 hard. A label
 belongs to a face in one image and is matched within that image, so it no longer
@@ -414,70 +415,96 @@ this flaw, because it compares boxes without knowing their frames.
 
 ### The decision
 
-1. **Record the frame with each face row:** the decode source (sidecar JPEG,
-   embedded preview, full RAW decode, or the file itself), the orientation
-   applied, the decoded width and height, and an identifier for the
-   recognition model. Per face rather than per image, because faces move
-   between rows by `UPDATE faces SET image_id` (`core/database.cpp:1356`) on
-   relink and demotion, and per-face columns move with them. This is a schema
-   migration to v10.
-2. **Same frame:** match by box overlap, as now.
-3. **Different frame, same recognition model:** match within the image by
-   embedding distance, greedy and one-to-one, accepted only within a
-   threshold. Embeddings are computed on aligned face crops, so they do not
-   depend on the frame's size, orientation or crop.
-4. **Different frame and different model:** the label is dropped and counted in
+Settled 2026-11-09, and built together with plan 069, which owns the decoder.
+
+1. **Record the frame and the model with each face row.** Five columns on
+   `faces`, schema v10:
+   - `frame_source`: `file`, `sidecar_jpeg`, `raw_preview` or `raw_full`;
+   - `frame_width` and `frame_height`: the decoded size;
+   - `frame_sha256`: the sha256 of the bytes decoded. For `file` and
+     `raw_full` that is the image file's own sha256; for `sidecar_jpeg` and
+     `raw_preview` it is the sidecar file's or the preview's;
+   - `model_sha256`: the sha256 of the recognition model file that computed the
+     embedding.
+
+   Per face rather than per image, because faces move between rows by `UPDATE
+   faces SET image_id` (`core/database.cpp:1356`) on relink and demotion, and
+   per-face columns move with them. Plan 069's decoder reports the frame in
+   `DecodeResult`.
+2. **Same recognition model: match by embedding.** Within the image, greedy
+   and one-to-one from the smallest distance up, accepted only within the
+   threshold below. Embeddings are computed on aligned face crops, so they do
+   not depend on the frame's size, orientation or crop, and re-detecting the
+   same pixels reproduces them, so this also covers an unchanged frame.
+3. **Different model, same frame: match by box overlap**, as the R60 fix does.
+   Two frames are the same when `frame_sha256`, `frame_width` and
+   `frame_height` all agree. The source is not compared: a demoted JPEG's faces
+   and its RAW's sidecar-JPEG decode read the same bytes through the same
+   decoder.
+4. **Different model and different frame: the label is dropped** and counted in
    `labels_dropped`, as now. This is the one remaining loss, and it is
    reported.
-5. **Rows written before v10 have no recorded frame.** They are treated as a
-   different frame, so they match by embedding if the model is unchanged.
-   Whether a missing model identifier is treated as unchanged is settled during
-   implementation.
+5. **Rows written before v10** have no recorded frame or model. Their model is
+   taken to be `face_recognition_sface_2021dec.onnx` with sha256
+   `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79`, the
+   only recognition model phig has downloaded, which `core/models.cpp` pins.
+   Their frame is unknown and never equal to another.
+6. **The model is identified by its file's sha256,** computed once per process.
+   The download URL points at opencv_zoo's `main` branch, so a file name alone
+   does not identify a model.
+7. **The embedding threshold is SFace's published L2 threshold, 1.128, on
+   unit-normalized embeddings.** It is the threshold the model's authors give
+   for "same identity" (`cv::FaceRecognizerSF::match` with `FR_NORM_L2`), not
+   one fitted to any collection. Tests pin that a re-detected face in a
+   rescaled or cropped frame matches and that a different face does not.
+8. **A new rule, R86: a carried label lands on the face it named.** R60 says a
+   label is not destroyed without authorization; it does not say a carried
+   label stays with its person. The current overlap test breaks R86 when a
+   frame changes but keeps its size, so the rule is recorded with this fix.
 
-Every path that writes faces records the frame: both scan paths and
-`FacesEngine::run`.
+Every path that writes faces records the frame and the model: both scan paths
+and `FacesEngine::run`.
 
-Making the embedded preview decode upright is a separate fix. If reason 2 is
+Making the embedded preview decode upright is a separate fix, and not part of
+069 either, whose decoder matches `cv::imdecode` pixel for pixel. If reason 2 is
 confirmed, a RAW's phash, sharpness score, thumbnail and face boxes all depend on
 whether a same-named JPEG sits beside it, and its thumbnail can be sideways.
-That is recorded as its own finding once verified. Label carry does not depend
-on it.
+Turning the preview upright moves stored hashes, so it needs its own decision.
+Label carry does not depend on it.
 
 ### Testing
 
-On synthetic images, not on any one collection:
+On synthetic data and the existing face fixtures, not on any one collection:
 
-- a square image re-detected after a 90° rotation;
-- two faces placed so a rotated box lands on the other person, asserting the
-  label does not move to the wrong face;
-- a cropped frame;
-- a rebuild with a different model identifier, asserting the drop is counted;
-- rows written before v10;
-- the overlap threshold, with boxes moved across it.
-
-A RAW fixture with an embedded preview and an orientation tag verifies reason 2.
-It has to be small and freely licensed.
+- carry decisions, as unit tests of the matching function: same model matches
+  by embedding whatever the boxes; a different model in the same frame matches
+  by overlap; a different model in a different frame drops; rows from before
+  v10;
+- a square image rotated 90° and an image rotated 180°, keeping its size, with
+  two faces placed so a rotated box lands on the other person: under a model
+  change the label is dropped, never moved;
+- re-detection after the image file is replaced by a rescaled and by a cropped
+  copy of itself: the label carries by embedding;
+- the embedding threshold, with a same-face pair and a different-face pair;
+- the v10 migration over a v9 database with labelled faces;
+- every face writer records a frame and a model.
 
 ### Performance
 
-Expected to be negligible. Recording the frame is a few integers per face in a
+Expected to be small. Recording the frame is a few values per face in a
 transaction that already inserts the face. Embedding matching compares a few
-vectors per image, runs only in a rebuild, and only when the frame changed.
-Turning the preview upright is one rotation of an already-decoded preview. A
-plain scan does no new work.
+vectors per image. The model hash is computed once per process. The one new
+per-image cost is hashing the sidecar JPEG or the preview when one is decoded
+and faces are found; the file itself and a full RAW decode reuse the image's
+sha256.
 
-This is measured, not assumed. A `phig-perf-tests` case times `face rebuild` over
-a synthetic set with and without a frame change against the current code, and a
-plain scan is checked for no change. It goes in the perf target because it
-asserts on wall-clock time.
+This is measured, not assumed:
 
-To settle during implementation:
-
-- the model identifier, which nothing stores today: the model file's sha256 or
-  its file name;
-- the embedding threshold, and whether `auto_label_face`'s threshold applies;
-- whether R60 needs a companion rule that a carried label lands on the same
-  person's face, since that is a claim R60's statement does not make.
+- a `phig-perf-tests` case times `face rebuild` over a synthetic set with and
+  without a frame change and asserts the two stay within a fixed ratio;
+- a recorded before-and-after measurement, at the branch's base and its tip, of
+  `face rebuild` and of a plain `scan --faces` over the same synthetic set,
+  written here.
 
 ## Decisions for R27, R48, R69, R81 and R83
 
