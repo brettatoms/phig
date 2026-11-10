@@ -9,6 +9,7 @@
 
 #include "gallery-model.h"
 #include "collection.h"
+#include "connect.h"
 #include "gref.h"
 #include "thumb-loader.h"
 
@@ -509,33 +510,14 @@ static void phig_queue_relayout(PhigApp* app) {
         app->relayout_id = g_idle_add(phig_relayout_idle, app);
 }
 
-static void on_grid_width_changed(GObject* object, GParamSpec* pspec, gpointer user_data) noexcept {
-    (void)object;
-    (void)pspec;
-    phig_queue_relayout(static_cast<PhigApp*>(user_data));
-}
-
-static void on_scale_factor_changed(GObject* object, GParamSpec* pspec, gpointer user_data) noexcept {
-    (void)object;
-    (void)pspec;
-    /* Moving between monitors changes how many physical pixels a cell needs, so
-     * the sharpness clamp and the requested texture size both change. */
-    phig_queue_relayout(static_cast<PhigApp*>(user_data));
-}
-
 /* Trackpad pinch. The gesture is continuous but the resting state is always a
  * whole column count: the scale is tracked live and snapped on release. */
-static void on_zoom_begin(GtkGesture* gesture, GdkEventSequence* sequence, gpointer user_data) noexcept {
-    (void)gesture;
-    (void)sequence;
-    auto* app = static_cast<PhigApp*>(user_data);
+static void on_zoom_begin(PhigApp* app) noexcept {
     app->pinch_base_cell = app->target_cell_px;
     app->pinch_cell = (double)app->target_cell_px;
 }
 
-static void on_zoom_scale_changed(GtkGestureZoom* gesture, double scale, gpointer user_data) noexcept {
-    (void)gesture;
-    auto* app = static_cast<PhigApp*>(user_data);
+static void on_zoom_scale_changed(PhigApp* app, double scale) noexcept {
     if (scale <= 0.0)
         return;
     /* Pinching out (scale > 1) magnifies, i.e. bigger thumbnails. */
@@ -545,10 +527,7 @@ static void on_zoom_scale_changed(GtkGestureZoom* gesture, double scale, gpointe
 /* Snap on release so the resting state is a whole number of columns filling the
  * width, then adopt the cell size that count implies as the new target. Uses the
  * hysteresis rule so a pinch resting on a boundary does not oscillate. */
-static void on_zoom_end(GtkGesture* gesture, GdkEventSequence* sequence, gpointer user_data) noexcept {
-    (void)gesture;
-    (void)sequence;
-    auto* app = static_cast<PhigApp*>(user_data);
+static void on_zoom_end(PhigApp* app) noexcept {
     int width = phig_viewport_width(app);
     if (width <= 0 || app->pinch_cell <= 0.0)
         return;
@@ -559,10 +538,8 @@ static void on_zoom_end(GtkGesture* gesture, GdkEventSequence* sequence, gpointe
 
 /* Ctrl+scroll, for mice. Discrete by nature, so it steps one column per notch
  * and needs no snapping. */
-static gboolean on_scroll(GtkEventControllerScroll* controller, double dx, double dy,
-                          gpointer user_data) noexcept {
-    (void)dx;
-    auto* app = static_cast<PhigApp*>(user_data);
+static gboolean on_scroll(PhigApp* app, GtkEventControllerScroll* controller,
+                          double dy) noexcept {
     GdkModifierType state =
         gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(controller));
     if ((state & GDK_CONTROL_MASK) == 0)
@@ -579,10 +556,7 @@ static gboolean on_scroll(GtkEventControllerScroll* controller, double dx, doubl
 /* setup: build the cell. content-fit COVER keeps thumbnails from distorting;
  * the frame gives every cell the same footprint whether or not it currently has
  * a picture. Size is applied at bind time, not here — see on_factory_setup. */
-static void on_factory_setup(GtkSignalListItemFactory* factory, GtkListItem* item,
-                              gpointer user_data) noexcept {
-    (void)factory;
-    (void)user_data;
+static void on_factory_setup(GtkListItem* item) noexcept {
     GtkWidget* frame = gtk_frame_new(NULL);
     /* No size request here: the cell's footprint depends on the viewport width
      * and the current column count, neither of which setup can see. on_factory_bind
@@ -641,10 +615,7 @@ static void on_thumb_result(PhigApp* app, GtkListItem* item, ThumbResult result,
  * thumbnail request whose callback holds a reference to the item, so the item
  * outlives the hop to a worker thread and back whether or not GTK still has it
  * bound when the result arrives. */
-static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item,
-                             gpointer user_data) noexcept {
-    (void)factory;
-    auto* app = static_cast<PhigApp*>(user_data);
+static void on_factory_bind(PhigApp* app, GtkListItem* item) noexcept {
     auto* row = PHIG_IMAGE_ROW(gtk_list_item_get_item(item));
 
     GtkWidget* frame = gtk_list_item_get_child(item);
@@ -677,10 +648,7 @@ static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item
 /* unbind: cancel any outstanding request for this cell and clear the
  * picture, so a cell recycled onto a different row never flashes the
  * previous one's thumbnail while its own request is in flight. */
-static void on_factory_unbind(GtkSignalListItemFactory* factory, GtkListItem* item,
-                               gpointer user_data) noexcept {
-    (void)factory;
-    (void)user_data;
+static void on_factory_unbind(GtkListItem* item) noexcept {
     auto* cancellable = static_cast<GCancellable*>(g_object_get_data(G_OBJECT(item), "phig-cancellable"));
     if (cancellable != NULL)
         g_cancellable_cancel(cancellable);
@@ -692,9 +660,7 @@ static void on_factory_unbind(GtkSignalListItemFactory* factory, GtkListItem* it
 }
 
 /* Activated when a cell is clicked. Launches the image in the system viewer. */
-static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_data) noexcept {
-    (void)grid;
-    auto* app = static_cast<PhigApp*>(user_data);
+static void on_cell_activate(PhigApp* app, guint position) noexcept {
 
     GtkSelectionModel* selection = gtk_grid_view_get_model(app->grid);
     GListModel* list_model = nullptr;
@@ -730,11 +696,7 @@ static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_da
  * outruns several page fetches would otherwise stack a toast per failure.
  * The affected cells already keep their placeholders (the model's contract
  * for this signal), so this is purely a "something is wrong" notice. */
-static void on_page_fetch_failed(PhigGalleryModel* model, const char* reason,
-                                 gpointer user_data) noexcept {
-    (void)model;
-    (void)reason;
-    auto* app = static_cast<PhigApp*>(user_data);
+static void on_page_fetch_failed(PhigApp* app) noexcept {
     if (app->page_fetch_toast_shown)
         return;
     app->page_fetch_toast_shown = true;
@@ -776,15 +738,23 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
 
     /* The model borrows coll, which app owns until ~PhigApp. */
     PhigGalleryModel* model = phig_gallery_model_new(*app->coll);
-    g_signal_connect(model, "page-fetch-failed", G_CALLBACK(on_page_fetch_failed), app);
+    phig::gtk::connect<void(PhigGalleryModel*, const char*)>(
+        model, "page-fetch-failed",
+        [app](PhigGalleryModel*, const char*) noexcept { on_page_fetch_failed(app); });
     GtkSelectionModel* selection = GTK_SELECTION_MODEL(gtk_no_selection_new(G_LIST_MODEL(model)));
     gtk_grid_view_set_model(app->grid, selection);
     g_object_unref(selection);
 
     GtkListItemFactory* factory = gtk_signal_list_item_factory_new();
-    g_signal_connect(factory, "setup", G_CALLBACK(on_factory_setup), NULL);
-    g_signal_connect(factory, "bind", G_CALLBACK(on_factory_bind), app);
-    g_signal_connect(factory, "unbind", G_CALLBACK(on_factory_unbind), NULL);
+    phig::gtk::connect<void(GtkSignalListItemFactory*, GtkListItem*)>(
+        factory, "setup",
+        [](GtkSignalListItemFactory*, GtkListItem* item) noexcept { on_factory_setup(item); });
+    phig::gtk::connect<void(GtkSignalListItemFactory*, GtkListItem*)>(
+        factory, "bind",
+        [app](GtkSignalListItemFactory*, GtkListItem* item) noexcept { on_factory_bind(app, item); });
+    phig::gtk::connect<void(GtkSignalListItemFactory*, GtkListItem*)>(
+        factory, "unbind",
+        [](GtkSignalListItemFactory*, GtkListItem* item) noexcept { on_factory_unbind(item); });
     gtk_grid_view_set_factory(app->grid, factory);
     g_object_unref(factory);
 
@@ -801,8 +771,7 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
     phig_measure_maybe_start(app);
 }
 
-static void on_activate(GtkApplication* gtk_app, gpointer user_data) noexcept {
-    auto* app = static_cast<PhigApp*>(user_data);
+static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
 
     /* org.phig.Gtk is a unique application, so a second launch re-emits activate
      * here. A second window would replace coll and loader under the first. */
@@ -839,7 +808,9 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) noexcept {
      * count from the cells' requested size. */
     gtk_grid_view_set_min_columns(app->grid, app->columns);
     gtk_grid_view_set_max_columns(app->grid, app->columns);
-    g_signal_connect(app->grid, "activate", G_CALLBACK(on_cell_activate), app);
+    phig::gtk::connect<void(GtkGridView*, guint)>(
+        app->grid, "activate",
+        [app](GtkGridView*, guint position) noexcept { on_cell_activate(app, position); });
     app->scroller = GTK_SCROLLED_WINDOW(gtk_scrolled_window_new());
     gtk_scrolled_window_set_child(app->scroller, GTK_WIDGET(app->grid));
     /* Never scroll horizontally: cell size is derived from the viewport width,
@@ -849,20 +820,33 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) noexcept {
     /* GtkWidget exposes no resize signal and no notifying width property, so the
      * horizontal adjustment's page size — which is the visible width — is what
      * reports a viewport resize. */
-    g_signal_connect(gtk_scrolled_window_get_hadjustment(app->scroller), "notify::page-size",
-                     G_CALLBACK(on_grid_width_changed), app);
-    g_signal_connect(app->grid, "notify::scale-factor", G_CALLBACK(on_scale_factor_changed), app);
+    phig::gtk::connect<void(GObject*, GParamSpec*)>(
+        gtk_scrolled_window_get_hadjustment(app->scroller), "notify::page-size",
+        [app](GObject*, GParamSpec*) noexcept { phig_queue_relayout(app); });
+    /* Moving between monitors changes how many physical pixels a cell needs, so
+     * the sharpness clamp and the requested texture size both change. */
+    phig::gtk::connect<void(GObject*, GParamSpec*)>(
+        app->grid, "notify::scale-factor",
+        [app](GObject*, GParamSpec*) noexcept { phig_queue_relayout(app); });
 
     GtkGesture* zoom = gtk_gesture_zoom_new();
-    g_signal_connect(zoom, "begin", G_CALLBACK(on_zoom_begin), app);
-    g_signal_connect(zoom, "scale-changed", G_CALLBACK(on_zoom_scale_changed), app);
-    g_signal_connect(zoom, "end", G_CALLBACK(on_zoom_end), app);
+    phig::gtk::connect<void(GtkGesture*, GdkEventSequence*)>(
+        zoom, "begin", [app](GtkGesture*, GdkEventSequence*) noexcept { on_zoom_begin(app); });
+    phig::gtk::connect<void(GtkGestureZoom*, double)>(
+        zoom, "scale-changed",
+        [app](GtkGestureZoom*, double scale) noexcept { on_zoom_scale_changed(app, scale); });
+    phig::gtk::connect<void(GtkGesture*, GdkEventSequence*)>(
+        zoom, "end", [app](GtkGesture*, GdkEventSequence*) noexcept { on_zoom_end(app); });
     gtk_widget_add_controller(GTK_WIDGET(app->grid), GTK_EVENT_CONTROLLER(zoom));
 
     GtkEventController* scroll = gtk_event_controller_scroll_new(
         static_cast<GtkEventControllerScrollFlags>(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL |
                                                    GTK_EVENT_CONTROLLER_SCROLL_DISCRETE));
-    g_signal_connect(scroll, "scroll", G_CALLBACK(on_scroll), app);
+    phig::gtk::connect<gboolean(GtkEventControllerScroll*, double, double)>(
+        scroll, "scroll",
+        [app](GtkEventControllerScroll* controller, double, double dy) noexcept {
+            return on_scroll(app, controller, dy);
+        });
     gtk_widget_add_controller(GTK_WIDGET(app->grid), scroll);
     adw_toolbar_view_set_content(app->toolbar_view, GTK_WIDGET(app->scroller));
 
@@ -911,7 +895,9 @@ int main(int argc, char** argv) {
     // treats a bare positional argument as a file to open, which a catalog directory is not.
     GRef<AdwApplication> gtk_app =
         adopt(adw_application_new("org.phig.Gtk", G_APPLICATION_DEFAULT_FLAGS));
-    g_signal_connect(gtk_app.get(), "activate", G_CALLBACK(on_activate), app.get());
+    phig::gtk::connect<void(GtkApplication*)>(
+        gtk_app.get(), "activate",
+        [app = app.get()](GtkApplication* application) noexcept { on_activate(application, app); });
     int status = g_application_run(G_APPLICATION(gtk_app.get()), 1, argv);
 
     // g_application_run stops pumping the main context when it returns, so an

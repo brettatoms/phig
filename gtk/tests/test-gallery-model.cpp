@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "connect.h"
 #include "fake-collection.h"
 #include "gallery-model.h"
 
@@ -127,17 +128,6 @@ typedef struct {
     guint added;
 } ItemsChangedCapture;
 
-static void on_items_changed(GListModel* model, guint position, guint removed, guint added,
-                             gpointer user_data) {
-    (void)model;
-    ItemsChangedCapture* capture = static_cast<ItemsChangedCapture*>(user_data);
-    capture->fired = TRUE;
-    capture->position = position;
-    capture->removed = removed;
-    capture->added = added;
-    g_main_loop_quit(capture->loop);
-}
-
 static gboolean on_timeout(gpointer user_data) {
     g_main_loop_quit(static_cast<GMainLoop*>(user_data));
     return G_SOURCE_REMOVE;
@@ -155,8 +145,15 @@ static void test_async_fetch_emits_items_changed(Fixture* f, gconstpointer unuse
      * items-changed a GtkGridView needs to re-query the range. */
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     ItemsChangedCapture capture = {.loop = loop, .fired = FALSE, .position = 0, .removed = 0, .added = 0};
-    gulong handler_id =
-        g_signal_connect(f->model, "items-changed", G_CALLBACK(on_items_changed), &capture);
+    gulong handler_id = phig::gtk::connect<void(GListModel*, guint, guint, guint)>(
+        f->model, "items-changed",
+        [&capture](GListModel*, guint position, guint removed, guint added) noexcept {
+            capture.fired = TRUE;
+            capture.position = position;
+            capture.removed = removed;
+            capture.added = added;
+            g_main_loop_quit(capture.loop);
+        });
     guint timeout_id = g_timeout_add_seconds(5, on_timeout, loop);
 
     g_object_unref(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
@@ -179,22 +176,17 @@ typedef struct {
     std::string reason;
 } FailedCapture;
 
-static void on_page_fetch_failed(PhigGalleryModel* model, const char* reason,
-                                 gpointer user_data) {
-    (void)model;
-    FailedCapture* capture = static_cast<FailedCapture*>(user_data);
-    capture->fired = TRUE;
-    capture->reason = reason;
-    g_main_loop_quit(capture->loop);
-}
-
 static void test_failed_fetch_emits_page_fetch_failed(Fixture* f, gconstpointer unused) {
     (void)unused;
     phig::gtk::fake::fail_pages(*f->coll, true);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     FailedCapture capture = {.loop = loop, .fired = FALSE, .reason = {}};
-    gulong handler_id = g_signal_connect(f->model, "page-fetch-failed",
-                                         G_CALLBACK(on_page_fetch_failed), &capture);
+    gulong handler_id = phig::gtk::connect<void(PhigGalleryModel*, const char*)>(
+        f->model, "page-fetch-failed", [&capture](PhigGalleryModel*, const char* reason) noexcept {
+            capture.fired = TRUE;
+            capture.reason = reason;
+            g_main_loop_quit(capture.loop);
+        });
     guint timeout_id = g_timeout_add_seconds(5, on_timeout, loop);
     g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING, "gallery model: page 0 fetch failed: fake: page fetch failed");
 

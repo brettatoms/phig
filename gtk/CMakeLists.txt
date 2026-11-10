@@ -39,6 +39,8 @@ phig_gtk_test(gallery-model tests/test-gallery-model.cpp src/gallery-model.cpp
 phig_gtk_test(thumb-loader tests/test-thumb-loader.cpp src/thumb-loader.cpp
               tests/fake-collection.cpp)
 
+phig_gtk_test(connect tests/test-connect.cpp)
+
 # Tests collection.cpp itself, against a database it builds, so unlike the
 # other gtk tests it links phig-core.
 phig_gtk_test(collection tests/test-collection.cpp src/collection.cpp)
