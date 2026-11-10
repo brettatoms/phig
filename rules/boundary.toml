@@ -184,11 +184,12 @@ id = "R73"
 tier = "boundary"
 concern = "authorization"
 statement = "Input an operation does not recognize, whether an unknown CLI flag or an option value outside its field's defined set, stops it before it changes anything."
-rationale = "An unrecognized input that is skipped or defaulted widens what an operation acts on without anyone asking for it. The CLI case was measured: before face rebuild's flag loop had an else branch, `phig face rebuild --mtach '*a.jpg'` stepped over the typo and its value, left opts.matches empty, which selects every image (R74), and rebuilt both images of a two-image collection, dropping the label on a named face; with the else branch the same typo prints 'Unknown option: --mtach', exits 1, and the face row and its label are untouched. All thirteen of cli/main.cpp's flag loops now end that way. That guard is argv parsing, which only cli/ has, so the rule is enforced again below it for every surface: each engine's validate() throws InvalidOption before any work for a value outside its field's set (scan's media string and directory, a thumbnail size of zero or less, organize's empty destination or format), and libphig refuses an enum value outside its declaration (phig_config.mode, phig_index_options.media, on_conflict, a per-item resolution), a negative thumbnail size, and an id_count with a NULL ids array, returning PHIG_ERR_INVALID_ARG with *out NULL and the field named in phig_last_error. Before that, each of those was defaulted: an unknown mode opened the read-write path, which creates a missing catalog; an unknown media indexed everything; an unknown conflict policy became rename; an empty destination planned every path relative to the process's working directory."
+rationale = "An unrecognized input that is skipped or defaulted widens what an operation acts on without anyone asking for it. The CLI case was measured: before face rebuild's flag loop had an else branch, `phig face rebuild --mtach '*a.jpg'` stepped over the typo and its value, left opts.matches empty, which selects every image (R74), and rebuilt both images of a two-image collection, dropping the label on a named face; with the else branch the same typo prints 'Unknown option: --mtach', exits 1, and the face row and its label are untouched. All thirteen of cli/main.cpp's flag loops now end that way. That guard is argv parsing, which only cli/ has, so the rule is enforced again below it for every surface: each engine's validate() throws InvalidOption before any work for a value outside its field's set (scan's media string and directory, a thumbnail size of zero or less, organize's empty destination or format, and a parallel above 256, or above the machine's core count where each worker loads its own ~150MB face detector), and libphig refuses an enum value outside its declaration (phig_config.mode, phig_index_options.media, on_conflict, a per-item resolution), a negative thumbnail size, and an id_count with a NULL ids array, returning PHIG_ERR_INVALID_ARG with *out NULL and the field named in phig_last_error. Before that, each of those was defaulted: an unknown mode opened the read-write path, which creates a missing catalog; an unknown media indexed everything; an unknown conflict policy became rename; an empty destination planned every path relative to the process's working directory."
 enforced_at = [
     "core/scan_engine.cpp:validate",
     "core/thumbs_engine.cpp:validate",
     "core/organize_engine.cpp:validate",
+    "core/faces_engine.cpp:validate",
     "libphig/context.cpp:phig_init",
     "libphig/operations.cpp:phig_op_index_start",
     "libphig/operations.cpp:phig_op_thumbs_start",
@@ -209,10 +210,15 @@ tests = [
     "AbiOperations.AnUnknownOptionValueIsRefusedBeforeTheOperationStarts",
     "AbiOrganizeTest.PlanRefusesAnUnknownPolicyAnEmptyDestinationAndAMissingIdArray",
     "AbiOrganizeTest.SetResolutionRefusesAnUnknownValueAndChangesNothing",
+    "ScanEngine.AParallelAboveTheLimitIsRefusedBeforeAnythingIsIndexed",
+    "ThumbsEngineRun.AParallelAboveTheLimitIsRefused",
+    "FacesEngineRun.AParallelAboveTheCoreCountIsRefusedAndTouchesNoFace",
+    "FacesEngineRun.CliRefusesAParallelAboveTheCoreCountWithoutTouchingFaceData",
+    "AbiOperations.AParallelAboveTheLimitIsRefusedBeforeTheOperationStarts",
 ]
 test_kind = "conformance"
 status = "holds"
-test_gap = "One CLI loop, one flag: the subprocess test runs `face rebuild --mtach` and skips when the binary is not beside phig-tests or at ./build/phig; the other twelve loops rest on measurement. A value inside its field's set but harmful is out of scope: `parallel` has no upper bound, so a huge value on a faces run builds that many detectors. An organize format's unknown %-tokens are kept literally, and its substituted values are not checked for path separators, which R87 records."
+test_gap = "One CLI loop, one flag: the subprocess test runs `face rebuild --mtach` and skips when the binary is not beside phig-tests or at ./build/phig; the other twelve loops rest on measurement. An organize format's unknown %-tokens are kept literally, and its substituted values are not checked for path separators, which R87 records."
 
 [[rule]]
 id = "R81"

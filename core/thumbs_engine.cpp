@@ -22,6 +22,10 @@ void validate(const ThumbsOptions& opts) {
     if (opts.size <= 0) {
         throw InvalidOption("thumbs: size must be positive, got " + std::to_string(opts.size));
     }
+    if (opts.parallel > kMaxParallel) {
+        throw InvalidOption("thumbs: parallel " + std::to_string(opts.parallel) +
+                            " is above the limit of " + std::to_string(kMaxParallel));
+    }
 }
 
 ThumbsResult ThumbsEngine::run(const CancelToken& cancel, ProgressQueue<ThumbsProgress>* progress) {

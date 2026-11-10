@@ -22,6 +22,7 @@
 #include "fault_injection.h"
 #include "invalid_option.h"
 #include "models.h"
+#include "parallel.h"
 #include "progress_queue.h"
 #include "scan_engine.h"
 #include "scanner.h"
@@ -126,6 +127,23 @@ TEST(ScanEngine, AnUnknownMediaValueIsRefusedBeforeAnythingIsIndexed) {
     ScanEngine engine(opts, db);
     EXPECT_THROW(engine.run(cancel, nullptr), InvalidOption);
     EXPECT_THROW(engine.run_workers(cancel, nullptr), InvalidOption);
+    EXPECT_EQ(db.count(), 0);
+}
+
+TEST(ScanEngine, AParallelAboveTheLimitIsRefusedBeforeAnythingIsIndexed) {
+    ScratchCollection c(2);
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+
+    ScanOptions opts = c.options();
+    opts.parallel = kMaxParallel + 1;
+    EXPECT_THROW(ScanEngine(opts, db).run(cancel, nullptr), InvalidOption);
+
+    // With faces each worker loads its own detector, so the limit is the core count.
+    opts.faces = true;
+    opts.parallel = max_face_workers() + 1;
+    EXPECT_THROW(ScanEngine(opts, db).run(cancel, nullptr), InvalidOption);
     EXPECT_EQ(db.count(), 0);
 }
 

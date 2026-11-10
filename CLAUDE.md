@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite, 1020 tests
+./build/phig-tests        # fast suite, 1026 tests
 ./build/phig-perf-tests   # performance suite (~2s), 6 tests
-ctest --test-dir build --parallel   # both — 1026 (~19s; 48s without --parallel)
+ctest --test-dir build --parallel   # both — 1032 (~19s; 48s without --parallel)
 clang-format -i <files>
 ```
 

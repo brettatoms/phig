@@ -1,5 +1,6 @@
 #include "parallel.h"
 
+#include <algorithm>
 #include <atomic>
 #include <exception>
 #include <mutex>
@@ -54,4 +55,8 @@ bool parallel_for_each(size_t count, int num_threads, const CancelToken& cancel,
     // can flip after the last item finishes, which would misreport a full
     // run as cancelled.
     return completed.load(std::memory_order_relaxed) == count;
+}
+
+int max_face_workers() {
+    return static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
 }

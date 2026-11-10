@@ -27,3 +27,12 @@
 // num_threads <= 0 is treated as 1.
 bool parallel_for_each(size_t count, int num_threads, const CancelToken& cancel,
                        const std::function<void(size_t, int)>& fn);
+
+// The most workers an engine accepts for `parallel`. Above any real core count, so it
+// refuses a mistake rather than a tuning choice; scan does I/O, where more threads than
+// cores can still help.
+constexpr int kMaxParallel = 256;
+
+// The most face workers: one per core. Each loads its own ~150MB detector and is
+// CPU-bound, so a worker past the core count costs memory and buys nothing.
+int max_face_workers();

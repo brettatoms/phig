@@ -126,6 +126,16 @@ void validate(const ScanOptions& opts) {
         throw InvalidOption("scan: unknown media type '" + opts.media +
                             "' (expected image, video or empty for all)");
     }
+    if (opts.parallel > kMaxParallel) {
+        throw InvalidOption("scan: parallel " + std::to_string(opts.parallel) +
+                            " is above the limit of " + std::to_string(kMaxParallel));
+    }
+    if (opts.faces && opts.parallel > max_face_workers()) {
+        throw InvalidOption("scan: parallel " + std::to_string(opts.parallel) +
+                            " with faces is above this machine's " +
+                            std::to_string(max_face_workers()) +
+                            " cores; each face worker loads its own ~150MB detector");
+    }
 }
 
 ScanResult ScanEngine::run_workers(const CancelToken& cancel,

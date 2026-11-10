@@ -529,7 +529,8 @@ typedef struct {
     /* PHIG_MEDIA_ANY indexes both images and videos. A value outside the enum
        is refused with PHIG_ERR_INVALID_ARG. */
     phig_media_type media;
-    /* Threads for the parallel hash/extract phase. 0 or negative = auto. */
+    /* Threads for the parallel hash/extract phase. 0 or negative = auto;
+       above 256 is refused. */
     int parallel;
 } phig_index_options;
 
@@ -546,6 +547,7 @@ typedef struct {
     int size;
     /* Regenerate thumbnails that already exist in the cache. */
     bool force;
+    /* 0 or negative = auto; above 256 is refused. */
     int parallel;
 } phig_thumbs_options;
 
@@ -561,7 +563,9 @@ typedef struct {
     size_t id_count;
     /* Each worker loads its own detector (~150MB of model state, and the
        detector is not thread-safe), so this bounds memory as much as speed.
-       0 or negative = auto, which is deliberately conservative. */
+       0 or negative = auto, which is deliberately conservative. Above the
+       machine's core count is refused: workers are CPU-bound, so one past it
+       costs memory and buys nothing. */
     int parallel;
 } phig_faces_options;
 

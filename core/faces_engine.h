@@ -6,6 +6,7 @@
 
 #include "cancel.h"
 #include "database.h"
+#include "invalid_option.h"
 #include "progress_queue.h"
 
 enum class FacesStage { FileDone, Selected, LoadingFaceModels };
@@ -20,6 +21,9 @@ struct FacesRebuildOptions {
     std::vector<int64_t> ids;
     int parallel = -1;  // -1 = auto
 };
+
+// Throws InvalidOption when a field holds a value outside its set (R73).
+void validate(const FacesRebuildOptions& opts);
 
 // `error` is non-empty when the file could not be decoded: it is the
 // already-formatted warning text, and the CALLER is responsible for logging it.

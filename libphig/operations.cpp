@@ -187,6 +187,7 @@ phig_status phig_op_faces_start(phig_ctx* ctx, const phig_faces_options* opts, p
         fopts.ids.assign(opts->ids, opts->ids + opts->id_count);
     }
     fopts.parallel = opts->parallel;
+    validate(fopts);
 
     phig_op* raw = op.get();
     spawn(raw, [raw, fopts]() {

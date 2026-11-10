@@ -24,7 +24,9 @@
 #include "faces_engine.h"
 #include "fault_injection.h"
 #include "hasher.h"
+#include "invalid_option.h"
 #include "models.h"
+#include "parallel.h"
 #include "paths.h"
 #include "phig_binary.h"
 #include "progress_queue.h"
@@ -816,6 +818,87 @@ TEST(FacesEngineRun, CliRejectsAnUnknownFlagWithoutTouchingFaceData) {
     sqlite3_finalize(s);
     EXPECT_EQ(step, SQLITE_ROW) << "the named face was deleted; output was:\n" << output;
     EXPECT_EQ(labeled_as, person_id);
+}
+
+namespace {
+// One face row named "Ada" on f0.jpg, written directly so the tests that use it hold on
+// a machine without face models. Returns the face's id.
+int64_t add_named_face(ScratchFaces& coll) {
+    int64_t image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    EXPECT_GT(image_id, 0);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 1;
+    face.y = 2;
+    face.width = 10;
+    face.height = 10;
+    int64_t face_id = coll.db->insert_face(image_id, face);
+    int64_t person_id = coll.db->get_or_create_person("Ada");
+    EXPECT_TRUE(coll.db->set_face_person(face_id, person_id));
+    return face_id;
+}
+}  // namespace
+
+// Each face worker holds its own ~150MB detector and is CPU-bound, so a worker past
+// the core count buys nothing and a huge value exhausts memory. Refused before any
+// detector loads or face row is touched.
+TEST(FacesEngineRun, AParallelAboveTheCoreCountIsRefusedAndTouchesNoFace) {
+    ScratchFaces coll(2);
+    add_named_face(coll);
+    FacesRebuildOptions opts;
+    opts.ids = coll.all_ids();
+    opts.parallel = max_face_workers() + 1;
+    FacesEngine engine(opts, *coll.db);
+    CancelToken tok;
+    EXPECT_THROW(engine.run(tok, nullptr), InvalidOption);
+    EXPECT_EQ(count_face_rows(coll), 1u);
+}
+
+TEST(FacesEngineRun, LoadsNoMoreDetectorsThanSelectedImages) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    if (max_face_workers() < 3) GTEST_SKIP() << "needs at least 3 cores to ask for 3 workers";
+    ScratchFaces coll(2);
+    FacesRebuildOptions opts;
+    opts.ids = coll.all_ids();
+    opts.parallel = 3;
+    FacesEngine engine(opts, *coll.db);
+    CancelToken tok;
+    ProgressQueue<FacesProgress> q(64);
+    engine.run(tok, &q);
+    q.close();
+
+    FacesProgress p;
+    bool saw_load = false;
+    while (q.pop(p)) {
+        if (p.stage == FacesStage::LoadingFaceModels) {
+            saw_load = true;
+            EXPECT_EQ(p.total, 2u) << "two images need two detectors, not three";
+        }
+    }
+    EXPECT_TRUE(saw_load);
+}
+
+TEST(FacesEngineRun, CliRefusesAParallelAboveTheCoreCountWithoutTouchingFaceData) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    ScratchFaces coll(2);
+    int64_t face_id = add_named_face(coll);
+
+    PhigRun run = run_phig(phig_bin, coll.dir,
+                           "face rebuild --parallel 100000 --catalog '" + coll.dir.string() + "'");
+    EXPECT_EQ(run.exit_code, 1) << "output was:\n" << run.output;
+    EXPECT_NE(run.output.find("parallel"), std::string::npos) << "output was:\n" << run.output;
+    EXPECT_EQ(count_face_rows(coll), 1u) << "output was:\n" << run.output;
+    sqlite3_stmt* s = nullptr;
+    ASSERT_EQ(
+        sqlite3_prepare_v2(coll.db->db_ptr(), "SELECT 1 FROM faces WHERE id = ?", -1, &s, nullptr),
+        SQLITE_OK);
+    sqlite3_bind_int64(s, 1, face_id);
+    EXPECT_EQ(sqlite3_step(s), SQLITE_ROW) << "the named face was deleted";
+    sqlite3_finalize(s);
 }
 
 TEST(FacesEngineRun, CliRebuildWarnsWhenItDropsALabel) {

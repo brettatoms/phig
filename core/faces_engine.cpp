@@ -73,7 +73,16 @@ IdentifyResult identify_person(Database& db, const std::string& person, float th
 
 FacesEngine::FacesEngine(const FacesRebuildOptions& opts, Database& db) : opts_(opts), db_(db) {}
 
+void validate(const FacesRebuildOptions& opts) {
+    if (opts.parallel > max_face_workers()) {
+        throw InvalidOption("faces: parallel " + std::to_string(opts.parallel) +
+                            " is above this machine's " + std::to_string(max_face_workers()) +
+                            " cores; each face worker loads its own ~150MB detector");
+    }
+}
+
 FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgress>* progress) {
+    validate(opts_);
     FacesResult result;
 
     std::vector<ImageInfo> images = db_.get_images_by_ids(opts_.ids);
@@ -98,6 +107,8 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
         num_threads = std::min(static_cast<int>(std::thread::hardware_concurrency()) / 2, 4);
         num_threads = std::max(num_threads, 1);
     }
+    // A detector per worker, and no more workers than images.
+    num_threads = std::min(num_threads, static_cast<int>(images.size()));
 
     if (progress) {
         FacesProgress p;

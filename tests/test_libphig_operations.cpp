@@ -10,6 +10,7 @@
 
 #include "database.h"
 #include "face_path.h"
+#include "parallel.h"
 #include "paths.h"
 #include "phig/phig.h"
 #include "temp_dir.h"
@@ -489,6 +490,34 @@ TEST(AbiOperations, AnUnknownOptionValueIsRefusedBeforeTheOperationStarts) {
     phig_shutdown(ctx);
     Database db(fx.db_path);
     EXPECT_EQ(db.count(), 1) << "the loose file must not have been indexed";
+}
+
+TEST(AbiOperations, AParallelAboveTheLimitIsRefusedBeforeTheOperationStarts) {
+    OpFixture fx(1);
+    phig_ctx* ctx = fx.open();
+    AllIds all(ctx);
+    phig_op* op = nullptr;
+
+    const std::string scan_dir = fx.dir.string();
+    phig_index_options iopts = default_index(scan_dir);
+    iopts.parallel = kMaxParallel + 1;
+    EXPECT_EQ(phig_op_index_start(ctx, &iopts, &op), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(op, nullptr);
+
+    phig_thumbs_options topts = default_thumbs(all.list);
+    topts.parallel = kMaxParallel + 1;
+    EXPECT_EQ(phig_op_thumbs_start(ctx, &topts, &op), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(op, nullptr);
+
+    phig_faces_options fopts{};
+    fopts.ids = all.list->items;
+    fopts.id_count = static_cast<size_t>(all.list->count);
+    fopts.parallel = max_face_workers() + 1;
+    EXPECT_EQ(phig_op_faces_start(ctx, &fopts, &op), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(op, nullptr);
+    EXPECT_STRNE(phig_last_error(ctx), "");
+
+    phig_shutdown(ctx);
 }
 
 TEST(AbiOperations, FailedStartClearsTheCallersHandle) {
