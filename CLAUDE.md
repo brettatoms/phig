@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite, 1012 tests
+./build/phig-tests        # fast suite, 1013 tests
 ./build/phig-perf-tests   # performance suite (~2s), 6 tests
-ctest --test-dir build --parallel   # both — 1018 (~19s; 48s without --parallel)
+ctest --test-dir build --parallel   # both — 1019 (~19s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -104,7 +104,7 @@ for this reason, not only for runtime.**
 `gtk/` builds inside the root build when configured with
 `-DPHIG_BUILD_GTK=ON`. The option is off by default, so a plain build needs
 neither gtk4 nor libadwaita. `cmake --build build --target phig-gtk` then
-builds the client and `phig-core` only. Its 45 tests across five binaries
+builds the client and `phig-core` only. Its 46 tests across five binaries
 carry the ctest label `gtk` (`ctest --test-dir build -L gtk`) and need no
 collection. See `gtk/CLAUDE.md`.
 
@@ -237,14 +237,17 @@ sound check against a catalog you have scanned.
   deprecation window, and when 26.04 becomes the default it and `ubuntu-latest`
   will be the same image.
 - **Not every job runs on every push.** A push or PR gets both ubuntu test
-  legs, gtk and lint. That cost has not been measured since the second ubuntu
-  leg was added; before it, the set was 15 billable minutes.
-  The macOS leg and both sanitizer jobs are
-  weekly (Mondays 09:00 UTC) plus `workflow_dispatch`, which runs the full set
-  on any branch: `gh workflow run CI --ref <branch>`. macOS runners bill at 10x,
-  so that one job was 40 of a full run's 71 minutes and 64% of a month's spend.
-  A change to platform code, or anything you want a sanitizer verdict on before
-  merging, needs the manual run — a green PR has not been near macOS or TSan.
+  legs, gtk and lint. The macOS leg and both sanitizer jobs are weekly (Mondays
+  09:00 UTC) plus `workflow_dispatch`, which runs the full set on any branch:
+  `gh workflow run CI --ref <branch>`. That split was set by billing while the
+  repository was private, when macOS runners billed at 10x. The repository is
+  now public, and standard GitHub-hosted runners, macOS included, cost nothing
+  there, so billing no longer argues for it. A change to platform code, or
+  anything you want a sanitizer verdict on before merging, needs the manual run
+  — a green PR has not been near macOS or TSan.
+- **Every job is capped at 30 minutes** (`timeout-minutes`), against a longest
+  green run of 9. Without it a hung test holds a runner for GitHub's default of
+  six hours.
 - **Prose-only pushes do not run CI at all.** `paths-ignore` covers `plans/`,
   `docs/` and top-level `*.md`. `rules/` is deliberately not in that list: the
   ubuntu legs gate its records and generated views.

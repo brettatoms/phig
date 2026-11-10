@@ -19,9 +19,8 @@ on:
       - '*.md'
 
   # The macOS leg and both sanitizer jobs run on this schedule rather than on
-  # every push, because cadence is the only thing that moves the bill: at the
-  # 10x macOS multiplier that one job is 40 of a full run's 71 billable minutes,
-  # so a nightly macOS run would cost what running it per-push already costs.
+  # every push. That was a billing decision while the repository was private and
+  # macOS billed at 10x; standard runners are free for a public repository.
   # Weekly, Mondays 09:00 UTC.
   schedule:
     - cron: '0 9 * * 1'
@@ -67,6 +66,9 @@ jobs:
           && fromJSON('["ubuntu-latest", "ubuntu-26.04", "macos-latest"]')
           || fromJSON('["ubuntu-latest", "ubuntu-26.04"]') }}
     runs-on: ${{ matrix.os }}
+    # Every job is capped at 30 minutes, against a longest green run of 9. A hung
+    # test otherwise holds a runner for GitHub's default of six hours.
+    timeout-minutes: 30
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 400M
@@ -115,8 +117,8 @@ jobs:
       # 26.04 only, here and on the download below: it is the only leg whose
       # OpenCV can run the detector. Putting them on 24.04 as well would install
       # 37 MB so that ten tests could fail on a cv::Exception, and putting them
-      # on macOS would spend a 10x-billed weekly leg on the same coverage 26.04
-      # already gives. Leaving 24.04 models-less is also what lets
+      # on macOS would repeat the coverage 26.04 already gives. Leaving 24.04
+      # models-less is also what lets
       # ScanEngine.FacesModeFailsClearlyBelowTheOpenCVFloor run without them.
       - name: Restore face models
         if: matrix.os == 'ubuntu-26.04'
@@ -280,6 +282,7 @@ jobs:
     # would be paid against a miss.
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -378,6 +381,7 @@ jobs:
   gtk:
     name: build & test (gtk)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 400M
@@ -415,6 +419,7 @@ jobs:
   lint:
     name: lint (clang-format + clang-tidy)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
