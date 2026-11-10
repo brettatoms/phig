@@ -1,8 +1,9 @@
 ---
 name: Silent Loss on a Successful Run
-status: in-progress
+status: completed
 created: 2026-08-10
-closes_rules: [R27, R48, R60, R66, R69, R73, R81, R83]
+completed: 2026-11-10
+closes_rules: [R27, R48, R69, R73, R81, R83]
 description: >
   Four measured defects that share one shape: the operation finishes, reports
   success, exits 0, and something that mattered is gone or wrongly counted.
@@ -238,6 +239,28 @@ moving the guard, not writing it.
 It does not gate R60, and the two are still worth deciding together — an
 authorization step in front of a rebuild blunts a typo as well, and a parser
 that refuses unknown flags does not make an unprompted rebuild safe.
+
+**Closed 2026-11-10.** libphig has no flags, so its equivalent is an option value
+outside its field's set. A survey of every mutating entry point found none that
+widened a destructive operation, since an empty selection already meant nothing,
+but every such value was defaulted rather than refused: an unknown
+`phig_config.mode` took the read-write path and created a missing catalog, an
+unknown `media` indexed everything, an unknown `on_conflict` or per-item
+resolution became rename, a negative thumbnail size became the default, an empty
+organize destination planned paths relative to the process's working directory,
+and an `id_count` with a NULL `ids` was read as an empty selection.
+
+Each engine now has a `validate()` that throws `InvalidOption` before any work
+(scan's media and directory, thumbs' size, organize's destination and format), so
+the CLI and a future `phigd` get the check too. libphig converts its enums with an
+explicit unknown case, refuses the malformed selection, and maps `InvalidOption` to
+`PHIG_ERR_INVALID_ARG` with the field named in `phig_last_error`. R73's statement
+now covers option values as well as flags, and the record holds.
+
+Two things the survey found are out of R73's scope and recorded in its
+`test_gap`: `parallel` has no upper bound, so a huge value on a faces run builds
+that many detectors; and an organize format's substituted values are not checked
+for path separators, which plan 070 owns.
 
 ## R83 — a failed delete reports no reason
 
@@ -606,8 +629,10 @@ after the R60 fix; R73 and open question 7 stay open.
   06f3773 Update rule records and docs for the final review fixes
   ```
 
-- Left: R73, the layer move; R66, faces with no plan phase, which also stays on
-  053.
+- R73 holds as of 2026-11-10; see its section.
+- R60 and the faces half of R66 moved to plan 063 on 2026-11-10, which must
+  decide what authorizes a rebuild to drop a label before it ships. 060 built the
+  label carry that decision starts from; both records stay `partial`.
 - The open question 7 decision is built. A face rebuild carries a label by
   embedding when the recognition model is unchanged, by box overlap when the
   model changed and the recorded frame is identical, and otherwise drops and
@@ -709,10 +734,10 @@ after the R60 fix; R73 and open question 7 stay open.
 - **Plan 053** (libphig feature parity) was the plan all three records named
   before this one opened, and is the plan that picks up 020's deferred
   activity-log reader. It stays the owner of *reaching* faces and the log
-  through the ABI; it is not the owner of what a rebuild destroys. R66 stays on
-  053 for the same reason: it is `partial` for two causes — faces having no plan
-  phase, which this plan closes, and remove not being exposed through the ABI at
-  all, which it does not.
+  through the ABI. R66 is `partial` for two causes: faces having no plan phase,
+  and remove not being exposed through the ABI at all.
+- **Plan 063** (people and faces ABI) took R60 and the faces half of R66 on
+  2026-11-10, with the shapes this plan weighed.
 - **Plan 042** (organize engine, completed) is where R27 and R48 both live, and
   its plan/apply shape is R60's model.
 - **Plan 043** (CLI primitive split) owns `cli/`, including `face rebuild`'s

@@ -83,6 +83,7 @@ The bytes on disk.
 | R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
 | R77 | authorization | violated (test gap) | Cleaning the thumbnail cache removes only files whose names match phig's thumbnail contract and whose hash no row claims, and a dry run removes nothing at all. |
 | R81 | conflict | holds (test gap) | Staging a stdin query image does not destroy anything already on disk. |
+| R87 | authorization | violated (test gap) | Every destination organize plans lies inside the destination directory the caller named; nothing a file carries and nothing in the format can place a file outside it. |
 
 ## attachment — rebuildable: backup-only
 

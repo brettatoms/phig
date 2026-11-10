@@ -7,9 +7,9 @@
 | faces.identify | — | — | R28 R29 R34 | — | — | — | R07 R51 R53 R71 | — | — |
 | **faces.rebuild** | — | — | R28 R29 R34 R72 | — | R85 R86 | — | R51 R52 R53 R55 | R57 R58 | R60 R74 |
 | metadata.write | — | — | R28 R29 R34 | — | R79 | — | R49 R50 R53 R54 R55 R84 | — | R74 R78 |
-| organize.copy | R01 R03 R05 R08 R09 R10 R11 | — | R28 R29 R31 R32 R33 R34 R48 | R18 R19 R27 R83 | R40 | R41 R44 R45 R47 | R49 R50 R53 R55 | R57 R58 | R59 R74 |
-| **organize.move** | R01 R02 R03 R06 R08 R09 R10 R11 | — | R28 R29 R31 R32 R33 R34 R48 | R18 R19 R27 R83 | R40 | R41 R44 R45 R47 | R49 R50 R53 R55 | R57 R58 | R59 R74 |
-| organize.plan | R01 R03 R08 | — | R29 | — | — | — | R49 R50 R53 R55 | R57 | R21 R59 R61 R74 |
+| organize.copy | R01 R03 R05 R08 R09 R10 R11 | — | R28 R29 R31 R32 R33 R34 R48 | R18 R19 R27 R83 | R40 | R41 R44 R45 R47 | R49 R50 R53 R55 | R57 R58 | R59 R74 R87 |
+| **organize.move** | R01 R02 R03 R06 R08 R09 R10 R11 | — | R28 R29 R31 R32 R33 R34 R48 | R18 R19 R27 R83 | R40 | R41 R44 R45 R47 | R49 R50 R53 R55 | R57 R58 | R59 R74 R87 |
+| organize.plan | R01 R03 R08 | — | R29 | — | — | — | R49 R50 R53 R55 | R57 | R21 R59 R61 R74 R87 |
 | **relink.demote** | — | R17 | R28 R29 R30 R34 | R18 R19 | R37 R38 R39 | R43 | R49 R50 R53 | R56 | — |
 | **relink.demote_live_photo** | — | R17 | R28 R29 R30 R34 | R18 R19 | R37 R38 | — | R49 R50 R53 | R56 | — |
 | **relink.transfer** | — | R16 | R28 R29 R30 R34 | R18 R19 | R37 R38 R39 | — | R49 R50 R53 | R56 | — |

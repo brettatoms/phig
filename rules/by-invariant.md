@@ -1162,3 +1162,17 @@ tag add, tag remove, gallery set, gallery clear, fav add and fav remove each req
 | Binds | `metadata.write` |
 | Protects | user-metadata |
 | Evidence | subprocess: `DatabaseTest.ResolveNamedSelectionRefusesAnUnnamedSubject`, `DatabaseTest.ResolveNamedSelectionMayLegitimatelyMatchNothing`, `DatabaseTest.CliMetadataWritesRefuseAnUnnamedSubject` |
+
+### R87 — violated (test gap)
+
+Every destination organize plans lies inside the destination directory the caller named; nothing a file carries and nothing in the format can place a file outside it.
+
+apply_format substitutes %camera and %make from the file's EXIF Model and Make, and %gallery from its gallery name, verbatim, and OrganizeEngine::plan joins the result onto the destination with fs::path's operator/. A '/' in a value adds directories, a '..' climbs out, and an absolute value replaces the destination outright. Measured with the built binary in a scratch catalog: a JPEG whose EXIF Model is '../../escaped' was copied by `phig cp <dest> --format '%camera/%original'` to a directory two levels above <dest>, and one whose Make is '/tmp/abs' was planned by the same command with %make to /tmp/abs/a.jpg. mv does the same with the original. A camera writes those fields and anyone can edit them, so the file decides where phig moves it, and the caller authorized a move into one directory, not wherever the file says. The conflict guards (R01, R02) still refuse to overwrite an occupied path, so nothing is clobbered; the original lands outside the tree the user chose, possibly somewhere they never look or that is cleaned up.
+
+| | |
+|---|---|
+| Enforced at | `core/organize_plan.cpp:apply_format`, `core/organize_engine.cpp:OrganizeEngine::plan` |
+| Binds | `organize.plan`, `organize.copy`, `organize.move` |
+| Protects | original-file |
+| Evidence | witness: none |
+| Test gap | Nothing pins it; the measurement above is the evidence. A test needs an image row whose metadata_json carries a Make or Model with '..' or a leading '/', planned with a format using it, asserting every planned destination stays under the destination. |
