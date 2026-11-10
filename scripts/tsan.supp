@@ -31,6 +31,19 @@ deadlock:CPLAcquireMutex
 called_from_lib:libavcodec.so
 called_from_lib:libavutil.so
 
+# oneTBB, OpenCV's parallel framework on Linux, reached from any decode or
+# imgproc call. TBB frees its global process affinity mask when its last
+# reference goes (__TBB_InitOnce::remove_ref, misc_ex.cpp) while a thread waking
+# workers memcmps it (affinity_helper::protect_affinity_mask). The reference
+# count orders the two, and it is an atomic inside libtbb, which Ubuntu and Arch
+# ship uninstrumented. Both accesses are interceptors (operator delete[],
+# memcmp) called from libtbb on TBB's own memory, so phig code run inside a
+# parallel region is still checked. OMP_NUM_THREADS does not reach TBB.
+# libtbbmalloc is TBB's allocator, loaded by libtbb, and reports the same way:
+# memset from two TBB workers on memory it manages.
+called_from_lib:libtbb.so
+called_from_lib:libtbbmalloc.so
+
 # LibRaw::get_timestamp: strdup in one scan worker, free in another. Looked like
 # a real bug at first -- raw_decode runs unserialized across workers, and
 # libraw_r is meant to be the reentrant build -- so it was investigated rather

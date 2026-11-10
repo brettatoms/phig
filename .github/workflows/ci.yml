@@ -322,11 +322,13 @@ jobs:
       - name: Build
         run: cmake --build build --parallel "$(getconf _NPROCESSORS_ONLN)" --target phig-tests
 
-      # OMP_NUM_THREADS=1 is required, not tidiness. OpenCV's parallel backend
-      # on Linux is OpenMP, libgomp is not TSan-instrumented, so TSan cannot see
-      # its barriers and every parallel region inside a detect() or decode looks
-      # like unsynchronized access — roughly 120 false positives that bury any
-      # real finding. See "ThreadSanitizer" in CLAUDE.md.
+      # OMP_NUM_THREADS=1 is required, not tidiness. libgomp, the OpenMP runtime
+      # some of phig's libraries use, is not TSan-instrumented, so TSan cannot
+      # see its barriers and every parallel region inside a detect() or decode
+      # looks like unsynchronized access — roughly 120 false positives that bury
+      # any real finding. OpenCV's own parallel framework is TBB, which this
+      # does not reach; scripts/tsan.supp covers it. See "ThreadSanitizer" in
+      # CLAUDE.md.
       #
       # halt_on_error makes a finding fail the job: UBSan otherwise reports and
       # keeps going, which would let a real diagnostic pass as green.

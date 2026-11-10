@@ -146,13 +146,19 @@ uninstrumented. CI runners are slower.
 OMP_NUM_THREADS=1 ./build/phig-tests   # TSan build
 ```
 
-OpenCV's parallel framework here is OpenMP, and `libgomp` is not
-TSan-instrumented, so TSan cannot see its barriers — every OpenCV parallel
+`libgomp`, the OpenMP runtime some of phig's libraries use (LibRaw links it),
+is not TSan-instrumented, so TSan cannot see its barriers — every parallel
 region inside a `detect()` or decode call then looks like unsynchronized
 access. Measured: `*Face*` 77-86 reports and `*Scan*` 42 at the default
 thread count, 0 for both with `OMP_NUM_THREADS=1` and no code change. Run
 TSan without this and roughly 120 false positives will bury any genuine
 finding.
+
+OpenCV's own parallel framework is TBB, on Ubuntu and Arch alike, and
+`OMP_NUM_THREADS` does not reach it. libtbb is uninstrumented too, so its
+internal reference counting reads as a race on TBB's own memory. That is
+suppressed by library in `scripts/tsan.supp`, which the CI job passes; pass
+it locally with `TSAN_OPTIONS=suppressions=$PWD/scripts/tsan.supp`.
 
 ### Real-run checks
 
