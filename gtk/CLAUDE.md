@@ -10,7 +10,7 @@ Links `phig-core` directly, as `cli/` does, through one seam:
 `cmake --build build --target phig-gtk`.
 
 The client's argument is a catalog directory. Without one it uses
-`phig_collection_default_catalog`, so `PHIG_CATALOG` and the config file apply.
+`phig::gtk::default_catalog`, so `PHIG_CATALOG` and the config file apply.
 
 ## Rules
 
@@ -18,7 +18,8 @@ The client's argument is a catalog directory. Without one it uses
   `collection.h`, never `Database` or an engine. The seam keeps reads paged.
   No call returns the whole collection, because a full read carries about
   3.8 KB of EXIF per row that the client never reads. A new capability is a
-  new `collection.h` function.
+  new `collection.h` function. Every function in it is `noexcept`; one that can
+  fail returns `std::expected` carrying phig's reason.
 - **The tests link `tests/fake-collection.cpp`, not `phig-core`.** They test
   the client's own behaviour and need no collection. A new `collection.h`
   function gets a fake implementation too. `test-collection` is the exception:
@@ -27,13 +28,16 @@ The client's argument is a catalog directory. Without one it uses
   `GdkTexture` or a file path before widget code sees them.
 - **No exception unwinds into GTK.** GTK calls the client's handlers through C
   frames. Every function passed to GLib or GTK is `noexcept`, and every
-  `collection.h` function catches.
+  `collection.h` function catches. Connect signals with `phig::gtk::connect`
+  (`src/connect.h`), which rejects a handler that is not `noexcept` at compile
+  time. It is not named `signal.h`: `src/` is on the include path, and a
+  `signal.h` there shadows the system header GLib includes.
 - **Never authorize a removal with `cmd_rm`'s `ConfirmFn`.** A destructive
   operation is authorized by a plan the caller inspects and then applies
   (R66). The Remove screen waits for that plan/apply pair in `core/`.
-- **C++ throughout, against GTK's C API.** No new C files. Three remain,
-  `src/gallery-model.c`, `src/row-page.c` and `tests/test-gallery-model.c`, and
-  plan 068 converts them. Not gtkmm: its libadwaita support lags the widgets
+- **C++ throughout, against GTK's C API.** No C
+  files. `gtk/` may use `std::expected` and `std::move_only_function`; see
+  root `CLAUDE.md` for why the rest of the tree may not. Not gtkmm: its libadwaita support lags the widgets
   the client is built on. Prefer C++ types to GLib's where GTK does not
   require GLib's: `std::string` over `char*`, standard containers over
   `GHashTable`.
@@ -44,11 +48,19 @@ The client's argument is a catalog directory. Without one it uses
   `finalize`. Everything else is plain C++ structs and free functions, with
   `GRef` (`src/gref.h`) owning GObject references.
 - **Widgets and rendering stay on the main thread.** `ThumbLoader`'s worker
-  threads call `phig_collection_thumb_lookup`/`phig_collection_thumb_generate`
+  threads call `phig::gtk::thumb_lookup`/`phig::gtk::thumb_generate`
   and load the file into a new `GdkTexture`, then post results back via
   `g_idle_add`. Creating a texture is thread-safe, and so is dropping one that
   never reached GTK. A worker never touches a `GtkWidget`, or a texture
-  already handed to GTK.
+  already handed to GTK. A `ThumbCallback` is destroyed exactly once, on the
+  main thread, whether or not it ran, so it may hold the last reference to a
+  GTK object. Capture what the result needs in it, such as a `GRef` to the list
+  item.
+- **Background work owns its inputs.** A worker thread reads only what it was
+  handed by value, never `PhigApp`: the window can close, and `main` free
+  `PhigApp`, while it runs. `open_in_background` (`src/startup.h`) is the
+  pattern. The application is held until startup finishes, and
+  `startup_done` checks `app->window` before touching any widget.
 - **`ThumbLoader` and `max_dim`:** `max_dim` is the largest edge in **physical**
   pixels — cell size times `gtk_widget_get_scale_factor`. The worker decodes to
   that size and the texture cache is keyed `(sha256, max_dim)`, so the same image

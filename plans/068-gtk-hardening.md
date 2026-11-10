@@ -1,7 +1,8 @@
 ---
 name: GTK Hardening
-status: planned
+status: completed
 created: 2026-11-08
+completed: 2026-11-09
 description: >
   Make `gtk/` C++ throughout, including its collection seam and the remaining
   C files, and move the build to C++23 for `std::expected` and
@@ -265,3 +266,38 @@ Each step lands green, and the ASan gtk build runs the gtk tests at each one.
 - **067:** changes `phig_collection_open`'s argument to a catalog directory.
   Whichever plan lands second carries that change into the seam.
 - **GTK M1 (not yet written):** builds on the C++ seam and the signal helper.
+
+## Outcome
+
+Shipped on branch `068-gtk-hardening`; execution plan
+`docs/plans/2026-11-09-068-gtk-hardening.md`.
+
+- The build is C++23. `gtk/` uses `std::expected` and
+  `std::move_only_function`; root `CLAUDE.md` keeps the rest of the tree off
+  both until the sanitizer jobs and Apple's libc++ catch up.
+- `collection.h` is the `phig::gtk` namespace. Fallible calls return
+  `std::expected` with phig's reason, and `thumb_generate` mirrors
+  `EnsureThumb`. `row-page` is gone.
+- `gtk/` has no C files. `PhigImageRow` and `PhigGalleryModel` hold C++
+  state, placement-new'd in `instance_init`.
+- Signals connect through `phig::gtk::connect` in `src/connect.h`. The spec
+  named it `signal.h`, which would shadow the system header.
+- The loader destroys every callback exactly once, on the main thread, which
+  closes 061's cancelled-request leak.
+- The startup worker reads its own copy of the catalog path, the application
+  is held until it finishes, and a closed window clears `app->window`.
+- The gallery model's dispose waits for a page fetch in progress. The worker
+  used to hold a strong model reference, so the caller's final unref returned
+  at once and `~PhigApp` could close the collection under a fetch; a shared
+  state block replaced that, with a test whose fake holds `page()`.
+- `cli/main.cpp` includes `<exception>`, which libc++ stops providing
+  transitively in C++23 mode; macOS failed to build without it.
+- The window's destroy handler cancels a pending relayout, and a second
+  activation after the catalog is open does not start another open.
+- CI run 42727497103 at `1dd552b` (full set, including macOS and the
+  sanitizers): macOS, gtk, ASan+UBSan, ubuntu-26.04 and lint passed;
+  ubuntu-latest was still running when this was written. TSan failed in
+  OpenCV code paths (hasher and thumbnail tests) with race reports inside
+  libtbb's own threads. The same report reproduces locally on the branch base
+  at C++20, so it is a pre-existing false positive from uninstrumented TBB. It
+  is not fixed here and stays open.

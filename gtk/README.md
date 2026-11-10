@@ -35,7 +35,7 @@ ctest --test-dir build -L gtk
 ```
 
 The argument is a catalog directory. Without one the client uses
-`phig_collection_default_catalog`, so `PHIG_CATALOG` and the config file apply.
+`phig::gtk::default_catalog`, so `PHIG_CATALOG` and the config file apply.
 
 ## Measured performance (Task 7)
 
@@ -80,7 +80,7 @@ Taken together there is no evidence the grid misses 60 fps while visible and
 focused. The measured cost of the thumbnail path is also ~zero: with thumbnail
 loading stubbed out entirely, frame timing is unchanged.
 
-Chosen values (see comments in `src/main.cpp` and `src/gallery-model.c` for the
+Chosen values (see comments in `src/main.cpp` and `src/gallery-model.cpp` for the
 measurements behind each):
 
 | Value | Chosen | Rationale |
