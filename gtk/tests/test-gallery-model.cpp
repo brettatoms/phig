@@ -42,7 +42,7 @@ static void test_get_item_returns_a_row_without_blocking(Fixture* f, gconstpoint
      * synchronous implementation would have installed the page by the time
      * get_item returns, so the page still being non-resident is what shows a
      * placeholder came back rather than a blocking fetch. */
-    GObject* item = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
+    GObject* item = static_cast<GObject*>(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
     g_assert_nonnull(item);
     g_assert_true(PHIG_IS_IMAGE_ROW(item));
     g_assert_true(phig_image_row_is_placeholder(PHIG_IMAGE_ROW(item)));
@@ -96,9 +96,9 @@ static void test_placeholders_are_unique_per_position(Fixture* f, gconstpointer 
      * (glib#3030): one placeholder shared across positions makes it pick a
      * widget for the wrong position. GtkSelectionModel separately requires the
      * same object for repeated queries of one position. Both must hold. */
-    GObject* a1 = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
-    GObject* b1 = g_list_model_get_item(G_LIST_MODEL(f->model), 400);
-    GObject* a2 = g_list_model_get_item(G_LIST_MODEL(f->model), 0);
+    GObject* a1 = static_cast<GObject*>(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
+    GObject* b1 = static_cast<GObject*>(g_list_model_get_item(G_LIST_MODEL(f->model), 400));
+    GObject* a2 = static_cast<GObject*>(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
 
     g_assert_true(phig_image_row_is_placeholder(PHIG_IMAGE_ROW(a1)));
     g_assert_true(phig_image_row_is_placeholder(PHIG_IMAGE_ROW(b1)));
@@ -129,7 +129,7 @@ typedef struct {
 static void on_items_changed(GListModel* model, guint position, guint removed, guint added,
                              gpointer user_data) {
     (void)model;
-    ItemsChangedCapture* capture = user_data;
+    ItemsChangedCapture* capture = static_cast<ItemsChangedCapture*>(user_data);
     capture->fired = TRUE;
     capture->position = position;
     capture->removed = removed;
@@ -138,7 +138,7 @@ static void on_items_changed(GListModel* model, guint position, guint removed, g
 }
 
 static gboolean on_timeout(gpointer user_data) {
-    g_main_loop_quit(user_data);
+    g_main_loop_quit(static_cast<GMainLoop*>(user_data));
     return G_SOURCE_REMOVE;
 }
 
@@ -153,7 +153,7 @@ static void test_async_fetch_emits_items_changed(Fixture* f, gconstpointer unuse
      * placeholder. The completion callback runs on the main loop and emits the
      * items-changed a GtkGridView needs to re-query the range. */
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
-    ItemsChangedCapture capture = {.loop = loop, .fired = FALSE};
+    ItemsChangedCapture capture = {.loop = loop, .fired = FALSE, .position = 0, .removed = 0, .added = 0};
     gulong handler_id =
         g_signal_connect(f->model, "items-changed", G_CALLBACK(on_items_changed), &capture);
     guint timeout_id = g_timeout_add_seconds(5, on_timeout, loop);
@@ -179,7 +179,7 @@ typedef struct {
 
 static void on_page_fetch_failed(PhigGalleryModel* model, gpointer user_data) {
     (void)model;
-    FailedCapture* capture = user_data;
+    FailedCapture* capture = static_cast<FailedCapture*>(user_data);
     capture->fired = TRUE;
     g_main_loop_quit(capture->loop);
 }

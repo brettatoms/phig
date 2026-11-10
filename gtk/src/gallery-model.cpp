@@ -76,14 +76,14 @@ const char* phig_image_row_get_filename(PhigImageRow* row) {
 }
 
 static PhigImageRow* phig_image_row_new_placeholder(void) {
-    PhigImageRow* row = g_object_new(PHIG_TYPE_IMAGE_ROW, NULL);
+    PhigImageRow* row = PHIG_IMAGE_ROW(g_object_new(PHIG_TYPE_IMAGE_ROW, NULL));
     row->placeholder = TRUE;
     return row;
 }
 
 /* Copies every field it exposes out of data, whose strings belong to its page. */
 static PhigImageRow* phig_image_row_new_from_data(const PhigRowData* data) {
-    PhigImageRow* row = g_object_new(PHIG_TYPE_IMAGE_ROW, NULL);
+    PhigImageRow* row = PHIG_IMAGE_ROW(g_object_new(PHIG_TYPE_IMAGE_ROW, NULL));
     row->placeholder = FALSE;
     row->id = data->id;
     row->path = g_strdup(data->path);
@@ -202,7 +202,7 @@ static void phig_gallery_model_evict_if_needed(PhigGalleryModel* self) {
 
         g_hash_table_iter_init(&iter, self->pages);
         while (g_hash_table_iter_next(&iter, &key, &value)) {
-            PhigPage* page = value;
+            PhigPage* page = static_cast<PhigPage*>(value);
             if (lru_page == NULL || page->last_used < lru_page->last_used) {
                 lru_key = key;
                 lru_page = page;
@@ -218,7 +218,7 @@ static void phig_gallery_model_evict_if_needed(PhigGalleryModel* self) {
  * table without bound regardless of how many distinct pages get touched. */
 static PhigImageRow* phig_gallery_model_get_placeholder(PhigGalleryModel* self, guint position) {
     PhigPlaceholderEntry* entry =
-        g_hash_table_lookup(self->placeholders, GUINT_TO_POINTER(position));
+        static_cast<PhigPlaceholderEntry*>(g_hash_table_lookup(self->placeholders, GUINT_TO_POINTER(position)));
     if (entry != NULL) {
         entry->last_used = ++self->placeholder_clock;
         return entry->row;
@@ -232,7 +232,7 @@ static PhigImageRow* phig_gallery_model_get_placeholder(PhigGalleryModel* self, 
 
         g_hash_table_iter_init(&iter, self->placeholders);
         while (g_hash_table_iter_next(&iter, &key, &value)) {
-            PhigPlaceholderEntry* candidate = value;
+            PhigPlaceholderEntry* candidate = static_cast<PhigPlaceholderEntry*>(value);
             if (lru_entry == NULL || candidate->last_used < lru_entry->last_used) {
                 lru_key = key;
                 lru_entry = candidate;
@@ -312,7 +312,7 @@ static void fetch_task_data_free(FetchTaskData* data) {
  * out from under the caller. If the model is already gone, unregisters
  * immediately and returns NULL. */
 static PhigGalleryModel* phig_gallery_model_enter_in_flight(FetchTaskData* data) {
-    PhigGalleryModel* self = g_weak_ref_get(&data->model);
+    PhigGalleryModel* self = static_cast<PhigGalleryModel*>(g_weak_ref_get(&data->model));
     if (self == NULL)
         return NULL;
 
@@ -334,7 +334,7 @@ static void fetch_page_thread_func(GTask* task, gpointer source_object, gpointer
                                     GCancellable* cancellable) {
     (void)source_object;
     (void)cancellable;
-    FetchTaskData* data = task_data;
+    FetchTaskData* data = static_cast<FetchTaskData*>(task_data);
     PhigGalleryModel* self = phig_gallery_model_enter_in_flight(data);
     if (self == NULL) {
         g_task_return_boolean(task, FALSE);
@@ -357,8 +357,8 @@ static void fetch_page_done(GObject* source, GAsyncResult* result, gpointer user
     (void)source;
     (void)user_data;
     GTask* task = G_TASK(result);
-    FetchTaskData* data = g_task_get_task_data(task);
-    PhigGalleryModel* self = g_weak_ref_get(&data->model);
+    FetchTaskData* data = static_cast<FetchTaskData*>(g_task_get_task_data(task));
+    PhigGalleryModel* self = static_cast<PhigGalleryModel*>(g_weak_ref_get(&data->model));
     if (self == NULL)
         return; /* model was destroyed before this fetch's result landed */
 
@@ -407,7 +407,7 @@ static gpointer phig_gallery_model_get_item(GListModel* list, guint position) {
     guint page_index = position / PHIG_PAGE_SIZE;
     guint offset_in_page = position % PHIG_PAGE_SIZE;
 
-    PhigPage* page = g_hash_table_lookup(self->pages, GUINT_TO_POINTER(page_index));
+    PhigPage* page = static_cast<PhigPage*>(g_hash_table_lookup(self->pages, GUINT_TO_POINTER(page_index)));
     if (page != NULL) {
         if (offset_in_page >= page->n_rows)
             return NULL; /* last page, past its actual row count */
@@ -472,7 +472,7 @@ static void phig_gallery_model_init(PhigGalleryModel* self) {
 }
 
 PhigGalleryModel* phig_gallery_model_new(PhigCollection* coll) {
-    PhigGalleryModel* self = g_object_new(PHIG_TYPE_GALLERY_MODEL, NULL);
+    PhigGalleryModel* self = PHIG_GALLERY_MODEL(g_object_new(PHIG_TYPE_GALLERY_MODEL, NULL));
     self->coll = coll;
     guint total = 0;
     self->total = phig_collection_count(coll, &total) ? total : 0;
