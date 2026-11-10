@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -18,16 +19,17 @@
 namespace {
 
 // One request. Exactly one place owns it at a time: the queue, then the worker
-// that took it, then the idle source that delivers it.
+// that took it, then the delivery that carries it back to the main thread. It
+// is destroyed only on the main thread, because its callback may hold the last
+// reference to a GTK object.
 struct ThumbRequest {
     int64_t image_id = 0;
     std::string sha256;
     guint32 max_dim = 0;  // 0 = the cache's native size
     GRef<GCancellable> cancellable;
-    ThumbCallback cb = nullptr;
-    gpointer user_data = nullptr;
+    ThumbCallback cb;
 
-    // Set by the worker before it posts the request to the main thread.
+    // Set by the worker before it hands the request back.
     ThumbResult result = THUMB_MISS;
     GRef<GdkTexture> texture;
 };
@@ -48,6 +50,8 @@ std::string cache_key(const std::string& sha256, guint32 size) {
     return sha256 + "@" + std::to_string(size);
 }
 
+struct Delivery;
+
 }  // namespace
 
 struct ThumbLoader {
@@ -59,12 +63,22 @@ struct ThumbLoader {
     std::condition_variable queue_cv;
     std::deque<std::unique_ptr<ThumbRequest>> queue;
     bool stopping = false;  // guarded by queue_mutex
+    // Requests a worker finished while the last loader reference was being
+    // dropped, so it had no reference to post them with. thumb_loader_shutdown
+    // destroys them after the join. Guarded by queue_mutex.
+    std::vector<std::unique_ptr<ThumbRequest>> orphans;
     std::vector<std::thread> workers;
 
     std::mutex cache_mutex;
     std::unordered_map<std::string, CacheEntry> cache;
     std::list<std::string> lru;  // front = least recently used
     gsize cache_bytes = 0;
+
+    // Deliveries posted to the main context and not yet destroyed.
+    // thumb_loader_shutdown takes their requests, so a callback is destroyed
+    // even if the main context never runs again.
+    std::mutex posted_mutex;
+    std::unordered_set<Delivery*> posted;
 
     // Diagnostic only; nothing waits on it.
     std::atomic<guint> pending_idle{0};
@@ -125,37 +139,59 @@ GRef<GdkTexture> cache_probe(ThumbLoader& self, const std::string& sha256, guint
 // keeps it alive until the delivery runs or is destroyed undelivered.
 struct Delivery {
     std::shared_ptr<ThumbLoader> loader;
-    std::unique_ptr<ThumbRequest> req;
+    std::unique_ptr<ThumbRequest> req;  // null once thumb_loader_shutdown took it
 };
 
 gboolean deliver(gpointer data) noexcept {
     auto& delivery = *static_cast<Delivery*>(data);
+    if (!delivery.req) return G_SOURCE_REMOVE;
     ThumbRequest& req = *delivery.req;
     if (delivery.loader->stopped.load() || is_cancelled(req)) return G_SOURCE_REMOVE;
 
     if (req.result == THUMB_OK) {
         GRef<GdkTexture> texture =
             cache_insert(*delivery.loader, req.sha256, req.max_dim, std::move(req.texture));
-        req.cb(THUMB_OK, texture.get(), req.user_data);
+        req.cb(THUMB_OK, texture.get());
     } else {
-        req.cb(req.result, nullptr, req.user_data);
+        req.cb(req.result, nullptr);
     }
     return G_SOURCE_REMOVE;
 }
 
-// Runs exactly once per posted result, after deliver or instead of it. Deleting
-// the Delivery may drop the last reference to the loader, which then joins its
-// workers here, on the main thread.
+// Runs exactly once per posted request, after deliver or instead of it, on the
+// main thread. Deleting the Delivery destroys the request, and may drop the
+// last reference to the loader, which then joins its workers here.
 void delivery_destroy(gpointer data) noexcept {
     auto* delivery = static_cast<Delivery*>(data);
-    delivery->loader->pending_idle--;
+    ThumbLoader& loader = *delivery->loader;
+    {
+        std::lock_guard lock(loader.posted_mutex);
+        loader.posted.erase(delivery);
+    }
+    loader.pending_idle--;
     delete delivery;
 }
 
 void post_result(std::shared_ptr<ThumbLoader> loader, std::unique_ptr<ThumbRequest> req) {
-    loader->pending_idle++;
-    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, deliver,
-                    new Delivery{std::move(loader), std::move(req)}, delivery_destroy);
+    ThumbLoader& self = *loader;
+    auto* delivery = new Delivery{std::move(loader), std::move(req)};
+    {
+        std::lock_guard lock(self.posted_mutex);
+        self.posted.insert(delivery);
+    }
+    self.pending_idle++;
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, deliver, delivery, delivery_destroy);
+}
+
+// Every request a worker takes leaves through here, resolved or not, so it is
+// destroyed on the main thread: by its delivery, or by thumb_loader_shutdown.
+void hand_back(ThumbLoader& self, std::unique_ptr<ThumbRequest> req) {
+    if (std::shared_ptr<ThumbLoader> loader = self.self.lock()) {
+        post_result(std::move(loader), std::move(req));
+        return;
+    }
+    std::lock_guard lock(self.queue_mutex);
+    self.orphans.push_back(std::move(req));
 }
 
 PhigThumbLookup lookup(ThumbLoader& self, const ThumbRequest& req, int size, std::string& path) {
@@ -167,9 +203,9 @@ PhigThumbLookup lookup(ThumbLoader& self, const ThumbRequest& req, int size, std
 }
 
 // Looks the thumbnail up, generates it on a miss, and loads it, setting
-// req.result and req.texture. Returns false if the request was cancelled
-// before generating.
-bool resolve(ThumbLoader& self, ThumbRequest& req) {
+// req.result and req.texture. Returns without generating if the request was
+// cancelled first.
+void resolve(ThumbLoader& self, ThumbRequest& req) {
     // Sizes are independent in phig's cache. The caller quantises max_dim, so
     // this is a small set of sizes rather than one per pixel.
     int want = static_cast<int>(req.max_dim > 0 ? req.max_dim : PHIG_THUMB_SIZE_DEFAULT);
@@ -179,10 +215,10 @@ bool resolve(ThumbLoader& self, ThumbRequest& req) {
     if (look == PHIG_THUMB_ABSENT) {
         // Generation costs hundreds of milliseconds against about one for a
         // load, so a request the user has scrolled past stops here.
-        if (is_cancelled(req)) return false;
+        if (is_cancelled(req)) return;
         if (!phig_collection_thumb_generate(self.coll, req.image_id, want)) {
             req.result = THUMB_FAILED;
-            return true;
+            return;
         }
         look = lookup(self, req, want, path);
     }
@@ -206,7 +242,6 @@ bool resolve(ThumbLoader& self, ThumbRequest& req) {
             req.texture = adopt(texture);
         }
     }
-    return true;
 }
 
 void worker_main(ThumbLoader& self) {
@@ -219,21 +254,18 @@ void worker_main(ThumbLoader& self) {
             req = std::move(self.queue.front());
             self.queue.pop_front();
         }
-        if (is_cancelled(*req)) continue;
 
-        // A row phig has not hashed has no cache key. That is data phig has not
-        // produced, not a failure, so it reports like a not-yet-generated miss.
-        if (req->sha256.empty()) {
-            req->result = THUMB_MISS;
-        } else if (!resolve(self, *req) || is_cancelled(*req)) {
-            // Drops req's texture on this thread, which is safe: GTK never saw it.
-            continue;
+        // A request cancelled before or during resolving goes back unresolved;
+        // its delivery sees the cancel and does not call back. A row phig has
+        // not hashed has no cache key: that is data phig has not produced, not
+        // a failure, so it reports like a not-yet-generated miss.
+        if (!is_cancelled(*req)) {
+            if (req->sha256.empty())
+                req->result = THUMB_MISS;
+            else
+                resolve(self, *req);
         }
-
-        // Empty only while the last owner is destroying the loader, which
-        // delivers nothing anyway.
-        if (std::shared_ptr<ThumbLoader> loader = self.self.lock())
-            post_result(std::move(loader), std::move(req));
+        hand_back(self, std::move(req));
     }
 }
 
@@ -253,35 +285,50 @@ std::shared_ptr<ThumbLoader> thumb_loader_new(PhigCollection* coll, guint n_thre
 
 void thumb_loader_shutdown(ThumbLoader& self) {
     self.stopped = true;
+    // Requests are moved out under the locks and destroyed after this function's
+    // last lock is released, so no callback's destructor runs under one.
+    std::deque<std::unique_ptr<ThumbRequest>> queued;
     {
         std::lock_guard lock(self.queue_mutex);
         self.stopping = true;
-        self.queue.clear();
+        queued.swap(self.queue);
     }
     self.queue_cv.notify_all();
     for (std::thread& worker : self.workers) worker.join();
     self.workers.clear();
+
+    std::vector<std::unique_ptr<ThumbRequest>> dropped;
+    {
+        std::lock_guard lock(self.queue_mutex);
+        dropped.swap(self.orphans);
+    }
+    {
+        std::lock_guard lock(self.posted_mutex);
+        for (Delivery* delivery : self.posted)
+            if (delivery->req) dropped.push_back(std::move(delivery->req));
+    }
 }
 
-void thumb_loader_request(ThumbLoader& self, int64_t image_id, const char* sha256, guint32 max_dim,
-                          GCancellable* cancellable, ThumbCallback cb, gpointer user_data) {
+void thumb_loader_request(ThumbLoader& self, int64_t image_id, std::string sha256, guint32 max_dim,
+                          GCancellable* cancellable, ThumbCallback cb) {
     if (self.stopped.load()) return;
     if (cancellable != nullptr && g_cancellable_is_cancelled(cancellable)) return;
 
     if (GRef<GdkTexture> cached = cache_probe(self, sha256, max_dim)) {
-        cb(THUMB_OK, cached.get(), user_data);
+        cb(THUMB_OK, cached.get());
         return;
     }
 
     auto req = std::make_unique<ThumbRequest>();
     req->image_id = image_id;
-    req->sha256 = sha256;
+    req->sha256 = std::move(sha256);
     req->max_dim = max_dim;
     req->cancellable = gref(cancellable);
-    req->cb = cb;
-    req->user_data = user_data;
+    req->cb = std::move(cb);
     {
         std::lock_guard lock(self.queue_mutex);
+        // req is declared before the lock, so on this return it is destroyed
+        // after the lock is released.
         if (self.stopping) return;
         self.queue.push_back(std::move(req));
     }

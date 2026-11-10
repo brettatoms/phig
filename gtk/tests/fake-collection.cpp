@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <filesystem>
+#include <mutex>
 #include <string>
 
 struct PhigCollection {
@@ -12,6 +14,9 @@ struct PhigCollection {
     std::filesystem::path thumb_dir;
     std::atomic<bool> fail_pages{false};
     std::atomic<guint> generate_count{0};
+    std::mutex hold_mutex;
+    std::condition_variable hold_cv;
+    bool hold = false;  // guarded by hold_mutex
 };
 
 namespace {
@@ -75,6 +80,14 @@ void fake_collection_fail_pages(PhigCollection* coll, gboolean fail) {
 
 guint fake_collection_generate_count(PhigCollection* coll) { return coll->generate_count.load(); }
 
+void fake_collection_hold_generation(PhigCollection* coll, gboolean hold) {
+    {
+        std::lock_guard lock(coll->hold_mutex);
+        coll->hold = hold != FALSE;
+    }
+    coll->hold_cv.notify_all();
+}
+
 void phig_collection_close(PhigCollection* coll) {
     if (coll == nullptr) return;
     std::error_code ec;
@@ -113,6 +126,10 @@ PhigThumbLookup phig_collection_thumb_lookup(PhigCollection* coll, const char* s
 
 gboolean phig_collection_thumb_generate(PhigCollection* coll, int64_t image_id, int size) {
     if (image_id < 1 || image_id > static_cast<int64_t>(coll->n_rows) || size <= 0) return FALSE;
+    {
+        std::unique_lock lock(coll->hold_mutex);
+        coll->hold_cv.wait(lock, [coll] { return !coll->hold; });
+    }
     std::string sha = sha_of(static_cast<guint>(image_id - 1));
     std::filesystem::path p = thumb_path(*coll, sha.c_str(), size);
     std::error_code ec;

@@ -21,6 +21,9 @@ void fake_collection_fail_pages(PhigCollection* coll, gboolean fail);
 /* How many thumbnail files phig_collection_thumb_generate has written. */
 guint fake_collection_generate_count(PhigCollection* coll);
 
+/* While hold is set, phig_collection_thumb_generate waits before generating. */
+void fake_collection_hold_generation(PhigCollection* coll, gboolean hold);
+
 G_END_DECLS
 
 #endif /* PHIG_GTK_FAKE_COLLECTION_H */

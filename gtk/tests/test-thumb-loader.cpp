@@ -1,8 +1,10 @@
 #include <glib.h>
 #include <gtk/gtk.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "fake-collection.h"
 #include "thumb-loader.h"
@@ -12,6 +14,8 @@ namespace {
 // Every fake thumbnail is 64x64, charged at width * height * 4 bytes.
 constexpr gsize kTextureBytes = 64 * 64 * 4;
 constexpr gsize kRoomy = 64 * 1024 * 1024;
+
+GThread* main_thread = nullptr;  // set by main()
 
 std::string sha_of(guint index) {
     char sha[65];
@@ -58,18 +62,48 @@ struct Capture {
     int width = -1;  // of the delivered texture; -1 if none
 };
 
-void on_capture(ThumbResult result, GdkTexture* texture, gpointer user_data) {
-    auto* capture = static_cast<Capture*>(user_data);
-    capture->called = true;
-    capture->result = result;
-    capture->width = texture != nullptr ? gdk_texture_get_width(texture) : -1;
-    if (capture->loop != nullptr) g_main_loop_quit(capture->loop);
+ThumbCallback capturing(Capture& capture) {
+    return [&capture](ThumbResult result, GdkTexture* texture) noexcept {
+        capture.called = true;
+        capture.result = result;
+        capture.width = texture != nullptr ? gdk_texture_get_width(texture) : -1;
+        if (capture.loop != nullptr) g_main_loop_quit(capture.loop);
+    };
 }
 
-void on_must_not_run(ThumbResult result, GdkTexture* texture, gpointer user_data) {
-    (void)result;
-    (void)texture;
-    *static_cast<bool*>(user_data) = true;
+// For a request that must never call back.
+ThumbCallback must_not_run(bool& called) {
+    return [&called](ThumbResult, GdkTexture*) noexcept { called = true; };
+}
+
+// How often, and on which threads, the callbacks holding one Probe were
+// destroyed.
+struct Destroyed {
+    std::atomic<int> count{0};
+    std::atomic<bool> off_main_thread{false};
+};
+
+// A move-only capture that reports its own destruction into a Destroyed.
+class Probe {
+  public:
+    explicit Probe(Destroyed& into) : into_(&into) {}
+    Probe(Probe&& other) noexcept : into_(std::exchange(other.into_, nullptr)) {}
+    Probe& operator=(Probe&&) = delete;
+    ~Probe() {
+        if (into_ == nullptr) return;
+        into_->count++;
+        if (g_thread_self() != main_thread) into_->off_main_thread = true;
+    }
+
+  private:
+    Destroyed* into_;
+};
+
+// Sets called when it runs, and reports its destruction into destroyed.
+ThumbCallback probed(Destroyed& destroyed, bool& called) {
+    return [probe = Probe(destroyed), &called](ThumbResult, GdkTexture*) noexcept {
+        called = true;
+    };
 }
 
 // Requests one thumbnail and runs the main loop until it is delivered, or for
@@ -79,7 +113,7 @@ Capture request_and_wait(ThumbLoader& loader, int64_t id, const std::string& sha
     Capture capture;
     capture.loop = g_main_loop_new(nullptr, FALSE);
     guint timeout_id = g_timeout_add_seconds(5, on_timeout, capture.loop);
-    thumb_loader_request(loader, id, sha.c_str(), size, nullptr, on_capture, &capture);
+    thumb_loader_request(loader, id, sha, size, nullptr, capturing(capture));
     capture.synchronous = capture.called;
     if (!capture.called) g_main_loop_run(capture.loop);
     if (g_main_context_find_source_by_id(nullptr, timeout_id) != nullptr)
@@ -87,6 +121,22 @@ Capture request_and_wait(ThumbLoader& loader, int64_t id, const std::string& sha
     g_main_loop_unref(capture.loop);
     capture.loop = nullptr;
     return capture;
+}
+
+// Polls until a worker has posted a result for delivery, for up to 5s.
+void wait_for_posted_result(ThumbLoader& loader) {
+    for (int waited_ms = 0; thumb_loader_pending_idle_count(loader) == 0 && waited_ms < 5000;
+         waited_ms++)
+        g_usleep(1000);
+    g_assert_cmpuint(thumb_loader_pending_idle_count(loader), >, 0);
+}
+
+// Polls until the workers have taken every queued request, for up to 5s.
+void wait_for_empty_queue(ThumbLoader& loader) {
+    for (int waited_ms = 0; thumb_loader_queue_length(loader) > 0 && waited_ms < 5000;
+         waited_ms++)
+        g_usleep(1000);
+    g_assert_cmpint(thumb_loader_queue_length(loader), ==, 0);
 }
 
 void test_a_miss_is_generated_and_delivered() {
@@ -150,21 +200,12 @@ void test_cancel_before_dispatch_never_calls_back() {
     g_cancellable_cancel(cancellable);
     bool called = false;
 
-    thumb_loader_request(*f.loader, 1, sha_of(0).c_str(), 256, cancellable, on_must_not_run,
-                         &called);
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, cancellable, must_not_run(called));
     g_assert_cmpint(thumb_loader_queue_length(*f.loader), ==, 0);
     pump(300);
 
     g_assert_false(called);
     g_object_unref(cancellable);
-}
-
-// Polls until a worker has posted a result for delivery, for up to 5s.
-void wait_for_posted_result(ThumbLoader& loader) {
-    for (int waited_ms = 0; thumb_loader_pending_idle_count(loader) == 0 && waited_ms < 5000;
-         waited_ms++)
-        g_usleep(1000);
-    g_assert_cmpuint(thumb_loader_pending_idle_count(loader), >, 0);
 }
 
 // Waits until a worker has posted the result before cancelling, so only the
@@ -174,8 +215,7 @@ void test_cancel_after_dispatch_discards_the_result() {
     GCancellable* cancellable = g_cancellable_new();
     bool called = false;
 
-    thumb_loader_request(*f.loader, 1, sha_of(0).c_str(), 256, cancellable, on_must_not_run,
-                         &called);
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, cancellable, must_not_run(called));
     wait_for_posted_result(*f.loader);
     g_cancellable_cancel(cancellable);
     pump(300);
@@ -194,7 +234,7 @@ void test_a_delivery_outlives_the_callers_reference() {
     std::weak_ptr<ThumbLoader> watch = loader;
     Capture c;
 
-    thumb_loader_request(*loader, 1, sha_of(0).c_str(), 256, nullptr, on_capture, &c);
+    thumb_loader_request(*loader, 1, sha_of(0), 256, nullptr, capturing(c));
     wait_for_posted_result(*loader);
     loader.reset();
     g_assert_false(watch.expired());
@@ -210,7 +250,7 @@ void test_shutdown_discards_a_posted_result() {
     Fixture f;
     bool called = false;
 
-    thumb_loader_request(*f.loader, 1, sha_of(0).c_str(), 256, nullptr, on_must_not_run, &called);
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, nullptr, must_not_run(called));
     wait_for_posted_result(*f.loader);
     thumb_loader_shutdown(*f.loader);
     pump(300);
@@ -228,7 +268,7 @@ void test_a_request_after_shutdown_is_dropped() {
     thumb_loader_shutdown(*f.loader);
     bool called = false;
 
-    thumb_loader_request(*f.loader, 1, sha_of(0).c_str(), 256, nullptr, on_must_not_run, &called);
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, nullptr, must_not_run(called));
     pump(100);
 
     g_assert_false(called);
@@ -255,10 +295,142 @@ void test_a_texture_over_budget_is_delivered_but_not_kept() {
     g_assert_cmpuint(thumb_loader_cache_bytes(*f.loader), ==, 0);
 }
 
+void test_a_delivered_callback_is_destroyed_once() {
+    Fixture f;
+    Destroyed destroyed;
+    bool called = false;
+
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, nullptr, probed(destroyed, called));
+    wait_for_posted_result(*f.loader);
+    pump(300);
+
+    g_assert_true(called);
+    g_assert_cmpint(destroyed.count.load(), ==, 1);
+    g_assert_false(destroyed.off_main_thread.load());
+}
+
+void test_a_cache_hit_destroys_its_callback_before_returning() {
+    Fixture f;
+    g_assert_cmpint(request_and_wait(*f.loader, 1, sha_of(0), 256).result, ==, THUMB_OK);
+    Destroyed destroyed;
+    bool called = false;
+
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, nullptr, probed(destroyed, called));
+
+    g_assert_true(called);
+    g_assert_cmpint(destroyed.count.load(), ==, 1);
+}
+
+void test_a_request_cancelled_before_dispatch_destroys_its_callback() {
+    Fixture f(kRoomy, 0);
+    GCancellable* cancellable = g_cancellable_new();
+    g_cancellable_cancel(cancellable);
+    Destroyed destroyed;
+    bool called = false;
+
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, cancellable, probed(destroyed, called));
+
+    g_assert_false(called);
+    g_assert_cmpint(destroyed.count.load(), ==, 1);
+    g_object_unref(cancellable);
+}
+
+void test_a_request_cancelled_after_dispatch_destroys_its_callback() {
+    Fixture f;
+    GCancellable* cancellable = g_cancellable_new();
+    Destroyed destroyed;
+    bool called = false;
+
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, cancellable, probed(destroyed, called));
+    wait_for_posted_result(*f.loader);
+    g_cancellable_cancel(cancellable);
+    pump(300);
+
+    g_assert_false(called);
+    g_assert_cmpint(destroyed.count.load(), ==, 1);
+    g_assert_false(destroyed.off_main_thread.load());
+    g_object_unref(cancellable);
+}
+
+// One worker, held inside the first request's generation, so the second
+// request is still queued when it is cancelled. The worker then takes it
+// already cancelled, and the callback must still be destroyed on the main
+// thread: it may hold the last reference to a GTK object.
+void test_a_callback_a_worker_drops_is_destroyed_on_the_main_thread() {
+    Fixture f(kRoomy, 1);
+    fake_collection_hold_generation(f.coll, TRUE);
+    Destroyed first_destroyed;
+    bool first_called = false;
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, nullptr,
+                         probed(first_destroyed, first_called));
+    wait_for_empty_queue(*f.loader);
+
+    GCancellable* cancellable = g_cancellable_new();
+    Destroyed destroyed;
+    bool called = false;
+    thumb_loader_request(*f.loader, 2, sha_of(1), 256, cancellable, probed(destroyed, called));
+    g_assert_cmpint(thumb_loader_queue_length(*f.loader), ==, 1);
+    g_cancellable_cancel(cancellable);
+    fake_collection_hold_generation(f.coll, FALSE);
+    pump(300);
+
+    g_assert_true(first_called);
+    g_assert_false(called);
+    g_assert_cmpint(destroyed.count.load(), ==, 1);
+    g_assert_false(destroyed.off_main_thread.load());
+    g_object_unref(cancellable);
+}
+
+// No workers, so the request is still queued when shutdown drops it.
+void test_shutdown_destroys_a_queued_callback() {
+    Fixture f(kRoomy, 0);
+    Destroyed destroyed;
+    bool called = false;
+
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, nullptr, probed(destroyed, called));
+    g_assert_cmpint(thumb_loader_queue_length(*f.loader), ==, 1);
+    thumb_loader_shutdown(*f.loader);
+
+    g_assert_false(called);
+    g_assert_cmpint(destroyed.count.load(), ==, 1);
+}
+
+// No pump before the check: after shutdown the main context may never run
+// again, as when g_application_run has returned.
+void test_shutdown_destroys_a_posted_callback_without_the_main_loop() {
+    Fixture f;
+    Destroyed destroyed;
+    bool called = false;
+
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, nullptr, probed(destroyed, called));
+    wait_for_posted_result(*f.loader);
+    thumb_loader_shutdown(*f.loader);
+
+    g_assert_false(called);
+    g_assert_cmpint(destroyed.count.load(), ==, 1);
+
+    pump(100);
+    g_assert_cmpint(destroyed.count.load(), ==, 1);
+    g_assert_cmpuint(thumb_loader_pending_idle_count(*f.loader), ==, 0);
+}
+
+void test_a_request_after_shutdown_destroys_its_callback() {
+    Fixture f;
+    thumb_loader_shutdown(*f.loader);
+    Destroyed destroyed;
+    bool called = false;
+
+    thumb_loader_request(*f.loader, 1, sha_of(0), 256, nullptr, probed(destroyed, called));
+
+    g_assert_false(called);
+    g_assert_cmpint(destroyed.count.load(), ==, 1);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     g_test_init(&argc, &argv, nullptr);
+    main_thread = g_thread_self();
     g_test_add_func("/thumb-loader/a-miss-is-generated-and-delivered",
                     test_a_miss_is_generated_and_delivered);
     g_test_add_func("/thumb-loader/a-thumbnail-on-disk-is-not-regenerated",
@@ -282,5 +454,21 @@ int main(int argc, char** argv) {
                     test_the_cache_keeps_the_most_recent_within_budget);
     g_test_add_func("/thumb-loader/a-texture-over-budget-is-delivered-but-not-kept",
                     test_a_texture_over_budget_is_delivered_but_not_kept);
+    g_test_add_func("/thumb-loader/a-delivered-callback-is-destroyed-once",
+                    test_a_delivered_callback_is_destroyed_once);
+    g_test_add_func("/thumb-loader/a-cache-hit-destroys-its-callback-before-returning",
+                    test_a_cache_hit_destroys_its_callback_before_returning);
+    g_test_add_func("/thumb-loader/a-request-cancelled-before-dispatch-destroys-its-callback",
+                    test_a_request_cancelled_before_dispatch_destroys_its_callback);
+    g_test_add_func("/thumb-loader/a-request-cancelled-after-dispatch-destroys-its-callback",
+                    test_a_request_cancelled_after_dispatch_destroys_its_callback);
+    g_test_add_func("/thumb-loader/a-callback-a-worker-drops-is-destroyed-on-the-main-thread",
+                    test_a_callback_a_worker_drops_is_destroyed_on_the_main_thread);
+    g_test_add_func("/thumb-loader/shutdown-destroys-a-queued-callback",
+                    test_shutdown_destroys_a_queued_callback);
+    g_test_add_func("/thumb-loader/shutdown-destroys-a-posted-callback-without-the-main-loop",
+                    test_shutdown_destroys_a_posted_callback_without_the_main_loop);
+    g_test_add_func("/thumb-loader/a-request-after-shutdown-destroys-its-callback",
+                    test_a_request_after_shutdown_destroys_its_callback);
     return g_test_run();
 }

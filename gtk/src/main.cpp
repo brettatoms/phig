@@ -597,15 +597,6 @@ static void on_factory_setup(GtkSignalListItemFactory* factory, GtkListItem* ite
     gtk_list_item_set_child(item, frame);
 }
 
-/* Bundles the two things on_thumb_result needs: the item (reffed, to survive
- * the hop to a worker thread and back) and app (borrowed, to update the
- * failure counter). ThumbCallback has one user_data slot, so both travel in
- * this heap struct rather than one being smuggled onto the item. */
-struct ThumbResultData {
-    GRef<GtkListItem> item;
-    PhigApp* app;
-};
-
 /* Updates the header-bar failure counter and shows it once nonzero. Left
  * visible for the rest of the session once shown: a count dropping back out
  * of sight would look like the problem went away, which it has not — the
@@ -623,11 +614,8 @@ static void phig_app_note_thumb_failed(PhigApp* app) {
  * stored on the item, not on the result: if the cell has since been unbound
  * (and its cancellable cancelled), a stale success for a now-different row
  * must not be shown. */
-static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer user_data) noexcept {
-    std::unique_ptr<ThumbResultData> data(static_cast<ThumbResultData*>(user_data));
-    GtkListItem* item = data->item.get();
-    PhigApp* app = data->app;
-
+static void on_thumb_result(PhigApp* app, GtkListItem* item, ThumbResult result,
+                            GdkTexture* texture) noexcept {
     auto* cancellable = static_cast<GCancellable*>(g_object_get_data(G_OBJECT(item), "phig-cancellable"));
     if (cancellable == NULL || g_cancellable_is_cancelled(cancellable))
         return;
@@ -651,9 +639,9 @@ static void on_thumb_result(ThumbResult result, GdkTexture* texture, gpointer us
 
 /* bind: a placeholder row (page not fetched yet) gets the grey state and
  * nothing else. A real row gets a cancellable stashed on the item and a
- * thumbnail request; the item is reffed for the callback's user_data because
- * it must survive the hop to a worker thread and back regardless of whether
- * GTK still wants it bound when the result arrives. */
+ * thumbnail request whose callback holds a reference to the item, so the item
+ * outlives the hop to a worker thread and back whether or not GTK still has it
+ * bound when the result arrives. */
 static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item,
                              gpointer user_data) noexcept {
     (void)factory;
@@ -680,10 +668,11 @@ static void on_factory_bind(GtkSignalListItemFactory* factory, GtkListItem* item
     GCancellable* cancellable = g_cancellable_new();
     g_object_set_data_full(G_OBJECT(item), "phig-cancellable", cancellable, g_object_unref);
 
-    auto* data = new ThumbResultData{gref(item), app};
-
     thumb_loader_request(*app->loader, phig_image_row_get_id(row), phig_image_row_get_sha256(row),
-                          phig_texture_size_for(app), cancellable, on_thumb_result, data);
+                         phig_texture_size_for(app), cancellable,
+                         [app, item = gref(item)](ThumbResult result, GdkTexture* texture) noexcept {
+                             on_thumb_result(app, item.get(), result, texture);
+                         });
 }
 
 /* unbind: cancel any outstanding request for this cell and clear the
