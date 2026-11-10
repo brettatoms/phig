@@ -18,7 +18,14 @@ bool thumb_needs_generating(const ImageInfo& img, bool force, int size) {
 
 ThumbsEngine::ThumbsEngine(const ThumbsOptions& opts, Database& db) : opts_(opts), db_(db) {}
 
+void validate(const ThumbsOptions& opts) {
+    if (opts.size <= 0) {
+        throw InvalidOption("thumbs: size must be positive, got " + std::to_string(opts.size));
+    }
+}
+
 ThumbsResult ThumbsEngine::run(const CancelToken& cancel, ProgressQueue<ThumbsProgress>* progress) {
+    validate(opts_);
     ThumbsResult result;
 
     std::vector<ImageInfo> images = db_.get_images_by_ids(opts_.ids);

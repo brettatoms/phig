@@ -205,6 +205,21 @@ TEST(Abi, InitRejectsNullDbPath) {
     EXPECT_EQ(ctx, nullptr);
 }
 
+// An unknown mode is refused before the catalog is touched: anything other than
+// PHIG_READ_ONLY used to open with the read-write path, which creates a missing
+// catalog (R73).
+TEST(Abi, InitRejectsAnUnknownAccessModeWithoutCreatingTheCatalog) {
+    TempDbPath tmp;
+    const std::string catalog = tmp.dir + "/catalog";
+    phig_config cfg{};
+    cfg.catalog_dir = catalog.c_str();
+    cfg.mode = static_cast<phig_access_mode>(7);
+    phig_ctx* ctx = nullptr;
+    EXPECT_EQ(phig_init(&cfg, &ctx), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(ctx, nullptr);
+    EXPECT_FALSE(std::filesystem::exists(catalog));
+}
+
 TEST(Abi, InitFailsOnUnopenableDatabase) {
     phig_config cfg{};
     phig_ctx* ctx = nullptr;

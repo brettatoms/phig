@@ -7,6 +7,7 @@
 
 #include "cancel.h"
 #include "database.h"
+#include "invalid_option.h"
 #include "progress_queue.h"
 #include "thumbs.h"
 #include "types.h"
@@ -21,6 +22,9 @@ struct ThumbsOptions {
     int parallel = -1;                   // -1 = auto
     int size = PHIG_DEFAULT_THUMB_SIZE;  // longest edge, in pixels
 };
+
+// Throws InvalidOption when a field holds a value outside its set (R73).
+void validate(const ThumbsOptions& opts);
 
 // Whether one row needs a thumbnail generated.
 //

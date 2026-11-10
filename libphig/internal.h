@@ -15,6 +15,7 @@
 #include "cancel.h"
 #include "database.h"
 #include "faces_engine.h"
+#include "invalid_option.h"
 #include "lockfile.h"
 #include "organize_engine.h"
 #include "paths.h"
@@ -23,6 +24,14 @@
 #include "scan_engine.h"
 #include "settings.h"
 #include "thumbs_engine.h"
+
+// A selection's count with no array is malformed input, not an empty selection.
+inline void check_id_array(const int64_t* ids, size_t count, const char* operation) {
+    if (ids == nullptr && count > 0) {
+        throw InvalidOption(std::string(operation) + ": id_count is " + std::to_string(count) +
+                            " but ids is NULL");
+    }
+}
 
 struct phig_ctx {
     std::unique_ptr<Database> db;
@@ -246,6 +255,10 @@ void phig_acquire_write_lock(phig_ctx* ctx, std::unique_ptr<WriterLock>& out);
     catch (const LockBusy& e) {                              \
         phig_thread_last_error() = e.what();                 \
         return PHIG_ERR_BUSY;                                \
+    }                                                        \
+    catch (const InvalidOption& e) {                         \
+        phig_thread_last_error() = e.what();                 \
+        return PHIG_ERR_INVALID_ARG;                         \
     }                                                        \
     catch (const std::exception& e) {                        \
         phig_thread_last_error() = e.what();                 \

@@ -10,6 +10,7 @@
 
 #include "cancel.h"
 #include "database.h"
+#include "invalid_option.h"
 #include "progress_queue.h"
 #include "temp_dir.h"
 #include "thumbs.h"
@@ -163,6 +164,18 @@ TEST(ThumbsEngineRun, GeneratesOneThumbnailPerSelectedImage) {
     EXPECT_EQ(r.errors, 0u);
     EXPECT_EQ(r.total_selected, 4u);
     EXPECT_TRUE(r.completed);
+}
+
+TEST(ThumbsEngineRun, ANonPositiveSizeIsRefusedBeforeAnythingIsGenerated) {
+    ScratchThumbs coll(1);
+    for (int size : {0, -512}) {
+        ThumbsOptions opts;
+        opts.ids = coll.all_ids();
+        opts.size = size;
+        ThumbsEngine engine(opts, *coll.db);
+        CancelToken tok;
+        EXPECT_THROW(engine.run(tok, nullptr), InvalidOption) << size;
+    }
 }
 
 TEST(ThumbsEngineRun, SecondRunSkipsEverythingItAlreadyGenerated) {

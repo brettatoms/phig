@@ -11,6 +11,7 @@
 
 #include "cancel.h"
 #include "database.h"
+#include "invalid_option.h"
 #include "organize_engine.h"
 #include "phig_binary.h"
 #include "progress_queue.h"
@@ -109,6 +110,23 @@ TEST_F(OrganizeEngineTest, PlanWritesNothingToDiskOrDatabase) {
     EXPECT_EQ(db.count(), rows_before);
     EXPECT_FALSE(fs::exists(dir / "out")) << "plan must not create the destination tree";
     EXPECT_TRUE(fs::exists(dir / "src" / "a.jpg")) << "plan must not move sources";
+}
+
+// An empty destination would plan every path relative to the process's working
+// directory, and applying the plan would move files there (R73).
+TEST_F(OrganizeEngineTest, AnEmptyDestinationOrFormatIsRefusedBeforePlanning) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    CancelToken cancel;
+
+    OrganizeOptions no_dest = base_opts(db);
+    no_dest.destination = "";
+    EXPECT_THROW(OrganizeEngine(no_dest, db).plan(cancel, nullptr), InvalidOption);
+
+    OrganizeOptions no_format = base_opts(db);
+    no_format.format = "";
+    EXPECT_THROW(OrganizeEngine(no_format, db).plan(cancel, nullptr), InvalidOption);
 }
 
 TEST_F(OrganizeEngineTest, PlanHonorsItsIdSelection) {

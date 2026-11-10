@@ -31,5 +31,5 @@ These bind a surface rather than an operation, so they
 appear in no cell above and are inherited by every
 operation reached through that surface.
 
-- `abi` — R62, R63, R64, R65, R66, R67
+- `abi` — R62, R63, R64, R65, R66, R67, R73
 - `cli` — R69, R70, R73, R81

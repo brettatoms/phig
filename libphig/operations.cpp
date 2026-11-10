@@ -106,15 +106,19 @@ phig_status phig_op_index_start(phig_ctx* ctx, const phig_index_options* opts, p
         case PHIG_MEDIA_VIDEO:
             sopts.media = "video";
             break;
-        default:
+        case PHIG_MEDIA_ANY:
             sopts.media = "";
             break;
+        default:
+            throw InvalidOption("index: unknown media type " +
+                                std::to_string(static_cast<int>(opts->media)));
     }
     // Never set: the ABI models indexing, thumbnails, and faces as three
     // independent operations, and these flags would fold all three into one
     // pass. See the note on ScanOptions in core/scan_engine.h.
     sopts.faces = false;
     sopts.thumbs = false;
+    validate(sopts);
 
     phig_op* raw = op.get();
     // run_workers, not run(): the reconcile phase deletes rows for files that
@@ -141,6 +145,11 @@ phig_status phig_op_thumbs_start(phig_ctx* ctx, const phig_thumbs_options* opts,
     phig_status st = make_op(ctx, phig_op::Kind::Thumbs, op);
     if (st != PHIG_OK) return st;
 
+    check_id_array(opts->ids, opts->id_count, "thumbs");
+    if (opts->size < 0) {
+        throw InvalidOption("thumbs: size must be positive, or 0 for the default; got " +
+                            std::to_string(opts->size));
+    }
     ThumbsOptions topts;
     // By value: the caller's array need only outlive this call, while the
     // engine runs on a worker thread afterwards.
@@ -150,6 +159,7 @@ phig_status phig_op_thumbs_start(phig_ctx* ctx, const phig_thumbs_options* opts,
     topts.force = opts->force;
     topts.parallel = opts->parallel;
     if (opts->size > 0) topts.size = opts->size;
+    validate(topts);
 
     phig_op* raw = op.get();
     spawn(raw, [raw, topts]() {
@@ -171,6 +181,7 @@ phig_status phig_op_faces_start(phig_ctx* ctx, const phig_faces_options* opts, p
     phig_status st = make_op(ctx, phig_op::Kind::Faces, op);
     if (st != PHIG_OK) return st;
 
+    check_id_array(opts->ids, opts->id_count, "faces");
     FacesRebuildOptions fopts;
     if (opts->ids != nullptr && opts->id_count > 0) {
         fopts.ids.assign(opts->ids, opts->ids + opts->id_count);

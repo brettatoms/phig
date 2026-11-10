@@ -9,6 +9,7 @@
 #include "cancel.h"
 #include "database.h"
 #include "faces.h"
+#include "invalid_option.h"
 #include "progress_queue.h"
 #include "types.h"
 
@@ -44,6 +45,9 @@ struct ScanOptions {
     int log_max_entries = 100000;
     std::string argv_str;  // full invocation, for the audit trail
 };
+
+// Throws InvalidOption when a field holds a value outside its set (R73).
+void validate(const ScanOptions& opts);
 
 struct ProcessResult {
     ImageInfo info;

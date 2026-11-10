@@ -85,7 +85,9 @@ typedef struct {
        effect even if phig_init then fails.
 
        PHIG_READ_ONLY requires the catalog to exist at this build's schema.
-       PHIG_READ_WRITE creates a missing catalog and migrates an older one. */
+       PHIG_READ_WRITE creates a missing catalog and migrates an older one.
+       Any other value is refused with PHIG_ERR_INVALID_ARG before the catalog
+       is touched. */
     const char* catalog_dir;
     phig_access_mode mode;
 
@@ -524,7 +526,8 @@ typedef struct {
     /* Reprocess files a previous scan already indexed, instead of skipping
        those whose path and mtime are unchanged. */
     bool force;
-    /* PHIG_MEDIA_ANY indexes both images and videos. */
+    /* PHIG_MEDIA_ANY indexes both images and videos. A value outside the enum
+       is refused with PHIG_ERR_INVALID_ARG. */
     phig_media_type media;
     /* Threads for the parallel hash/extract phase. 0 or negative = auto. */
     int parallel;
@@ -537,8 +540,9 @@ typedef struct {
        array need only outlive the _start call. */
     const int64_t* ids;
     size_t id_count;
-    /* Longest edge in pixels. 0 uses phig's default. Sizes are independent —
-       generating one never invalidates another. */
+    /* Longest edge in pixels. 0 uses phig's default; a negative size is
+       refused with PHIG_ERR_INVALID_ARG. Sizes are independent — generating
+       one never invalidates another. */
     int size;
     /* Regenerate thumbnails that already exist in the cache. */
     bool force;
@@ -568,6 +572,10 @@ typedef struct {
  * Each requires a PHIG_READ_WRITE context and returns PHIG_ERR_READONLY on a
  * read-only one. Work begins immediately on an internal thread; these return
  * as soon as it is running.
+ *
+ * An option value outside its documented set, or an id_count with a NULL ids
+ * array, is refused with PHIG_ERR_INVALID_ARG before any work starts, and
+ * phig_last_error names the field.
  *
  * The handle does not borrow the context: an operation reads its configuration
  * at start and opens its own database connection, so it keeps running correctly
@@ -662,15 +670,18 @@ typedef enum {
 } phig_conflict_resolution;
 
 typedef struct {
-    const char* destination; /* root of the organized layout */
-    const char* format;      /* e.g. "%Y/%m/%original"; NULL uses "%Y/%m/%original" */
+    /* Root of the organized layout. "" is refused. */
+    const char* destination;
+    /* e.g. "%Y/%m/%original". NULL uses "%Y/%m/%original"; "" is refused. */
+    const char* format;
     /* The images to act on, as ids — resolve a set with phig_query_ids.
        NULL/0 selects NOTHING, not everything: a caller names its subject, and
        an unset selection is a no-op rather than a whole-collection move. The
        array need only outlive the _start call. */
     const int64_t* ids;
     size_t id_count;
-    phig_conflict_resolution on_conflict; /* run-level default */
+    /* Run-level default. A value outside the enum is refused. */
+    phig_conflict_resolution on_conflict;
 } phig_organize_options;
 
 typedef struct {
@@ -728,10 +739,10 @@ PHIG_API bool phig_organize_plan_occupant_tracked_at(const phig_organize_plan* p
  * the choice. PHIG_CONFLICT_OVERWRITE carries the caller's authority to replace
  * a file that exists on disk, which the run-level policy does not.
  *
- * Returns PHIG_ERR_INVALID_ARG, changing nothing, when i is out of range, the
- * item does not conflict, or the destination is another image's not-yet-moved
- * source file — a tracked original phig is in the middle of relocating, which
- * no caller intent may overwrite. */
+ * Returns PHIG_ERR_INVALID_ARG, changing nothing, when resolution is outside
+ * the enum, i is out of range, the item does not conflict, or the destination
+ * is another image's not-yet-moved source file — a tracked original phig is in
+ * the middle of relocating, which no caller intent may overwrite. */
 PHIG_API phig_status phig_organize_plan_set_resolution(phig_organize_plan* plan, size_t i,
                                                        phig_conflict_resolution resolution);
 

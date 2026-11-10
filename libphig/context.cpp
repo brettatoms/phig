@@ -19,6 +19,9 @@ phig_status phig_init(const phig_config* cfg, phig_ctx** out) {
     if (cfg == nullptr || cfg->catalog_dir == nullptr || cfg->catalog_dir[0] == '\0') {
         return PHIG_ERR_INVALID_ARG;
     }
+    // Checked before set_catalog and the open: an unknown mode must not reach the
+    // read-write path, which creates a missing catalog (R73).
+    if (cfg->mode != PHIG_READ_ONLY && cfg->mode != PHIG_READ_WRITE) return PHIG_ERR_INVALID_ARG;
     try {
         const CatalogPaths paths =
             catalog_paths(std::filesystem::absolute(cfg->catalog_dir).lexically_normal().string());

@@ -120,8 +120,17 @@ ScanResult ScanEngine::run(const CancelToken& cancel, ProgressQueue<ScanProgress
     return result;
 }
 
+void validate(const ScanOptions& opts) {
+    if (opts.directory.empty()) throw InvalidOption("scan: no directory given");
+    if (opts.media != "" && opts.media != "image" && opts.media != "video") {
+        throw InvalidOption("scan: unknown media type '" + opts.media +
+                            "' (expected image, video or empty for all)");
+    }
+}
+
 ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                                    ProgressQueue<ScanProgress>* progress) {
+    validate(opts_);
     ScanResult result;
 
     // Paths are shortened against the scan directory in log messages, matching

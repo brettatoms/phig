@@ -8,6 +8,7 @@
 
 #include "cancel.h"
 #include "database.h"
+#include "invalid_option.h"
 #include "progress_queue.h"
 
 // How one file's destination collision is resolved. Mirrors the strings
@@ -29,6 +30,10 @@ struct OrganizeOptions {
     int log_max_entries = 100000;
     std::string argv_str;  // full invocation, for the audit trail
 };
+
+// Throws InvalidOption when a field holds a value outside its set (R73). Checked by
+// plan(): apply() executes a plan, whose destinations are already resolved.
+void validate(const OrganizeOptions& opts);
 
 // One planned move or copy. `dest` is empty when the item resolved to a skip.
 struct OrganizeAction {

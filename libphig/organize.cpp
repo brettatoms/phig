@@ -1,4 +1,5 @@
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -6,7 +7,9 @@
 
 namespace {
 
-ConflictResolution from_abi(phig_conflict_resolution r) {
+// Empty for a value outside the enum, which every caller refuses rather than
+// mapping to a default (R73).
+std::optional<ConflictResolution> from_abi(phig_conflict_resolution r) {
     switch (r) {
         case PHIG_CONFLICT_SKIP:
             return ConflictResolution::Skip;
@@ -15,7 +18,7 @@ ConflictResolution from_abi(phig_conflict_resolution r) {
         case PHIG_CONFLICT_RENAME:
             return ConflictResolution::Rename;
     }
-    return ConflictResolution::Rename;
+    return std::nullopt;
 }
 
 phig_conflict_resolution to_abi(ConflictResolution r) {
@@ -94,6 +97,12 @@ phig_status phig_op_organize_plan_start(phig_ctx* ctx, const phig_organize_optio
     *out = nullptr;
     PHIG_TRY(ctx)
     if (opts == nullptr || opts->destination == nullptr) return PHIG_ERR_INVALID_ARG;
+    check_id_array(opts->ids, opts->id_count, "organize");
+    std::optional<ConflictResolution> policy = from_abi(opts->on_conflict);
+    if (!policy) {
+        throw InvalidOption("organize: unknown conflict resolution " +
+                            std::to_string(static_cast<int>(opts->on_conflict)));
+    }
 
     // Planning writes nothing, so a read-only context may compute one. Only the
     // apply entry points require PHIG_READ_WRITE.
@@ -108,9 +117,10 @@ phig_status phig_op_organize_plan_start(phig_ctx* ctx, const phig_organize_optio
     if (opts->ids != nullptr && opts->id_count > 0) {
         core.ids.assign(opts->ids, opts->ids + opts->id_count);
     }
-    core.on_conflict = from_abi(opts->on_conflict);
+    core.on_conflict = *policy;
     core.db_path = ctx->db_path;
     core.log_enabled = false;  // planning opens no operation
+    validate(core);
 
     phig_op* raw = op.get();
     spawn_organize(raw, [raw, core]() {
@@ -172,9 +182,10 @@ bool phig_organize_plan_occupant_tracked_at(const phig_organize_plan* plan, size
 
 phig_status phig_organize_plan_set_resolution(phig_organize_plan* plan, size_t i,
                                               phig_conflict_resolution resolution) {
-    if (plan == nullptr) return PHIG_ERR_INVALID_ARG;
+    std::optional<ConflictResolution> r = from_abi(resolution);
+    if (plan == nullptr || !r) return PHIG_ERR_INVALID_ARG;
     try {
-        return plan->plan.set_resolution(i, from_abi(resolution)) ? PHIG_OK : PHIG_ERR_INVALID_ARG;
+        return plan->plan.set_resolution(i, *r) ? PHIG_OK : PHIG_ERR_INVALID_ARG;
     } catch (...) {
         return PHIG_ERR_INTERNAL;
     }

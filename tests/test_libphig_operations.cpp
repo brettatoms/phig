@@ -454,6 +454,43 @@ TEST(AbiOperations, RejectsBadArguments) {
     phig_shutdown(ctx);
 }
 
+// A value outside an option's defined set is refused before the operation starts,
+// with *out left NULL and the reason in phig_last_error (R73).
+TEST(AbiOperations, AnUnknownOptionValueIsRefusedBeforeTheOperationStarts) {
+    OpFixture fx(1);
+    fx.add_unindexed("loose.jpg");
+    phig_ctx* ctx = fx.open();
+    AllIds all(ctx);
+    phig_op* op = nullptr;
+
+    const std::string scan_dir = fx.dir.string();
+    phig_index_options iopts = default_index(scan_dir);
+    iopts.media = static_cast<phig_media_type>(9);
+    EXPECT_EQ(phig_op_index_start(ctx, &iopts, &op), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(op, nullptr);
+    EXPECT_STRNE(phig_last_error(ctx), "");
+
+    phig_thumbs_options topts = default_thumbs(all.list);
+    topts.size = -1;
+    EXPECT_EQ(phig_op_thumbs_start(ctx, &topts, &op), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(op, nullptr);
+
+    // A count with no array is malformed, not an empty selection.
+    topts = default_thumbs();
+    topts.id_count = 3;
+    EXPECT_EQ(phig_op_thumbs_start(ctx, &topts, &op), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(op, nullptr);
+
+    phig_faces_options fopts{};
+    fopts.id_count = 3;
+    EXPECT_EQ(phig_op_faces_start(ctx, &fopts, &op), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(op, nullptr);
+
+    phig_shutdown(ctx);
+    Database db(fx.db_path);
+    EXPECT_EQ(db.count(), 1) << "the loose file must not have been indexed";
+}
+
 TEST(AbiOperations, FailedStartClearsTheCallersHandle) {
     // "On failure *out is NULL" has to hold for the argument checks too, not
     // just the ones past them. A client that reuses one variable across calls

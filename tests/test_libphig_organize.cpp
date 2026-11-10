@@ -148,6 +148,51 @@ TEST_F(AbiOrganizeTest, SetResolutionRejectsANonConflictingItem) {
     phig_organize_plan_free(plan);
 }
 
+TEST_F(AbiOrganizeTest, PlanRefusesAnUnknownPolicyAnEmptyDestinationAndAMissingIdArray) {
+    OrganizeFixture fx(1);
+    open(fx);
+    AllIds all(ctx);
+    phig_organize_options opts{};
+    opts.destination = fx.out_dir.c_str();
+    opts.ids = all.list->items;
+    opts.id_count = static_cast<size_t>(all.list->count);
+    phig_op* op = nullptr;
+
+    opts.on_conflict = static_cast<phig_conflict_resolution>(5);
+    EXPECT_EQ(phig_op_organize_plan_start(ctx, &opts, &op), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(op, nullptr);
+    EXPECT_STRNE(phig_last_error(ctx), "");
+
+    opts.on_conflict = PHIG_CONFLICT_RENAME;
+    opts.destination = "";
+    EXPECT_EQ(phig_op_organize_plan_start(ctx, &opts, &op), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(op, nullptr);
+
+    opts.destination = fx.out_dir.c_str();
+    opts.ids = nullptr;
+    EXPECT_EQ(phig_op_organize_plan_start(ctx, &opts, &op), PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(op, nullptr);
+}
+
+TEST_F(AbiOrganizeTest, SetResolutionRefusesAnUnknownValueAndChangesNothing) {
+    OrganizeFixture fx(1);
+    open(fx);
+    fs::create_directories(fs::path(fx.out_dir) / "2019");
+    {
+        std::ofstream f(fs::path(fx.out_dir) / "2019" / "img0.jpg");
+        f << "occupant";
+    }
+    phig_organize_plan* plan = make_plan(fx, PHIG_CONFLICT_SKIP);
+    ASSERT_TRUE(phig_organize_plan_conflicts_at(plan, 0));
+
+    EXPECT_EQ(phig_organize_plan_set_resolution(plan, 0, static_cast<phig_conflict_resolution>(5)),
+              PHIG_ERR_INVALID_ARG);
+    EXPECT_EQ(phig_organize_plan_resolution_at(plan, 0), PHIG_CONFLICT_SKIP);
+    EXPECT_STREQ(phig_organize_plan_dest_at(plan, 0), "");
+
+    phig_organize_plan_free(plan);
+}
+
 TEST_F(AbiOrganizeTest, OutOfRangeAccessorsReturnDefaultsRatherThanCrashing) {
     OrganizeFixture fx(1);
     open(fx);

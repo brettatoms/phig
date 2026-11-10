@@ -20,6 +20,7 @@
 #include "face_path.h"
 #include "faces.h"
 #include "fault_injection.h"
+#include "invalid_option.h"
 #include "models.h"
 #include "progress_queue.h"
 #include "scan_engine.h"
@@ -109,6 +110,23 @@ TEST(ScanEngine, ProcessesEveryFileOnAFirstScan) {
         EXPECT_EQ(img.media_type, "video") << img.path;
         EXPECT_FALSE(img.modified_at.empty()) << img.path;
     }
+}
+
+// An option value outside its field's set is refused before any file is read (R73).
+// "images" is the shape of a typo the CLI's parser catches; core has to catch it too,
+// because libphig and a daemon reach the engine without that parser.
+TEST(ScanEngine, AnUnknownMediaValueIsRefusedBeforeAnythingIsIndexed) {
+    ScratchCollection c(2);
+    Database db(c.db_path);
+    db.init_schema();
+    CancelToken cancel;
+
+    ScanOptions opts = c.options();
+    opts.media = "images";
+    ScanEngine engine(opts, db);
+    EXPECT_THROW(engine.run(cancel, nullptr), InvalidOption);
+    EXPECT_THROW(engine.run_workers(cancel, nullptr), InvalidOption);
+    EXPECT_EQ(db.count(), 0);
 }
 
 TEST(ScanEngine, SkipsUnchangedFilesOnASecondScan) {

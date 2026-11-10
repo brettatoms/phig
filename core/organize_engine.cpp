@@ -64,8 +64,16 @@ bool OrganizePlan::set_resolution(size_t i, ConflictResolution r) {
 
 OrganizeEngine::OrganizeEngine(const OrganizeOptions& opts, Database& db) : opts_(opts), db_(db) {}
 
+void validate(const OrganizeOptions& opts) {
+    // An empty destination would resolve every planned path against the process's
+    // working directory; an empty format would send every file to the same path.
+    if (opts.destination.empty()) throw InvalidOption("organize: no destination given");
+    if (opts.format.empty()) throw InvalidOption("organize: empty format");
+}
+
 OrganizePlan OrganizeEngine::plan(const CancelToken& cancel,
                                   ProgressQueue<OrganizeProgress>* progress) {
+    validate(opts_);
     OrganizePlan out;
 
     auto images = db_.get_images_by_ids(opts_.ids);

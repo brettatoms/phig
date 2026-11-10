@@ -39,7 +39,7 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R61 | authorization | violated (test gap) | A destructive operation's preview is a value the caller can inspect, not text the engine prints. |
 | R66 | authorization | partial (test gap) | A destructive ABI operation is authorized by a plan the caller inspects and then applies with a second call, never by a callback the engine invokes mid-run. |
 | R71 | concurrency | holds (test gap) | A face row's embedding is written only by the insert that creates the row, so identify's `embedding = ?` clause refuses no write that `id = ?` and `person_id IS NULL` have not already refused. |
-| R73 | authorization | violated (test gap) | An unrecognized flag stops a command before it changes anything. |
+| R73 | authorization | holds (test gap) | Input an operation does not recognize, whether an unknown CLI flag or an option value outside its field's defined set, stops it before it changes anything. |
 | R74 | authorization | holds (test gap) | An operation acts on every tracked path that no --exclude matches and, when any --match was given, that at least one --match matches; with no --match at all it acts on everything. |
 | R75 | reconcile | holds (test gap) | Which rows a scan deletes is decided by whether their files are on disk, never by which files that scan's flags admitted to the walk. |
 | R76 | metadata | holds (test gap) | No value of --force re-detects faces: a scan keeps a row's existing face data whatever it was told to force, and face rebuild is the only path that replaces it. |
