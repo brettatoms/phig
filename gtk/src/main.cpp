@@ -682,8 +682,7 @@ static void on_cell_activate(PhigApp* app, guint position) noexcept {
         return;
     }
 
-    const char* path = phig_image_row_get_path(row);
-    GFile* file = g_file_new_for_path(path);
+    GFile* file = g_file_new_for_path(phig_image_row_get_path(row).c_str());
     GtkFileLauncher* launcher = gtk_file_launcher_new(file);
     gtk_file_launcher_launch(launcher, GTK_WINDOW(app->window), NULL, on_launched, app);
     g_object_unref(file);

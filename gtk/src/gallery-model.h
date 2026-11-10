@@ -4,6 +4,7 @@
 #include <glib-object.h>
 
 #include <cstdint>
+#include <string>
 
 #include "collection.h"
 
@@ -16,11 +17,11 @@
 #define PHIG_TYPE_IMAGE_ROW (phig_image_row_get_type())
 G_DECLARE_FINAL_TYPE(PhigImageRow, phig_image_row, PHIG, IMAGE_ROW, GObject)
 
-gboolean phig_image_row_is_placeholder(PhigImageRow* row);
+bool phig_image_row_is_placeholder(PhigImageRow* row);
 int64_t phig_image_row_get_id(PhigImageRow* row);
-const char* phig_image_row_get_path(PhigImageRow* row);
-const char* phig_image_row_get_sha256(PhigImageRow* row);
-const char* phig_image_row_get_filename(PhigImageRow* row);
+const std::string& phig_image_row_get_path(PhigImageRow* row);
+const std::string& phig_image_row_get_sha256(PhigImageRow* row);
+const std::string& phig_image_row_get_filename(PhigImageRow* row);
 
 /* PhigGalleryModel: a GListModel over the collection's gallery rows without holding
  * the collection in memory. It knows the total row count up front (from

@@ -61,9 +61,9 @@ static void test_rows_carry_the_collections_fields(Fixture* f, gconstpointer unu
 
     const std::string sha = phig::gtk::fake::sha(250);
     g_assert_cmpint(phig_image_row_get_id(row), ==, 251);
-    g_assert_cmpstr(phig_image_row_get_sha256(row), ==, sha.c_str());
-    g_assert_cmpstr(phig_image_row_get_path(row), ==, "/fake/250.jpg");
-    g_assert_cmpstr(phig_image_row_get_filename(row), ==, "250.jpg");
+    g_assert_cmpstr(phig_image_row_get_sha256(row).c_str(), ==, sha.c_str());
+    g_assert_cmpstr(phig_image_row_get_path(row).c_str(), ==, "/fake/250.jpg");
+    g_assert_cmpstr(phig_image_row_get_filename(row).c_str(), ==, "250.jpg");
     g_object_unref(row);
 }
 
@@ -82,13 +82,12 @@ static void test_row_strings_survive_page_eviction(Fixture* f, gconstpointer unu
      * freed and evicted. */
     phig_gallery_model_fetch_page_sync(f->model, 0);
     PhigImageRow* row = PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
-    char* sha_copy = g_strdup(phig_image_row_get_sha256(row));
+    const std::string sha_copy = phig_image_row_get_sha256(row);
 
     for (guint page = 0; page * 200 < N_ROWS; page++)
         phig_gallery_model_fetch_page_sync(f->model, page);
 
-    g_assert_cmpstr(phig_image_row_get_sha256(row), ==, sha_copy);
-    g_free(sha_copy);
+    g_assert_cmpstr(phig_image_row_get_sha256(row).c_str(), ==, sha_copy.c_str());
     g_object_unref(row);
 }
 
