@@ -101,7 +101,7 @@ struct PhigApp {
     // coll closes. coll is declared before loader, but the destructor body
     // releases the loader and drops the model first, then member destruction
     // closes coll.
-    CollectionPtr coll;
+    phig::gtk::CollectionPtr coll;
     std::shared_ptr<ThumbLoader> loader;
 
     guint thumb_failed_count = 0;
@@ -296,24 +296,23 @@ static void on_launched(GObject* source, GAsyncResult* result, gpointer user_dat
 // success, and closes with this struct otherwise.
 struct StartupResult {
     PhigApp* app = nullptr;  // borrowed; app outlives the task
-    CollectionPtr coll;
+    phig::gtk::CollectionPtr coll;
 };
 
-// The collection's error comes back as an owned copy.
+// The collection's reason comes back as the task's error.
 static void startup_thread_func(GTask* task, gpointer source_object, gpointer task_data,
                                  GCancellable* cancellable) noexcept {
     (void)source_object;
     (void)cancellable;
     auto* result = static_cast<StartupResult*>(task_data);
 
-    char* error = nullptr;
-    result->coll.reset(phig_collection_open(result->app->catalog_dir.c_str(), &error));
-    if (!result->coll) {
-        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "%s", error);
-        g_free(error);
+    auto opened = phig::gtk::open(result->app->catalog_dir);
+    if (!opened) {
+        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "%s",
+                                opened.error().c_str());
         return;
     }
-
+    result->coll = std::move(*opened);
     g_task_return_boolean(task, TRUE);
 }
 
@@ -731,8 +730,10 @@ static void on_cell_activate(GtkGridView* grid, guint position, gpointer user_da
  * outruns several page fetches would otherwise stack a toast per failure.
  * The affected cells already keep their placeholders (the model's contract
  * for this signal), so this is purely a "something is wrong" notice. */
-static void on_page_fetch_failed(PhigGalleryModel* model, gpointer user_data) noexcept {
+static void on_page_fetch_failed(PhigGalleryModel* model, const char* reason,
+                                 gpointer user_data) noexcept {
     (void)model;
+    (void)reason;
     auto* app = static_cast<PhigApp*>(user_data);
     if (app->page_fetch_toast_shown)
         return;
@@ -771,10 +772,10 @@ static void startup_done(GObject* source, GAsyncResult* result, gpointer user_da
     guint n_threads = env_override_uint("PHIG_THUMB_LOADER_THREADS", PHIG_THUMB_LOADER_THREADS);
     gsize cache_bytes =
         (gsize)env_override_uint("PHIG_THUMB_CACHE_BYTES", PHIG_THUMB_CACHE_BYTES);
-    app->loader = thumb_loader_new(app->coll.get(), n_threads, cache_bytes);
+    app->loader = thumb_loader_new(*app->coll, n_threads, cache_bytes);
 
     /* The model borrows coll, which app owns until ~PhigApp. */
-    PhigGalleryModel* model = phig_gallery_model_new(app->coll.get());
+    PhigGalleryModel* model = phig_gallery_model_new(*app->coll);
     g_signal_connect(model, "page-fetch-failed", G_CALLBACK(on_page_fetch_failed), app);
     GtkSelectionModel* selection = GTK_SELECTION_MODEL(gtk_no_selection_new(G_LIST_MODEL(model)));
     gtk_grid_view_set_model(app->grid, selection);
@@ -892,13 +893,13 @@ static void on_activate(GtkApplication* gtk_app, gpointer user_data) noexcept {
     g_object_unref(task);
 }
 
-// phig's own default, from core/ through the collection seam. Empty when it
-// cannot be resolved.
+// phig's own default, from core/ through the collection seam. Empty, after a
+// warning naming the reason, when it cannot be resolved.
 static std::string resolve_default_catalog() {
-    char* path = phig_collection_default_catalog();
-    std::string out = path != nullptr ? path : "";
-    g_free(path);
-    return out;
+    auto dir = phig::gtk::default_catalog();
+    if (dir) return std::move(*dir);
+    g_warning("phig: could not resolve the default catalog: %s", dir.error().c_str());
+    return {};
 }
 
 int main(int argc, char** argv) {

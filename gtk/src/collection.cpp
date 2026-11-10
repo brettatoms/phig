@@ -1,12 +1,12 @@
 #include "collection.h"
 
+#include <glib.h>
+
+#include <algorithm>
 #include <cctype>
-#include <cstdint>
 #include <exception>
-#include <memory>
 #include <optional>
-#include <string>
-#include <vector>
+#include <utility>
 
 #include "catalog.h"
 #include "config.h"
@@ -16,127 +16,119 @@
 #include "thumbs_engine.h"
 #include "types.h"
 
-struct PhigCollection {
+namespace phig::gtk {
+
+struct Collection {
     std::unique_ptr<Database> db;
 };
 
+void CollectionClose::operator()(Collection* coll) const noexcept { delete coll; }
+
 namespace {
 
-// GTK reaches this file through C frames, which an exception must not unwind
-// through, so every entry point catches and reports here.
-void warn_caught(const char* what) noexcept {
+// The current exception's message, or fallback when it carries none. Call only
+// inside a catch block.
+std::string caught(const char* fallback) noexcept {
     try {
         throw;
     } catch (const std::exception& e) {
-        g_warning("phig collection: %s failed: %s", what, e.what());
+        return e.what();
     } catch (...) {
-        g_warning("phig collection: %s failed", what);
+        return fallback;
     }
 }
 
 // A thumbnail path is built from the hash, so it must be exactly 64 hex digits.
-bool is_hex64(const char* s) {
-    size_t n = 0;
-    for (; s[n] != '\0'; ++n) {
-        if (n >= 64) return false;
-        if (!std::isxdigit(static_cast<unsigned char>(s[n]))) return false;
-    }
-    return n == 64;
+bool is_hex64(std::string_view s) {
+    return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) {
+               return std::isxdigit(static_cast<unsigned char>(c)) != 0;
+           });
 }
 
 }  // namespace
 
-extern "C" {
-
-PhigCollection* phig_collection_open(const char* catalog_dir, char** error) {
-    *error = nullptr;
+std::expected<CollectionPtr, std::string> open(const std::string& catalog_dir) noexcept {
     try {
         const CatalogPaths paths = catalog_paths(catalog_dir);
-        auto coll = std::make_unique<PhigCollection>();
-        coll->db = open_catalog_db(paths.db, CatalogAccess::Read);
+        CollectionPtr coll(new Collection{open_catalog_db(paths.db, CatalogAccess::Read)});
         set_catalog(paths);
         migrate_legacy_catalog_files(paths);
-        return coll.release();
-    } catch (const std::exception& e) {
-        *error = g_strdup(e.what());
+        return coll;
     } catch (...) {
-        *error = g_strdup("Could not open the phig catalog.");
+        return std::unexpected(caught("Could not open the phig catalog."));
     }
-    return nullptr;
 }
 
-void phig_collection_close(PhigCollection* coll) { delete coll; }
-
-char* phig_collection_default_catalog(void) {
+std::expected<std::string, std::string> default_catalog() noexcept {
     try {
         const Config cfg = load_config(config_path());
-        return g_strdup(resolve_catalog_dir(std::nullopt, cfg).dir.c_str());
+        return resolve_catalog_dir(std::nullopt, cfg).dir;
     } catch (...) {
-        warn_caught("default catalog");
+        return std::unexpected(caught("Could not resolve the default catalog."));
     }
-    return nullptr;
 }
 
-gboolean phig_collection_count(PhigCollection* coll, guint* out) {
+std::expected<uint32_t, std::string> count(Collection& coll) noexcept {
     try {
-        int64_t n = coll->db->count_matching(Database::SearchCriteria{});
-        *out = n > 0 ? static_cast<guint>(n) : 0;
-        return TRUE;
+        const int64_t n = coll.db->count_matching(Database::SearchCriteria{});
+        return n > 0 ? static_cast<uint32_t>(n) : 0u;
     } catch (...) {
-        warn_caught("count");
+        return std::unexpected(caught("Could not count the catalog's rows."));
     }
-    return FALSE;
 }
 
-PhigRowPage* phig_collection_page(PhigCollection* coll, guint offset, guint limit) {
+std::expected<std::vector<Row>, std::string> page(Collection& coll, uint32_t offset,
+                                                  uint32_t limit) noexcept {
     try {
         Database::PageCriteria c;
         c.sort = Database::SortKey::Date;
         c.descending = true;
         c.offset = offset;
         c.limit = static_cast<int32_t>(limit);
-        std::vector<ImageInfo> rows = coll->db->search_page(c);
-
-        PhigRowPage* page = phig_row_page_new(static_cast<guint>(rows.size()));
-        for (size_t i = 0; i < rows.size(); i++) {
-            page->rows[i].id = rows[i].id;
-            page->rows[i].path = g_strdup(rows[i].path.c_str());
-            page->rows[i].sha256 = g_strdup(rows[i].sha256.c_str());
-            page->rows[i].filename = g_strdup(rows[i].filename.c_str());
-        }
-        return page;
+        std::vector<Row> rows;
+        for (ImageInfo& info : coll.db->search_page(c))
+            rows.push_back(Row{info.id, std::move(info.path), std::move(info.sha256),
+                               std::move(info.filename)});
+        return rows;
     } catch (...) {
-        warn_caught("page");
+        return std::unexpected(caught("Could not read a page of the catalog."));
     }
-    return nullptr;
 }
 
-PhigThumbLookup phig_collection_thumb_lookup(PhigCollection* coll, const char* sha256, int size,
-                                             char** path) {
+ThumbLocation thumb_lookup(Collection& coll, std::string_view sha256, int size) noexcept {
     (void)coll;  // the thumbnail cache is located by core/paths, not by the database
-    *path = nullptr;
     try {
-        if (sha256 == nullptr || size <= 0 || !is_hex64(sha256)) return PHIG_THUMB_ERROR;
-        std::string p = get_thumb_path(sha256, size);
-        if (p.empty()) return PHIG_THUMB_ERROR;
-        *path = g_strdup(p.c_str());
-        return thumb_exists(sha256, size) ? PHIG_THUMB_PRESENT : PHIG_THUMB_ABSENT;
+        if (size <= 0 || !is_hex64(sha256)) return {};
+        const std::string sha(sha256);
+        std::string path = get_thumb_path(sha, size);
+        if (path.empty()) return {};
+        const ThumbLookup state =
+            thumb_exists(sha, size) ? ThumbLookup::Present : ThumbLookup::Absent;
+        return {state, std::move(path)};
     } catch (...) {
-        warn_caught("thumbnail lookup");
+        g_warning("phig collection: thumbnail lookup failed: %s", caught("unknown error").c_str());
     }
-    g_free(*path);
-    *path = nullptr;
-    return PHIG_THUMB_ERROR;
+    return {};
 }
 
-gboolean phig_collection_thumb_generate(PhigCollection* coll, int64_t image_id, int size) {
-    if (size <= 0) return FALSE;
+ThumbGenerate thumb_generate(Collection& coll, int64_t image_id, int size) noexcept {
+    if (size <= 0) return ThumbGenerate::Failed;
     try {
-        return ensure_thumb(*coll->db, image_id, size) == EnsureThumb::Ok;
+        switch (ensure_thumb(*coll.db, image_id, size)) {
+            case EnsureThumb::Ok:
+                return ThumbGenerate::Ok;
+            case EnsureThumb::NoSuchRow:
+                return ThumbGenerate::NoSuchRow;
+            case EnsureThumb::SourceMissing:
+                return ThumbGenerate::SourceMissing;
+            case EnsureThumb::Failed:
+                return ThumbGenerate::Failed;
+        }
     } catch (...) {
-        warn_caught("thumbnail generation");
+        g_warning("phig collection: thumbnail generation failed: %s",
+                  caught("unknown error").c_str());
     }
-    return FALSE;
+    return ThumbGenerate::Failed;
 }
 
-}  // extern "C"
+}  // namespace phig::gtk

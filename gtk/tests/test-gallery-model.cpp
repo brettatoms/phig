@@ -1,5 +1,7 @@
 #include <glib.h>
 
+#include <string>
+
 #include "fake-collection.h"
 #include "gallery-model.h"
 
@@ -7,14 +9,14 @@
 #define N_ROWS 1050
 
 typedef struct {
-    PhigCollection* coll;
+    phig::gtk::Collection* coll;
     PhigGalleryModel* model;
 } Fixture;
 
 static void fixture_set_up(Fixture* f, gconstpointer unused) {
     (void)unused;
-    f->coll = fake_collection_new(N_ROWS);
-    f->model = phig_gallery_model_new(f->coll);
+    f->coll = phig::gtk::fake::make(N_ROWS).release();
+    f->model = phig_gallery_model_new(*f->coll);
 }
 
 /* The model goes first: its dispose waits for any page fetch still using the
@@ -22,7 +24,7 @@ static void fixture_set_up(Fixture* f, gconstpointer unused) {
 static void fixture_tear_down(Fixture* f, gconstpointer unused) {
     (void)unused;
     g_clear_object(&f->model);
-    phig_collection_close(f->coll);
+    phig::gtk::CollectionClose{}(f->coll);
 }
 
 static void test_n_items_matches_count(Fixture* f, gconstpointer unused) {
@@ -56,10 +58,9 @@ static void test_rows_carry_the_collections_fields(Fixture* f, gconstpointer unu
     PhigImageRow* row = PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(f->model), 250));
     g_assert_false(phig_image_row_is_placeholder(row));
 
-    char sha[65];
-    fake_collection_sha(250, sha);
+    const std::string sha = phig::gtk::fake::sha(250);
     g_assert_cmpint(phig_image_row_get_id(row), ==, 251);
-    g_assert_cmpstr(phig_image_row_get_sha256(row), ==, sha);
+    g_assert_cmpstr(phig_image_row_get_sha256(row), ==, sha.c_str());
     g_assert_cmpstr(phig_image_row_get_path(row), ==, "/fake/250.jpg");
     g_assert_cmpstr(phig_image_row_get_filename(row), ==, "250.jpg");
     g_object_unref(row);
@@ -175,24 +176,27 @@ static void test_async_fetch_emits_items_changed(Fixture* f, gconstpointer unuse
 typedef struct {
     GMainLoop* loop;
     gboolean fired;
+    std::string reason;
 } FailedCapture;
 
-static void on_page_fetch_failed(PhigGalleryModel* model, gpointer user_data) {
+static void on_page_fetch_failed(PhigGalleryModel* model, const char* reason,
+                                 gpointer user_data) {
     (void)model;
     FailedCapture* capture = static_cast<FailedCapture*>(user_data);
     capture->fired = TRUE;
+    capture->reason = reason;
     g_main_loop_quit(capture->loop);
 }
 
 static void test_failed_fetch_emits_page_fetch_failed(Fixture* f, gconstpointer unused) {
     (void)unused;
-    fake_collection_fail_pages(f->coll, TRUE);
+    phig::gtk::fake::fail_pages(*f->coll, true);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
-    FailedCapture capture = {.loop = loop, .fired = FALSE};
+    FailedCapture capture = {.loop = loop, .fired = FALSE, .reason = {}};
     gulong handler_id = g_signal_connect(f->model, "page-fetch-failed",
                                          G_CALLBACK(on_page_fetch_failed), &capture);
     guint timeout_id = g_timeout_add_seconds(5, on_timeout, loop);
-    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING, "gallery model: page 0 fetch failed*");
+    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING, "gallery model: page 0 fetch failed: fake: page fetch failed");
 
     g_object_unref(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
     g_main_loop_run(loop);
@@ -203,6 +207,7 @@ static void test_failed_fetch_emits_page_fetch_failed(Fixture* f, gconstpointer 
 
     g_test_assert_expected_messages();
     g_assert_true(capture.fired);
+    g_assert_cmpstr(capture.reason.c_str(), ==, phig::gtk::fake::kPageError);
     g_assert_cmpuint(phig_gallery_model_resident_page_count(f->model), ==, 0);
 }
 

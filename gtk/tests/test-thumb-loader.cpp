@@ -17,25 +17,21 @@ constexpr gsize kRoomy = 64 * 1024 * 1024;
 
 GThread* main_thread = nullptr;  // set by main()
 
-std::string sha_of(guint index) {
-    char sha[65];
-    fake_collection_sha(index, sha);
-    return sha;
-}
+std::string sha_of(guint index) { return phig::gtk::fake::sha(index); }
 
 // A collection of 8 rows and a loader over it. The loader is shut down before
 // the collection closes: a delivery still queued on the main context holds a
 // loader reference, so dropping this one alone may leave workers running.
 struct Fixture {
-    PhigCollection* coll;
+    phig::gtk::CollectionPtr coll;
     std::shared_ptr<ThumbLoader> loader;
 
     explicit Fixture(gsize budget = kRoomy, guint threads = 4)
-        : coll(fake_collection_new(8)), loader(thumb_loader_new(coll, threads, budget)) {}
+        : coll(phig::gtk::fake::make(8)), loader(thumb_loader_new(*coll, threads, budget)) {}
     ~Fixture() {
         thumb_loader_shutdown(*loader);
         loader.reset();
-        phig_collection_close(coll);
+        coll.reset();
     }
     Fixture(const Fixture&) = delete;
     Fixture& operator=(const Fixture&) = delete;
@@ -145,7 +141,7 @@ void test_a_miss_is_generated_and_delivered() {
     g_assert_true(c.called);
     g_assert_cmpint(c.result, ==, THUMB_OK);
     g_assert_cmpint(c.width, ==, 64);
-    g_assert_cmpuint(fake_collection_generate_count(f.coll), ==, 1);
+    g_assert_cmpuint(phig::gtk::fake::generate_count(*f.coll), ==, 1);
 }
 
 // The second loader has an empty texture cache, so its request reaches the
@@ -154,14 +150,14 @@ void test_a_thumbnail_on_disk_is_not_regenerated() {
     Fixture f;
     g_assert_cmpint(request_and_wait(*f.loader, 1, sha_of(0), 256).result, ==, THUMB_OK);
 
-    std::shared_ptr<ThumbLoader> second = thumb_loader_new(f.coll, 1, kRoomy);
+    std::shared_ptr<ThumbLoader> second = thumb_loader_new(*f.coll, 1, kRoomy);
     Capture c = request_and_wait(*second, 1, sha_of(0), 256);
     thumb_loader_shutdown(*second);
     second.reset();
 
     g_assert_cmpint(c.result, ==, THUMB_OK);
     g_assert_false(c.synchronous);
-    g_assert_cmpuint(fake_collection_generate_count(f.coll), ==, 1);
+    g_assert_cmpuint(phig::gtk::fake::generate_count(*f.coll), ==, 1);
 }
 
 void test_a_repeat_request_is_served_from_memory() {
@@ -189,7 +185,7 @@ void test_generation_failure_yields_thumb_failed() {
     g_assert_true(c.called);
     g_assert_cmpint(c.result, ==, THUMB_FAILED);
     g_assert_cmpint(c.width, ==, -1);
-    g_assert_cmpuint(fake_collection_generate_count(f.coll), ==, 0);
+    g_assert_cmpuint(phig::gtk::fake::generate_count(*f.coll), ==, 0);
 }
 
 // No workers, so nothing pops the queue and its length shows whether the
@@ -229,8 +225,8 @@ void test_cancel_after_dispatch_discards_the_result() {
 // leaves the loader alive until the delivery runs. It still calls back, and the
 // loader is then destroyed on the main thread, before the collection closes.
 void test_a_delivery_outlives_the_callers_reference() {
-    PhigCollection* coll = fake_collection_new(8);
-    std::shared_ptr<ThumbLoader> loader = thumb_loader_new(coll, 4, kRoomy);
+    phig::gtk::CollectionPtr coll = phig::gtk::fake::make(8);
+    std::shared_ptr<ThumbLoader> loader = thumb_loader_new(*coll, 4, kRoomy);
     std::weak_ptr<ThumbLoader> watch = loader;
     Capture c;
 
@@ -243,7 +239,7 @@ void test_a_delivery_outlives_the_callers_reference() {
     g_assert_true(c.called);
     g_assert_cmpint(c.result, ==, THUMB_OK);
     g_assert_true(watch.expired());
-    phig_collection_close(coll);
+    coll.reset();
 }
 
 void test_shutdown_discards_a_posted_result() {
@@ -358,7 +354,7 @@ void test_a_request_cancelled_after_dispatch_destroys_its_callback() {
 // thread: it may hold the last reference to a GTK object.
 void test_a_callback_a_worker_drops_is_destroyed_on_the_main_thread() {
     Fixture f(kRoomy, 1);
-    fake_collection_hold_generation(f.coll, TRUE);
+    phig::gtk::fake::hold_generation(*f.coll, true);
     Destroyed first_destroyed;
     bool first_called = false;
     thumb_loader_request(*f.loader, 1, sha_of(0), 256, nullptr,
@@ -371,7 +367,7 @@ void test_a_callback_a_worker_drops_is_destroyed_on_the_main_thread() {
     thumb_loader_request(*f.loader, 2, sha_of(1), 256, cancellable, probed(destroyed, called));
     g_assert_cmpint(thumb_loader_queue_length(*f.loader), ==, 1);
     g_cancellable_cancel(cancellable);
-    fake_collection_hold_generation(f.coll, FALSE);
+    phig::gtk::fake::hold_generation(*f.coll, false);
     pump(300);
 
     g_assert_true(first_called);

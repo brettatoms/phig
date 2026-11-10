@@ -1,29 +1,32 @@
-#ifndef PHIG_GTK_FAKE_COLLECTION_H
-#define PHIG_GTK_FAKE_COLLECTION_H
+#pragma once
+
+#include <cstdint>
+#include <string>
 
 #include "collection.h"
 
-G_BEGIN_DECLS
+// A Collection with synthetic rows and no database, for the gtk tests.
+namespace phig::gtk::fake {
 
-/* A PhigCollection with n_rows synthetic rows and no database. Row i (0-based)
- * has id i + 1, path "/fake/<i>.jpg", filename "<i>.jpg" and the sha256
- * fake_collection_sha gives for i. Thumbnails live in a private temp directory
- * that phig_collection_close removes. Generating one writes a 64x64 PNG. Generation fails for
- * an id outside [1, n_rows]. */
-PhigCollection* fake_collection_new(guint n_rows);
+// n_rows rows. Row i (0-based) has id i + 1, path "/fake/<i>.jpg", filename
+// "<i>.jpg" and the sha256 sha(i) gives. Thumbnails live in a private temp
+// directory that closing the collection removes. Generating one writes a 64x64
+// PNG; generation reports NoSuchRow for an id outside [1, n_rows].
+CollectionPtr make(uint32_t n_rows);
 
-/* Row index's sha256: the index in hex, zero-padded to 64 digits. */
-void fake_collection_sha(guint index, char out[65]);
+// Row index's sha256: the index in hex, zero-padded to 64 digits.
+std::string sha(uint32_t index);
 
-/* While fail is set, phig_collection_page returns NULL. */
-void fake_collection_fail_pages(PhigCollection* coll, gboolean fail);
+// The reason page gives while fail_pages is set.
+inline constexpr const char* kPageError = "fake: page fetch failed";
 
-/* How many thumbnail files phig_collection_thumb_generate has written. */
-guint fake_collection_generate_count(PhigCollection* coll);
+// While fail is set, page fails with kPageError.
+void fail_pages(Collection& coll, bool fail);
 
-/* While hold is set, phig_collection_thumb_generate waits before generating. */
-void fake_collection_hold_generation(PhigCollection* coll, gboolean hold);
+// How many thumbnail files thumb_generate has written.
+uint32_t generate_count(Collection& coll);
 
-G_END_DECLS
+// While hold is set, thumb_generate waits before generating.
+void hold_generation(Collection& coll, bool hold);
 
-#endif /* PHIG_GTK_FAKE_COLLECTION_H */
+}  // namespace phig::gtk::fake

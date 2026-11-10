@@ -1,5 +1,11 @@
 #include "gallery-model.h"
 
+#include <expected>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
 /* One page holds this many rows. Not varied in measurement (task-7-report.md):
  * page-fetch latency (0.85ms warm / 19ms cold per page fetch) is never
  * the bottleneck a full-range scroll hits, so there was no result to tune
@@ -81,14 +87,14 @@ static PhigImageRow* phig_image_row_new_placeholder(void) {
     return row;
 }
 
-/* Copies every field it exposes out of data, whose strings belong to its page. */
-static PhigImageRow* phig_image_row_new_from_data(const PhigRowData* data) {
+/* Copies every field it exposes out of data. */
+static PhigImageRow* phig_image_row_new_from_data(const phig::gtk::Row& data) {
     PhigImageRow* row = PHIG_IMAGE_ROW(g_object_new(PHIG_TYPE_IMAGE_ROW, NULL));
     row->placeholder = FALSE;
-    row->id = data->id;
-    row->path = g_strdup(data->path);
-    row->sha256 = g_strdup(data->sha256);
-    row->filename = g_strdup(data->filename);
+    row->id = data.id;
+    row->path = g_strdup(data.path.c_str());
+    row->sha256 = g_strdup(data.sha256.c_str());
+    row->filename = g_strdup(data.filename.c_str());
     return row;
 }
 
@@ -121,7 +127,7 @@ static void phig_placeholder_entry_free(PhigPlaceholderEntry* entry) {
 
 struct _PhigGalleryModel {
     GObject parent_instance;
-    PhigCollection* coll;
+    phig::gtk::Collection* coll;
     guint total;
     GHashTable* pages; /* page_index (guint, via GUINT_TO_POINTER) -> PhigPage* */
     gint64 clock;
@@ -145,7 +151,7 @@ struct _PhigGalleryModel {
     /* coll is borrowed from the caller, not owned, so pinning self alive (the
      * GWeakRef in FetchTaskData) does not keep it alive. in_flight counts
      * worker threads currently between resolving that weak ref and dropping
-     * it — i.e. actually inside phig_collection_page. dispose blocks until it
+     * it — i.e. actually inside phig::gtk::page. dispose blocks until it
      * reaches zero, which is what makes the header's "caller must not close
      * coll while any reference to the model is outstanding" contract actually
      * true: the caller's final unref will not return while a worker is still
@@ -177,17 +183,16 @@ static guint phig_gallery_model_get_n_items(GListModel* list) {
     return PHIG_GALLERY_MODEL(list)->total;
 }
 
-/* Builds owned rows from a freshly fetched page and frees it. Called on
- * whichever thread fetched the page (worker for async, the caller's for the
- * sync test helper); it touches no GTK or main-loop state. */
-static PhigPage* phig_page_new_from_rows(guint page_index, PhigRowPage* fetched) {
+/* Builds owned rows from a freshly fetched page. Touches no GTK or main-loop
+ * state. */
+static PhigPage* phig_page_new_from_rows(guint page_index,
+                                         const std::vector<phig::gtk::Row>& fetched) {
     PhigPage* page = g_new0(PhigPage, 1);
     page->page_index = page_index;
-    page->n_rows = fetched->n_rows;
+    page->n_rows = static_cast<guint>(fetched.size());
     page->rows = g_new0(PhigImageRow*, page->n_rows);
     for (guint i = 0; i < page->n_rows; i++)
-        page->rows[i] = phig_image_row_new_from_data(&fetched->rows[i]);
-    phig_row_page_free(fetched);
+        page->rows[i] = phig_image_row_new_from_data(fetched[i]);
     return page;
 }
 
@@ -288,21 +293,17 @@ static void phig_gallery_model_touch_page(PhigGalleryModel* self, PhigPage* page
  * a temporary strong ref via g_weak_ref_get and drops it immediately after,
  * so the model cannot be finalized out from under a call in progress, but an
  * idle GTask callback that never runs cannot pin it forever either. */
-typedef struct {
+struct FetchTaskData {
     GWeakRef model;
-    guint page_index;
-    PhigRowPage* fetched; /* set on the worker thread */
-} FetchTaskData;
+    guint page_index = 0;
+    /* Set on the worker thread. Empty if the model was gone before the fetch
+     * ran. */
+    std::optional<std::expected<std::vector<phig::gtk::Row>, std::string>> fetched;
+};
 
 static void fetch_task_data_free(FetchTaskData* data) {
-    /* Set once phig_page_new_from_rows has consumed it (fetch_page_done);
-     * still non-NULL here means the result was fetched but never installed
-     * (model gone before the callback ran, or the callback never dispatched),
-     * so this is the only place left to free it. */
-    if (data->fetched != NULL)
-        phig_row_page_free(data->fetched);
     g_weak_ref_clear(&data->model);
-    g_free(data);
+    delete data;
 }
 
 /* Registers as in-flight, then resolves the weak ref. Registering first
@@ -341,15 +342,9 @@ static void fetch_page_thread_func(GTask* task, gpointer source_object, gpointer
         return;
     }
 
-    PhigRowPage* fetched =
-        phig_collection_page(self->coll, data->page_index * PHIG_PAGE_SIZE, PHIG_PAGE_SIZE);
+    data->fetched.emplace(
+        phig::gtk::page(*self->coll, data->page_index * PHIG_PAGE_SIZE, PHIG_PAGE_SIZE));
     phig_gallery_model_leave_in_flight(self);
-
-    if (fetched == NULL) {
-        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "phig_collection_page failed");
-        return;
-    }
-    data->fetched = fetched;
     g_task_return_boolean(task, TRUE);
 }
 
@@ -362,22 +357,20 @@ static void fetch_page_done(GObject* source, GAsyncResult* result, gpointer user
     if (self == NULL)
         return; /* model was destroyed before this fetch's result landed */
 
-    GError* error = NULL;
-    if (!g_task_propagate_boolean(task, &error)) {
-        if (error) {
-            g_warning("gallery model: page %u fetch failed: %s", data->page_index, error->message);
-            g_error_free(error);
-        }
-        g_hash_table_remove(self->pending, GUINT_TO_POINTER(data->page_index));
-        g_signal_emit(self, signals[SIGNAL_PAGE_FETCH_FAILED], 0);
+    g_hash_table_remove(self->pending, GUINT_TO_POINTER(data->page_index));
+    if (!data->fetched) {
+        g_object_unref(self);
+        return;
+    }
+    if (!*data->fetched) {
+        const std::string& reason = data->fetched->error();
+        g_warning("gallery model: page %u fetch failed: %s", data->page_index, reason.c_str());
+        g_signal_emit(self, signals[SIGNAL_PAGE_FETCH_FAILED], 0, reason.c_str());
         g_object_unref(self);
         return;
     }
 
-    PhigPage* page = phig_page_new_from_rows(data->page_index, data->fetched);
-    data->fetched = NULL; /* consumed: phig_page_new_from_rows freed it */
-    g_hash_table_remove(self->pending, GUINT_TO_POINTER(data->page_index));
-    phig_gallery_model_install_page(self, page);
+    phig_gallery_model_install_page(self, phig_page_new_from_rows(data->page_index, **data->fetched));
     g_object_unref(self);
 }
 
@@ -386,7 +379,7 @@ static void phig_gallery_model_schedule_fetch(PhigGalleryModel* self, guint page
         return;
     g_hash_table_add(self->pending, GUINT_TO_POINTER(page_index));
 
-    FetchTaskData* data = g_new0(FetchTaskData, 1);
+    FetchTaskData* data = new FetchTaskData{};
     g_weak_ref_init(&data->model, self);
     data->page_index = page_index;
 
@@ -428,10 +421,10 @@ static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface)
 /* The caller may close coll as soon as its last reference to this model
  * is released (see phig_gallery_model_new's contract), so dispose must not
  * return while a worker thread is still between phig_gallery_model_enter_in_flight
- * and phig_gallery_model_leave_in_flight — i.e. still inside phig_collection_page.
+ * and phig_gallery_model_leave_in_flight — i.e. still inside phig::gtk::page.
  * This is what makes that contract actually hold: without it, a
  * worker resolving its weak ref just before the caller's final unref could
- * still be running phig_collection_page after the caller closes coll. */
+ * still be running phig::gtk::page after the caller closes coll. */
 static void phig_gallery_model_dispose(GObject* obj) {
     PhigGalleryModel* self = PHIG_GALLERY_MODEL(obj);
     g_debug("phig_gallery_model_dispose: entering, in_flight=%u", self->in_flight);
@@ -458,7 +451,7 @@ static void phig_gallery_model_class_init(PhigGalleryModelClass* klass) {
 
     signals[SIGNAL_PAGE_FETCH_FAILED] =
         g_signal_new("page-fetch-failed", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL,
-                     NULL, NULL, G_TYPE_NONE, 0);
+                     NULL, NULL, G_TYPE_NONE, 1, G_TYPE_STRING);
 }
 
 static void phig_gallery_model_init(PhigGalleryModel* self) {
@@ -471,20 +464,21 @@ static void phig_gallery_model_init(PhigGalleryModel* self) {
     g_cond_init(&self->in_flight_cond);
 }
 
-PhigGalleryModel* phig_gallery_model_new(PhigCollection* coll) {
+PhigGalleryModel* phig_gallery_model_new(phig::gtk::Collection& coll) {
     PhigGalleryModel* self = PHIG_GALLERY_MODEL(g_object_new(PHIG_TYPE_GALLERY_MODEL, NULL));
-    self->coll = coll;
-    guint total = 0;
-    self->total = phig_collection_count(coll, &total) ? total : 0;
+    self->coll = &coll;
+    if (auto total = phig::gtk::count(coll))
+        self->total = *total;
+    else
+        g_warning("gallery model: count failed: %s", total.error().c_str());
     return self;
 }
 
 void phig_gallery_model_fetch_page_sync(PhigGalleryModel* self, guint page_index) {
-    PhigRowPage* fetched =
-        phig_collection_page(self->coll, page_index * PHIG_PAGE_SIZE, PHIG_PAGE_SIZE);
-    if (fetched == NULL)
+    auto fetched = phig::gtk::page(*self->coll, page_index * PHIG_PAGE_SIZE, PHIG_PAGE_SIZE);
+    if (!fetched)
         return;
-    phig_gallery_model_install_page(self, phig_page_new_from_rows(page_index, fetched));
+    phig_gallery_model_install_page(self, phig_page_new_from_rows(page_index, *fetched));
 }
 
 guint phig_gallery_model_resident_page_count(PhigGalleryModel* self) {

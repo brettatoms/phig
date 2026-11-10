@@ -55,7 +55,7 @@ struct Delivery;
 }  // namespace
 
 struct ThumbLoader {
-    PhigCollection* coll = nullptr;  // borrowed; see thumb_loader_new
+    phig::gtk::Collection* coll = nullptr;  // borrowed; see thumb_loader_new
     gsize cache_bytes_budget = 0;
     std::weak_ptr<ThumbLoader> self;  // what a worker hands to the idle source it posts
 
@@ -194,46 +194,38 @@ void hand_back(ThumbLoader& self, std::unique_ptr<ThumbRequest> req) {
     self.orphans.push_back(std::move(req));
 }
 
-PhigThumbLookup lookup(ThumbLoader& self, const ThumbRequest& req, int size, std::string& path) {
-    char* raw = nullptr;
-    PhigThumbLookup look = phig_collection_thumb_lookup(self.coll, req.sha256.c_str(), size, &raw);
-    path = raw != nullptr ? raw : "";
-    g_free(raw);
-    return look;
-}
-
 // Looks the thumbnail up, generates it on a miss, and loads it, setting
 // req.result and req.texture. Returns without generating if the request was
 // cancelled first.
 void resolve(ThumbLoader& self, ThumbRequest& req) {
     // Sizes are independent in phig's cache. The caller quantises max_dim, so
     // this is a small set of sizes rather than one per pixel.
-    int want = static_cast<int>(req.max_dim > 0 ? req.max_dim : PHIG_THUMB_SIZE_DEFAULT);
-    std::string path;
-    PhigThumbLookup look = lookup(self, req, want, path);
+    const int want = static_cast<int>(req.max_dim > 0 ? req.max_dim : PHIG_THUMB_SIZE_DEFAULT);
+    phig::gtk::ThumbLocation found = phig::gtk::thumb_lookup(*self.coll, req.sha256, want);
 
-    if (look == PHIG_THUMB_ABSENT) {
+    if (found.state == phig::gtk::ThumbLookup::Absent) {
         // Generation costs hundreds of milliseconds against about one for a
         // load, so a request the user has scrolled past stops here.
         if (is_cancelled(req)) return;
-        if (!phig_collection_thumb_generate(self.coll, req.image_id, want)) {
+        if (phig::gtk::thumb_generate(*self.coll, req.image_id, want) !=
+            phig::gtk::ThumbGenerate::Ok) {
             req.result = THUMB_FAILED;
             return;
         }
-        look = lookup(self, req, want, path);
+        found = phig::gtk::thumb_lookup(*self.coll, req.sha256, want);
     }
 
-    if (look == PHIG_THUMB_ERROR) {
+    if (found.state == phig::gtk::ThumbLookup::Invalid) {
         req.result = THUMB_FAILED;
-    } else if (look == PHIG_THUMB_ABSENT) {
+    } else if (found.state == phig::gtk::ThumbLookup::Absent) {
         req.result = THUMB_MISS;
     } else {
         GError* error = nullptr;
         // phig wrote the file at the size asked for, so it loads without a
         // rescale, which keeps the texture as small as the budget assumes.
-        GdkTexture* texture = gdk_texture_new_from_filename(path.c_str(), &error);
+        GdkTexture* texture = gdk_texture_new_from_filename(found.path.c_str(), &error);
         if (texture == nullptr) {
-            g_warning("thumb loader: failed to load %s: %s", path.c_str(),
+            g_warning("thumb loader: failed to load %s: %s", found.path.c_str(),
                       error != nullptr ? error->message : "unknown error");
             g_clear_error(&error);
             req.result = THUMB_FAILED;
@@ -271,10 +263,10 @@ void worker_main(ThumbLoader& self) {
 
 }  // namespace
 
-std::shared_ptr<ThumbLoader> thumb_loader_new(PhigCollection* coll, guint n_threads,
+std::shared_ptr<ThumbLoader> thumb_loader_new(phig::gtk::Collection& coll, guint n_threads,
                                               gsize cache_bytes) {
     auto loader = std::make_shared<ThumbLoader>();
-    loader->coll = coll;
+    loader->coll = &coll;
     loader->cache_bytes_budget = cache_bytes;
     loader->self = loader;
     loader->workers.reserve(n_threads);

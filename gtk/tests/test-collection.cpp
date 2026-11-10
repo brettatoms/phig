@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 
 #include "collection.h"
 #include "database.h"
@@ -55,100 +56,83 @@ struct Fixture {
         db.insert(info);
     }
 
-    PhigCollection* open() const {
-        char* error = nullptr;
-        PhigCollection* coll = phig_collection_open(dir.c_str(), &error);
-        if (coll == nullptr) g_error("open failed: %s", error);
-        return coll;
+    phig::gtk::CollectionPtr open() const {
+        auto coll = phig::gtk::open(dir.string());
+        if (!coll) g_error("open failed: %s", coll.error().c_str());
+        return std::move(*coll);
     }
 };
 
-void test_open_reports_a_missing_file_without_creating_it() {
+void test_open_reports_a_missing_catalog_without_creating_it() {
     Fixture f;
     fs::path absent = f.dir / "absent";
-    char* error = nullptr;
-    PhigCollection* coll = phig_collection_open(absent.c_str(), &error);
-    g_assert_null(coll);
-    g_assert_nonnull(error);
-    g_assert_cmpstr(error, !=, "");
-    g_free(error);
+    auto coll = phig::gtk::open(absent.string());
+    g_assert_false(coll.has_value());
+    g_assert_false(coll.error().empty());
     g_assert_false(fs::exists(absent));
 }
 
 void test_pages_come_newest_first() {
     Fixture f;
-    PhigCollection* coll = f.open();
+    phig::gtk::CollectionPtr coll = f.open();
 
-    guint n = 0;
-    g_assert_true(phig_collection_count(coll, &n));
-    g_assert_cmpuint(n, ==, 3);
+    auto n = phig::gtk::count(*coll);
+    g_assert_true(n.has_value());
+    g_assert_cmpuint(*n, ==, 3);
 
     const std::string sha_b(64, 'b');
     const std::string sha_c(64, 'c');
-    PhigRowPage* page = phig_collection_page(coll, 0, 2);
-    g_assert_nonnull(page);
-    g_assert_cmpuint(page->n_rows, ==, 2);
-    g_assert_cmpstr(page->rows[0].sha256, ==, sha_b.c_str());
-    g_assert_cmpstr(page->rows[0].filename, ==, "faces_small.jpg");
-    g_assert_cmpstr(page->rows[1].sha256, ==, sha_c.c_str());
-    phig_row_page_free(page);
+    auto page = phig::gtk::page(*coll, 0, 2);
+    g_assert_true(page.has_value());
+    g_assert_cmpuint(page->size(), ==, 2);
+    g_assert_cmpstr((*page)[0].sha256.c_str(), ==, sha_b.c_str());
+    g_assert_cmpstr((*page)[0].filename.c_str(), ==, "faces_small.jpg");
+    g_assert_cmpstr((*page)[1].sha256.c_str(), ==, sha_c.c_str());
 
-    page = phig_collection_page(coll, 2, 2);
-    g_assert_cmpuint(page->n_rows, ==, 1);
-    g_assert_cmpstr(page->rows[0].path, ==, "/nowhere/a.jpg");
-    phig_row_page_free(page);
+    page = phig::gtk::page(*coll, 2, 2);
+    g_assert_true(page.has_value());
+    g_assert_cmpuint(page->size(), ==, 1);
+    g_assert_cmpstr((*page)[0].path.c_str(), ==, "/nowhere/a.jpg");
 
-    page = phig_collection_page(coll, 3, 2);
-    g_assert_nonnull(page);
-    g_assert_cmpuint(page->n_rows, ==, 0);
-    phig_row_page_free(page);
-
-    phig_collection_close(coll);
+    page = phig::gtk::page(*coll, 3, 2);
+    g_assert_true(page.has_value());
+    g_assert_true(page->empty());
 }
 
 void test_a_thumbnail_is_generated_on_demand() {
     Fixture f;
-    PhigCollection* coll = f.open();
-    std::string sha(64, 'b');
+    phig::gtk::CollectionPtr coll = f.open();
+    const std::string sha(64, 'b');
 
-    char* path = nullptr;
-    g_assert_cmpint(phig_collection_thumb_lookup(coll, sha.c_str(), 256, &path), ==,
-                    PHIG_THUMB_ABSENT);
-    g_assert_nonnull(path);
-    g_assert_true(g_str_has_prefix(path, f.dir.c_str()));
-    g_free(path);
+    phig::gtk::ThumbLocation found = phig::gtk::thumb_lookup(*coll, sha, 256);
+    g_assert_true(found.state == phig::gtk::ThumbLookup::Absent);
+    g_assert_true(g_str_has_prefix(found.path.c_str(), f.dir.c_str()));
 
-    PhigRowPage* page = phig_collection_page(coll, 0, 1);
-    int64_t id = page->rows[0].id;
-    phig_row_page_free(page);
+    const int64_t id = phig::gtk::page(*coll, 0, 1)->front().id;
+    g_assert_true(phig::gtk::thumb_generate(*coll, id, 256) == phig::gtk::ThumbGenerate::Ok);
 
-    g_assert_true(phig_collection_thumb_generate(coll, id, 256));
-    g_assert_cmpint(phig_collection_thumb_lookup(coll, sha.c_str(), 256, &path), ==,
-                    PHIG_THUMB_PRESENT);
-    g_assert_true(g_file_test(path, G_FILE_TEST_EXISTS));
-    g_assert_true(std::string(path).rfind((f.dir / "thumbs").string(), 0) == 0);
-    g_free(path);
-
-    phig_collection_close(coll);
+    found = phig::gtk::thumb_lookup(*coll, sha, 256);
+    g_assert_true(found.state == phig::gtk::ThumbLookup::Present);
+    g_assert_true(g_file_test(found.path.c_str(), G_FILE_TEST_EXISTS));
+    g_assert_true(found.path.rfind((f.dir / "thumbs").string(), 0) == 0);
 }
 
-void test_generation_fails_for_a_missing_source_or_an_unknown_id() {
+void test_generation_names_a_missing_source_and_an_unknown_id() {
     Fixture f;
-    PhigCollection* coll = f.open();
-    PhigRowPage* page = phig_collection_page(coll, 2, 1);  // the /nowhere/a.jpg row
-    g_assert_false(phig_collection_thumb_generate(coll, page->rows[0].id, 256));
-    phig_row_page_free(page);
-    g_assert_false(phig_collection_thumb_generate(coll, 999999, 256));
-    phig_collection_close(coll);
+    phig::gtk::CollectionPtr coll = f.open();
+    const int64_t missing = phig::gtk::page(*coll, 2, 1)->front().id;  // /nowhere/a.jpg
+    g_assert_true(phig::gtk::thumb_generate(*coll, missing, 256) ==
+                  phig::gtk::ThumbGenerate::SourceMissing);
+    g_assert_true(phig::gtk::thumb_generate(*coll, 999999, 256) ==
+                  phig::gtk::ThumbGenerate::NoSuchRow);
 }
 
 void test_lookup_rejects_a_malformed_sha() {
     Fixture f;
-    PhigCollection* coll = f.open();
-    char* path = nullptr;
-    g_assert_cmpint(phig_collection_thumb_lookup(coll, "abc", 256, &path), ==, PHIG_THUMB_ERROR);
-    g_assert_null(path);
-    phig_collection_close(coll);
+    phig::gtk::CollectionPtr coll = f.open();
+    phig::gtk::ThumbLocation found = phig::gtk::thumb_lookup(*coll, "abc", 256);
+    g_assert_true(found.state == phig::gtk::ThumbLookup::Invalid);
+    g_assert_true(found.path.empty());
 }
 
 void test_default_catalog_follows_the_environment() {
@@ -160,21 +144,21 @@ void test_default_catalog_follows_the_environment() {
     g_setenv("XDG_DATA_HOME", "/tmp/phig-gtk-xdg-data", TRUE);
     g_unsetenv("PHIG_CATALOG");
 
-    char* path = phig_collection_default_catalog();
-    g_assert_cmpstr(path, ==, "/tmp/phig-gtk-xdg-data/phig");
-    g_free(path);
+    auto dir = phig::gtk::default_catalog();
+    g_assert_true(dir.has_value());
+    g_assert_cmpstr(dir->c_str(), ==, "/tmp/phig-gtk-xdg-data/phig");
 
     g_setenv("PHIG_CATALOG", "/tmp/phig-gtk-elsewhere", TRUE);
-    path = phig_collection_default_catalog();
-    g_assert_cmpstr(path, ==, "/tmp/phig-gtk-elsewhere");
-    g_free(path);
+    dir = phig::gtk::default_catalog();
+    g_assert_true(dir.has_value());
+    g_assert_cmpstr(dir->c_str(), ==, "/tmp/phig-gtk-elsewhere");
 
     g_unsetenv("PHIG_CATALOG");
     g_unsetenv("XDG_DATA_HOME");
     g_unsetenv("XDG_CONFIG_HOME");
 }
 
-void test_default_catalog_is_null_when_it_cannot_be_resolved() {
+void test_default_catalog_reports_why_it_cannot_be_resolved() {
     const fs::path config_home =
         "/tmp/phig-gtk-xdg-config-empty-" + std::to_string(static_cast<long>(getpid()));
     fs::create_directories(config_home / "phig");
@@ -183,10 +167,9 @@ void test_default_catalog_is_null_when_it_cannot_be_resolved() {
     g_setenv("XDG_DATA_HOME", "/tmp/phig-gtk-xdg-data", TRUE);
     g_unsetenv("PHIG_CATALOG");
 
-    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING, "*default catalog failed*");
-    char* path = phig_collection_default_catalog();
-    g_test_assert_expected_messages();
-    g_assert_null(path);
+    auto dir = phig::gtk::default_catalog();
+    g_assert_false(dir.has_value());
+    g_assert_false(dir.error().empty());
 
     g_unsetenv("XDG_DATA_HOME");
     g_unsetenv("XDG_CONFIG_HOME");
@@ -198,18 +181,18 @@ void test_default_catalog_is_null_when_it_cannot_be_resolved() {
 
 int main(int argc, char** argv) {
     g_test_init(&argc, &argv, nullptr);
-    g_test_add_func("/collection/open-reports-a-missing-file-without-creating-it",
-                    test_open_reports_a_missing_file_without_creating_it);
+    g_test_add_func("/collection/open-reports-a-missing-catalog-without-creating-it",
+                    test_open_reports_a_missing_catalog_without_creating_it);
     g_test_add_func("/collection/pages-come-newest-first", test_pages_come_newest_first);
     g_test_add_func("/collection/a-thumbnail-is-generated-on-demand",
                     test_a_thumbnail_is_generated_on_demand);
-    g_test_add_func("/collection/generation-fails-for-a-missing-source-or-an-unknown-id",
-                    test_generation_fails_for_a_missing_source_or_an_unknown_id);
+    g_test_add_func("/collection/generation-names-a-missing-source-and-an-unknown-id",
+                    test_generation_names_a_missing_source_and_an_unknown_id);
     g_test_add_func("/collection/lookup-rejects-a-malformed-sha",
                     test_lookup_rejects_a_malformed_sha);
     g_test_add_func("/collection/default-catalog-follows-the-environment",
                     test_default_catalog_follows_the_environment);
-    g_test_add_func("/collection/default-catalog-is-null-when-it-cannot-be-resolved",
-                    test_default_catalog_is_null_when_it_cannot_be_resolved);
+    g_test_add_func("/collection/default-catalog-reports-why-it-cannot-be-resolved",
+                    test_default_catalog_reports_why_it_cannot_be_resolved);
     return g_test_run();
 }

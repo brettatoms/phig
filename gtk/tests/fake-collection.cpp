@@ -7,38 +7,36 @@
 #include <condition_variable>
 #include <filesystem>
 #include <mutex>
-#include <string>
+#include <string_view>
 
-struct PhigCollection {
-    guint n_rows = 0;
+namespace phig::gtk {
+
+struct Collection {
+    uint32_t n_rows = 0;
     std::filesystem::path thumb_dir;
     std::atomic<bool> fail_pages{false};
-    std::atomic<guint> generate_count{0};
+    std::atomic<uint32_t> generate_count{0};
     std::mutex hold_mutex;
     std::condition_variable hold_cv;
     bool hold = false;  // guarded by hold_mutex
 };
 
+void CollectionClose::operator()(Collection* coll) const noexcept {
+    std::error_code ec;
+    std::filesystem::remove_all(coll->thumb_dir, ec);
+    delete coll;
+}
+
 namespace {
 
 constexpr int kThumbEdge = 64;
 
-std::string sha_of(guint index) {
-    char sha[65];
-    fake_collection_sha(index, sha);
-    return sha;
+bool is_hex64(std::string_view s) {
+    return s.size() == 64 &&
+           std::all_of(s.begin(), s.end(), [](char c) { return g_ascii_isxdigit(c) != FALSE; });
 }
 
-bool is_hex64(const char* s) {
-    if (s == nullptr) return false;
-    size_t n = 0;
-    for (; s[n] != '\0'; n++) {
-        if (n >= 64 || !g_ascii_isxdigit(s[n])) return false;
-    }
-    return n == 64;
-}
-
-std::filesystem::path thumb_path(const PhigCollection& coll, const char* sha256, int size) {
+std::filesystem::path thumb_path(const Collection& coll, std::string_view sha256, int size) {
     return coll.thumb_dir / std::to_string(size) / (std::string(sha256) + ".png");
 }
 
@@ -60,10 +58,51 @@ bool write_png(const std::filesystem::path& path, int width, int height) {
 
 }  // namespace
 
-extern "C" {
+std::expected<uint32_t, std::string> count(Collection& coll) noexcept { return coll.n_rows; }
 
-PhigCollection* fake_collection_new(guint n_rows) {
-    auto* coll = new PhigCollection();
+std::expected<std::vector<Row>, std::string> page(Collection& coll, uint32_t offset,
+                                                  uint32_t limit) noexcept {
+    if (coll.fail_pages.load()) return std::unexpected(std::string(fake::kPageError));
+    const uint32_t end = offset >= coll.n_rows ? offset : std::min(coll.n_rows, offset + limit);
+    std::vector<Row> rows;
+    rows.reserve(end - offset);
+    for (uint32_t i = offset; i < end; i++)
+        rows.push_back(Row{static_cast<int64_t>(i) + 1, "/fake/" + std::to_string(i) + ".jpg",
+                           fake::sha(i), std::to_string(i) + ".jpg"});
+    return rows;
+}
+
+ThumbLocation thumb_lookup(Collection& coll, std::string_view sha256, int size) noexcept {
+    if (!is_hex64(sha256) || size <= 0) return {};
+    std::filesystem::path p = thumb_path(coll, sha256, size);
+    std::error_code ec;
+    const ThumbLookup state =
+        std::filesystem::exists(p, ec) ? ThumbLookup::Present : ThumbLookup::Absent;
+    return {state, p.string()};
+}
+
+ThumbGenerate thumb_generate(Collection& coll, int64_t image_id, int size) noexcept {
+    if (size <= 0) return ThumbGenerate::Failed;
+    if (image_id < 1 || image_id > static_cast<int64_t>(coll.n_rows))
+        return ThumbGenerate::NoSuchRow;
+    {
+        std::unique_lock lock(coll.hold_mutex);
+        coll.hold_cv.wait(lock, [&coll] { return !coll.hold; });
+    }
+    std::filesystem::path p =
+        thumb_path(coll, fake::sha(static_cast<uint32_t>(image_id - 1)), size);
+    std::error_code ec;
+    if (std::filesystem::exists(p, ec)) return ThumbGenerate::Ok;
+    std::filesystem::create_directories(p.parent_path(), ec);
+    if (!write_png(p, kThumbEdge, kThumbEdge)) return ThumbGenerate::Failed;
+    coll.generate_count++;
+    return ThumbGenerate::Ok;
+}
+
+namespace fake {
+
+CollectionPtr make(uint32_t n_rows) {
+    CollectionPtr coll(new Collection());
     coll->n_rows = n_rows;
     char* dir = g_dir_make_tmp("phig-gtk-fake-XXXXXX", nullptr);
     g_assert_nonnull(dir);
@@ -72,72 +111,24 @@ PhigCollection* fake_collection_new(guint n_rows) {
     return coll;
 }
 
-void fake_collection_sha(guint index, char out[65]) { g_snprintf(out, 65, "%064x", index); }
-
-void fake_collection_fail_pages(PhigCollection* coll, gboolean fail) {
-    coll->fail_pages = fail != FALSE;
+std::string sha(uint32_t index) {
+    char out[65];
+    g_snprintf(out, sizeof out, "%064x", index);
+    return out;
 }
 
-guint fake_collection_generate_count(PhigCollection* coll) { return coll->generate_count.load(); }
+void fail_pages(Collection& coll, bool fail) { coll.fail_pages = fail; }
 
-void fake_collection_hold_generation(PhigCollection* coll, gboolean hold) {
+uint32_t generate_count(Collection& coll) { return coll.generate_count.load(); }
+
+void hold_generation(Collection& coll, bool hold) {
     {
-        std::lock_guard lock(coll->hold_mutex);
-        coll->hold = hold != FALSE;
+        std::lock_guard lock(coll.hold_mutex);
+        coll.hold = hold;
     }
-    coll->hold_cv.notify_all();
+    coll.hold_cv.notify_all();
 }
 
-void phig_collection_close(PhigCollection* coll) {
-    if (coll == nullptr) return;
-    std::error_code ec;
-    std::filesystem::remove_all(coll->thumb_dir, ec);
-    delete coll;
-}
+}  // namespace fake
 
-gboolean phig_collection_count(PhigCollection* coll, guint* out) {
-    *out = coll->n_rows;
-    return TRUE;
-}
-
-PhigRowPage* phig_collection_page(PhigCollection* coll, guint offset, guint limit) {
-    if (coll->fail_pages.load()) return nullptr;
-    guint end = offset >= coll->n_rows ? offset : std::min(coll->n_rows, offset + limit);
-    PhigRowPage* page = phig_row_page_new(end - offset);
-    for (guint i = offset; i < end; i++) {
-        PhigRowData* row = &page->rows[i - offset];
-        row->id = static_cast<int64_t>(i) + 1;
-        row->path = g_strdup_printf("/fake/%u.jpg", i);
-        row->filename = g_strdup_printf("%u.jpg", i);
-        row->sha256 = g_strdup(sha_of(i).c_str());
-    }
-    return page;
-}
-
-PhigThumbLookup phig_collection_thumb_lookup(PhigCollection* coll, const char* sha256, int size,
-                                             char** path) {
-    *path = nullptr;
-    if (!is_hex64(sha256) || size <= 0) return PHIG_THUMB_ERROR;
-    std::filesystem::path p = thumb_path(*coll, sha256, size);
-    *path = g_strdup(p.c_str());
-    std::error_code ec;
-    return std::filesystem::exists(p, ec) ? PHIG_THUMB_PRESENT : PHIG_THUMB_ABSENT;
-}
-
-gboolean phig_collection_thumb_generate(PhigCollection* coll, int64_t image_id, int size) {
-    if (image_id < 1 || image_id > static_cast<int64_t>(coll->n_rows) || size <= 0) return FALSE;
-    {
-        std::unique_lock lock(coll->hold_mutex);
-        coll->hold_cv.wait(lock, [coll] { return !coll->hold; });
-    }
-    std::string sha = sha_of(static_cast<guint>(image_id - 1));
-    std::filesystem::path p = thumb_path(*coll, sha.c_str(), size);
-    std::error_code ec;
-    if (std::filesystem::exists(p, ec)) return TRUE;
-    std::filesystem::create_directories(p.parent_path(), ec);
-    if (!write_png(p, kThumbEdge, kThumbEdge)) return FALSE;
-    coll->generate_count++;
-    return TRUE;
-}
-
-}  // extern "C"
+}  // namespace phig::gtk

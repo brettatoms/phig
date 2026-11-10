@@ -42,7 +42,7 @@ struct ThumbLoader;
 
 // Caller keeps ownership of coll and must not close it before calling
 // thumb_loader_shutdown: workers call into it from their own threads.
-std::shared_ptr<ThumbLoader> thumb_loader_new(PhigCollection* coll, guint n_threads,
+std::shared_ptr<ThumbLoader> thumb_loader_new(phig::gtk::Collection& coll, guint n_threads,
                                               gsize cache_bytes);
 
 // Stops and joins every worker, then destroys every queued request and every

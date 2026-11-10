@@ -11,8 +11,7 @@ set(PHIG_GTK_WARNINGS -Wall -Wextra)
 
 pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk4 libadwaita-1)
 
-add_executable(phig-gtk src/main.cpp src/gallery-model.cpp src/thumb-loader.cpp src/collection.cpp
-               src/row-page.cpp)
+add_executable(phig-gtk src/main.cpp src/gallery-model.cpp src/thumb-loader.cpp src/collection.cpp)
 target_compile_options(phig-gtk PRIVATE ${PHIG_GTK_WARNINGS})
 target_link_libraries(phig-gtk PRIVATE phig-core PkgConfig::GTK)
 
@@ -34,14 +33,14 @@ endfunction()
 
 # Linked against tests/fake-collection.cpp in place of src/collection.cpp, so
 # it needs no collection and no phig-core.
-phig_gtk_test(gallery-model tests/test-gallery-model.cpp src/gallery-model.cpp src/row-page.cpp
+phig_gtk_test(gallery-model tests/test-gallery-model.cpp src/gallery-model.cpp
               tests/fake-collection.cpp)
 
-phig_gtk_test(thumb-loader tests/test-thumb-loader.cpp src/thumb-loader.cpp src/row-page.cpp
+phig_gtk_test(thumb-loader tests/test-thumb-loader.cpp src/thumb-loader.cpp
               tests/fake-collection.cpp)
 
 # Tests collection.cpp itself, against a database it builds, so unlike the
 # other gtk tests it links phig-core.
-phig_gtk_test(collection tests/test-collection.cpp src/collection.cpp src/row-page.cpp)
+phig_gtk_test(collection tests/test-collection.cpp src/collection.cpp)
 target_link_libraries(test-collection PRIVATE phig-core)
 target_compile_definitions(test-collection PRIVATE PHIG_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
