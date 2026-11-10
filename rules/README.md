@@ -120,7 +120,10 @@ goes into exactly one of three buckets:
   something a person invokes through a command, an ABI call, or (later) a
   URL.
 - **`core_internal`** — the name mutates real data but is the *inside* of
-  an operation already declared, with no caller outside `core/`. A rule
+  an operation already declared. Its callers are in `core/`, or are thin
+  surfaces that reach the operation through it: `ensure_thumb` is called by
+  libphig's `phig_thumb_generate` and by gtk's collection seam, and is
+  still `thumbs.rebuild`'s inside, not an operation of its own. A rule
   that lives in such a function anchors its `enforced_at` there and binds
   the operation that covers it, rather than the internal function itself.
   `rules/conflict.toml`'s R01 is the worked example: it anchors at

@@ -615,6 +615,10 @@ static void on_factory_bind(PhigApp* app, GtkListItem* item) noexcept {
         gtk_widget_remove_css_class(picture, "phig-thumb-failed");
         return;
     }
+    /* startup_done creates the loader before it attaches the model, so this
+     * only guards a later reordering. */
+    if (!app->loader)
+        return;
 
     GCancellable* cancellable = g_cancellable_new();
     g_object_set_data_full(G_OBJECT(item), "phig-cancellable", cancellable, g_object_unref);
@@ -759,7 +763,15 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
     /* Cleared on destroy, so startup_done can tell the window closed while the
      * catalog was opening. */
     phig::gtk::connect<void(GtkWidget*)>(app->window, "destroy",
-                                         [app](GtkWidget*) noexcept { app->window = nullptr; });
+                                         [app](GtkWidget*) noexcept {
+                                             app->window = nullptr;
+                                             /* The held application keeps the loop running, and the
+                                              * idle reads the scroller that dies with the window. */
+                                             if (app->relayout_id != 0) {
+                                                 g_source_remove(app->relayout_id);
+                                                 app->relayout_id = 0;
+                                             }
+                                         });
     gtk_window_set_title(GTK_WINDOW(app->window), "phig");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 1100, 750);
 
@@ -839,6 +851,9 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
     gtk_window_present(GTK_WINDOW(app->window));
 
     if (app->opening) return;  // startup_done fills this window
+    /* The catalog is already open; a second open would replace coll under the
+     * loader. */
+    if (app->coll) return;
 
     /* Empty when no catalog was named and the default could not be resolved:
      * opening "" would resolve to a path at the filesystem root. */
