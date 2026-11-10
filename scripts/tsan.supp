@@ -31,6 +31,18 @@ deadlock:CPLAcquireMutex
 called_from_lib:libavcodec.so
 called_from_lib:libavutil.so
 
+# libswscale, the third FFmpeg library on that path, through OpenCV's FFmpeg
+# backend, which owns the SwsContext. The two lines above make this one
+# necessary. OpenCV 5 gives the SwsContext a thread per CPU, so FFmpeg runs each
+# scaling pass on a slicethread. avpriv_slicethread_execute (libavutil) locks,
+# waits on and unlocks done_mutex on one thread, but the unlock is compiled as a
+# tail call, so its return address is libswscale's. TSan ignores the lock
+# (called from libavutil), records the unlock, and reports "unlock of an
+# unlocked mutex". Measured on FFmpeg 9.0.2 / OpenCV 5.0: 106 reports across the
+# video keyframe tests, 0 with this line. libswscale calls no pthread_mutex_*
+# itself and never calls back into phig.
+called_from_lib:libswscale.so
+
 # oneTBB, OpenCV's parallel framework on Linux, reached from any decode or
 # imgproc call. TBB frees its global process affinity mask when its last
 # reference goes (__TBB_InitOnce::remove_ref, misc_ex.cpp) while a thread waking
@@ -63,3 +75,23 @@ called_from_lib:libtbbmalloc.so
 # HasherTest.DecodeWarningNotMisattributedAcrossThreads under TSan against
 # LibRaw 0.22.2 reproduced nothing. phig needs no lock around RAW decode.
 race:LibRaw::get_timestamp
+
+# OpenCV DNN, reached from face detection and recognition (core/faces.cpp). Its
+# parallel_for_ bodies (repackDepthwiseConvWeights, resizeNearest,
+# transformLayoutInterleave_32u) run on TBB workers and memset or memcpy buffers
+# the calling thread allocated; TBB's spawn and wait order the two, inside
+# libtbb, where TSan cannot see it. Measured: every one of 22 reports had a TBB
+# worker on one side, and forcing parallel_for_ serial (cv::setNumThreads(0))
+# removed all of them. phig code never runs inside DNN, so its own accesses are
+# still checked; what is lost is a DNN read racing a phig write to the same Mat.
+called_from_lib:libopencv_dnn.so
+
+# OpenCV imgcodecs' codec registry, reached from generate_thumb through
+# cv::imwrite. getCodecs() is a function-local static. The first thread
+# constructs it under __cxa_guard_acquire, which TSan models; every later thread
+# takes the inline fast path, a plain load of the guard byte compiled into the
+# uninstrumented library, so TSan records no acquire and reports the next
+# thread's copy of BmpEncoder's description string. Measured: 6 of 30 runs of
+# ThumbsEngineRun.GeneratesOneThumbnailPerSelectedImage. Function-name rules do
+# not match: TSan resolves no symbols in a stripped libopencv.
+called_from_lib:libopencv_imgcodecs.so

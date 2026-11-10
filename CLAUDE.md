@@ -160,6 +160,17 @@ internal reference counting reads as a race on TBB's own memory. That is
 suppressed by library in `scripts/tsan.supp`, which the CI job passes; pass
 it locally with `TSAN_OPTIONS=suppressions=$PWD/scripts/tsan.supp`.
 
+On glibc 2.44 or later, also exclude
+`JpegDecode.GarbageFailsWithAnEmptyImageAndAMessage`, the one test that reaches
+libjpeg's `error_exit` and longjmps. glibc 2.44 mangles the stack pointer that
+`setjmp` saves with the global `__pointer_chk_guard`, while TSan through clang
+23.1 and GCC 16 still demangles it with the TCB slot at `%fs:0x30`, which 2.44
+leaves at zero. The longjmp interceptor then finds no buffer and aborts with
+`ThreadSanitizer: can't find longjmp buf`. A six-line setjmp/longjmp program
+fails the same way, so phig's code is not at fault. Both ubuntu CI legs have an
+older glibc and run the test. Drop the exclusion once a minimal setjmp/longjmp
+program passes under the local TSan runtime.
+
 ### Real-run checks
 
 ```bash
