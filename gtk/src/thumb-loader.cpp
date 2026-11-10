@@ -144,8 +144,12 @@ struct Delivery {
 
 gboolean deliver(gpointer data) noexcept {
     auto& delivery = *static_cast<Delivery*>(data);
-    if (!delivery.req) return G_SOURCE_REMOVE;
-    ThumbRequest& req = *delivery.req;
+    // The request moves out so it is destroyed when this returns, after the
+    // callback: a callback that calls thumb_loader_shutdown does not free
+    // itself while it runs.
+    std::unique_ptr<ThumbRequest> owned = std::move(delivery.req);
+    if (!owned) return G_SOURCE_REMOVE;
+    ThumbRequest& req = *owned;
     if (delivery.loader->stopped.load() || is_cancelled(req)) return G_SOURCE_REMOVE;
 
     if (req.result == THUMB_OK) {

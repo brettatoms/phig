@@ -103,6 +103,19 @@ void test_each_connection_owns_its_own_captures() {
     g_object_unref(emitter);
 }
 
+void test_an_invalid_signal_name_returns_zero_and_destroys_the_captures() {
+    TestEmitter* emitter = new_emitter();
+    int destroyed = 0;
+    g_test_expect_message("GLib-GObject", G_LOG_LEVEL_CRITICAL, "*is invalid for instance*");
+    gulong id = phig::gtk::connect<int(TestEmitter*, int)>(
+        emitter, "no-such-signal",
+        [probe = Probe(destroyed)](TestEmitter*, int) noexcept { return 0; });
+    g_test_assert_expected_messages();
+    g_assert_cmpuint(id, ==, 0);
+    g_assert_cmpint(destroyed, ==, 1);
+    g_object_unref(emitter);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -115,5 +128,7 @@ int main(int argc, char** argv) {
                     test_finalizing_the_instance_destroys_the_captures);
     g_test_add_func("/connect/each-connection-owns-its-own-captures",
                     test_each_connection_owns_its_own_captures);
+    g_test_add_func("/connect/an-invalid-signal-name-returns-zero-and-destroys-the-captures",
+                    test_an_invalid_signal_name_returns_zero_and_destroys_the_captures);
     return g_test_run();
 }

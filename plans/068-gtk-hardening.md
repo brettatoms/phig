@@ -294,10 +294,14 @@ Shipped on branch `068-gtk-hardening`; execution plan
   transitively in C++23 mode; macOS failed to build without it.
 - The window's destroy handler cancels a pending relayout, and a second
   activation after the catalog is open does not start another open.
-- CI run 42727497103 at `1dd552b` (full set, including macOS and the
-  sanitizers): macOS, gtk, ASan+UBSan, ubuntu-26.04 and lint passed;
-  ubuntu-latest was still running when this was written. TSan failed in
-  OpenCV code paths (hasher and thumbnail tests) with race reports inside
-  libtbb's own threads. The same report reproduces locally on the branch base
-  at C++20, so it is a pre-existing false positive from uninstrumented TBB. It
-  is not fixed here and stays open.
+- CI run 42727497103 ran the full set at `1dd552b`, Task 1's fix round; Tasks
+  6-9 have not been through CI. macOS, gtk, ASan+UBSan, ubuntu-26.04 and lint
+  passed. TSan failed in OpenCV code paths with race reports inside libtbb's
+  own threads; they reproduce locally on the branch base at C++20, so they
+  predate this plan.
+- ubuntu-latest hung in
+  `DecodeStderr.AnotherThreadsStderrIsNotHiddenDuringANonJpegDecode`, a plan
+  069 test on master, and the run was cancelled. `tests/capture_fd2.h` reads
+  its pipe only after the captured function returns, while the test's decoder
+  thread writes libpng warnings to fd 2 in a loop, so a full pipe blocks both
+  writers. Both failures are outside this plan and open.

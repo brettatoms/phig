@@ -144,7 +144,7 @@ struct _PhigGalleryModel {
     Impl impl;  // constructed in phig_gallery_model_init, destroyed in finalize
 };
 
-static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface);
+static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface) noexcept;
 
 G_DEFINE_FINAL_TYPE_WITH_CODE(PhigGalleryModel, phig_gallery_model, G_TYPE_OBJECT,
                               G_IMPLEMENT_INTERFACE(G_TYPE_LIST_MODEL,
@@ -329,7 +329,7 @@ gpointer get_item(GListModel* list, guint position) noexcept {
 
 }  // namespace
 
-static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface) {
+static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface) noexcept {
     iface->get_item_type = get_item_type;
     iface->get_n_items = get_n_items;
     iface->get_item = get_item;

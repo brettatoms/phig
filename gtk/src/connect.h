@@ -37,7 +37,8 @@ struct Trampoline<R(Args...)> {
 // against the signal, so it must match the signal's documentation.
 //
 // f moves to the heap and is destroyed when the handler is disconnected or the
-// instance is finalized, so it may own its captures. f must be noexcept: no
+// instance is finalized, so it may own its captures. An invalid signal name
+// returns 0 and f is destroyed before connect returns. f must be noexcept: no
 // exception may unwind into GLib, and the static_assert makes that a compile
 // error rather than a review item.
 //
@@ -48,8 +49,11 @@ gulong connect(gpointer instance, const char* signal, F f) {
     using T = detail::Trampoline<Sig>;
     static_assert(T::template nothrow<F>, "a signal handler must be noexcept");
     auto* owned = new F(std::move(f));
-    return g_signal_connect_data(instance, signal, G_CALLBACK(&T::template call<F>), owned,
-                                 &T::template destroy<F>, GConnectFlags{});
+    const gulong id = g_signal_connect_data(instance, signal, G_CALLBACK(&T::template call<F>),
+                                            owned, &T::template destroy<F>, GConnectFlags{});
+    // An invalid signal name returns 0 without calling the destroy notify.
+    if (id == 0) delete owned;
+    return id;
 }
 
 }  // namespace phig::gtk

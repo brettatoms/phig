@@ -35,10 +35,10 @@ The client's argument is a catalog directory. Without one it uses
 - **Never authorize a removal with `cmd_rm`'s `ConfirmFn`.** A destructive
   operation is authorized by a plan the caller inspects and then applies
   (R66). The Remove screen waits for that plan/apply pair in `core/`.
-- **C++ throughout, against GTK's C API.** No C
-  files. `gtk/` may use `std::expected` and `std::move_only_function`; see
-  root `CLAUDE.md` for why the rest of the tree may not. Not gtkmm: its libadwaita support lags the widgets
-  the client is built on. Prefer C++ types to GLib's where GTK does not
+- **C++ throughout, against GTK's C API.** No C files. `gtk/` may use
+  `std::expected` and `std::move_only_function`; see root `CLAUDE.md` for why
+  the rest of the tree may not. Not gtkmm: its libadwaita support lags the
+  widgets the client is built on. Prefer C++ types to GLib's where GTK does not
   require GLib's: `std::string` over `char*`, standard containers over
   `GHashTable`.
 - **GObjects only where GTK requires one.** `PhigImageRow` and
@@ -56,10 +56,12 @@ The client's argument is a catalog directory. Without one it uses
   main thread, whether or not it ran, so it may hold the last reference to a
   GTK object. Capture what the result needs in it, such as a `GRef` to the list
   item.
-- **Background work owns its inputs.** A worker thread reads only what it was
-  handed by value, never `PhigApp`: the window can close, and `main` free
-  `PhigApp`, while it runs. `open_in_background` (`src/startup.h`) is the
-  pattern. The application is held until startup finishes, and
+- **Background work never reads `PhigApp`.** The window can close, and `main`
+  frees `PhigApp`, while a worker runs. Startup's worker gets its input by
+  value (`open_in_background`, `src/startup.h`). The loader's and the model's
+  workers borrow `coll`, which `thumb_loader_shutdown` and the model's dispose
+  (which waits for a fetch in progress) keep alive; `~PhigApp` relies on both
+  before it closes `coll`. The application is held until startup finishes, and
   `startup_done` checks `app->window` before touching any widget.
 - **`ThumbLoader` and `max_dim`:** `max_dim` is the largest edge in **physical**
   pixels — cell size times `gtk_widget_get_scale_factor`. The worker decodes to

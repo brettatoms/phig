@@ -108,7 +108,9 @@ void test_a_thumbnail_is_generated_on_demand() {
     g_assert_true(found.state == phig::gtk::ThumbLookup::Absent);
     g_assert_true(g_str_has_prefix(found.path.c_str(), f.dir.c_str()));
 
-    const int64_t id = phig::gtk::page(*coll, 0, 1)->front().id;
+    auto first = phig::gtk::page(*coll, 0, 1);
+    g_assert_true(first.has_value() && !first->empty());
+    const int64_t id = first->front().id;
     g_assert_true(phig::gtk::thumb_generate(*coll, id, 256) == phig::gtk::ThumbGenerate::Ok);
 
     found = phig::gtk::thumb_lookup(*coll, sha, 256);
@@ -120,7 +122,9 @@ void test_a_thumbnail_is_generated_on_demand() {
 void test_generation_names_a_missing_source_and_an_unknown_id() {
     Fixture f;
     phig::gtk::CollectionPtr coll = f.open();
-    const int64_t missing = phig::gtk::page(*coll, 2, 1)->front().id;  // /nowhere/a.jpg
+    auto third = phig::gtk::page(*coll, 2, 1);
+    g_assert_true(third.has_value() && !third->empty());
+    const int64_t missing = third->front().id;  // /nowhere/a.jpg
     g_assert_true(phig::gtk::thumb_generate(*coll, missing, 256) ==
                   phig::gtk::ThumbGenerate::SourceMissing);
     g_assert_true(phig::gtk::thumb_generate(*coll, 999999, 256) ==

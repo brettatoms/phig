@@ -33,9 +33,10 @@ using ThumbCallback = std::move_only_function<void(ThumbResult, GdkTexture*) noe
 // byte-bounded LRU cache of textures.
 //
 // n_threads workers pull requests off the queue, look up or generate the file,
-// and load it off the main thread. Every request goes back to the main thread
-// through an idle source, delivered or not, and each idle holds a reference to
-// the loader, so the loader outlives every delivery it has posted. cache_bytes
+// and load it off the main thread. Every request a worker takes goes back to
+// the main thread through an idle source, delivered or not, and each idle holds
+// a reference to the loader, so the loader outlives every delivery it has
+// posted. Requests are destroyed on the main thread. cache_bytes
 // bounds the texture cache, charged at width * height * 4 per texture; the
 // least recently used entry is evicted until the total fits.
 struct ThumbLoader;
