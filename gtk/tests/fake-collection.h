@@ -29,4 +29,10 @@ uint32_t generate_count(Collection& coll);
 // While hold is set, thumb_generate waits before generating.
 void hold_generation(Collection& coll, bool hold);
 
+// While hold is set, page waits before returning.
+void hold_pages(Collection& coll, bool hold);
+
+// How many page calls are inside page right now.
+uint32_t pages_in_progress(Collection& coll);
+
 }  // namespace phig::gtk::fake

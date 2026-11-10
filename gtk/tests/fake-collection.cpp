@@ -19,6 +19,10 @@ struct Collection {
     std::mutex hold_mutex;
     std::condition_variable hold_cv;
     bool hold = false;  // guarded by hold_mutex
+    std::mutex page_hold_mutex;
+    std::condition_variable page_hold_cv;
+    bool hold_pages = false;  // guarded by page_hold_mutex
+    std::atomic<uint32_t> pages_in_progress{0};
 };
 
 void CollectionClose::operator()(Collection* coll) const noexcept {
@@ -62,6 +66,15 @@ std::expected<uint32_t, std::string> count(Collection& coll) noexcept { return c
 
 std::expected<std::vector<Row>, std::string> page(Collection& coll, uint32_t offset,
                                                   uint32_t limit) noexcept {
+    coll.pages_in_progress++;
+    {
+        std::unique_lock lock(coll.page_hold_mutex);
+        coll.page_hold_cv.wait(lock, [&coll] { return !coll.hold_pages; });
+    }
+    struct Leave {
+        Collection& coll;
+        ~Leave() { coll.pages_in_progress--; }
+    } leave{coll};
     if (coll.fail_pages.load()) return std::unexpected(std::string(fake::kPageError));
     const uint32_t end = offset >= coll.n_rows ? offset : std::min(coll.n_rows, offset + limit);
     std::vector<Row> rows;
@@ -128,6 +141,16 @@ void hold_generation(Collection& coll, bool hold) {
     }
     coll.hold_cv.notify_all();
 }
+
+void hold_pages(Collection& coll, bool hold) {
+    {
+        std::lock_guard lock(coll.page_hold_mutex);
+        coll.hold_pages = hold;
+    }
+    coll.page_hold_cv.notify_all();
+}
+
+uint32_t pages_in_progress(Collection& coll) { return coll.pages_in_progress.load(); }
 
 }  // namespace fake
 

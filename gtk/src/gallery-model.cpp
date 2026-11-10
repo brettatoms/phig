@@ -4,6 +4,7 @@
 #include <expected>
 #include <iterator>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
@@ -107,8 +108,22 @@ struct Placeholder {
     std::list<guint>::iterator lru;  // this entry's node in Impl::placeholder_lru
 };
 
-struct Impl {
+// State shared by the model and every fetch task, so a worker needs no
+// reference to the model. dispose sets disposed and waits for in_flight to reach
+// zero, which is what makes the header's "caller must not close coll while any
+// reference to the model is outstanding" contract true: the caller's final unref
+// does not return while a worker is inside phig::gtk::page, and no worker enters
+// once it has.
+struct FetchShared {
     phig::gtk::Collection* coll = nullptr;  // borrowed; see phig_gallery_model_new
+    std::mutex mutex;
+    std::condition_variable cv;
+    guint in_flight = 0;    // workers inside phig::gtk::page; guarded by mutex
+    bool disposed = false;  // guarded by mutex
+};
+
+struct Impl {
+    std::shared_ptr<FetchShared> shared = std::make_shared<FetchShared>();
     guint total = 0;
 
     std::unordered_map<guint, Page> pages;  // by page index
@@ -120,17 +135,6 @@ struct Impl {
     // it touches. A position's entry is also dropped once its page lands.
     std::unordered_map<guint, Placeholder> placeholders;  // by position
     std::list<guint> placeholder_lru;                     // front = least recently used
-
-    // coll is borrowed from the caller, not owned, so pinning the model alive
-    // (the GWeakRef in FetchTask) does not keep coll alive. in_flight counts
-    // worker threads between resolving that weak ref and dropping it, that is,
-    // inside phig::gtk::page. dispose blocks until it reaches zero, which is
-    // what makes the header's "caller must not close coll while any reference
-    // to the model is outstanding" contract true: the caller's final unref does
-    // not return while a worker still uses it.
-    std::mutex in_flight_mutex;
-    std::condition_variable in_flight_cv;
-    guint in_flight = 0;  // guarded by in_flight_mutex
 };
 
 }  // namespace
@@ -223,53 +227,38 @@ void install_page(PhigGalleryModel* self, guint page_index, std::vector<phig::gt
 /* GTask state for the async fetch. model is a weak reference, not a strong
  * one: a GTask only releases its task data once its completion callback has
  * been dispatched, which needs a main-loop iteration that a caller destroying
- * the model synchronously (as the sync test helper's caller does, and as app
- * shutdown may do) never provides. A strong ref here would keep the model, and
- * the collection it points at, alive past when the caller expects to free them.
- * Each thread-side use resolves a temporary strong ref and drops it right
- * after, so the model cannot be finalized under a call in progress, but an
- * idle callback that never runs cannot pin it forever either. */
+ * the model synchronously never provides. A strong ref here would keep the model
+ * alive past when the caller expects to free it. Only fetch_done, on the main
+ * thread, resolves it. The worker uses shared, never the model. */
 struct FetchTask {
     GWeakRef model;
+    std::shared_ptr<FetchShared> shared;
     guint page_index = 0;
-    // Set on the worker thread. Empty if the model was gone before the fetch ran.
+    // Set on the worker thread. Empty if the model was disposed before the fetch ran.
     std::optional<std::expected<std::vector<phig::gtk::Row>, std::string>> fetched;
 };
-
-// Registers as in-flight, then returns a strong ref, or null if the model is
-// gone. While this returns non-null, dispose blocks until leave_in_flight.
-PhigGalleryModel* enter_in_flight(FetchTask& task) {
-    auto* self = static_cast<PhigGalleryModel*>(g_weak_ref_get(&task.model));
-    if (self == nullptr) return nullptr;
-    std::lock_guard lock(self->impl.in_flight_mutex);
-    self->impl.in_flight++;
-    return self;
-}
-
-// The notify happens while self still holds its strong ref, so dispose cannot
-// finish, and finalize destroy the condition variable, before it returns.
-void leave_in_flight(PhigGalleryModel* self) {
-    {
-        std::lock_guard lock(self->impl.in_flight_mutex);
-        self->impl.in_flight--;
-    }
-    self->impl.in_flight_cv.notify_all();
-    g_object_unref(self);
-}
 
 void fetch_thread(GTask* task, gpointer source_object, gpointer task_data,
                   GCancellable* cancellable) noexcept {
     (void)source_object;
     (void)cancellable;
     auto& data = *static_cast<FetchTask*>(task_data);
-    PhigGalleryModel* self = enter_in_flight(data);
-    if (self == nullptr) {
-        g_task_return_boolean(task, FALSE);
-        return;
+    FetchShared& shared = *data.shared;
+    {
+        std::lock_guard lock(shared.mutex);
+        if (shared.disposed) {
+            g_task_return_boolean(task, FALSE);
+            return;
+        }
+        shared.in_flight++;
     }
     data.fetched.emplace(
-        phig::gtk::page(*self->impl.coll, data.page_index * PHIG_PAGE_SIZE, PHIG_PAGE_SIZE));
-    leave_in_flight(self);
+        phig::gtk::page(*shared.coll, data.page_index * PHIG_PAGE_SIZE, PHIG_PAGE_SIZE));
+    {
+        std::lock_guard lock(shared.mutex);
+        shared.in_flight--;
+    }
+    shared.cv.notify_all();
     g_task_return_boolean(task, TRUE);
 }
 
@@ -297,6 +286,7 @@ void schedule_fetch(PhigGalleryModel* self, guint page_index) {
 
     auto* data = new FetchTask{};
     g_weak_ref_init(&data->model, self);
+    data->shared = self->impl.shared;
     data->page_index = page_index;
 
     /* No source_object: a GTask refs its source_object for the task's own
@@ -347,12 +337,13 @@ static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface)
 
 /* The caller may close coll as soon as its last reference to this model is
  * released, so dispose must not return while a worker is still inside
- * phig::gtk::page. */
+ * phig::gtk::page. It runs on the thread that dropped the last reference. */
 static void phig_gallery_model_dispose(GObject* obj) noexcept {
-    Impl& impl = PHIG_GALLERY_MODEL(obj)->impl;
+    FetchShared& shared = *PHIG_GALLERY_MODEL(obj)->impl.shared;
     {
-        std::unique_lock lock(impl.in_flight_mutex);
-        impl.in_flight_cv.wait(lock, [&impl] { return impl.in_flight == 0; });
+        std::unique_lock lock(shared.mutex);
+        shared.disposed = true;
+        shared.cv.wait(lock, [&shared] { return shared.in_flight == 0; });
     }
     G_OBJECT_CLASS(phig_gallery_model_parent_class)->dispose(obj);
 }
@@ -375,7 +366,7 @@ static void phig_gallery_model_init(PhigGalleryModel* self) { new (&self->impl) 
 
 PhigGalleryModel* phig_gallery_model_new(phig::gtk::Collection& coll) {
     auto* self = PHIG_GALLERY_MODEL(g_object_new(PHIG_TYPE_GALLERY_MODEL, nullptr));
-    self->impl.coll = &coll;
+    self->impl.shared->coll = &coll;
     if (auto total = phig::gtk::count(coll))
         self->impl.total = *total;
     else
@@ -384,7 +375,8 @@ PhigGalleryModel* phig_gallery_model_new(phig::gtk::Collection& coll) {
 }
 
 void phig_gallery_model_fetch_page_sync(PhigGalleryModel* self, guint page_index) {
-    auto rows = phig::gtk::page(*self->impl.coll, page_index * PHIG_PAGE_SIZE, PHIG_PAGE_SIZE);
+    auto rows =
+        phig::gtk::page(*self->impl.shared->coll, page_index * PHIG_PAGE_SIZE, PHIG_PAGE_SIZE);
     if (rows) install_page(self, page_index, std::move(*rows));
 }
 

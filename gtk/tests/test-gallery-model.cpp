@@ -1,6 +1,8 @@
 #include <glib.h>
 
+#include <chrono>
 #include <string>
+#include <thread>
 
 #include "connect.h"
 #include "fake-collection.h"
@@ -202,6 +204,27 @@ static void test_failed_fetch_emits_page_fetch_failed(Fixture* f, gconstpointer 
     g_assert_cmpuint(phig_gallery_model_resident_page_count(f->model), ==, 0);
 }
 
+/* The caller's last unref must not return while a worker is inside page: the
+ * caller closes the collection right after. */
+static void test_final_unref_waits_for_a_fetch_in_progress(Fixture* f, gconstpointer unused) {
+    (void)unused;
+    phig::gtk::fake::hold_pages(*f->coll, true);
+    g_object_unref(g_list_model_get_item(G_LIST_MODEL(f->model), 0));
+
+    gint64 deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+    while (phig::gtk::fake::pages_in_progress(*f->coll) != 1 && g_get_monotonic_time() < deadline)
+        g_usleep(1000);
+    g_assert_cmpuint(phig::gtk::fake::pages_in_progress(*f->coll), ==, 1);
+
+    std::thread releaser([f] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        phig::gtk::fake::hold_pages(*f->coll, false);
+    });
+    g_clear_object(&f->model);
+    g_assert_cmpuint(phig::gtk::fake::pages_in_progress(*f->coll), ==, 0);
+    releaser.join();
+}
+
 int main(int argc, char** argv) {
     g_test_init(&argc, &argv, NULL);
 #define T(name, fn) \
@@ -216,6 +239,7 @@ int main(int argc, char** argv) {
     T("placeholders-unique-per-position", test_placeholders_are_unique_per_position);
     T("async-fetch-emits-items-changed", test_async_fetch_emits_items_changed);
     T("failed-fetch-emits-page-fetch-failed", test_failed_fetch_emits_page_fetch_failed);
+    T("final-unref-waits-for-a-fetch-in-progress", test_final_unref_waits_for_a_fetch_in_progress);
 #undef T
     return g_test_run();
 }
