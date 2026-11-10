@@ -112,6 +112,31 @@ ThumbGenerate thumb_generate(Collection& coll, int64_t image_id, int size) noexc
     return ThumbGenerate::Ok;
 }
 
+namespace {
+
+std::mutex open_mutex;
+std::condition_variable open_cv;
+bool open_held = false;  // guarded by open_mutex
+std::string open_last;   // guarded by open_mutex
+
+}  // namespace
+
+std::expected<CollectionPtr, std::string> open(const std::string& catalog_dir) noexcept {
+    std::unique_lock lock(open_mutex);
+    open_cv.wait(lock, [] { return !open_held; });
+    // Read only after the hold, so a caller that passed a reference to storage
+    // it then freed is caught under ASan.
+    open_last = catalog_dir;
+    if (open_last == fake::kMissingCatalog)
+        return std::unexpected("fake: no catalog at " + open_last);
+    lock.unlock();
+    return fake::make(3);
+}
+
+std::expected<std::string, std::string> default_catalog() noexcept {
+    return std::string("/fake/default");
+}
+
 namespace fake {
 
 CollectionPtr make(uint32_t n_rows) {
@@ -140,6 +165,19 @@ void hold_generation(Collection& coll, bool hold) {
         coll.hold = hold;
     }
     coll.hold_cv.notify_all();
+}
+
+void hold_open(bool hold) {
+    {
+        std::lock_guard lock(open_mutex);
+        open_held = hold;
+    }
+    open_cv.notify_all();
+}
+
+std::string last_opened() {
+    std::lock_guard lock(open_mutex);
+    return open_last;
 }
 
 void hold_pages(Collection& coll, bool hold) {

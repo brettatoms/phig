@@ -11,6 +11,7 @@
 #include "collection.h"
 #include "connect.h"
 #include "gref.h"
+#include "startup.h"
 #include "thumb-loader.h"
 
 /* Grid zoom. The grid always divides the viewport width exactly — cell size is
@@ -107,6 +108,10 @@ struct PhigApp {
 
     guint thumb_failed_count = 0;
     bool page_fetch_toast_shown = false;  // one toast per session, not one per failed page
+    // An open is running. A second activation then builds a window and leaves
+    // startup_done to fill it, rather than starting a second open whose result
+    // would replace coll under the first's loader.
+    bool opening = false;
 
     gint64 startup_start_us = 0;  // g_get_monotonic_time() at process start, for PHIG_MEASURE
 
@@ -291,30 +296,6 @@ static void on_launched(GObject* source, GAsyncResult* result, gpointer user_dat
     }
 
     g_object_unref(launcher);
-}
-
-// Handed from the startup worker to startup_done. coll is moved onto app on
-// success, and closes with this struct otherwise.
-struct StartupResult {
-    PhigApp* app = nullptr;  // borrowed; app outlives the task
-    phig::gtk::CollectionPtr coll;
-};
-
-// The collection's reason comes back as the task's error.
-static void startup_thread_func(GTask* task, gpointer source_object, gpointer task_data,
-                                 GCancellable* cancellable) noexcept {
-    (void)source_object;
-    (void)cancellable;
-    auto* result = static_cast<StartupResult*>(task_data);
-
-    auto opened = phig::gtk::open(result->app->catalog_dir);
-    if (!opened) {
-        g_task_return_new_error(task, G_IO_ERROR, G_IO_ERROR_FAILED, "%s",
-                                opened.error().c_str());
-        return;
-    }
-    result->coll = std::move(*opened);
-    g_task_return_boolean(task, TRUE);
 }
 
 
@@ -715,21 +696,16 @@ static void show_startup_error(PhigApp* app, const char* message) {
     adw_toolbar_view_set_content(app->toolbar_view, status_page);
 }
 
-static void startup_done(GObject* source, GAsyncResult* result, gpointer user_data) noexcept {
-    (void)source;
-    (void)user_data;
-    GTask* task = G_TASK(result);
-    auto* startup = static_cast<StartupResult*>(g_task_get_task_data(task));
-    PhigApp* app = startup->app;
-
-    GError* error = NULL;
-    if (!g_task_propagate_boolean(task, &error)) {
-        show_startup_error(app, error->message);
-        g_error_free(error);
+// Runs on the main thread when the open finishes. The window may have closed
+// while the worker ran; the result then closes with opened.
+static void startup_done(PhigApp* app, phig::gtk::OpenResult opened) noexcept {
+    if (app->window == nullptr) return;
+    if (!opened) {
+        show_startup_error(app, opened.error().c_str());
         return;
     }
 
-    app->coll = std::move(startup->coll);
+    app->coll = std::move(*opened);
     guint n_threads = env_override_uint("PHIG_THUMB_LOADER_THREADS", PHIG_THUMB_LOADER_THREADS);
     gsize cache_bytes =
         (gsize)env_override_uint("PHIG_THUMB_CACHE_BYTES", PHIG_THUMB_CACHE_BYTES);
@@ -780,6 +756,10 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
     }
 
     app->window = ADW_APPLICATION_WINDOW(adw_application_window_new(gtk_app));
+    /* Cleared on destroy, so startup_done can tell the window closed while the
+     * catalog was opening. */
+    phig::gtk::connect<void(GtkWidget*)>(app->window, "destroy",
+                                         [app](GtkWidget*) noexcept { app->window = nullptr; });
     gtk_window_set_title(GTK_WINDOW(app->window), "phig");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 1100, 750);
 
@@ -858,6 +838,8 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
      * model is not attached until it finishes (startup_done, above). */
     gtk_window_present(GTK_WINDOW(app->window));
 
+    if (app->opening) return;  // startup_done fills this window
+
     /* Empty when no catalog was named and the default could not be resolved:
      * opening "" would resolve to a path at the filesystem root. */
     if (app->catalog_dir.empty()) {
@@ -867,13 +849,18 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
         return;
     }
 
-    auto* startup = new StartupResult{};
-    startup->app = app;
-    GTask* task = g_task_new(NULL, NULL, startup_done, NULL);
-    g_task_set_task_data(task, startup,
-                         [](gpointer data) noexcept { delete static_cast<StartupResult*>(data); });
-    g_task_run_in_thread(task, startup_thread_func);
-    g_object_unref(task);
+    /* Held until startup_done has run, so closing the window during a slow open
+     * keeps the process up until the worker finishes, rather than exiting with
+     * it mid-open. */
+    GApplication* gapp = G_APPLICATION(gtk_app);
+    g_application_hold(gapp);
+    app->opening = true;
+    phig::gtk::open_in_background(app->catalog_dir,
+                                  [app, gapp](phig::gtk::OpenResult opened) noexcept {
+                                      app->opening = false;
+                                      startup_done(app, std::move(opened));
+                                      g_application_release(gapp);
+                                  });
 }
 
 // phig's own default, from core/ through the collection seam. Empty, after a
