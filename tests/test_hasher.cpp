@@ -497,6 +497,18 @@ size_t stderr_bytes_arriving_during_decode(const std::string& path) {
 
 }  // namespace
 
+// The decode tests above write to fd 2 from a second thread for as long as the capture
+// runs, so the capture must keep reading while `fn` runs or a full pipe blocks both.
+TEST(CaptureFd2, TakesMoreThanAPipeBufferWithoutBlockingTheWriter) {
+    const std::string chunk(4096, 'x');
+    std::string got = capture_fd2([&] {
+        for (int i = 0; i < 256; ++i) {
+            ASSERT_EQ(::write(2, chunk.data(), chunk.size()), static_cast<ssize_t>(chunk.size()));
+        }
+    });
+    EXPECT_EQ(got.size(), 256u * chunk.size());
+}
+
 TEST(DecodeStderr, AnotherThreadsStderrIsNotHiddenDuringADecode) {
     fs::path bad = fs::path(__FILE__).parent_path() / "data" / "jpeg" / "truncated.jpg";
     EXPECT_EQ(stderr_bytes_arriving_during_decode(bad.string()), 200u);
