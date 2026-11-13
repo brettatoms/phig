@@ -18,22 +18,29 @@ status = "holds"
 id = "R36"
 tier = "engine"
 concern = "metadata"
-statement = "A re-scan clears a row's face data when the file's sha256 differs from the one recorded, or none was recorded, and keeps it — boxes, embeddings and person labels — when the two match."
-rationale = "A face box and its embedding describe pixels, so once the bytes change they describe pixels that no longer exist and repositioning them is not possible; dropping them is the only honest option and a later `face rebuild` replaces them — only that, because no `--force` value reaches face data (R76). The other half matters more: a person label is user-authored and nothing can reconstruct it, so an unchanged file must not lose one to an ordinary re-scan, and `--force hash` alone must not either — the test is the hash, not the flag. run_workers depends on that: it re-adds this run's detections only when db_.has_faces is false, so a row that kept its faces does not also collect a duplicate set."
+statement = "A re-scan of a file whose sha256 differs from the one recorded, or with none recorded, clears the row's unnamed faces and keeps its named ones until a re-detection carries their labels or reports them dropped; when the two match it keeps every face — boxes, embeddings and person labels."
+rationale = "A face box and its embedding describe pixels, so once the bytes change they describe pixels that no longer exist; an unnamed face holds nothing else and goes. A named face also holds a person label, which is user-authored and which nothing can reconstruct, so it stays: Database::insert keeps it with its box, embedding and model, and marks its frame replaced (frame_source 'replaced', frame hash and size unknown), which also keeps carry_labels from matching it by box overlap against a frame it was never measured in. A RAW's faces are measured on its sidecar JPEG or embedded preview, never on the file, so the mark has to be explicit; comparing a face's frame hash with the row's would call every RAW face replaced. A scan that detects faces then hands the image to replace_faces, the routine face rebuild uses, on both its changed-file and unchanged-file paths: carried labels are written onto the new detections, an unmatched one is dropped and counted in ScanResult::labels_dropped, and the CLI warns. A scan that detects no faces, such as libphig's index, leaves the named faces kept for the next face rebuild or face-detecting scan. An unchanged file must not lose a label to an ordinary re-scan, and --force hash alone must not either: the test is the hash, not the flag."
 enforced_at = [
     "core/database.cpp:Database::insert",
-    "core/database.cpp:delete_faces_for_image",
+    "core/database.cpp:keep_named_faces_of_replaced_frame",
+    "core/database.cpp:has_replaced_faces",
+    "core/faces_engine.cpp:replace_faces",
     "core/scan_engine.cpp:ScanEngine::run_workers",
 ]
 binds = ["scan.walk"]
 protects = ["user-metadata"]
 tests = [
     "DatabaseTest.ReinsertSameContentKeepsFaces",
-    "DatabaseTest.ReinsertChangedContentClearsFacesAndVecFaces",
+    "DatabaseTest.ReinsertChangedContentKeepsOnlyNamedFacesMarkedReplaced",
+    "FacesEngineRun.AScanWithoutFacesOfAnEditedFileKeepsItsNamedFace",
+    "FacesEngineRun.AScanWithFacesOfAnEditedFileCarriesItsName",
+    "FacesEngineRun.AScanWithFacesDropsAndCountsANameNoFaceMatches",
+    "FacesEngineRun.AScanWithFacesCarriesANameAnEarlierScanWithoutFacesKept",
+    "FacesEngineRun.ARebuildAfterAScanCarriesTheNameOfAnEditedPhoto",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "Both tests now label their face and assert the name is still on the row after an unchanged re-insert and gone after a changed one, so the clause that matters most is asserted rather than inferred. Both still call Database::insert directly: nothing drives the pair through ScanEngine, where the has_faces guard against a duplicate second set lives, and that half needs a real detection run, so it gates on face_path_blocker() like the other face tests."
+test_gap = "The four tests that detect faces skip wherever the face path cannot run (R72), so ubuntu-26.04 is the only CI leg that runs them; the Database test and the scan without faces run everywhere. The CLI's warning on a scan that dropped a label is untested; face rebuild's is pinned by FacesEngineRun.CliRebuildWarnsWhenItDropsALabel."
 
 [[rule]]
 id = "R37"
@@ -120,8 +127,8 @@ test_gap = "Both listed tests pin today's contrary behaviour — the occupant ro
 id = "R76"
 tier = "engine"
 concern = "metadata"
-statement = "No value of --force re-detects faces: a scan keeps a row's existing face data whatever it was told to force, and face rebuild is the only path that replaces it."
-rationale = "ForceOptions carries hash, thumbs and faces, and core/ reads the first two only. A grep for force.faces over core/ and libphig/ returns the declaration at core/scan_engine.h:18 and nothing else: the field is written by cli/main.cpp:1904 and by set_all(), and read only by ForceOptions::any(), which nothing calls. --force hash does bypass the mtime skip and reprocess the file, but run_workers re-adds this run's detections only when db_.has_faces is false, and insert() clears faces only when the sha256 changed (R36), so an unchanged file keeps what it had however it was reprocessed. Measured with the built binary on a one-image collection: `scan --faces` reported Faces: 1; a plain repeat reported Processed: 0, Faces: 0; `scan --faces --force faces` reported Processed: 0, Skipped: 1, Faces: 0, identical to the plain repeat; and `scan --faces --force all` reported Processed: 1 — the file was decoded and its faces detected again — with Faces: 0, the detections discarded. The effect is protective, since a person label is the one thing a rescan cannot rebuild, but it is not what the flag says: the help text reads 'Re-process: hash,thumbs,faces,all' and one third of that is inert."
+statement = "No value of --force re-detects faces: a scan keeps a row's existing face data whatever it was told to force. Face rebuild is the only path that replaces an unchanged file's faces; a changed file's kept named faces are carried by a face-detecting scan (R36)."
+rationale = "ForceOptions carries hash, thumbs and faces, and core/ reads the first two only. A grep for force.faces over core/ and libphig/ returns the declaration at core/scan_engine.h:18 and nothing else: the field is written by cli/main.cpp:1904 and by set_all(), and read only by ForceOptions::any(), which nothing calls. --force hash does bypass the mtime skip and reprocess the file, but run_workers re-adds this run's detections only when db_.has_faces is false or the image holds named faces kept from a replaced frame, and insert() changes faces only when the sha256 changed (R36), so an unchanged file keeps what it had however it was reprocessed. Measured with the built binary on a one-image collection: `scan --faces` reported Faces: 1; a plain repeat reported Processed: 0, Faces: 0; `scan --faces --force faces` reported Processed: 0, Skipped: 1, Faces: 0, identical to the plain repeat; and `scan --faces --force all` reported Processed: 1 — the file was decoded and its faces detected again — with Faces: 0, the detections discarded. The effect is protective, since a person label is the one thing a rescan cannot rebuild, but it is not what the flag says: the help text reads 'Re-process: hash,thumbs,faces,all' and one third of that is inert."
 enforced_at = [
     "core/scan_engine.cpp:ScanEngine::run_workers",
     "core/database.cpp:Database::insert",

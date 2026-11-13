@@ -15,6 +15,7 @@
 #include "database.h"
 #include "dates.h"
 #include "exif.h"
+#include "faces_engine.h"
 #include "hasher.h"
 #include "live_photo.h"
 #include "log.h"
@@ -91,6 +92,7 @@ ProcessResult process_file(const fs::path& filepath, FaceDetector* face_detector
         // Face detection from same decoded image (no re-decode)
         if (face_detector) {
             result.faces = face_detector->detect(img);
+            result.detected = true;
         }
 
         // EXIF / image metadata
@@ -204,6 +206,7 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
     std::atomic<size_t> skipped{0};
     std::atomic<size_t> errors{0};
     std::atomic<size_t> face_count{0};
+    std::atomic<size_t> labels_dropped{0};
     std::atomic<size_t> thumb_count{0};
     std::atomic<size_t> video_count{0};
 
@@ -275,12 +278,24 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
 
                 // Insert faces (need image_id from DB) and auto-label known people
                 for (auto& r : batch) {
+                    if (!r.detected) continue;
+                    int64_t image_id = db_.get_image_id(r.info.path);
+                    // insert() kept only the named faces of a file whose bytes
+                    // changed, marked replaced: these detections replace them,
+                    // carrying the names they match and counting the rest dropped
+                    // (R36). This runs even when nothing was detected, so a name
+                    // on a face the edit removed is reported, not kept forever.
+                    if (image_id >= 0 && db_.has_replaced_faces(image_id)) {
+                        labels_dropped.fetch_add(
+                            replace_faces(db_, image_id, r.faces,
+                                          face_provenance(r.frame, r.info.sha256, model_sha)));
+                        face_count.fetch_add(r.faces.size());
+                        continue;
+                    }
                     if (!r.faces.empty()) {
-                        int64_t image_id = db_.get_image_id(r.info.path);
                         // Rows whose bytes didn't change kept their existing faces
                         // (and person labels) through insert(); re-adding this
-                        // run's detections would duplicate them. insert() cleared
-                        // faces when the content changed, so has_faces == false
+                        // run's detections would duplicate them. has_faces == false
                         // means these detections are needed. `face rebuild` is the
                         // path for forced re-detection.
                         if (image_id >= 0 && !db_.has_faces(r.info.path)) {
@@ -344,8 +359,13 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                     std::lock_guard<std::mutex> lock(db_mutex);
                     auto existing_mtime = db_.get_modified_at(canonical);
                     if (existing_mtime && *existing_mtime == mtime) {
-                        // File unchanged — check if we need faces or thumbs
-                        bool need_faces = detector && !db_.has_faces(canonical);
+                        // File unchanged — check if we need faces or thumbs. Named
+                        // faces kept from before an earlier edit, by a scan that
+                        // detected none, still need re-detecting to carry them.
+                        const int64_t row_id = db_.get_image_id(canonical);
+                        bool need_faces =
+                            detector && (!db_.has_faces(canonical) ||
+                                         (row_id >= 0 && db_.has_replaced_faces(row_id)));
                         bool need_thumbs = false;
                         if (opts_.thumbs) {
                             auto sha = db_.get_sha256(canonical);
@@ -401,14 +421,18 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                     if (!img.empty()) {
                         if (detector) {
                             auto faces = detector->detect(img);
-                            if (!faces.empty()) {
-                                std::lock_guard<std::mutex> lock(db_mutex);
+                            std::lock_guard<std::mutex> lock(db_mutex);
+                            const int64_t row_id = db_.get_image_id(canonical);
+                            // Replaced faces are carried even when nothing was
+                            // detected, so a name the edit removed is reported.
+                            const bool replaced = row_id >= 0 && db_.has_replaced_faces(row_id);
+                            if (replaced || !faces.empty()) {
                                 // Flush any pending batch first, then insert faces in a
                                 // transaction
                                 flush_batch();
                                 // Another thread's flush_batch() may have inserted faces
                                 // for this row already; don't duplicate them.
-                                if (!db_.has_faces(canonical)) {
+                                if (replaced || !db_.has_faces(canonical)) {
                                     db_.begin_transaction();
                                     try {
                                         int64_t image_id = db_.get_image_id(canonical);
@@ -418,10 +442,15 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
                                                 decoded.frame,
                                                 rows.empty() ? "" : trusted_row_sha(rows[0]),
                                                 model_sha);
-                                            for (const auto& face : faces) {
-                                                int64_t face_id =
-                                                    db_.insert_face(image_id, face, prov);
-                                                db_.auto_label_face(face_id, face.embedding);
+                                            if (db_.has_replaced_faces(image_id)) {
+                                                labels_dropped.fetch_add(
+                                                    replace_faces(db_, image_id, faces, prov));
+                                            } else {
+                                                for (const auto& face : faces) {
+                                                    int64_t face_id =
+                                                        db_.insert_face(image_id, face, prov);
+                                                    db_.auto_label_face(face_id, face.embedding);
+                                                }
                                             }
                                             face_count.fetch_add(faces.size());
                                         }
@@ -550,6 +579,7 @@ ScanResult ScanEngine::run_workers(const CancelToken& cancel,
     result.videos = video_count.load();
     result.images = result.processed - result.videos;
     result.faces = face_count.load();
+    result.labels_dropped = labels_dropped.load();
     result.thumbs = thumb_count.load();
     return result;
 }

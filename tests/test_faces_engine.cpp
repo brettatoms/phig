@@ -30,6 +30,7 @@
 #include "paths.h"
 #include "phig_binary.h"
 #include "progress_queue.h"
+#include "scan_engine.h"
 #include "types.h"
 
 namespace fs = std::filesystem;
@@ -349,6 +350,170 @@ TEST(FacesEngineRun, RebuildCarriesALabelWhenTheImageIsReplacedByARescaledCopy) 
     bool found = false;
     for (const ProvRow& p : provenance_of(*coll.db, image_id)) found |= p.person_id == ada;
     EXPECT_TRUE(found) << "no face of the rescaled image carries Ada's label";
+}
+
+namespace {
+// One face row named "Ada" on f0.jpg, written directly so the tests that use it hold on
+// a machine without face models. Returns the face's id.
+int64_t add_named_face(ScratchFaces& coll) {
+    int64_t image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    EXPECT_GT(image_id, 0);
+    FaceInfo face{};
+    face.embedding.fill(0.5f);
+    face.x = 1;
+    face.y = 2;
+    face.width = 10;
+    face.height = 10;
+    int64_t face_id = coll.db->insert_face(image_id, face);
+    int64_t person_id = coll.db->get_or_create_person("Ada");
+    EXPECT_TRUE(coll.db->set_face_person(face_id, person_id));
+    return face_id;
+}
+}  // namespace
+
+namespace {
+// Overwrites f0.jpg with `replacement` and moves its mtime forward, so a scan sees a
+// changed file whatever the clock's resolution.
+void edit_f0(ScratchFaces& coll, const cv::Mat& replacement) {
+    const fs::path f0 = coll.dir / "f0.jpg";
+    const auto before = fs::last_write_time(f0);
+    ASSERT_TRUE(cv::imwrite(f0.string(), replacement));
+    fs::last_write_time(f0, before + std::chrono::seconds(10));
+}
+
+ScanResult scan_coll(ScratchFaces& coll, bool faces) {
+    ScanOptions opts;
+    opts.directory = coll.dir.string();
+    opts.db_path = coll.db_path;
+    opts.parallel = 1;
+    opts.faces = faces;
+    opts.log_enabled = false;
+    CancelToken tok;
+    return ScanEngine(opts, *coll.db).run_workers(tok, nullptr);
+}
+
+// Detects f0.jpg's faces with a rebuild and names the first "Ada".
+void name_first_face(ScratchFaces& coll, int64_t& image_id, int64_t& ada) {
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    opts.ids = coll.all_ids();
+    CancelToken tok;
+    FacesEngine(opts, *coll.db).run(tok, nullptr);
+    image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    std::vector<FaceRow> faces = faces_of(*coll.db, image_id);
+    ASSERT_FALSE(faces.empty());
+    ada = coll.db->get_or_create_person("Ada");
+    ASSERT_TRUE(coll.db->set_face_person(faces[0].id, ada));
+}
+
+cv::Mat half_of_f0(ScratchFaces& coll) {
+    cv::Mat orig = cv::imread((coll.dir / "f0.jpg").string());
+    cv::Mat half;
+    cv::resize(orig, half, cv::Size(orig.cols / 2, orig.rows / 2));
+    return half;
+}
+
+bool someone_is(const std::vector<ProvRow>& rows, int64_t person) {
+    for (const ProvRow& p : rows) {
+        if (p.person_id == person) return true;
+    }
+    return false;
+}
+
+bool any_replaced(const std::vector<ProvRow>& rows) {
+    for (const ProvRow& p : rows) {
+        if (p.source == "replaced") return true;
+    }
+    return false;
+}
+}  // namespace
+
+// The scan plan 071 adds, and libphig's index, detect no faces. Re-indexing an edited
+// photo must not take its names with it (R36).
+TEST(FacesEngineRun, AScanWithoutFacesOfAnEditedFileKeepsItsNamedFace) {
+    ScratchFaces coll(1);
+    int64_t face_id = add_named_face(coll);
+    int64_t image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
+    edit_f0(coll, half_of_f0(coll));
+
+    ScanResult r = scan_coll(coll, /*faces=*/false);
+    EXPECT_EQ(r.processed, 1u) << "the edit was not seen as a change";
+
+    std::vector<ProvRow> rows = provenance_of(*coll.db, image_id);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].source, "replaced");
+    EXPECT_GE(rows[0].person_id, 0);
+    EXPECT_EQ(faces_of(*coll.db, image_id)[0].id, face_id);
+}
+
+TEST(FacesEngineRun, AScanWithFacesOfAnEditedFileCarriesItsName) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(1);
+    int64_t image_id = -1, ada = -1;
+    name_first_face(coll, image_id, ada);
+    edit_f0(coll, half_of_f0(coll));
+
+    ScanResult r = scan_coll(coll, /*faces=*/true);
+
+    EXPECT_EQ(r.labels_dropped, 0u);
+    std::vector<ProvRow> rows = provenance_of(*coll.db, image_id);
+    EXPECT_TRUE(someone_is(rows, ada)) << "no re-detected face carries Ada";
+    EXPECT_FALSE(any_replaced(rows)) << "the kept face was not replaced by the detections";
+}
+
+TEST(FacesEngineRun, AScanWithFacesDropsAndCountsANameNoFaceMatches) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(1);
+    int64_t image_id = -1, ada = -1;
+    name_first_face(coll, image_id, ada);
+    edit_f0(coll, cv::Mat(240, 320, CV_8UC3, cv::Scalar(90, 140, 30)));
+
+    ScanResult r = scan_coll(coll, /*faces=*/true);
+
+    EXPECT_EQ(r.labels_dropped, 1u);
+    std::vector<ProvRow> rows = provenance_of(*coll.db, image_id);
+    EXPECT_FALSE(someone_is(rows, ada));
+    EXPECT_FALSE(any_replaced(rows));
+}
+
+TEST(FacesEngineRun, AScanWithFacesCarriesANameAnEarlierScanWithoutFacesKept) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(1);
+    int64_t image_id = -1, ada = -1;
+    name_first_face(coll, image_id, ada);
+    edit_f0(coll, half_of_f0(coll));
+    scan_coll(coll, /*faces=*/false);
+    ASSERT_TRUE(any_replaced(provenance_of(*coll.db, image_id)));
+
+    // The file has not changed since, so this takes the unchanged-file path.
+    ScanResult r = scan_coll(coll, /*faces=*/true);
+
+    EXPECT_EQ(r.labels_dropped, 0u);
+    std::vector<ProvRow> rows = provenance_of(*coll.db, image_id);
+    EXPECT_TRUE(someone_is(rows, ada));
+    EXPECT_FALSE(any_replaced(rows));
+}
+
+// The case that lost the name before: a scan re-indexed the edit and deleted the labelled
+// face, so the rebuild found nothing to carry.
+TEST(FacesEngineRun, ARebuildAfterAScanCarriesTheNameOfAnEditedPhoto) {
+    if (auto why = face_path_blocker(); !why.empty()) GTEST_SKIP() << why;
+    ScratchFaces coll(1);
+    int64_t image_id = -1, ada = -1;
+    name_first_face(coll, image_id, ada);
+    edit_f0(coll, half_of_f0(coll));
+    scan_coll(coll, /*faces=*/false);
+
+    FacesRebuildOptions opts;
+    opts.parallel = 1;
+    opts.ids = coll.all_ids();
+    CancelToken tok;
+    FacesResult r = FacesEngine(opts, *coll.db).run(tok, nullptr);
+
+    EXPECT_EQ(r.labels_dropped, 0u);
+    std::vector<ProvRow> rows = provenance_of(*coll.db, image_id);
+    EXPECT_TRUE(someone_is(rows, ada));
+    EXPECT_FALSE(any_replaced(rows));
 }
 
 TEST(FacesEngineRun, RebuildCarriesALabelWhenTheImageIsReplacedByACroppedCopy) {
@@ -819,25 +984,6 @@ TEST(FacesEngineRun, CliRejectsAnUnknownFlagWithoutTouchingFaceData) {
     EXPECT_EQ(step, SQLITE_ROW) << "the named face was deleted; output was:\n" << output;
     EXPECT_EQ(labeled_as, person_id);
 }
-
-namespace {
-// One face row named "Ada" on f0.jpg, written directly so the tests that use it hold on
-// a machine without face models. Returns the face's id.
-int64_t add_named_face(ScratchFaces& coll) {
-    int64_t image_id = coll.db->get_image_id((coll.dir / "f0.jpg").string());
-    EXPECT_GT(image_id, 0);
-    FaceInfo face{};
-    face.embedding.fill(0.5f);
-    face.x = 1;
-    face.y = 2;
-    face.width = 10;
-    face.height = 10;
-    int64_t face_id = coll.db->insert_face(image_id, face);
-    int64_t person_id = coll.db->get_or_create_person("Ada");
-    EXPECT_TRUE(coll.db->set_face_person(face_id, person_id));
-    return face_id;
-}
-}  // namespace
 
 // Each face worker holds its own ~150MB detector and is CPU-bound, so a worker past
 // the core count buys nothing and a huge value exhausts memory. Refused before any

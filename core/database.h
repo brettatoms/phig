@@ -241,6 +241,12 @@ class Database {
     int64_t insert_face(int64_t image_id, const FaceInfo& face);
     bool has_faces(const std::string& path);
     void delete_faces_for_image(int64_t image_id);
+    // For an image whose file changed: deletes its unnamed faces and marks the named
+    // ones as measured on a replaced frame (kReplacedFrameSource), keeping their box,
+    // embedding, model and person label for a re-detection to carry (R36).
+    void keep_named_faces_of_replaced_frame(int64_t image_id);
+    // Whether the image has named faces kept from before its file changed.
+    bool has_replaced_faces(int64_t image_id);
     // This image's faces that carry a person label, in id order. A rebuild
     // reads these before replacing the image's faces, to carry the labels over.
     std::vector<LabelledFace> get_labelled_faces_for_image(int64_t image_id);

@@ -52,6 +52,11 @@ FaceProvenance face_provenance(const DecodeFrame& frame, const std::string& imag
 // the same trust a scan's skip uses; otherwise "" so the frame matches no other frame.
 std::string trusted_row_sha(const ImageInfo& img);
 
+// The frame_source of a named face whose image's file changed after it was measured.
+// Database::insert keeps such a face, with its frame's hash and size unknown, until a
+// re-detection carries its label or reports it dropped (R36). Not a decode source.
+inline constexpr const char* kReplacedFrameSource = "replaced";
+
 // A stored face that carries a person label, as a rebuild reads it before
 // replacing the image's faces.
 struct LabelledFace {

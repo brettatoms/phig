@@ -161,7 +161,10 @@ TEST_F(DatabaseTest, ReinsertSameContentKeepsFaces) {
         << "an unchanged file must keep the name someone typed";
 }
 
-TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
+// A changed file's unnamed faces describe pixels that are gone and go with them. A named
+// face carries a person label nothing can rebuild, so it stays, marked as measured on a
+// frame that has been replaced, until re-detection carries or reports it (R36).
+TEST_F(DatabaseTest, ReinsertChangedContentKeepsOnlyNamedFacesMarkedReplaced) {
     db->insert(make_image("/test/a.jpg", "sha1"));
     int64_t id = db->get_image_id("/test/a.jpg");
     FaceInfo face{};
@@ -170,15 +173,32 @@ TEST_F(DatabaseTest, ReinsertChangedContentClearsFacesAndVecFaces) {
     face.y = 2;
     face.width = 10;
     face.height = 10;
-    int64_t face_id = db->insert_face(id, face);
-    ASSERT_TRUE(db->set_face_person(face_id, db->get_or_create_person("alice")));
+    FaceProvenance prov;
+    prov.frame_source = "file";
+    prov.frame_width = 64;
+    prov.frame_height = 48;
+    prov.frame_sha256 = "sha1";
+    prov.model_sha256 = "model";
+    int64_t named = db->insert_face(id, face, prov);
+    ASSERT_TRUE(db->set_face_person(named, db->get_or_create_person("alice")));
+    db->insert_face(id, face, prov);  // unnamed
+    EXPECT_FALSE(db->has_replaced_faces(id));
 
     db->insert(make_image("/test/a.jpg", "sha2"));  // content changed
-    EXPECT_FALSE(db->has_faces("/test/a.jpg"));
-    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM faces"), 0);
-    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 0);
-    // The label describes a box over pixels that are gone, so it goes with it.
-    EXPECT_TRUE(db->get_images_for_person("alice").empty());
+
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM faces"), 1);
+    EXPECT_EQ(count_rows(db->db_ptr(), "SELECT COUNT(*) FROM vec_faces"), 1);
+    const std::string kept_row =
+        "SELECT COUNT(*) FROM faces WHERE id = " + std::to_string(named) + " AND x = 1";
+    EXPECT_EQ(count_rows(db->db_ptr(), kept_row.c_str()), 1);
+    EXPECT_EQ(db->get_images_for_person("alice").size(), 1u);
+    EXPECT_TRUE(db->has_replaced_faces(id));
+    std::vector<LabelledFace> kept = db->get_labelled_faces_for_image(id);
+    ASSERT_EQ(kept.size(), 1u);
+    EXPECT_EQ(kept[0].provenance.frame_source, "replaced");
+    EXPECT_EQ(kept[0].provenance.frame_sha256, "");
+    EXPECT_EQ(kept[0].provenance.frame_width, 0);
+    EXPECT_EQ(kept[0].provenance.model_sha256, "model") << "the model still names its embedding";
 }
 
 TEST_F(DatabaseTest, FaceProvenanceRoundTrips) {

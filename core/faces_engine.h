@@ -25,6 +25,14 @@ struct FacesRebuildOptions {
 // Throws InvalidOption when a field holds a value outside its set (R73).
 void validate(const FacesRebuildOptions& opts);
 
+// Replaces an image's faces with `detected`, measured in `current`: carries the labels
+// its stored faces hold onto the detections with carry_labels, writes every carried
+// label before auto-labelling the rest, and deletes the stored faces. The caller holds
+// the write transaction. Returns the number of labels no detection matched, which are
+// dropped. Face rebuild and a face-detecting scan of an edited file both use it.
+size_t replace_faces(Database& db, int64_t image_id, const std::vector<FaceInfo>& detected,
+                     const FaceProvenance& current);
+
 // `error` is non-empty when the file could not be decoded: it is the
 // already-formatted warning text, and the CALLER is responsible for logging it.
 // Matches ScanProgress::error — the engine does not log from a worker thread,

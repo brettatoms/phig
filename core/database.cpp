@@ -654,9 +654,10 @@ void Database::init_schema() {
 }
 
 void Database::insert(const ImageInfo& info) {
-    // If the row exists and its content changed, its face data (boxes +
-    // embeddings, incl. vec_faces) describes pixels that no longer exist —
-    // clear it. Unchanged content keeps faces and their person labels.
+    // If the row exists and its content changed, its face boxes and embeddings
+    // describe pixels that no longer exist. Unnamed faces go; named ones carry a
+    // label nothing can rebuild, so they stay, marked, for re-detection to carry
+    // (R36). Unchanged content keeps every face.
     {
         const char* sel = "SELECT id, sha256 FROM images WHERE path = ?";
         sqlite3_stmt* s;
@@ -670,7 +671,7 @@ void Database::insert(const ImageInfo& info) {
             const char* old_sha = reinterpret_cast<const char*>(sqlite3_column_text(s, 1));
             bool content_changed = !old_sha || info.sha256 != old_sha;
             sqlite3_finalize(s);
-            if (content_changed) delete_faces_for_image(id);
+            if (content_changed) keep_named_faces_of_replaced_frame(id);
         } else {
             sqlite3_finalize(s);
         }
@@ -1789,6 +1790,44 @@ void Database::delete_faces_for_image(int64_t image_id) {
     }
     sqlite3_bind_int64(stmt, 1, image_id);
     step_write_or_throw(db_, stmt, "Failed to delete faces");
+}
+
+void Database::keep_named_faces_of_replaced_frame(int64_t image_id) {
+    const char* sqls[] = {
+        "DELETE FROM vec_faces WHERE face_id IN "
+        "(SELECT id FROM faces WHERE image_id = ? AND person_id IS NULL)",
+        "DELETE FROM faces WHERE image_id = ? AND person_id IS NULL",
+        "UPDATE faces SET frame_source = ?, frame_width = NULL, frame_height = NULL, "
+        "frame_sha256 = NULL WHERE image_id = ?",
+    };
+    for (const char* sql : sqls) {
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            throw std::runtime_error("Failed to prepare replaced-frame face update: " +
+                                     std::string(sqlite3_errmsg(db_)));
+        }
+        if (sql == sqls[2]) {
+            sqlite3_bind_text(stmt, 1, kReplacedFrameSource, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(stmt, 2, image_id);
+        } else {
+            sqlite3_bind_int64(stmt, 1, image_id);
+        }
+        step_write_or_throw(db_, stmt, "Failed to keep named faces of a replaced frame");
+    }
+}
+
+bool Database::has_replaced_faces(int64_t image_id) {
+    const char* sql = "SELECT EXISTS(SELECT 1 FROM faces WHERE image_id = ? AND frame_source = ?)";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare replaced-face check: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    sqlite3_bind_int64(stmt, 1, image_id);
+    sqlite3_bind_text(stmt, 2, kReplacedFrameSource, -1, SQLITE_STATIC);
+    bool found = sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) != 0;
+    sqlite3_finalize(stmt);
+    return found;
 }
 
 std::vector<LabelledFace> Database::get_labelled_faces_for_image(int64_t image_id) {

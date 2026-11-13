@@ -52,6 +52,7 @@ void validate(const ScanOptions& opts);
 struct ProcessResult {
     ImageInfo info;
     std::vector<FaceInfo> faces;  // empty if faces not requested
+    bool detected = false;        // face detection ran; `faces` is its whole answer
     DecodeFrame frame;            // the decoded frame the faces were detected in
 };
 
@@ -117,6 +118,9 @@ struct ScanResult {
     // overridden). Reported so a skip is never silent.
     size_t skipped_parent_missing = 0;
     size_t skipped_check_failed = 0;
+    // Person labels on an edited file's faces that no re-detected face matched, so
+    // were dropped. Only a scan that detects faces drops any (R36, R60).
+    size_t labels_dropped = 0;
     bool completed = true;
     bool mount_warning = false;
 };

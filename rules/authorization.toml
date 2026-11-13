@@ -81,15 +81,16 @@ id = "R60"
 tier = "engine"
 concern = "authorization"
 statement = "An operation that destroys user-authored metadata is authorized before it runs, by an explicit yes or by a plan the caller approves."
-rationale = "rm asks (R22), organize publishes a plan the caller applies, and reconcile transfers metadata onto a surviving row before deleting (R38). A face rebuild does none of these, and is reachable from the ABI as phig_op_faces_start with no plan phase; operations.toml marks faces.rebuild destructive. FacesEngine::run replaces each selected image's face rows — boxes, embeddings, and the person_id that is a label someone typed. Inside the per-image transaction it reads the image's labelled faces first, matches them to the new detections through carry_labels, and writes the matched labels before auto_label_face names the rest. carry_labels matches by embedding when the recognition model is unchanged, by box overlap when the model changed and the face rows record a frame identical to the new decode, and otherwise drops the label and counts it (R86). A labelled face that is not matched loses its label without authorization: the loss is counted in FacesResult::labels_dropped, reported by face rebuild as a warning and by phig_faces_result, and not asked about first. That remainder is why the rule is partial."
+rationale = "rm asks (R22), organize publishes a plan the caller applies, and reconcile transfers metadata onto a surviving row before deleting (R38). A face rebuild does none of these, and is reachable from the ABI as phig_op_faces_start with no plan phase; operations.toml marks faces.rebuild destructive. FacesEngine::run replaces each selected image's face rows — boxes, embeddings, and the person_id that is a label someone typed. Inside the per-image transaction it reads the image's labelled faces first, matches them to the new detections through carry_labels, and writes the matched labels before auto_label_face names the rest. carry_labels matches by embedding when the recognition model is unchanged, by box overlap when the model changed and the face rows record a frame identical to the new decode, and otherwise drops the label and counts it (R86). A labelled face that is not matched loses its label without authorization: the loss is counted in FacesResult::labels_dropped, reported by face rebuild as a warning and by phig_faces_result, and not asked about first. A scan that detects faces does the same to an edited file's kept named faces through the same replace_faces (R36), so it drops and counts labels the same way. That remainder is why the rule is partial."
 enforced_at = [
     "core/faces_engine.cpp:FacesEngine::run",
+    "core/faces_engine.cpp:replace_faces",
     "core/faces.cpp:carry_labels",
     "core/database.cpp:get_labelled_faces_for_image",
     "core/database.cpp:delete_faces_for_image",
     "core/database.cpp:insert_face",
 ]
-binds = ["faces.rebuild"]
+binds = ["faces.rebuild", "scan.walk"]
 protects = ["user-metadata"]
 tests = [
     "FacesEngineRun.RebuildKeepsALabelOnTheFaceItNamed",
@@ -100,6 +101,7 @@ tests = [
     "CarryLabels.OneDetectedFaceTakesAtMostOneLabel",
     "FacesEngineRun.RebuildCarriesALabelWhenTheImageIsReplacedByARescaledCopy",
     "CarryLabels.ARowFromBeforeV10IsTakenAsTheSfaceModelWithAnUnknownFrame",
+    "FacesEngineRun.AScanWithFacesDropsAndCountsANameNoFaceMatches",
 ]
 test_kind = "witness"
 status = "partial"

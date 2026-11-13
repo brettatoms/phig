@@ -81,6 +81,25 @@ void validate(const FacesRebuildOptions& opts) {
     }
 }
 
+size_t replace_faces(Database& db, int64_t image_id, const std::vector<FaceInfo>& detected,
+                     const FaceProvenance& current) {
+    std::vector<LabelledFace> named = db.get_labelled_faces_for_image(image_id);
+    LabelCarry carry = carry_labels(named, detected, current);
+    db.delete_faces_for_image(image_id);
+    // Carried labels are all written before any auto-label runs, so auto_label_face
+    // sees them whatever the detection order.
+    std::vector<int64_t> face_ids;
+    face_ids.reserve(detected.size());
+    for (size_t i = 0; i < detected.size(); ++i) {
+        face_ids.push_back(db.insert_face(image_id, detected[i], current));
+        if (carry.person_ids[i] >= 0) db.set_face_person(face_ids[i], carry.person_ids[i]);
+    }
+    for (size_t i = 0; i < detected.size(); ++i) {
+        if (carry.person_ids[i] < 0) db.auto_label_face(face_ids[i], detected[i].embedding);
+    }
+    return carry.dropped;
+}
+
 FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgress>* progress) {
     validate(opts_);
     FacesResult result;
@@ -200,27 +219,10 @@ FacesResult FacesEngine::run(const CancelToken& cancel, ProgressQueue<FacesProgr
                     db_.rollback_transaction();
                     skipped = "faces: " + img_info.path + " -- image no longer in the database";
                 } else {
-                    std::vector<LabelledFace> named = db_.get_labelled_faces_for_image(image_id);
-                    LabelCarry carry = carry_labels(named, faces, current);
-                    db_.delete_faces_for_image(image_id);
-                    // Carried labels are all written before any auto-label runs,
-                    // so auto_label_face sees them whatever the detection order.
-                    std::vector<int64_t> face_ids;
-                    face_ids.reserve(faces.size());
-                    for (size_t i = 0; i < faces.size(); ++i) {
-                        face_ids.push_back(db_.insert_face(image_id, faces[i], current));
-                        if (carry.person_ids[i] >= 0) {
-                            db_.set_face_person(face_ids[i], carry.person_ids[i]);
-                        }
-                    }
-                    for (size_t i = 0; i < faces.size(); ++i) {
-                        if (carry.person_ids[i] < 0) {
-                            db_.auto_label_face(face_ids[i], faces[i].embedding);
-                        }
-                    }
+                    const size_t dropped = replace_faces(db_, image_id, faces, current);
                     db_.commit_transaction();
                     total_faces.fetch_add(faces.size());
-                    labels_dropped.fetch_add(carry.dropped);
+                    labels_dropped.fetch_add(dropped);
                 }
             } catch (...) {
                 db_.rollback_transaction();

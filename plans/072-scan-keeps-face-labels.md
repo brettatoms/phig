@@ -1,7 +1,8 @@
 ---
 name: Scan Keeps Face Labels on a Content Change
-status: planned
+status: completed
 created: 2026-11-13
+completed: 2026-11-13
 description: >
   Re-indexing a file whose contents changed deletes every face row for the
   image, person labels included, so an edited photo loses the names on it.
@@ -40,9 +41,13 @@ authorization before user-authored metadata is destroyed, binds only
 
 1. **On a content change, scan keeps the labelled faces.** `Database::insert`
    deletes only the image's unlabelled faces, which carry nothing a person typed.
-   A labelled face keeps its box, embedding and provenance. Its provenance names
-   the frame it was measured in (schema v10), which is no longer the file's, so it
-   is identifiable as measured on old pixels.
+   A labelled face keeps its box, embedding and model, and is marked as measured
+   on a replaced frame: `frame_source` becomes `replaced` and the frame's hash and
+   size become unknown. Amended during implementation: comparing a face's recorded
+   frame hash with the row's would mark every RAW face replaced, since a RAW's
+   faces are measured on its sidecar JPEG or embedded preview and never on the
+   file. With the frame unknown, `carry_labels` matches a kept face by embedding
+   only, which is right: the frame it was measured in is gone.
 2. **Re-detection carries the labels.** When a scan with faces enabled re-indexes
    a changed file, it detects, runs `carry_labels` from the kept labelled faces
    onto the new detections with the same rules and thresholds as face rebuild,
@@ -95,6 +100,16 @@ except where detection runs:
   dropped and counted in `labels_dropped`.
 - Face rebuild after a scan without faces carries the label, which is the case
   that fails today.
+
+## Outcome
+
+Built as designed, 2026-11-13, with the marker in point 1. `replace_faces`, moved
+out of `FacesEngine::run`, is the one routine that replaces an image's faces
+while carrying labels; face rebuild and both of scan's face paths call it. Five
+new tests and one rewritten Database test, each failing before the change; the
+rebuild-after-scan test is the case that lost the name. R36 holds with its new
+statement, R76's statement is narrowed to unchanged files, and R60 binds
+`scan.walk` and stays `partial` under 063.
 
 ## Relationship to other plans
 

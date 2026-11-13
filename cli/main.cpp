@@ -382,6 +382,10 @@ int cmd_scan(const ScanOptions& opts) {
         std::cout << "  Thumbs:    " << result.thumbs << "\n";
     }
     std::cout << "  Total DB:  " << db.count() << " entries\n";
+    if (result.labels_dropped > 0) {
+        log_warn(std::to_string(result.labels_dropped) +
+                 " person label(s) dropped: no re-detected face matched them");
+    }
 
     return 0;
 }
