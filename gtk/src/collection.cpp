@@ -96,7 +96,7 @@ Database::PageCriteria criteria_for(const Query& query) {
             break;
     }
     c.offset = 0;
-    c.limit = -1;  // every match: ids_matching does not page
+    c.limit = -1;  // every match: a negative limit turns off ids_matching's paging
     return c;
 }
 

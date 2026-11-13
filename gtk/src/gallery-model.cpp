@@ -399,7 +399,7 @@ int64_t phig_gallery_model_id_at(PhigGalleryModel* self, guint position) {
 std::vector<int64_t> phig_gallery_model_ids_in(PhigGalleryModel* self, GtkBitset* selection) {
     const std::vector<int64_t>& ids = self->impl.shared->ids;
     std::vector<int64_t> out;
-    out.reserve(static_cast<size_t>(gtk_bitset_get_size(selection)));
+    out.reserve(static_cast<size_t>(std::min<guint64>(gtk_bitset_get_size(selection), ids.size())));
     GtkBitsetIter iter;
     guint position = 0;
     for (bool more = gtk_bitset_iter_init_first(&iter, selection, &position);

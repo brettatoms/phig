@@ -290,6 +290,7 @@ static void test_a_selection_resolves_to_ids_without_a_fetch(Fixture* f, gconstp
     g_assert_cmpuint(ids.size(), ==, 4);
     g_assert_cmpint(ids[0], ==, 1);
     g_assert_cmpint(ids[1], ==, 999);
+    g_assert_cmpint(ids[2], ==, 1000);
     g_assert_cmpint(ids[3], ==, 1001);
     g_assert_cmpuint(phig_gallery_model_resident_page_count(f->model), ==, 0);
 }

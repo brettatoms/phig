@@ -115,14 +115,23 @@ void test_ids_come_newest_first_by_default() {
 
 void test_each_sort_orders_the_rows() {
     Fixture f;
+    // A fourth row, so each sort gives an order the others do not:
+    //   date oldest a c b d, filename a d c b, size largest first a c d b.
+    int64_t d = 0;
+    {
+        Database db(f.db_path);
+        d = Fixture::insert(db, "/nowhere/b.jpg", "2024-01-01T00:00:00Z", std::string(64, 'd'), 150,
+                            "{}", "image");
+    }
     phig::gtk::CollectionPtr coll = f.open();
     using phig::gtk::Sort;
     auto sorted = [&](Sort sort) {
         return ids_where(*coll, [sort](phig::gtk::Query& q) { q.sort = sort; });
     };
-    assert_ids(sorted(Sort::DateOldest), {f.a, f.c, f.b});
-    assert_ids(sorted(Sort::Filename), {f.a, f.c, f.b});  // a.jpg, c.mov, faces_small.jpg
-    assert_ids(sorted(Sort::Size), {f.a, f.c, f.b});      // largest first
+    assert_ids(sorted(Sort::DateNewest), {d, f.b, f.c, f.a});
+    assert_ids(sorted(Sort::DateOldest), {f.a, f.c, f.b, d});
+    assert_ids(sorted(Sort::Filename), {f.a, d, f.c, f.b});  // a, b, c.mov, faces_small
+    assert_ids(sorted(Sort::Size), {f.a, f.c, d, f.b});      // 300, 200, 150, 100
 }
 
 void test_rows_come_in_the_order_asked_and_skip_unknown_ids() {
@@ -244,6 +253,8 @@ void test_details_carry_what_the_viewer_shows() {
     g_assert_cmpint(d->id, ==, id);
     g_assert_cmpstr(d->path.c_str(), ==, "/nowhere/exif.jpg");
     g_assert_cmpstr(d->filename.c_str(), ==, "exif.jpg");
+    const std::string sha_e(64, 'e');
+    g_assert_cmpstr(d->sha256.c_str(), ==, sha_e.c_str());
     g_assert_cmpstr(d->media_type.c_str(), ==, "image");
     g_assert_cmpstr(d->date.c_str(), ==, "2026-08-08 14:32:11");
     g_assert_cmpstr(d->make.c_str(), ==, "Canon");
