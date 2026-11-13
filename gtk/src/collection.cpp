@@ -134,7 +134,7 @@ std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noe
         CollectionPtr coll(new Collection{});
         coll->paths = paths;
         coll->db = open_catalog_db(paths.db, CatalogAccess::Write);
-        coll->writer = std::make_unique<Database>(paths.db);
+        coll->writer = open_catalog_db(paths.db, CatalogAccess::Write);
         set_catalog(paths);
         migrate_legacy_catalog_files(paths);
         return coll;

@@ -306,11 +306,13 @@ void test_writes_change_exactly_the_named_images() {
 
     g_assert_true(phig::gtk::tag_add(*coll, {f.a, f.c}, "trip").has_value());
     g_assert_cmpuint(f.tags_of(path_a).size(), ==, 1);
+    assert_text(f.tags_of(path_a).front(), "trip");
     g_assert_true(f.tags_of(path_b).empty());
     g_assert_cmpuint(f.tags_of(path_c).size(), ==, 1);
 
     g_assert_true(phig::gtk::tag_remove(*coll, {f.c}, "trip").has_value());
     g_assert_cmpuint(f.tags_of(path_a).size(), ==, 1);
+    assert_text(f.tags_of(path_a).front(), "trip");
     g_assert_true(f.tags_of(path_c).empty());
 
     g_assert_true(phig::gtk::gallery_set(*coll, {f.b}, "Home").has_value());
@@ -369,8 +371,13 @@ void test_a_write_is_busy_while_another_process_holds_the_writer_lock() {
     g_assert_false(tagged.has_value());
     g_assert_true(tagged.error().busy);
     g_assert_false(tagged.error().message.empty());
-    g_assert_true(phig::gtk::gallery_set(*coll, {f.a}, "Blocked").error().busy);
-    g_assert_true(phig::gtk::favorite_set(*coll, {f.a}, true).error().busy);
+    auto filed = phig::gtk::gallery_set(*coll, {f.a}, "Blocked");
+    g_assert_false(filed.has_value());
+    g_assert_true(filed.error().busy);
+    auto faved = phig::gtk::favorite_set(*coll, {f.a}, true);
+    g_assert_false(faved.has_value());
+    g_assert_true(faved.error().busy);
+    g_assert_false(f.favorite_of(f.a));
     g_assert_true(f.tags_of("/nowhere/a.jpg").empty());
     g_assert_true(f.gallery_of(f.a).empty());
 
