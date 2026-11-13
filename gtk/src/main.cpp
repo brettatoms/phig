@@ -716,7 +716,12 @@ static void startup_done(PhigApp* app, phig::gtk::OpenResult opened) noexcept {
     app->loader = thumb_loader_new(*app->coll, n_threads, cache_bytes);
 
     /* The model borrows coll, which app owns until ~PhigApp. */
-    PhigGalleryModel* model = phig_gallery_model_new(*app->coll);
+    auto ids = phig::gtk::ids(*app->coll, phig::gtk::Query{});
+    if (!ids) {
+        show_startup_error(app, ids.error().c_str());
+        return;
+    }
+    PhigGalleryModel* model = phig_gallery_model_new(*app->coll, std::move(*ids));
     phig::gtk::connect<void(PhigGalleryModel*, const char*)>(
         model, "page-fetch-failed",
         [app](PhigGalleryModel*, const char*) noexcept { on_page_fetch_failed(app); });

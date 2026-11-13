@@ -2,9 +2,11 @@
 
 #include <gio/gio.h>
 #include <glib-object.h>
+#include <gtk/gtk.h>
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "collection.h"
 
@@ -23,13 +25,15 @@ const std::string& phig_image_row_get_path(PhigImageRow* row);
 const std::string& phig_image_row_get_sha256(PhigImageRow* row);
 const std::string& phig_image_row_get_filename(PhigImageRow* row);
 
-/* PhigGalleryModel: a GListModel over the collection's gallery rows without holding
- * the collection in memory. It knows the total row count up front (from
- * phig::gtk::count) and keeps only an LRU of fetched pages resident.
+/* PhigGalleryModel: a GListModel over one query's rows without holding them in
+ * memory. It is built from the query's ids (phig::gtk::ids), which fix the
+ * position of every row for the model's life: a row added to the catalog later
+ * does not shift the others, and position p always means the same image. Only
+ * an LRU of fetched pages of rows is resident.
  *
  * get_item never blocks: a resident page returns a ref to its cached row; a
  * non-resident page returns a placeholder row and schedules an async fetch
- * (a GTask running phig::gtk::page on a worker thread), which installs the
+ * (a GTask running phig::gtk::rows on a worker thread), which installs the
  * page and emits items-changed for its range from the GTask completion
  * callback on the main thread. Pages beyond the resident budget are evicted
  * least-recently-used; rows already handed out to callers stay valid because
@@ -47,8 +51,17 @@ G_DECLARE_FINAL_TYPE(PhigGalleryModel, phig_gallery_model, PHIG, GALLERY_MODEL, 
 
 /* Caller keeps ownership of coll and must not close it while any reference to
  * the model is outstanding: page fetches use it from a worker thread for as
- * long as the model exists. */
-PhigGalleryModel* phig_gallery_model_new(phig::gtk::Collection& coll);
+ * long as the model exists. ids are the query's, in its order. A row deleted
+ * from the catalog after ids were read stays at its position, with its id and
+ * no path or sha256. */
+PhigGalleryModel* phig_gallery_model_new(phig::gtk::Collection& coll, std::vector<int64_t> ids);
+
+/* The id at position, or 0 past the end. Needs no fetch. */
+int64_t phig_gallery_model_id_at(PhigGalleryModel* self, guint position);
+
+/* The ids at the positions in selection, in position order. Needs no fetch, so
+ * a selection over pages never fetched resolves as exactly as a visible one. */
+std::vector<int64_t> phig_gallery_model_ids_in(PhigGalleryModel* self, GtkBitset* selection);
 
 /* Test-only helpers. Production code goes through GListModel's get_item,
  * which schedules an async fetch; these exist so tests can force a page to

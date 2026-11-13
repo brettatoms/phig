@@ -6,10 +6,23 @@
 #include <atomic>
 #include <condition_variable>
 #include <filesystem>
+#include <map>
 #include <mutex>
+#include <set>
 #include <string_view>
 
 namespace phig::gtk {
+
+namespace {
+
+// One row's metadata as the fake's writes leave it.
+struct FakeRow {
+    std::set<std::string> tags;
+    std::string gallery;
+    bool favorite = false;
+};
+
+}  // namespace
 
 struct Collection {
     uint32_t n_rows = 0;
@@ -23,6 +36,8 @@ struct Collection {
     std::condition_variable page_hold_cv;
     bool hold_pages = false;  // guarded by page_hold_mutex
     std::atomic<uint32_t> pages_in_progress{0};
+    std::mutex rows_mutex;
+    std::vector<FakeRow> meta;  // by row index; guarded by rows_mutex
 };
 
 void CollectionClose::operator()(Collection* coll) const noexcept {
@@ -60,12 +75,40 @@ bool write_png(const std::filesystem::path& path, int width, int height) {
     return ok;
 }
 
+bool known(const Collection& coll, int64_t id) {
+    return id >= 1 && id <= static_cast<int64_t>(coll.n_rows);
+}
+
+Row row_for(uint32_t index) {
+    return Row{static_cast<int64_t>(index) + 1, "/fake/" + std::to_string(index) + ".jpg",
+               fake::sha(index), std::to_string(index) + ".jpg"};
+}
+
 }  // namespace
 
-std::expected<uint32_t, std::string> count(Collection& coll) noexcept { return coll.n_rows; }
+std::expected<std::vector<int64_t>, std::string> ids(Collection& coll,
+                                                     const Query& query) noexcept {
+    std::lock_guard lock(coll.rows_mutex);
+    const Filter& f = query.filter;
+    std::vector<int64_t> out;
+    for (uint32_t i = 0; i < coll.n_rows; i++) {
+        const FakeRow& m = coll.meta[i];
+        if (f.favorite && !m.favorite) continue;
+        if (!f.gallery.empty() && m.gallery != f.gallery) continue;
+        if (!std::all_of(f.tags.begin(), f.tags.end(),
+                         [&m](const std::string& t) { return m.tags.contains(t); }))
+            continue;
+        if (!query.search.empty() &&
+            (std::to_string(i) + ".jpg").find(query.search) == std::string::npos)
+            continue;
+        out.push_back(static_cast<int64_t>(i) + 1);
+    }
+    if (query.sort == Sort::DateOldest) std::reverse(out.begin(), out.end());
+    return out;
+}
 
-std::expected<std::vector<Row>, std::string> page(Collection& coll, uint32_t offset,
-                                                  uint32_t limit) noexcept {
+std::expected<std::vector<Row>, std::string> rows(Collection& coll,
+                                                  std::span<const int64_t> ids) noexcept {
     coll.pages_in_progress++;
     {
         std::unique_lock lock(coll.page_hold_mutex);
@@ -76,13 +119,45 @@ std::expected<std::vector<Row>, std::string> page(Collection& coll, uint32_t off
         ~Leave() { coll.pages_in_progress--; }
     } leave{coll};
     if (coll.fail_pages.load()) return std::unexpected(std::string(fake::kPageError));
-    const uint32_t end = offset >= coll.n_rows ? offset : std::min(coll.n_rows, offset + limit);
-    std::vector<Row> rows;
-    rows.reserve(end - offset);
-    for (uint32_t i = offset; i < end; i++)
-        rows.push_back(Row{static_cast<int64_t>(i) + 1, "/fake/" + std::to_string(i) + ".jpg",
-                           fake::sha(i), std::to_string(i) + ".jpg"});
-    return rows;
+    std::vector<Row> out;
+    for (int64_t id : ids)
+        if (known(coll, id)) out.push_back(row_for(static_cast<uint32_t>(id - 1)));
+    return out;
+}
+
+std::expected<Counts, std::string> counts(Collection& coll) noexcept {
+    std::lock_guard lock(coll.rows_mutex);
+    Counts out;
+    out.all = coll.n_rows;
+    std::map<std::string, uint32_t> galleries;
+    std::map<std::string, uint32_t> tags;
+    for (const FakeRow& m : coll.meta) {
+        if (m.favorite) out.favorites++;
+        if (!m.gallery.empty()) galleries[m.gallery]++;
+        for (const std::string& t : m.tags) tags[t]++;
+    }
+    for (const auto& [name, n] : galleries) out.galleries.push_back(NamedCount{name, n});
+    for (const auto& [name, n] : tags) out.tags.push_back(NamedCount{name, n});
+    return out;
+}
+
+std::expected<Details, std::string> details(Collection& coll, int64_t id) noexcept {
+    std::lock_guard lock(coll.rows_mutex);
+    if (!known(coll, id)) return std::unexpected("fake: no row " + std::to_string(id));
+    const auto index = static_cast<uint32_t>(id - 1);
+    const Row row = row_for(index);
+    const FakeRow& m = coll.meta[index];
+    Details d;
+    d.id = id;
+    d.path = row.path;
+    d.filename = row.filename;
+    d.sha256 = row.sha256;
+    d.media_type = "image";
+    d.date = "2026-01-01 00:00:00";
+    d.tags.assign(m.tags.begin(), m.tags.end());
+    d.gallery = m.gallery;
+    d.favorite = m.favorite;
+    return d;
 }
 
 ThumbLocation thumb_lookup(Collection& coll, std::string_view sha256, int size) noexcept {
@@ -142,6 +217,7 @@ namespace fake {
 CollectionPtr make(uint32_t n_rows) {
     CollectionPtr coll(new Collection());
     coll->n_rows = n_rows;
+    coll->meta.resize(n_rows);
     char* dir = g_dir_make_tmp("phig-gtk-fake-XXXXXX", nullptr);
     g_assert_nonnull(dir);
     coll->thumb_dir = dir;

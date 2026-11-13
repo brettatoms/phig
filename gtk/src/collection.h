@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,9 +13,9 @@
 // called from any thread, and none throws: a failure comes back as a value, with
 // phig's reason where the call can fail.
 //
-// Reads are paged: no call returns the whole collection. A full-collection read
+// Reads are paged: no call returns the whole collection's rows. A full read
 // through core/ carries every row's EXIF blob, about 3.8 KB a row that the
-// client never reads.
+// client never reads. ids returns every match, but as ids alone.
 namespace phig::gtk {
 
 struct Row {
@@ -46,12 +47,82 @@ std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noe
 // cannot be read or names an empty catalog.
 std::expected<std::string, std::string> default_catalog() noexcept;
 
-// Rows are in gallery order: newest effective date first, id breaking ties.
-std::expected<uint32_t, std::string> count(Collection& coll) noexcept;
+enum class Sort { DateNewest, DateOldest, Filename, Size };
 
-// Rows [offset, offset + limit) in gallery order. A page past the end is empty.
-std::expected<std::vector<Row>, std::string> page(Collection& coll, uint32_t offset,
-                                                  uint32_t limit) noexcept;
+// What the gallery shows. Each field that is set narrows it; they AND together.
+struct Filter {
+    std::vector<std::string> tags;  // has every one of these
+    std::string gallery;            // is in exactly this gallery
+    bool favorite = false;          // is a favorite
+    std::string after;              // YYYY-MM-DD: dated on or after this day
+    std::string before;             // YYYY-MM-DD: dated before this day
+    std::string camera;             // EXIF Model contains this
+    std::string make;               // EXIF Make contains this
+    std::string media;              // "image", "video", or "" for both
+    std::string extension;          // without the dot, any case
+
+    bool operator==(const Filter&) const = default;
+};
+
+struct Query {
+    Filter filter;
+    // Filename or path text. Text without * or ? matches anywhere in the full
+    // path; text with either is a glob over the full path, as --match takes.
+    // Case-sensitive.
+    std::string search;
+    Sort sort = Sort::DateNewest;
+
+    bool operator==(const Query&) const = default;
+};
+
+// Every id the query selects, in its order. Ids break ties, so the order is
+// the same on every call over the same rows.
+std::expected<std::vector<int64_t>, std::string> ids(Collection& coll, const Query& query) noexcept;
+
+// The rows for ids, in the order given. An id with no row is left out.
+std::expected<std::vector<Row>, std::string> rows(Collection& coll,
+                                                  std::span<const int64_t> ids) noexcept;
+
+struct NamedCount {
+    std::string name;
+    uint32_t count = 0;
+};
+
+// What the sidebar lists. Tags leave out the built-in favorite tag, which is
+// what favorites counts, and any tag no image carries.
+struct Counts {
+    uint32_t all = 0;
+    uint32_t favorites = 0;
+    std::vector<NamedCount> galleries;  // by name
+    std::vector<NamedCount> tags;       // by name
+};
+
+std::expected<Counts, std::string> counts(Collection& coll) noexcept;
+
+// One image's metadata, for the viewer.
+struct Details {
+    int64_t id = 0;
+    std::string path;
+    std::string filename;
+    std::string sha256;
+    std::string media_type;  // "image" or "video"
+    std::string date;        // "YYYY-MM-DD HH:MM:SS": the date the gallery sorts by
+    std::string make;        // EXIF Make, as phig stored it
+    std::string model;       // EXIF Model
+    std::string exposure_time;
+    std::string f_number;
+    std::string iso;
+    std::string focal_length;
+    int width = 0;
+    int height = 0;
+    int64_t file_size = 0;
+    double blur_score = -1.0;       // -1 when not measured
+    std::vector<std::string> tags;  // by name; favorite left out
+    std::string gallery;            // empty when none
+    bool favorite = false;
+};
+
+std::expected<Details, std::string> details(Collection& coll, int64_t id) noexcept;
 
 enum class ThumbLookup {
     Present,  // the file at path exists
