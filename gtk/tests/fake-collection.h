@@ -35,8 +35,8 @@ void hold_pages(Collection& coll, bool hold);
 // How many page calls are inside page right now.
 uint32_t pages_in_progress(Collection& coll);
 
-// open fails for this directory with "fake: no catalog at /fake/missing", and
-// succeeds with a 3-row collection for any other.
+// open fails for this directory with "fake: no catalog at /fake/missing" and
+// missing set, and succeeds with a 3-row collection for any other.
 inline constexpr const char* kMissingCatalog = "/fake/missing";
 
 // While hold is set, open waits before it reads its argument.

@@ -58,7 +58,7 @@ struct Fixture {
 
     phig::gtk::CollectionPtr open() const {
         auto coll = phig::gtk::open(dir.string());
-        if (!coll) g_error("open failed: %s", coll.error().c_str());
+        if (!coll) g_error("open failed: %s", coll.error().message.c_str());
         return std::move(*coll);
     }
 };
@@ -68,7 +68,8 @@ void test_open_reports_a_missing_catalog_without_creating_it() {
     fs::path absent = f.dir / "absent";
     auto coll = phig::gtk::open(absent.string());
     g_assert_false(coll.has_value());
-    g_assert_false(coll.error().empty());
+    g_assert_true(coll.error().missing);
+    g_assert_false(coll.error().message.empty());
     g_assert_false(fs::exists(absent));
 }
 

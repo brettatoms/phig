@@ -30,11 +30,16 @@ struct CollectionClose {
 };
 using CollectionPtr = std::unique_ptr<Collection, CollectionClose>;
 
-// Opens the catalog in catalog_dir read-only and installs it as the process's
-// catalog, so thumbnail lookups resolve inside it. Fails if the catalog has no
-// database or its schema is not the version this build reads. Never creates a
-// file.
-std::expected<CollectionPtr, std::string> open(const std::string& catalog_dir) noexcept;
+struct OpenError {
+    bool missing = false;  // the catalog has no database yet; only a scan creates one
+    std::string message;
+};
+
+// Opens the catalog in catalog_dir for reading and metadata writes, migrating
+// an older schema, and installs it as the process's catalog, so thumbnail
+// lookups resolve inside it. Fails, creating nothing, if the catalog has no
+// database or its schema is newer than this build reads.
+std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noexcept;
 
 // The catalog phig uses when none is named: PHIG_CATALOG, then the config
 // file's [paths] catalog, then $XDG_DATA_HOME/phig. Fails if the config file

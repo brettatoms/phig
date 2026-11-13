@@ -121,14 +121,14 @@ std::string open_last;   // guarded by open_mutex
 
 }  // namespace
 
-std::expected<CollectionPtr, std::string> open(const std::string& catalog_dir) noexcept {
+std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noexcept {
     std::unique_lock lock(open_mutex);
     open_cv.wait(lock, [] { return !open_held; });
     // Read only after the hold, so a caller that passed a reference to storage
     // it then freed is caught under ASan.
     open_last = catalog_dir;
     if (open_last == fake::kMissingCatalog)
-        return std::unexpected("fake: no catalog at " + open_last);
+        return std::unexpected(OpenError{true, "fake: no catalog at " + open_last});
     lock.unlock();
     return fake::make(3);
 }

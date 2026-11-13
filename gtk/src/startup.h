@@ -8,7 +8,7 @@
 
 namespace phig::gtk {
 
-using OpenResult = std::expected<CollectionPtr, std::string>;
+using OpenResult = std::expected<CollectionPtr, OpenError>;
 using OpenDone = std::move_only_function<void(OpenResult) noexcept>;
 
 // Opens catalog_dir on a worker thread, then calls done with the result on the

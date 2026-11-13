@@ -705,7 +705,7 @@ static void show_startup_error(PhigApp* app, const char* message) {
 static void startup_done(PhigApp* app, phig::gtk::OpenResult opened) noexcept {
     if (app->window == nullptr) return;
     if (!opened) {
-        show_startup_error(app, opened.error().c_str());
+        show_startup_error(app, opened.error().message.c_str());
         return;
     }
 
@@ -888,12 +888,16 @@ static std::string resolve_default_catalog() {
 }
 
 int main(int argc, char** argv) {
+    if (argc > 1) {
+        g_printerr("phig-gtk takes no arguments: it opens phig's default catalog.\n");
+        return 2;
+    }
     auto app = std::make_unique<PhigApp>();
     app->startup_start_us = g_get_monotonic_time();
-    app->catalog_dir = argc > 1 ? argv[1] : resolve_default_catalog();
+    app->catalog_dir = resolve_default_catalog();
 
-    // argv is parsed above, not handed to GApplication: G_APPLICATION_DEFAULT_FLAGS
-    // treats a bare positional argument as a file to open, which a catalog directory is not.
+    // argv is not handed to GApplication: the client takes no arguments, and
+    // G_APPLICATION_DEFAULT_FLAGS would treat a positional one as a file to open.
     GRef<AdwApplication> gtk_app =
         adopt(adw_application_new("org.phig.Gtk", G_APPLICATION_DEFAULT_FLAGS));
     phig::gtk::connect<void(GtkApplication*)>(

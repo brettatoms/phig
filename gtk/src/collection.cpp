@@ -47,15 +47,17 @@ bool is_hex64(std::string_view s) {
 
 }  // namespace
 
-std::expected<CollectionPtr, std::string> open(const std::string& catalog_dir) noexcept {
+std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noexcept {
     try {
         const CatalogPaths paths = catalog_paths(catalog_dir);
-        CollectionPtr coll(new Collection{open_catalog_db(paths.db, CatalogAccess::Read)});
+        CollectionPtr coll(new Collection{open_catalog_db(paths.db, CatalogAccess::Write)});
         set_catalog(paths);
         migrate_legacy_catalog_files(paths);
         return coll;
+    } catch (const CatalogError& e) {
+        return std::unexpected(OpenError{e.kind() == CatalogError::Kind::Missing, e.what()});
     } catch (...) {
-        return std::unexpected(caught("Could not open the phig catalog."));
+        return std::unexpected(OpenError{false, caught("Could not open the phig catalog.")});
     }
 }
 
