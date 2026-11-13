@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <exception>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -13,6 +14,7 @@
 #include "config.h"
 #include "database.h"
 #include "dates.h"
+#include "lockfile.h"
 #include "paths.h"
 #include "thumbs.h"
 #include "thumbs_engine.h"
@@ -21,7 +23,10 @@
 namespace phig::gtk {
 
 struct Collection {
-    std::unique_ptr<Database> db;
+    CatalogPaths paths;
+    std::unique_ptr<Database> db;      // reads, from any thread
+    std::mutex write_mutex;            // one metadata write at a time in this process
+    std::unique_ptr<Database> writer;  // metadata writes, under write_mutex
 };
 
 void CollectionClose::operator()(Collection* coll) const noexcept { delete coll; }
@@ -100,12 +105,36 @@ Database::PageCriteria criteria_for(const Query& query) {
     return c;
 }
 
+// Runs one metadata write. The writer lock is taken without waiting, as
+// libphig's writes take it (R55): a GUI reports a CLI job's lock as busy rather
+// than freezing behind it. write_mutex comes first because flock contends
+// between descriptors, so two writes from this process would otherwise see
+// each other as busy.
+template <typename Body>
+WriteResult write(Collection& coll, const std::vector<int64_t>& ids, const Body& body) noexcept {
+    if (ids.empty()) return {};
+    try {
+        std::lock_guard serial(coll.write_mutex);
+        std::unique_ptr<WriterLock> lock =
+            acquire_catalog_lock(coll.paths, /*no_wait=*/true, /*may_create=*/false);
+        body(*coll.writer);
+        return {};
+    } catch (const LockBusy& e) {
+        return std::unexpected(WriteError{true, e.what()});
+    } catch (...) {
+        return std::unexpected(WriteError{false, caught("Could not change the catalog.")});
+    }
+}
+
 }  // namespace
 
 std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noexcept {
     try {
         const CatalogPaths paths = catalog_paths(catalog_dir);
-        CollectionPtr coll(new Collection{open_catalog_db(paths.db, CatalogAccess::Write)});
+        CollectionPtr coll(new Collection{});
+        coll->paths = paths;
+        coll->db = open_catalog_db(paths.db, CatalogAccess::Write);
+        coll->writer = std::make_unique<Database>(paths.db);
         set_catalog(paths);
         migrate_legacy_catalog_files(paths);
         return coll;
@@ -205,6 +234,33 @@ std::expected<Details, std::string> details(Collection& coll, int64_t id) noexce
     } catch (...) {
         return std::unexpected(caught("Could not read the photo's details."));
     }
+}
+
+WriteResult tag_add(Collection& coll, const std::vector<int64_t>& ids,
+                    const std::string& tag) noexcept {
+    if (tag.empty()) return std::unexpected(WriteError{false, "A tag needs a name."});
+    return write(coll, ids, [&](Database& db) { db.set_tag_by_ids(ids, tag, true); });
+}
+
+WriteResult tag_remove(Collection& coll, const std::vector<int64_t>& ids,
+                       const std::string& tag) noexcept {
+    if (tag.empty()) return std::unexpected(WriteError{false, "A tag needs a name."});
+    return write(coll, ids, [&](Database& db) { db.set_tag_by_ids(ids, tag, false); });
+}
+
+WriteResult gallery_set(Collection& coll, const std::vector<int64_t>& ids,
+                        const std::string& gallery) noexcept {
+    if (gallery.empty()) return std::unexpected(WriteError{false, "A gallery needs a name."});
+    return write(coll, ids, [&](Database& db) { db.set_gallery_by_ids(ids, gallery); });
+}
+
+WriteResult gallery_clear(Collection& coll, const std::vector<int64_t>& ids) noexcept {
+    return write(coll, ids, [&](Database& db) { db.set_gallery_by_ids(ids, ""); });
+}
+
+WriteResult favorite_set(Collection& coll, const std::vector<int64_t>& ids,
+                         bool favorite) noexcept {
+    return write(coll, ids, [&](Database& db) { db.set_tag_by_ids(ids, kFavoriteTag, favorite); });
 }
 
 ThumbLocation thumb_lookup(Collection& coll, std::string_view sha256, int size) noexcept {

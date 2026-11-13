@@ -1,4 +1,6 @@
+#include <fcntl.h>
 #include <glib.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 #include <filesystem>
@@ -14,6 +16,12 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+// g_assert_cmpstr keeps only the pointer it is given, so a temporary string
+// must outlive the macro: here it lives until this call returns.
+void assert_text(const std::string& got, const char* want) {
+    g_assert_cmpstr(got.c_str(), ==, want);
+}
 
 // A database of three rows dated 2021, 2023 and 2022 in insert order, so the
 // gallery's newest-first order differs from insertion order:
@@ -75,6 +83,21 @@ struct Fixture {
         auto coll = phig::gtk::open(dir.string());
         if (!coll) g_error("open failed: %s", coll.error().message.c_str());
         return std::move(*coll);
+    }
+
+    std::vector<std::string> tags_of(const std::string& path) const {
+        Database db(db_path);
+        return db.get_tags_for_image(path);
+    }
+
+    std::string gallery_of(int64_t id) const {
+        Database db(db_path);
+        return db.get_images_by_ids({id}).front().gallery;
+    }
+
+    bool favorite_of(int64_t id) const {
+        Database db(db_path);
+        return db.get_images_by_ids({id}).front().favorite;
     }
 };
 
@@ -275,6 +298,88 @@ void test_details_carry_what_the_viewer_shows() {
     g_assert_false(phig::gtk::details(*coll, 999999).has_value());
 }
 
+void test_writes_change_exactly_the_named_images() {
+    Fixture f;
+    phig::gtk::CollectionPtr coll = f.open();
+    const std::string path_a = "/nowhere/a.jpg", path_c = "/nowhere/c.mov";
+    const std::string path_b = PHIG_SOURCE_DIR "/tests/data/faces_small.jpg";
+
+    g_assert_true(phig::gtk::tag_add(*coll, {f.a, f.c}, "trip").has_value());
+    g_assert_cmpuint(f.tags_of(path_a).size(), ==, 1);
+    g_assert_true(f.tags_of(path_b).empty());
+    g_assert_cmpuint(f.tags_of(path_c).size(), ==, 1);
+
+    g_assert_true(phig::gtk::tag_remove(*coll, {f.c}, "trip").has_value());
+    g_assert_cmpuint(f.tags_of(path_a).size(), ==, 1);
+    g_assert_true(f.tags_of(path_c).empty());
+
+    g_assert_true(phig::gtk::gallery_set(*coll, {f.b}, "Home").has_value());
+    assert_text(f.gallery_of(f.b), "Home");
+    g_assert_true(f.gallery_of(f.a).empty());
+    g_assert_true(f.gallery_of(f.c).empty());
+
+    g_assert_true(phig::gtk::favorite_set(*coll, {f.a}, true).has_value());
+    g_assert_true(f.favorite_of(f.a));
+    g_assert_false(f.favorite_of(f.b));
+    g_assert_true(phig::gtk::favorite_set(*coll, {f.a}, false).has_value());
+    g_assert_false(f.favorite_of(f.a));
+
+    g_assert_true(phig::gtk::gallery_set(*coll, {f.a}, "Away").has_value());
+    g_assert_true(phig::gtk::gallery_clear(*coll, {f.b}).has_value());
+    g_assert_true(f.gallery_of(f.b).empty());
+    assert_text(f.gallery_of(f.a), "Away");
+
+    // An empty selection names nothing and writes nothing.
+    g_assert_true(phig::gtk::tag_add(*coll, {}, "everything").has_value());
+    g_assert_cmpuint(f.tags_of(path_b).size(), ==, 0);
+}
+
+void test_gallery_set_replaces_the_gallery_an_image_had() {
+    Fixture f;
+    phig::gtk::CollectionPtr coll = f.open();
+    g_assert_true(phig::gtk::gallery_set(*coll, {f.a}, "First").has_value());
+    g_assert_true(phig::gtk::gallery_set(*coll, {f.a}, "Second").has_value());
+    assert_text(f.gallery_of(f.a), "Second");
+}
+
+void test_a_write_refuses_an_empty_name() {
+    Fixture f;
+    phig::gtk::CollectionPtr coll = f.open();
+    auto tagged = phig::gtk::tag_add(*coll, {f.a}, "");
+    g_assert_false(tagged.has_value());
+    g_assert_false(tagged.error().busy);
+    auto filed = phig::gtk::gallery_set(*coll, {f.a}, "");
+    g_assert_false(filed.has_value());
+    g_assert_true(f.tags_of("/nowhere/a.jpg").empty());
+    g_assert_true(f.gallery_of(f.a).empty());
+}
+
+// The writer lock is an flock, which contends between open file descriptions,
+// so a descriptor of the test's own stands in for another process, as
+// LockfileTest does.
+void test_a_write_is_busy_while_another_process_holds_the_writer_lock() {
+    Fixture f;
+    phig::gtk::CollectionPtr coll = f.open();
+    const std::string lock_path = (f.dir / "phig.db.lock").string();
+    int other = ::open(lock_path.c_str(), O_RDWR | O_CREAT, 0644);
+    g_assert_cmpint(other, >=, 0);
+    g_assert_cmpint(::flock(other, LOCK_EX | LOCK_NB), ==, 0);
+
+    auto tagged = phig::gtk::tag_add(*coll, {f.a}, "blocked");
+    g_assert_false(tagged.has_value());
+    g_assert_true(tagged.error().busy);
+    g_assert_false(tagged.error().message.empty());
+    g_assert_true(phig::gtk::gallery_set(*coll, {f.a}, "Blocked").error().busy);
+    g_assert_true(phig::gtk::favorite_set(*coll, {f.a}, true).error().busy);
+    g_assert_true(f.tags_of("/nowhere/a.jpg").empty());
+    g_assert_true(f.gallery_of(f.a).empty());
+
+    ::flock(other, LOCK_UN);
+    ::close(other);
+    g_assert_true(phig::gtk::tag_add(*coll, {f.a}, "allowed").has_value());
+    g_assert_cmpuint(f.tags_of("/nowhere/a.jpg").size(), ==, 1);
+}
+
 void test_a_thumbnail_is_generated_on_demand() {
     Fixture f;
     phig::gtk::CollectionPtr coll = f.open();
@@ -370,6 +475,14 @@ int main(int argc, char** argv) {
                     test_counts_list_galleries_and_tags_but_not_favorite);
     g_test_add_func("/collection/details-carry-what-the-viewer-shows",
                     test_details_carry_what_the_viewer_shows);
+    g_test_add_func("/collection/writes-change-exactly-the-named-images",
+                    test_writes_change_exactly_the_named_images);
+    g_test_add_func("/collection/gallery-set-replaces-the-gallery-an-image-had",
+                    test_gallery_set_replaces_the_gallery_an_image_had);
+    g_test_add_func("/collection/a-write-refuses-an-empty-name",
+                    test_a_write_refuses_an_empty_name);
+    g_test_add_func("/collection/a-write-is-busy-while-another-process-holds-the-writer-lock",
+                    test_a_write_is_busy_while_another_process_holds_the_writer_lock);
     g_test_add_func("/collection/a-thumbnail-is-generated-on-demand",
                     test_a_thumbnail_is_generated_on_demand);
     g_test_add_func("/collection/generation-names-a-missing-source-and-an-unknown-id",

@@ -84,6 +84,15 @@ Row row_for(uint32_t index) {
                fake::sha(index), std::to_string(index) + ".jpg"};
 }
 
+// Applies change to every known id's row.
+template <typename Change>
+WriteResult fake_write(Collection& coll, const std::vector<int64_t>& ids, const Change& change) {
+    std::lock_guard lock(coll.rows_mutex);
+    for (int64_t id : ids)
+        if (known(coll, id)) change(coll.meta[static_cast<size_t>(id - 1)]);
+    return {};
+}
+
 }  // namespace
 
 std::expected<std::vector<int64_t>, std::string> ids(Collection& coll,
@@ -158,6 +167,33 @@ std::expected<Details, std::string> details(Collection& coll, int64_t id) noexce
     d.gallery = m.gallery;
     d.favorite = m.favorite;
     return d;
+}
+
+WriteResult tag_add(Collection& coll, const std::vector<int64_t>& ids,
+                    const std::string& tag) noexcept {
+    if (tag.empty()) return std::unexpected(WriteError{false, "fake: empty tag"});
+    return fake_write(coll, ids, [&tag](FakeRow& m) { m.tags.insert(tag); });
+}
+
+WriteResult tag_remove(Collection& coll, const std::vector<int64_t>& ids,
+                       const std::string& tag) noexcept {
+    if (tag.empty()) return std::unexpected(WriteError{false, "fake: empty tag"});
+    return fake_write(coll, ids, [&tag](FakeRow& m) { m.tags.erase(tag); });
+}
+
+WriteResult gallery_set(Collection& coll, const std::vector<int64_t>& ids,
+                        const std::string& gallery) noexcept {
+    if (gallery.empty()) return std::unexpected(WriteError{false, "fake: empty gallery"});
+    return fake_write(coll, ids, [&gallery](FakeRow& m) { m.gallery = gallery; });
+}
+
+WriteResult gallery_clear(Collection& coll, const std::vector<int64_t>& ids) noexcept {
+    return fake_write(coll, ids, [](FakeRow& m) { m.gallery.clear(); });
+}
+
+WriteResult favorite_set(Collection& coll, const std::vector<int64_t>& ids,
+                         bool favorite) noexcept {
+    return fake_write(coll, ids, [favorite](FakeRow& m) { m.favorite = favorite; });
 }
 
 ThumbLocation thumb_lookup(Collection& coll, std::string_view sha256, int size) noexcept {

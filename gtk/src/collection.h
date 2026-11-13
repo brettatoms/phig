@@ -124,6 +124,27 @@ struct Details {
 
 std::expected<Details, std::string> details(Collection& coll, int64_t id) noexcept;
 
+struct WriteError {
+    bool busy = false;  // another phig process holds the writer lock
+    std::string message;
+};
+
+// A metadata write changes the images named in ids and no others. It takes the
+// catalog's writer lock without waiting: while another phig process holds it,
+// the write fails with busy set and changes nothing. An empty ids changes
+// nothing and succeeds. An id with no row is skipped.
+using WriteResult = std::expected<void, WriteError>;
+
+WriteResult tag_add(Collection& coll, const std::vector<int64_t>& ids,
+                    const std::string& tag) noexcept;
+WriteResult tag_remove(Collection& coll, const std::vector<int64_t>& ids,
+                       const std::string& tag) noexcept;
+// Replaces whatever gallery each image had.
+WriteResult gallery_set(Collection& coll, const std::vector<int64_t>& ids,
+                        const std::string& gallery) noexcept;
+WriteResult gallery_clear(Collection& coll, const std::vector<int64_t>& ids) noexcept;
+WriteResult favorite_set(Collection& coll, const std::vector<int64_t>& ids, bool favorite) noexcept;
+
 enum class ThumbLookup {
     Present,  // the file at path exists
     Absent,   // path is where it would be; generate to create it
