@@ -212,13 +212,25 @@ id = "R87"
 tier = "engine"
 concern = "authorization"
 statement = "Every destination organize plans lies inside the destination directory the caller named; nothing a file carries and nothing in the format can place a file outside it."
-rationale = "apply_format substitutes %camera and %make from the file's EXIF Model and Make, and %gallery from its gallery name, verbatim, and OrganizeEngine::plan joins the result onto the destination with fs::path's operator/. A '/' in a value adds directories, a '..' climbs out, and an absolute value replaces the destination outright. Measured with the built binary in a scratch catalog: a JPEG whose EXIF Model is '../../escaped' was copied by `phig cp <dest> --format '%camera/%original'` to a directory two levels above <dest>, and one whose Make is '/tmp/abs' was planned by the same command with %make to /tmp/abs/a.jpg. mv does the same with the original. A camera writes those fields and anyone can edit them, so the file decides where phig moves it, and the caller authorized a move into one directory, not wherever the file says. The conflict guards (R01, R02) still refuse to overwrite an occupied path, so nothing is clobbered; the original lands outside the tree the user chose, possibly somewhere they never look or that is cleaned up."
-enforced_at = ["core/organize_plan.cpp:apply_format", "core/organize_engine.cpp:OrganizeEngine::plan"]
+rationale = "A format's tokens are substituted into a path joined onto the destination, and %camera, %make and %gallery come from the file's EXIF Model and Make and its gallery name, which a camera writes and anyone can edit. Substituted verbatim, a '/' adds directories, a '..' climbs out and an absolute value replaces the destination; measured with the built binary, a JPEG whose Model was '../../escaped' was copied two directories above the destination, and one whose Make was '/tmp/abs' was planned into /tmp/abs. The caller authorized a move into one directory, not wherever the file says, so three guards hold the line. apply_format expands each of those tokens to a single path component: '/' and '\\' become '_', control characters are dropped, and a value left empty, '.' or '..' takes its placeholder. validate(const OrganizeOptions&) refuses, before planning, a format that is an absolute path, has a '..' component, or uses an unknown token, which also catches a typo such as %y that would otherwise name a folder. OrganizeEngine::plan then checks each built destination lexically lies under the destination and throws if one does not; after the other two that cannot happen, so reaching it is a bug and no plan is produced. The R01 and R02 conflict guards are separate: they stop an overwrite at a path, these stop the path being outside the tree."
+enforced_at = [
+    "core/organize_plan.cpp:apply_format",
+    "core/organize_plan.cpp:component",
+    "core/organize_engine.cpp:validate",
+    "core/organize_engine.cpp:OrganizeEngine::plan",
+]
 binds = ["organize.plan", "organize.copy", "organize.move"]
 # original-file: the bytes are not destroyed, but a move puts the only copy
 # outside the tree the user chose and named.
 protects = ["original-file"]
-tests = []
-test_kind = "witness"
-status = "violated"
-test_gap = "Nothing pins it; the measurement above is the evidence. A test needs an image row whose metadata_json carries a Make or Model with '..' or a leading '/', planned with a format using it, asserting every planned destination stays under the destination."
+tests = [
+    "OrganizeEngineTest.AMakeOrModelThatClimbsOrIsAbsoluteStaysInsideTheDestination",
+    "OrganizeEngineTest.AGalleryNameWithASlashPlansOneFolder",
+    "OrganizeEngineTest.AValueThatCleansToNothingOrADotTakesItsPlaceholder",
+    "OrganizeEngineTest.AFormatThatLeavesTheDestinationOrHasAnUnknownTokenIsRefused",
+    "OrganizeEngineTest.CliCopyKeepsAFileWhoseModelClimbsInsideTheDestination",
+    "AbiOrganizeTest.PlanRefusesAFormatThatLeavesTheDestination",
+]
+test_kind = "conformance"
+status = "holds"
+test_gap = "The containment check in plan() is unreachable once the other two guards hold, so no test reaches it; it is pinned only by reading. A symlinked directory inside the destination that points elsewhere passes, by design: the check is lexical, and following the user's own link is what they asked for."

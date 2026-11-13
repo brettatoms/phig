@@ -2,6 +2,7 @@
 #include <sqlite3.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -49,6 +50,36 @@ class OrganizeEngineTest : public ::testing::Test {
         info.sha256 = name;  // unique per file is all this needs
         info.metadata_json = R"({"DateTimeOriginal":")" + exif_date + R"("})";
         db.insert(info);
+    }
+
+    // add_image with extra raw JSON members after the date, e.g. R"("Model":"x")". The
+    // value goes in unescaped, as json_get reads it back.
+    void add_image_with(Database& db, const std::string& name, const std::string& members) {
+        fs::path p = dir / "src" / name;
+        fs::create_directories(p.parent_path());
+        {
+            std::ofstream f(p);
+            f << name;
+        }
+        ImageInfo info;
+        info.path = p.string();
+        info.filename = name;
+        info.extension = p.extension().string();
+        info.sha256 = name;
+        info.metadata_json = R"({"DateTimeOriginal":"2019:07:04 10:00:00",)" + members + "}";
+        db.insert(info);
+    }
+
+    // Every planned destination, after checking it lies under `root`.
+    std::vector<std::string> planned_dests(const OrganizePlan& plan, const fs::path& root) {
+        std::vector<std::string> out;
+        const std::string prefix = root.string() + "/";
+        for (size_t i = 0; i < plan.size(); ++i) {
+            const std::string d = fs::path(plan.at(i).dest).lexically_normal().string();
+            EXPECT_TRUE(d.starts_with(prefix)) << d << " is outside " << root;
+            out.push_back(plan.at(i).dest);
+        }
+        return out;
     }
 
     // Every row. These tests predate id selection and meant "the whole
@@ -127,6 +158,104 @@ TEST_F(OrganizeEngineTest, AnEmptyDestinationOrFormatIsRefusedBeforePlanning) {
     OrganizeOptions no_format = base_opts(db);
     no_format.format = "";
     EXPECT_THROW(OrganizeEngine(no_format, db).plan(cancel, nullptr), InvalidOption);
+}
+
+// A file's EXIF Make and Model are substituted into its destination. They are labels,
+// not paths: a separator in one becomes '_', so a file cannot steer where it is put
+// (R87).
+TEST_F(OrganizeEngineTest, AMakeOrModelThatClimbsOrIsAbsoluteStaysInsideTheDestination) {
+    Database db(db_path);
+    db.init_schema();
+    add_image_with(db, "a.jpg", R"("Model":"../../x")");
+    add_image_with(db, "b.jpg", R"("Make":"/tmp/abs")");
+
+    OrganizeOptions opts = base_opts(db);
+    opts.format = "%camera/%make/%original";
+    CancelToken cancel;
+    OrganizePlan plan = OrganizeEngine(opts, db).plan(cancel, nullptr);
+
+    ASSERT_EQ(plan.size(), 2u);
+    std::vector<std::string> dests = planned_dests(plan, dir / "out");
+    std::sort(dests.begin(), dests.end());
+    EXPECT_EQ(dests[0], (dir / "out" / ".._.._x" / "unknown-make" / "a.jpg").string());
+    EXPECT_EQ(dests[1], (dir / "out" / "unknown-camera" / "_tmp_abs" / "b.jpg").string());
+}
+
+TEST_F(OrganizeEngineTest, AGalleryNameWithASlashPlansOneFolder) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    ASSERT_EQ(db.set_gallery({(dir / "src" / "a.jpg").string()}, "trips/2019", false), 1);
+
+    OrganizeOptions opts = base_opts(db);
+    opts.format = "%gallery/%original";
+    CancelToken cancel;
+    OrganizePlan plan = OrganizeEngine(opts, db).plan(cancel, nullptr);
+
+    ASSERT_EQ(plan.size(), 1u);
+    EXPECT_EQ(planned_dests(plan, dir / "out")[0], (dir / "out" / "trips_2019" / "a.jpg").string());
+}
+
+TEST_F(OrganizeEngineTest, AValueThatCleansToNothingOrADotTakesItsPlaceholder) {
+    Database db(db_path);
+    db.init_schema();
+    add_image_with(db, "a.jpg", "\"Model\":\"..\",\"Make\":\"\x01\x02\"");
+    ASSERT_EQ(db.set_gallery({(dir / "src" / "a.jpg").string()}, ".", false), 1);
+
+    OrganizeOptions opts = base_opts(db);
+    opts.format = "%camera/%make/%gallery/%original";
+    CancelToken cancel;
+    OrganizePlan plan = OrganizeEngine(opts, db).plan(cancel, nullptr);
+
+    ASSERT_EQ(plan.size(), 1u);
+    EXPECT_EQ(planned_dests(plan, dir / "out")[0],
+              (dir / "out" / "unknown-camera" / "unknown-make" / "no-gallery" / "a.jpg").string());
+}
+
+// The format is the caller's own input, so one that could leave the destination, or
+// that uses a token phig does not know, is refused before planning (R73's shape).
+TEST_F(OrganizeEngineTest, AFormatThatLeavesTheDestinationOrHasAnUnknownTokenIsRefused) {
+    Database db(db_path);
+    db.init_schema();
+    add_image(db, "a.jpg", "2019:07:04 10:00:00");
+    CancelToken cancel;
+
+    for (const std::string fmt :
+         {"/abs/%original", "%Y/../../%original", "%y/%original", "%Y/%original%"}) {
+        OrganizeOptions opts = base_opts(db);
+        opts.format = fmt;
+        EXPECT_THROW(OrganizeEngine(opts, db).plan(cancel, nullptr), InvalidOption) << fmt;
+    }
+    // Literal text beside the tokens is still a format, and a destination given with a
+    // trailing separator still contains what is planned under it.
+    OrganizeOptions ok = base_opts(db);
+    ok.destination += "/";
+    ok.format = "photos-%Y/%m-%d/%original";
+    EXPECT_EQ(OrganizeEngine(ok, db).plan(cancel, nullptr).size(), 1u);
+}
+
+// The 2026-11-10 measurement, repeated through the CLI: a Model of '../../escaped' used
+// to put the copy two directories above the destination.
+TEST_F(OrganizeEngineTest, CliCopyKeepsAFileWhoseModelClimbsInsideTheDestination) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    {
+        Database db(db_path);
+        db.init_schema();
+        add_image_with(db, "a.jpg", R"("Model":"../../escaped")");
+    }
+    const fs::path dest = dir / "out" / "dest";
+
+    PhigRun run = run_phig(
+        phig_bin, dir,
+        "cp '" + dest.string() + "' --format '%camera/%original' --catalog '" + dir.string() + "'");
+
+    EXPECT_EQ(run.exit_code, 0) << run.output;
+    EXPECT_TRUE(fs::exists(dest / ".._.._escaped" / "a.jpg")) << run.output;
+    EXPECT_FALSE(fs::exists(dir / "escaped")) << run.output;
 }
 
 TEST_F(OrganizeEngineTest, PlanHonorsItsIdSelection) {

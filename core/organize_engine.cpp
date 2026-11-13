@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 
 #include "dates.h"
@@ -69,6 +70,23 @@ void validate(const OrganizeOptions& opts) {
     // working directory; an empty format would send every file to the same path.
     if (opts.destination.empty()) throw InvalidOption("organize: no destination given");
     if (opts.format.empty()) throw InvalidOption("organize: empty format");
+    // The format is joined onto the destination, so an absolute one would replace it
+    // and a ".." would climb out of it (R87).
+    const fs::path fmt(opts.format);
+    if (fmt.has_root_path()) {
+        throw InvalidOption("organize: format '" + opts.format +
+                            "' is an absolute path; it must be relative to the destination");
+    }
+    for (const auto& part : fmt) {
+        if (part == "..") {
+            throw InvalidOption("organize: format '" + opts.format +
+                                "' leaves the destination through '..'");
+        }
+    }
+    if (std::string bad = first_unknown_token(opts.format); !bad.empty()) {
+        throw InvalidOption("organize: unknown token '" + bad + "' in format '" + opts.format +
+                            "'");
+    }
 }
 
 OrganizePlan OrganizeEngine::plan(const CancelToken& cancel,
@@ -80,11 +98,24 @@ OrganizePlan OrganizeEngine::plan(const CancelToken& cancel,
 
     for (const auto& img : images) out.batch_sources_.insert(img.path);
 
+    // What every planned destination must lie under. A trailing separator leaves an
+    // empty last element that lexically_relative would not match.
+    fs::path root = fs::path(opts_.destination).lexically_normal();
+    if (!root.has_filename() && root.has_relative_path()) root = root.parent_path();
+
     for (const auto& img : images) {
         if (cancel.stop()) break;
 
         DateParts date = get_best_date(img);
         fs::path dest = fs::path(opts_.destination) / apply_format(opts_.format, img, date);
+        // Backstop for validate() and apply_format's cleaning, which between them
+        // leave nothing that can escape: reaching this is a bug, so no plan is
+        // produced rather than one item being skipped (R87).
+        const fs::path rel = dest.lexically_normal().lexically_relative(root);
+        if (rel.empty() || rel == "." || *rel.begin() == "..") {
+            throw std::runtime_error("organize: planned destination " + dest.string() +
+                                     " is outside " + opts_.destination);
+        }
 
         // Protect another image's not-yet-moved source, and any real file on
         // disk. Clobbering an untracked file is silent data loss; clobbering a

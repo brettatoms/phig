@@ -676,7 +676,11 @@ typedef enum {
 typedef struct {
     /* Root of the organized layout. "" is refused. */
     const char* destination;
-    /* e.g. "%Y/%m/%original". NULL uses "%Y/%m/%original"; "" is refused. */
+    /* e.g. "%Y/%m/%original". NULL uses "%Y/%m/%original". Tokens: %original,
+       %camera, %make, %gallery, %fav, %Y, %m, %d. Refused: "", an absolute
+       path, a ".." component, and an unknown %-token. %camera, %make and
+       %gallery each expand to one folder name, so a file's metadata cannot
+       place it outside the destination. */
     const char* format;
     /* The images to act on, as ids — resolve a set with phig_query_ids.
        NULL/0 selects NOTHING, not everything: a caller names its subject, and

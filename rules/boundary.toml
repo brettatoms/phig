@@ -218,7 +218,7 @@ tests = [
 ]
 test_kind = "conformance"
 status = "holds"
-test_gap = "One CLI loop, one flag: the subprocess test runs `face rebuild --mtach` and skips when the binary is not beside phig-tests or at ./build/phig; the other twelve loops rest on measurement. An organize format's unknown %-tokens are kept literally, and its substituted values are not checked for path separators, which R87 records."
+test_gap = "One CLI loop, one flag: the subprocess test runs `face rebuild --mtach` and skips when the binary is not beside phig-tests or at ./build/phig; the other twelve loops rest on measurement."
 
 [[rule]]
 id = "R81"

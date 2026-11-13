@@ -174,6 +174,25 @@ TEST_F(AbiOrganizeTest, PlanRefusesAnUnknownPolicyAnEmptyDestinationAndAMissingI
     EXPECT_EQ(op, nullptr);
 }
 
+TEST_F(AbiOrganizeTest, PlanRefusesAFormatThatLeavesTheDestination) {
+    OrganizeFixture fx(1);
+    open(fx);
+    AllIds all(ctx);
+    phig_organize_options opts{};
+    opts.destination = fx.out_dir.c_str();
+    opts.ids = all.list->items;
+    opts.id_count = static_cast<size_t>(all.list->count);
+    opts.on_conflict = PHIG_CONFLICT_RENAME;
+    phig_op* op = nullptr;
+
+    for (const char* fmt : {"/abs/%original", "../%original", "%q/%original"}) {
+        opts.format = fmt;
+        EXPECT_EQ(phig_op_organize_plan_start(ctx, &opts, &op), PHIG_ERR_INVALID_ARG) << fmt;
+        EXPECT_EQ(op, nullptr);
+        EXPECT_STRNE(phig_last_error(ctx), "");
+    }
+}
+
 TEST_F(AbiOrganizeTest, SetResolutionRefusesAnUnknownValueAndChangesNothing) {
     OrganizeFixture fx(1);
     open(fx);
