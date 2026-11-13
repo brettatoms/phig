@@ -59,19 +59,24 @@ std::filesystem::path thumb_path(const Collection& coll, std::string_view sha256
     return coll.thumb_dir / std::to_string(size) / (std::string(sha256) + ".png");
 }
 
-// Writes a solid width x height PNG to path, atomically.
-bool write_png(const std::filesystem::path& path, int width, int height) {
+// A solid width x height texture.
+GRef<GdkTexture> solid_texture(int width, int height) {
     std::string pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4, '\x80');
     GBytes* bytes = g_bytes_new(pixels.data(), pixels.size());
-    GdkTexture* texture = gdk_memory_texture_new(width, height, GDK_MEMORY_R8G8B8A8, bytes,
-                                                 static_cast<gsize>(width) * 4);
-    GBytes* png = gdk_texture_save_to_png_bytes(texture);
+    GRef<GdkTexture> texture = adopt(gdk_memory_texture_new(width, height, GDK_MEMORY_R8G8B8A8,
+                                                            bytes, static_cast<gsize>(width) * 4));
+    g_bytes_unref(bytes);
+    return texture;
+}
+
+// Writes a solid width x height PNG to path, atomically.
+bool write_png(const std::filesystem::path& path, int width, int height) {
+    GRef<GdkTexture> texture = solid_texture(width, height);
+    GBytes* png = gdk_texture_save_to_png_bytes(texture.get());
     gsize size = 0;
     const char* data = static_cast<const char*>(g_bytes_get_data(png, &size));
     gboolean ok = g_file_set_contents(path.c_str(), data, static_cast<gssize>(size), nullptr);
     g_bytes_unref(png);
-    g_object_unref(texture);
-    g_bytes_unref(bytes);
     return ok;
 }
 
@@ -167,6 +172,14 @@ std::expected<Details, std::string> details(Collection& coll, int64_t id) noexce
     d.gallery = m.gallery;
     d.favorite = m.favorite;
     return d;
+}
+
+std::expected<GRef<GdkTexture>, std::string> image(Collection& coll, int64_t id,
+                                                   int max_edge) noexcept {
+    if (!known(coll, id)) return std::unexpected("fake: no row " + std::to_string(id));
+    if (max_edge <= 0) return std::unexpected(std::string("fake: bad size"));
+    const int edge = std::min(kThumbEdge, max_edge);
+    return solid_texture(edge, edge);
 }
 
 WriteResult tag_add(Collection& coll, const std::vector<int64_t>& ids,

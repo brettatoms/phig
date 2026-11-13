@@ -3,6 +3,7 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -387,6 +388,37 @@ void test_a_write_is_busy_while_another_process_holds_the_writer_lock() {
     g_assert_cmpuint(f.tags_of("/nowhere/a.jpg").size(), ==, 1);
 }
 
+void test_an_image_decodes_upright_within_its_max_edge() {
+    Fixture f;
+    int64_t id = 0;
+    {
+        Database db(f.db_path);
+        // Stored 200x100 with EXIF orientation 6, so upright it is 100x200.
+        id = Fixture::insert(db, PHIG_SOURCE_DIR "/tests/data/orient_6.jpg", "2020-01-01T00:00:00Z",
+                             std::string(64, 'd'), 1, "{}", "image");
+    }
+    phig::gtk::CollectionPtr coll = f.open();
+
+    auto full = phig::gtk::image(*coll, id, 4096);
+    g_assert_true(full.has_value());
+    g_assert_cmpint(gdk_texture_get_width(full->get()), ==, 100);
+    g_assert_cmpint(gdk_texture_get_height(full->get()), ==, 200);
+
+    auto scaled = phig::gtk::image(*coll, id, 50);
+    g_assert_true(scaled.has_value());
+    g_assert_cmpint(gdk_texture_get_width(scaled->get()), ==, 25);
+    g_assert_cmpint(gdk_texture_get_height(scaled->get()), ==, 50);
+}
+
+void test_an_image_names_a_missing_file_and_an_unknown_id() {
+    Fixture f;
+    phig::gtk::CollectionPtr coll = f.open();
+    auto gone = phig::gtk::image(*coll, f.a, 512);
+    g_assert_false(gone.has_value());
+    g_assert_nonnull(strstr(gone.error().c_str(), "/nowhere/a.jpg"));
+    g_assert_false(phig::gtk::image(*coll, 999999, 512).has_value());
+}
+
 void test_a_thumbnail_is_generated_on_demand() {
     Fixture f;
     phig::gtk::CollectionPtr coll = f.open();
@@ -490,6 +522,10 @@ int main(int argc, char** argv) {
                     test_a_write_refuses_an_empty_name);
     g_test_add_func("/collection/a-write-is-busy-while-another-process-holds-the-writer-lock",
                     test_a_write_is_busy_while_another_process_holds_the_writer_lock);
+    g_test_add_func("/collection/an-image-decodes-upright-within-its-max-edge",
+                    test_an_image_decodes_upright_within_its_max_edge);
+    g_test_add_func("/collection/an-image-names-a-missing-file-and-an-unknown-id",
+                    test_an_image_names_a_missing_file_and_an_unknown_id);
     g_test_add_func("/collection/a-thumbnail-is-generated-on-demand",
                     test_a_thumbnail_is_generated_on_demand);
     g_test_add_func("/collection/generation-names-a-missing-source-and-an-unknown-id",

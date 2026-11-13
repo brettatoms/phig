@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cctype>
 #include <exception>
+#include <filesystem>
 #include <mutex>
+#include <opencv2/imgproc.hpp>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -14,6 +16,8 @@
 #include "config.h"
 #include "database.h"
 #include "dates.h"
+#include "decode_result.h"
+#include "hasher.h"
 #include "lockfile.h"
 #include "paths.h"
 #include "thumbs.h"
@@ -103,6 +107,29 @@ Database::PageCriteria criteria_for(const Query& query) {
     c.offset = 0;
     c.limit = -1;  // every match: a negative limit turns off ids_matching's paging
     return c;
+}
+
+// A decoded image as a texture whose longest edge is at most max_edge.
+GRef<GdkTexture> texture_from(cv::Mat img, int max_edge) {
+    if (img.depth() == CV_16U) img.convertTo(img, CV_8U, 1.0 / 257.0);
+    if (img.channels() == 1) cv::cvtColor(img, img, cv::COLOR_GRAY2BGR);
+    if (img.channels() == 4) cv::cvtColor(img, img, cv::COLOR_BGRA2BGR);
+    const int longest = std::max(img.cols, img.rows);
+    if (longest > max_edge) {
+        const double scale = static_cast<double>(max_edge) / longest;
+        cv::Mat scaled;
+        cv::resize(img, scaled,
+                   cv::Size(std::max(1, static_cast<int>(img.cols * scale)),
+                            std::max(1, static_cast<int>(img.rows * scale))),
+                   0, 0, cv::INTER_AREA);
+        img = std::move(scaled);
+    }
+    if (!img.isContinuous()) img = img.clone();
+    GBytes* bytes = g_bytes_new(img.data, img.total() * img.elemSize());
+    GRef<GdkTexture> texture =
+        adopt(gdk_memory_texture_new(img.cols, img.rows, GDK_MEMORY_B8G8R8, bytes, img.step[0]));
+    g_bytes_unref(bytes);
+    return texture;
 }
 
 // Runs one metadata write. The writer lock is taken without waiting, as
@@ -233,6 +260,35 @@ std::expected<Details, std::string> details(Collection& coll, int64_t id) noexce
         return d;
     } catch (...) {
         return std::unexpected(caught("Could not read the photo's details."));
+    }
+}
+
+std::expected<GRef<GdkTexture>, std::string> image(Collection& coll, int64_t id,
+                                                   int max_edge) noexcept {
+    try {
+        if (max_edge <= 0) return std::unexpected(std::string("The image size must be positive."));
+        ImageInfo info;
+        if (!coll.db->get_image_for_thumb(id, info))
+            return std::unexpected("No photo has id " + std::to_string(id) + ".");
+        std::error_code ec;
+        if (!std::filesystem::exists(info.path, ec))
+            return std::unexpected(info.path + " is not on disk.");
+        cv::Mat img;
+        std::string warning;
+        if (info.media_type == "video") {
+            VideoKeyframe keyframe = extract_video_keyframe(info.path);
+            img = std::move(keyframe.frame);
+            warning = std::move(keyframe.warning);
+        } else {
+            DecodeResult decoded = decode_image_with_warning(info.path);
+            img = std::move(decoded.img);
+            warning = std::move(decoded.warning);
+        }
+        if (img.empty())
+            return std::unexpected(warning.empty() ? "Could not decode " + info.path : warning);
+        return texture_from(std::move(img), max_edge);
+    } catch (...) {
+        return std::unexpected(caught("Could not decode the image."));
     }
 }
 

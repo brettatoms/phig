@@ -1,5 +1,7 @@
 #pragma once
 
+#include <gdk/gdk.h>
+
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -7,6 +9,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "gref.h"
 
 // The gtk client's only route into phig. src/collection.cpp implements it over
 // core/; the tests link tests/fake-collection.cpp instead. Every function may be
@@ -123,6 +127,12 @@ struct Details {
 };
 
 std::expected<Details, std::string> details(Collection& coll, int64_t id) noexcept;
+
+// Decodes row id's image upright, through the decoder thumbnail generation
+// uses, and scales it so its longest edge is at most max_edge pixels. A video
+// gives its keyframe.
+std::expected<GRef<GdkTexture>, std::string> image(Collection& coll, int64_t id,
+                                                   int max_edge) noexcept;
 
 struct WriteError {
     bool busy = false;  // another phig process holds the writer lock
