@@ -18,8 +18,15 @@ namespace phig::gtk {
 //
 // work runs on a worker thread: it may use only what it captured by value or
 // was guaranteed to outlive it, never PhigApp and never a widget. The
-// collection qualifies, because the held application keeps main from closing
-// it until done has run.
+// collection qualifies as long as the application exits by use count: the hold
+// keeps main from closing it until done has run, but g_application_quit() stops
+// the loop regardless.
+//
+// GLib may drop the last reference to the task on the worker thread, so the
+// job's state is not left to the task's destructor. The completion callback
+// destroys work, done, the result and the application reference itself, on the
+// calling thread, right after done returns. Only an empty Job is freed wherever
+// the task's last reference goes.
 template <typename T>
 void run_in_background(std::move_only_function<T() noexcept> work,
                        std::move_only_function<void(T) noexcept> done) {
@@ -39,6 +46,10 @@ void run_in_background(std::move_only_function<T() noexcept> work,
             auto& j = *static_cast<Job*>(g_task_get_task_data(G_TASK(result)));
             j.done(std::move(*j.result));
             if (j.app) g_application_release(j.app.get());
+            j.app.reset();
+            j.work = nullptr;
+            j.done = nullptr;
+            j.result.reset();
         },
         nullptr);
     g_task_set_task_data(task, job, [](gpointer p) noexcept { delete static_cast<Job*>(p); });

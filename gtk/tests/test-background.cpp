@@ -1,6 +1,5 @@
 #include <glib.h>
 
-#include <memory>
 #include <string>
 
 #include "background.h"
@@ -45,26 +44,37 @@ void test_work_runs_off_the_calling_thread_and_done_on_it() {
     g_assert_cmpstr(delivered.c_str(), ==, "from the worker");
 }
 
-// done may own the last reference to what it delivers into.
-void test_done_is_destroyed_after_it_runs() {
+// Records which thread destroys it.
+struct ThreadGuard {
+    GThread** destroyed_on;
+    explicit ThreadGuard(GThread** where) : destroyed_on(where) {}
+    ThreadGuard(ThreadGuard&& other) noexcept : destroyed_on(other.destroyed_on) {
+        other.destroyed_on = nullptr;
+    }
+    ~ThreadGuard() {
+        if (destroyed_on != nullptr) *destroyed_on = g_thread_self();
+    }
+};
+
+// done may own the last reference to a widget, so it and its captures are
+// destroyed on the calling thread as soon as it has run, before the loop that
+// it quits returns.
+void test_done_is_destroyed_on_the_calling_thread_after_it_runs() {
     GMainLoop* loop = g_main_loop_new(nullptr, FALSE);
-    auto owned = std::make_shared<int>(7);
-    std::weak_ptr<int> watch = owned;
+    GThread* destroyed_on = nullptr;
     int seen = 0;
 
-    phig::gtk::run_in_background<int>([]() noexcept { return 1; },
-                                      [owned = std::move(owned), &seen, loop](int n) noexcept {
-                                          seen = *owned + n;
-                                          g_main_loop_quit(loop);
-                                      });
+    phig::gtk::run_in_background<int>(
+        []() noexcept { return 1; },
+        [guard = ThreadGuard(&destroyed_on), &seen, loop](int n) noexcept {
+            seen = n;
+            g_main_loop_quit(loop);
+        });
     run_until_quit(loop);
-    // The task data is freed once the completion callback has been dispatched.
-    while (g_main_context_iteration(nullptr, FALSE)) {
-    }
     g_main_loop_unref(loop);
 
-    g_assert_cmpint(seen, ==, 8);
-    g_assert_true(watch.expired());
+    g_assert_cmpint(seen, ==, 1);
+    g_assert_true(destroyed_on == g_thread_self());
 }
 
 }  // namespace
@@ -73,7 +83,7 @@ int main(int argc, char** argv) {
     g_test_init(&argc, &argv, nullptr);
     g_test_add_func("/background/work-runs-off-the-calling-thread-and-done-on-it",
                     test_work_runs_off_the_calling_thread_and_done_on_it);
-    g_test_add_func("/background/done-is-destroyed-after-it-runs",
-                    test_done_is_destroyed_after_it_runs);
+    g_test_add_func("/background/done-is-destroyed-on-the-calling-thread-after-it-runs",
+                    test_done_is_destroyed_on_the_calling_thread_after_it_runs);
     return g_test_run();
 }
