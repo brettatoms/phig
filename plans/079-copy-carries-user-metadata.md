@@ -1,6 +1,6 @@
 ---
 name: Copy Carries User Metadata
-status: in-progress
+status: completed
 created: 2026-11-14
 description: >
   `phig cp` gives the copy a catalog row filled from the original's, but leaves
@@ -85,3 +85,26 @@ Real-behavior tests against the engine and the built binary, each failing first:
 - **076** added the identical-destination path whose copy branch this extends.
 - **020** (activity log) gains the `copy_metadata` entry kind; **065**'s undo
   reader needs to know it.
+
+## Outcome
+
+Built on branch `079-copy-carries-user-metadata`, 2026-11-14, as decided above,
+with these details settled in the code:
+
+- `Database::copy_user_metadata` (`core/database.cpp`) shares its tag and
+  gallery statements with `transfer_user_metadata`, so R37's rules live in one
+  place. Faces are read with `read_faces`, which also serves
+  `get_labelled_faces_for_image`, and written through `insert_face` and
+  `set_face_person`.
+- `execute_identical_action` re-checks `metadata_merge_blocker` before a copy as
+  well as a move. It had checked only moves, which was harmless while a copy
+  merged nothing; without it, a gallery set on the destination between plan and
+  apply would have been kept silently.
+- The `copy_metadata` entry carries no `restore_json`, like `relink`. What an
+  undo needs is left to 065.
+
+Rule R100 records it; R90's statement and R92's test gap changed with it. Eight
+new tests, seven of which failed before the change. The eighth,
+`CopyOntoAnIdenticalTrackedFileWithFacesKeepsItsOwn`, guards against copying
+too much and passed before the change as well. No test drives a copy through
+libphig, which runs the same executor.
