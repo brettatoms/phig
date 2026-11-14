@@ -438,7 +438,14 @@ GtkWidget* status_new(PhigApp& app) {
     PhigApp* a = &app;
     connect<void(GtkButton*)>(app.status_button, "clicked",
                               [a](GtkButton*) noexcept { on_status_clicked(*a); });
-    adw_status_page_set_child(app.status, GTK_WIDGET(app.status_button));
+    app.status_spinner = GTK_SPINNER(gtk_spinner_new());
+    gtk_widget_set_size_request(GTK_WIDGET(app.status_spinner), 32, 32);
+    gtk_widget_set_halign(GTK_WIDGET(app.status_spinner), GTK_ALIGN_CENTER);
+    gtk_widget_set_visible(GTK_WIDGET(app.status_spinner), FALSE);
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_box_append(GTK_BOX(box), GTK_WIDGET(app.status_spinner));
+    gtk_box_append(GTK_BOX(box), GTK_WIDGET(app.status_button));
+    adw_status_page_set_child(app.status, box);
     return GTK_WIDGET(app.status);
 }
 
@@ -453,6 +460,12 @@ void show_status(PhigApp& app, Status status, const std::string& message) {
         title = "No Matches";
         description = "No photos match these filters.";
         button = "Clear Filters";
+    } else if (status == Status::Upgrading) {
+        icon = "document-save-symbolic";
+        title = "Upgrading Your Collection";
+        description =
+            "phig is upgrading this collection for this version and keeps a copy of it first.";
+        button = nullptr;
     } else if (status == Status::Error || status == Status::LoadError) {
         icon = "dialog-error-symbolic";
         title = status == Status::Error ? "Could Not Open Collection" : "Could Not Load Photos";
@@ -467,6 +480,8 @@ void show_status(PhigApp& app, Status status, const std::string& message) {
     char* escaped = g_markup_escape_text(description.c_str(), -1);
     adw_status_page_set_description(app.status, escaped);
     g_free(escaped);
+    gtk_spinner_set_spinning(app.status_spinner, status == Status::Upgrading);
+    gtk_widget_set_visible(GTK_WIDGET(app.status_spinner), status == Status::Upgrading);
     gtk_widget_set_visible(GTK_WIDGET(app.status_button), button != nullptr);
     if (button != nullptr) gtk_button_set_label(app.status_button, button);
     scan_update_sensitivity(app);

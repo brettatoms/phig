@@ -213,6 +213,27 @@ std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noe
     }
 }
 
+std::expected<bool, std::string> upgrade_pending(const std::string& catalog_dir) noexcept {
+    try {
+        open_catalog_db(catalog_paths(catalog_dir).db, CatalogAccess::Read);
+        return false;
+    } catch (const CatalogError& e) {
+        if (e.kind() == CatalogError::Kind::Outdated) return true;
+        if (e.kind() == CatalogError::Kind::Missing) return false;
+        return std::unexpected(std::string(e.what()));
+    } catch (...) {
+        return std::unexpected(caught("Could not check the phig catalog."));
+    }
+}
+
+std::string upgrade_backup(const Collection& coll) noexcept {
+    try {
+        return coll.db->upgrade_backup_path();
+    } catch (...) {
+        return {};
+    }
+}
+
 std::expected<std::string, std::string> default_catalog() noexcept {
     try {
         const Config cfg = load_config(config_path());

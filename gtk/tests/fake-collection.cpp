@@ -285,8 +285,10 @@ namespace {
 
 std::mutex open_mutex;
 std::condition_variable open_cv;
-bool open_held = false;  // guarded by open_mutex
-std::string open_last;   // guarded by open_mutex
+bool open_held = false;           // guarded by open_mutex
+std::string open_last;            // guarded by open_mutex
+bool upgrade_is_pending = false;  // guarded by open_mutex
+std::string upgrade_backup_path;  // guarded by open_mutex
 
 }  // namespace
 
@@ -300,6 +302,16 @@ std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noe
         return std::unexpected(OpenError{true, "fake: no catalog at " + open_last});
     lock.unlock();
     return fake::make(3);
+}
+
+std::expected<bool, std::string> upgrade_pending(const std::string&) noexcept {
+    std::lock_guard lock(open_mutex);
+    return upgrade_is_pending;
+}
+
+std::string upgrade_backup(const Collection&) noexcept {
+    std::lock_guard lock(open_mutex);
+    return upgrade_backup_path;
 }
 
 std::expected<std::string, std::string> default_catalog() noexcept {
@@ -343,6 +355,12 @@ void hold_open(bool hold) {
         open_held = hold;
     }
     open_cv.notify_all();
+}
+
+void set_upgrade(bool pending, const std::string& backup) {
+    std::lock_guard lock(open_mutex);
+    upgrade_is_pending = pending;
+    upgrade_backup_path = backup;
 }
 
 std::string last_opened() {

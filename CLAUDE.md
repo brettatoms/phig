@@ -104,7 +104,7 @@ for this reason, not only for runtime.**
 `gtk/` builds inside the root build when configured with
 `-DPHIG_BUILD_GTK=ON`. The option is off by default, so a plain build needs
 neither gtk4 nor libadwaita. `cmake --build build --target phig-gtk` then
-builds the client and `phig-core` only. Its 98 tests across ten binaries
+builds the client and `phig-core` only. Its 102 tests across ten binaries
 carry the ctest label `gtk` (`ctest --test-dir build -L gtk`) and need no
 collection. See `gtk/CLAUDE.md`.
 

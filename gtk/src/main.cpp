@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "app.h"
+#include "background.h"
 #include "gallery-model.h"
 #include "collection.h"
 #include "connect.h"
@@ -647,6 +648,10 @@ static void startup_done(PhigApp* app, phig::gtk::OpenResult opened) noexcept {
     app->loader = thumb_loader_new(*app->coll, n_threads, cache_bytes);
     browse_set_sensitive(*app, true);
     reload(*app);
+    std::string backup = phig::gtk::upgrade_backup(*app->coll);
+    if (!backup.empty())
+        show_toast(*app, "Your collection was upgraded. A copy from before the upgrade is at " +
+                             backup + ".");
 }
 
 void open_catalog(PhigApp& app) {
@@ -659,13 +664,24 @@ void open_catalog(PhigApp& app) {
     app.opening = true;
     scan_update_sensitivity(app);
     PhigApp* a = &app;
-    phig::gtk::open_in_background(app.catalog_dir,
-                                  [a, gapp](phig::gtk::OpenResult opened) noexcept {
-                                      a->opening = false;
-                                      startup_done(a, std::move(opened));
-                                      scan_update_sensitivity(*a);
-                                      g_application_release(gapp);
-                                  });
+    /* A read-only check on a worker says whether the open will upgrade the
+     * catalog. If so, the upgrade page shows for the whole open. A failed check
+     * is not reported here: the open that follows reports its own failure. */
+    phig::gtk::run_in_background<bool>(
+        [dir = app.catalog_dir]() noexcept {
+            auto pending = phig::gtk::upgrade_pending(dir);
+            return pending.has_value() && *pending;
+        },
+        [a, gapp](bool pending) noexcept {
+            if (pending && a->window != nullptr) show_status(*a, Status::Upgrading);
+            phig::gtk::open_in_background(a->catalog_dir,
+                                          [a, gapp](phig::gtk::OpenResult opened) noexcept {
+                                              a->opening = false;
+                                              startup_done(a, std::move(opened));
+                                              scan_update_sensitivity(*a);
+                                              g_application_release(gapp);
+                                          });
+        });
 }
 
 static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {

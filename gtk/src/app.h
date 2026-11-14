@@ -66,8 +66,9 @@ struct FilterFields {
 };
 
 // What the content area's status page offers, when it shows instead of the grid.
-// Error is a catalog that did not open; LoadError a gallery query that failed.
-enum class Status { NoPhotos, NoMatches, Error, LoadError };
+// Error is a catalog that did not open; LoadError a gallery query that failed;
+// Upgrading is an older catalog being migrated by the open in progress.
+enum class Status { NoPhotos, NoMatches, Error, LoadError, Upgrading };
 
 // One metadata write, run against the collection on a worker.
 using WriteFn = std::move_only_function<phig::gtk::WriteResult(phig::gtk::Collection&) noexcept>;
@@ -79,6 +80,7 @@ struct PhigApp {
     AdwToolbarView* toolbar_view = nullptr;  // the gallery's content page
     GtkStack* content = nullptr;             // "grid" or "status"
     AdwStatusPage* status = nullptr;
+    GtkSpinner* status_spinner = nullptr;  // shown by Status::Upgrading only
     GtkButton* status_button = nullptr;
     Status status_kind = Status::NoPhotos;
     GtkListBox* sidebar = nullptr;
