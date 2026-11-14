@@ -146,3 +146,40 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
+
+[[rule]]
+id = "R90"
+tier = "engine"
+concern = "conflict"
+statement = "A destination that already holds the source's bytes, on disk or from an earlier item in the same run, is not a conflict under any on_conflict policy: a copy writes nothing, and a move sends the source to the trash after carrying its user metadata to the destination's row."
+rationale = "Renaming around identical content writes a second copy of the same bytes under a _1 name, and skipping leaves the duplicate where it was, so merging two copies of a collection multiplied its duplicates. A copy that adopts an untracked identical file is logged as adopt rather than copy, because undoing a copy deletes the file it wrote and phig wrote none."
+enforced_at = ["core/organize_engine.cpp:identical_occupant", "core/organize_engine.cpp:OrganizeEngine::apply", "core/organize_exec.cpp:execute_identical_action"]
+binds = ["organize.copy", "organize.move", "organize.plan"]
+protects = ["original-file", "user-metadata"]
+tests = [
+    "OrganizeIdenticalTest.MoveOntoAnIdenticalUntrackedFileTrashesTheSourceAndAdoptsTheDest",
+    "OrganizeIdenticalTest.MoveOntoAnIdenticalTrackedFileCarriesMetadataAndDropsTheSourceRow",
+    "OrganizeIdenticalTest.TwoIdenticalSourcesPlannedToOneDestinationLeaveOneFile",
+    "OrganizeIdenticalTest.WhenTheFirstOfTwoIdenticalSourcesFailsTheSecondMovesNormally",
+    "OrganizeIdenticalTest.AMissingSidecarIsCarriedAndAnIdenticalOneIsTrashed",
+    "OrganizeIdenticalTest.CopyOntoAnIdenticalUntrackedFileWritesNothingAndTracksIt",
+    "OrganizeIdenticalTest.CopyOntoAnIdenticalTrackedFileChangesNothing",
+    "AbiOrganizeTest.AnIdenticalDestinationIsReportedAndAMoveTrashesTheSource",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "Only the skip and rename policies are exercised; overwrite reaches the same branch. A RAW's attached JPEG and a Live Photo video go through the same attachment list as a sidecar and are not tested here."
+
+[[rule]]
+id = "R91"
+tier = "engine"
+concern = "conflict"
+statement = "A source is trashed as identical to its destination only after the two files, and their attachments, are compared byte for byte on disk when the move runs; an item that no longer matches is skipped."
+rationale = "The plan compares the source row's recorded sha256 and is advisory. Trashing the source is the one step here that removes a file from where the user keeps it, so it rests on what is on disk at that moment, not on a hash that may be stale or a plan computed before an edit."
+enforced_at = ["core/organize_exec.cpp:execute_identical_action", "core/organize_exec.cpp:same_bytes"]
+binds = ["organize.move"]
+protects = ["original-file"]
+tests = ["OrganizeIdenticalTest.ASourceEditedAfterPlanningIsSkippedNotTrashed"]
+test_kind = "witness"
+status = "holds"
+test_gap = "A destination edited between plan and apply, and an attachment that changes in that window, reach the same comparison and are not tested on their own."

@@ -674,9 +674,11 @@ int cmd_organize(Database& db, const OrganizeOptions& opts, bool is_move, bool d
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
-    size_t to_process = 0, to_skip = 0;
+    size_t to_process = 0, to_skip = 0, already = 0;
     for (size_t i = 0; i < plan.size(); i++) {
-        if (plan.at(i).dest.empty())
+        if (plan.at(i).identical)
+            already++;
+        else if (plan.at(i).dest.empty())
             to_skip++;
         else
             to_process++;
@@ -685,13 +687,18 @@ int cmd_organize(Database& db, const OrganizeOptions& opts, bool is_move, bool d
     std::string verb = is_move ? "Move" : "Copy";
     std::cout << "\n"
               << verb << ": " << to_process << " files"
-              << ", skip: " << to_skip << " (conflict/exists)\n";
+              << ", already present: " << already << ", skip: " << to_skip
+              << " (conflict/exists)\n";
 
     if (dry_run) {
         std::cout << "\n[DRY RUN]\n";
         for (size_t i = 0; i < plan.size(); i++) {
             const OrganizeAction& a = plan.at(i);
-            if (a.dest.empty()) {
+            if (a.identical) {
+                std::cout << "  SAME " << a.source << " \u2192 " << a.dest
+                          << (is_move ? " (already there; source goes to the trash)\n"
+                                      : " (already there; nothing copied)\n");
+            } else if (a.dest.empty()) {
                 std::cout << "  SKIP " << a.source << " \u2192 " << a.intended_dest
                           << " (already exists)\n";
             } else {
@@ -736,6 +743,7 @@ int cmd_organize(Database& db, const OrganizeOptions& opts, bool is_move, bool d
     if (result.cancelled) std::cout << "Interrupted. Stopped at a file boundary.\n";
     std::cout << "Done.\n"
               << "  Done: " << result.applied << "\n"
+              << "  Already present: " << result.identical << "\n"
               << "  Skipped: " << result.skipped << "\n"
               << "  Errors: " << result.errors << "\n";
     if (result.attachment_errors != 0) {

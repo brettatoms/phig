@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite, 1051 tests
+./build/phig-tests        # fast suite, 1073 tests
 ./build/phig-perf-tests   # performance suite (~2s), 6 tests
-ctest --test-dir build --parallel   # both — 1057 (~19s; 48s without --parallel)
+ctest --test-dir build --parallel   # both — 1079 (~23s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -496,6 +496,14 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
 - **`exif` column renamed to `metadata`** — stores JSON blob for any media
   type (EXIF for images, container metadata for videos).
 - **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.
+  Both keep a file's mtime, which dates a photo with no EXIF or sidecar date
+  (R89).
+- **Identical destinations** — a destination already holding the source's
+  bytes is not a conflict: `cp` writes nothing, and `mv` trashes the source
+  after merging its tags, gallery and faces into the destination's row, taking
+  the older mtime when the pair is dated by mtime. It falls back to the conflict
+  policy when the merge would lose a gallery, named faces or a differing
+  sidecar (R90–R94, plan 076).
 - **Match/exclude system** — `--match` includes (repeatable), `--exclude`
   excludes (repeatable), exclude wins on overlap.
 - **Duplicates compare against full DB** — `--match` selects which groups

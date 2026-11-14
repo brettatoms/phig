@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -293,6 +294,28 @@ TEST_F(MoveFileTest, CrossDeviceFallsBackToCopyRemove) {
     EXPECT_FALSE(fs::exists(src));
     ASSERT_TRUE(fs::exists(dst));
     EXPECT_EQ(read_file(dst), "cross-device");
+
+    fs::remove_all(shm_dir);
+}
+
+// The copy fallback must not stamp the moved file with the time of the move:
+// a photo with no EXIF or sidecar date is filed by its mtime.
+TEST_F(MoveFileTest, CrossDeviceKeepsSourceMtime) {
+    fs::path shm = "/dev/shm";
+    if (!fs::exists(shm) || device_of(dir) == device_of(shm)) {
+        GTEST_SKIP() << "no distinct second filesystem available for EXDEV test";
+    }
+    fs::path shm_dir = make_temp_dir("move-exdev-mtime", shm);
+
+    fs::path src = dir / "old.jpg";
+    fs::path dst = shm_dir / "old.jpg";
+    write_file(src, "cross-device");
+    const auto when = fs::file_time_type::clock::now() - std::chrono::hours(24 * 365 * 10);
+    fs::last_write_time(src, when);
+
+    move_file(src.string(), dst.string());
+
+    EXPECT_EQ(fs::last_write_time(dst), when);
 
     fs::remove_all(shm_dir);
 }
@@ -635,6 +658,19 @@ TEST_F(AtomicWriteTest, CopyFileFailureDoesNotTruncateExistingDest) {
     ASSERT_TRUE(fs::exists(dst));
     EXPECT_EQ(read_file(dst), "ORIGINAL-GOOD-DATA");
     EXPECT_FALSE(has_temp_residue());
+}
+
+// A photo with no EXIF or sidecar date is filed by its mtime, so a copy that
+// takes the current time misdates it.
+TEST_F(AtomicWriteTest, CopyFileKeepsSourceMtime) {
+    fs::path src = dir / "old.jpg", dst = dir / "out/copy.jpg";
+    write_file(src, "payload");
+    const auto when = fs::file_time_type::clock::now() - std::chrono::hours(24 * 365 * 10);
+    fs::last_write_time(src, when);
+
+    atomic_copy_file(src.string(), dst.string());
+
+    EXPECT_EQ(fs::last_write_time(dst), when);
 }
 
 TEST_F(AtomicWriteTest, CopyFileOverwritesExistingDestOnSuccess) {

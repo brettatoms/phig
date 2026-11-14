@@ -124,6 +124,10 @@ class Database {
     // open (caller owns BEGIN/COMMIT). Throws on failure. Lets a caller commit
     // the path change and a log entry together.
     void update_path_in_txn(const std::string& old_path, const std::string& new_path);
+    // Records a new file mtime on row `id` and recomputes its effective_date from
+    // it. Assumes the caller's transaction. `modified_at` is format_time()'s form,
+    // so scan's mtime-skip check matches it.
+    void set_modified_at_in_txn(int64_t id, const std::string& modified_at);
 
     // Returns all paths in the DB that start with the given prefix
     std::vector<std::string> get_paths_with_prefix(const std::string& prefix);
@@ -136,6 +140,9 @@ class Database {
     // re-insert. All deletes + log writes run in ONE transaction. Returns the
     // number of rows deleted (missing paths are skipped).
     int delete_paths_logged(const std::vector<std::string>& paths, int64_t op_id);
+    // Transaction-free core of delete_paths_logged: the caller owns BEGIN/COMMIT,
+    // so the deletes can commit together with other changes. Throws on failure.
+    int delete_paths_logged_in_txn(const std::vector<std::string>& paths, int64_t op_id);
 
     // Delete entries matching a path prefix and/or filename glob
     // Returns paths that were deleted

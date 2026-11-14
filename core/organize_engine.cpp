@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <map>
 #include <stdexcept>
 #include <string>
 
 #include "dates.h"
+#include "hasher.h"
 #include "organize_exec.h"
 #include "organize_plan.h"
 #include "paths.h"
@@ -24,6 +26,49 @@ const char* policy_string(ConflictResolution r) {
             return "rename";
     }
     return "rename";
+}
+
+struct ClaimedBy {
+    std::string sha256;
+    int64_t id = -1;
+};
+
+// Whether the file at `dest` — on disk, or the one an earlier item in this plan
+// will write there — holds `img`'s bytes and can absorb it without losing an
+// attachment or user metadata (plan 076). Advisory, like the rest of the plan:
+// apply() re-checks every condition from disk before acting.
+bool identical_occupant(Database& db, const ImageInfo& img, const std::string& dest, bool on_disk,
+                        const std::set<std::string>& batch_sources,
+                        const std::map<std::string, ClaimedBy>& claims) {
+    if (img.sha256.empty()) return false;
+    if (!on_disk) {
+        auto it = claims.find(dest);
+        if (it == claims.end() || it->second.sha256 != img.sha256) return false;
+        return metadata_merge_blocker(db, img.id, it->second.id).empty();
+    }
+    // Another image this run is about to move away: it is not staying, so it is
+    // not a copy this one can merge into.
+    if (batch_sources.count(dest)) return false;
+
+    std::error_code ec_a, ec_b;
+    const auto src_size = fs::file_size(img.path, ec_a);
+    const auto dst_size = fs::file_size(dest, ec_b);
+    if (ec_a || ec_b || src_size != dst_size) return false;
+
+    const int64_t occupant_id = db.get_image_id(dest);
+    std::string occupant_sha;
+    if (occupant_id >= 0) {
+        occupant_sha = db.get_sha256(dest).value_or("");
+    } else {
+        try {
+            occupant_sha = compute_sha256(dest);
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
+    if (occupant_sha != img.sha256) return false;
+    if (!attachments_mergeable(attachment_moves(db, img.path, dest))) return false;
+    return occupant_id < 0 || metadata_merge_blocker(db, img.id, occupant_id).empty();
 }
 
 }  // namespace
@@ -98,6 +143,11 @@ OrganizePlan OrganizeEngine::plan(const CancelToken& cancel,
 
     for (const auto& img : images) out.batch_sources_.insert(img.path);
 
+    // Each destination an earlier item will write, with that item's sha256 and
+    // row id, so a later item carrying the same bytes is recognized as identical
+    // rather than renamed around a file that does not exist yet.
+    std::map<std::string, ClaimedBy> claims;
+
     // What every planned destination must lie under. A trailing separator leaves an
     // empty last element that lexically_relative would not match.
     fs::path root = fs::path(opts_.destination).lexically_normal();
@@ -129,17 +179,25 @@ OrganizePlan OrganizeEngine::plan(const CancelToken& cancel,
             return false;
         };
 
-        const bool occupied = fs::exists(dest) || out.claimed_.count(dest.string()) > 0;
+        const bool on_disk = fs::exists(dest);
+        const bool occupied = on_disk || out.claimed_.count(dest.string()) > 0;
 
         OrganizeAction act;
         act.source = img.path;
         act.intended_dest = dest.string();
         act.resolution = opts_.on_conflict;
-        act.conflicts = occupied;
-        if (occupied) act.occupant_tracked = db_.get_image_id(dest.string()) >= 0;
 
-        act.dest = resolve_conflict(dest.string(), policy_string(opts_.on_conflict), out.claimed_,
-                                    is_protected);
+        if (occupied && dest.string() != img.path &&
+            identical_occupant(db_, img, dest.string(), on_disk, out.batch_sources_, claims)) {
+            act.identical = true;
+            act.dest = dest.string();
+        } else {
+            act.conflicts = occupied;
+            if (occupied) act.occupant_tracked = db_.get_image_id(dest.string()) >= 0;
+            act.dest = resolve_conflict(dest.string(), policy_string(opts_.on_conflict),
+                                        out.claimed_, is_protected);
+            if (!act.dest.empty()) claims[act.dest] = {img.sha256, img.id};
+        }
         out.actions_.push_back(std::move(act));
     }
 
@@ -186,6 +244,45 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
         p.total = actionable;
         p.path = act.source;
 
+        // A destination that already holds these bytes. When nothing is there
+        // any more — the earlier item it matched was skipped or failed — the
+        // item is written like any other, below.
+        if (act.identical) {
+            std::error_code there_ec;
+            if (fs::exists(act.dest, there_ec) || there_ec) {
+                try {
+                    IdenticalResult ir =
+                        execute_identical_action(db_, act.source, act.dest, is_move, op_id);
+                    if (!ir.resolved) {
+                        result.skipped++;
+                    } else {
+                        result.identical++;
+                        result.files_written += ir.carry.carried;
+                        if (!ir.carry.failures.empty()) {
+                            result.attachment_errors += ir.carry.failures.size();
+                            std::string joined;
+                            for (const auto& f : ir.carry.failures)
+                                joined += (joined.empty() ? "" : "; ") + f;
+                            p.error = act.source + " was already at " + act.dest +
+                                      ", but did not carry: " + joined;
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    result.errors++;
+                    p.error = "Failed to organize " + act.source + ": " + e.what();
+                }
+                if (progress) {
+                    p.done = result.applied + result.errors + result.identical;
+                    p.files_written = result.files_written;
+                    p.skipped = result.skipped;
+                    p.errors = result.errors;
+                    p.identical = result.identical;
+                    progress->push(p);
+                }
+                continue;
+            }
+        }
+
         // The plan is advisory; this check is authoritative (plan 041 decision
         // 4, inherited by 042). A destination that became occupied since
         // planning is skipped rather than acted on, unless the caller
@@ -202,7 +299,8 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
             p.error = "Failed to organize " + act.source + ": cannot check " + act.dest + ": " +
                       exists_ec.message();
             if (progress) {
-                p.done = result.applied + result.errors;
+                p.done = result.applied + result.errors + result.identical;
+                p.identical = result.identical;
                 p.skipped = result.skipped;
                 p.errors = result.errors;
                 p.files_written = result.files_written;
@@ -213,7 +311,8 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
         if (occupied) {
             result.skipped++;
             if (progress) {
-                p.done = result.applied + result.errors;
+                p.done = result.applied + result.errors + result.identical;
+                p.identical = result.identical;
                 p.skipped = result.skipped;
                 p.files_written = result.files_written;
                 progress->push(p);
@@ -255,7 +354,8 @@ OrganizeResult OrganizeEngine::apply(const OrganizePlan& plan, bool is_move,
         }
 
         if (progress) {
-            p.done = result.applied + result.errors;
+            p.done = result.applied + result.errors + result.identical;
+            p.identical = result.identical;
             p.files_written = result.files_written;
             p.skipped = result.skipped;
             p.errors = result.errors;

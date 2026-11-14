@@ -48,7 +48,7 @@ extern "C" {
  * Start versioning honestly the first time something outside this repo links
  * against libphig. */
 #define PHIG_ABI_VERSION_MAJOR 1u
-#define PHIG_ABI_VERSION_MINOR 4u
+#define PHIG_ABI_VERSION_MINOR 5u
 
 /* Values are published ABI: append only, never renumber. */
 typedef enum {
@@ -700,6 +700,8 @@ typedef struct {
     uint64_t files_written;     /* including sidecars and attached JPEGs */
     bool cancelled;             /* stopped by the caller partway */
     bool completed;             /* false when cancelled, or when anything failed */
+    uint64_t identical;         /* already at the destination with the same bytes; nothing
+                                   written, and on a move the source went to the trash */
 } phig_organize_result;
 
 /* A plan the caller owns: what would happen, before anything happens.
@@ -742,6 +744,15 @@ PHIG_API phig_conflict_resolution phig_organize_plan_resolution_at(const phig_or
  * Meaningless unless conflicts_at(i). False means phig cannot restore it from
  * its own records, which is when a client should warn hardest. */
 PHIG_API bool phig_organize_plan_occupant_tracked_at(const phig_organize_plan* plan, size_t i);
+
+/* Whether this item's destination already holds the same bytes — on disk, or
+ * written by an earlier item in the plan — and the two can merge without losing
+ * an attachment or user metadata. Not a conflict: dest_at is the intended
+ * destination whatever the policy. A copy writes nothing for it; a move sends
+ * the source to phig's trash after carrying its tags, favorite, gallery and
+ * faces to the destination's row. Both re-check the bytes when they run, and
+ * skip the item if they no longer match. */
+PHIG_API bool phig_organize_plan_identical_at(const phig_organize_plan* plan, size_t i);
 
 /* Answer one item's conflict, recomputing its destination so dest_at reflects
  * the choice. PHIG_CONFLICT_OVERWRITE carries the caller's authority to replace

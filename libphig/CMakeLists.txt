@@ -14,7 +14,7 @@ set_target_properties(phig_abi PROPERTIES
     # Must track PHIG_ABI_VERSION_MAJOR.MINOR in libphig/include/phig/phig.h.
     # SOVERSION is the major alone, so an additive minor bump keeps the soname.
     # Pre-release, neither moves for a breaking change — see the header for why.
-    VERSION 1.4.0
+    VERSION 1.5.0
     SOVERSION 1
     # Hide everything not explicitly exported so the ABI surface is exactly
     # what the header declares.

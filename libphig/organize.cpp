@@ -180,6 +180,11 @@ bool phig_organize_plan_occupant_tracked_at(const phig_organize_plan* plan, size
     return plan->plan.at(i).occupant_tracked;
 }
 
+bool phig_organize_plan_identical_at(const phig_organize_plan* plan, size_t i) {
+    if (plan == nullptr || i >= plan->plan.size()) return false;
+    return plan->plan.at(i).identical;
+}
+
 phig_status phig_organize_plan_set_resolution(phig_organize_plan* plan, size_t i,
                                               phig_conflict_resolution resolution) {
     std::optional<ConflictResolution> r = from_abi(resolution);
@@ -215,5 +220,6 @@ phig_status phig_op_organize_result(phig_op* op, phig_organize_result* out) {
     out->files_written = op->organize_result.files_written;
     out->cancelled = op->organize_result.cancelled;
     out->completed = op->organize_result.completed;
+    out->identical = op->organize_result.identical;
     return PHIG_OK;
 }

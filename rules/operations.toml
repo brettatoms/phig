@@ -20,7 +20,7 @@ read_only_abi = [
     "phig_organize_plan_free", "phig_organize_plan_count",
     "phig_organize_plan_source_at", "phig_organize_plan_dest_at",
     "phig_organize_plan_conflicts_at", "phig_organize_plan_resolution_at",
-    "phig_organize_plan_occupant_tracked_at",
+    "phig_organize_plan_occupant_tracked_at", "phig_organize_plan_identical_at",
     "phig_organize_plan_set_resolution",
     "phig_settings_load", "phig_settings_free", "phig_settings_get",
     "phig_settings_get_bool", "phig_settings_get_int", "phig_settings_get_raw",
@@ -218,6 +218,11 @@ core_internal = [
                                     # (refuse_occupied_carry_destination)
                                     # rather than overwriting it — unlike
                                     # move, it is not destructive
+    "execute_identical_action",    # organize.copy/organize.move's action
+                                    # for a destination that already holds
+                                    # the source's bytes (plan 076); a move
+                                    # trashes the source. Called only from
+                                    # OrganizeEngine::apply
     "execute_trash_action",        # remove.trash's per-file action; called
                                     # only from remove_media_with_sidecars,
                                     # itself called only from cmd_rm
@@ -268,6 +273,11 @@ core_read_only = [
     # core/organize_exec.h
     "file", "first", "failure", "match", "carry",  # prose
     "get_image_id",          # named in a comment; declared in core/database.h, a DB read
+    "attachment_moves",      # lists a photo's attachments and their destinations;
+                             # reads the directory and the still's MakerNote only
+    "same_bytes", "attachments_mergeable",  # size and SHA-256 comparisons, no mutation
+    "metadata_merge_blocker",  # reads two rows' gallery and faces, no mutation
+    "mtime_to_keep",         # pure choice between two file times
 
     # core/remove_exec.h
     "lifecycle", "mount", "action", "on", "bool", "success", "required",  # prose

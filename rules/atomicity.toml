@@ -254,3 +254,20 @@ tests = [
 test_kind = "witness"
 status = "holds"
 test_gap = "The step that adds a violation is a test's own step run through apply_migration_step, not a shipped migration, since none strands a row. The cannot-write case is reached through a read-only catalog directory while another connection keeps the WAL files open, so a disk-full failure partway through VACUUM INTO, a failed flush, and the removal of the partial file are not exercised, and nothing observes that the flush happened. The pre-migration path's copy is pinned, but not its behaviour when the copy cannot be written. The suffixed name for two copies in the same second is reached by DatabaseConcurrency's migration tests and asserted by none."
+
+[[rule]]
+id = "R94"
+tier = "engine"
+concern = "atomicity"
+statement = "When a move that absorbs its source into an identical destination fails to commit its row changes, the source is moved back from the trash and the destination's mtime restored before the error is reported."
+rationale = "The source is trashed before the transaction that merges and deletes its row, so a failed commit would otherwise leave a row pointing at a file in the trash and a destination with a time nothing records. The trash entry is logged inside that transaction, so the log never records a trash that was undone."
+enforced_at = ["core/organize_exec.cpp:execute_identical_action"]
+binds = ["organize.move"]
+protects = ["original-file", "db-row", "activity-log"]
+tests = [
+    "OrganizeIdenticalTest.AFailedCommitBringsTheTrashedSourceBack",
+    "OrganizeIdenticalMtimeTest.AFailedCommitRestoresTheDestinationsMtime",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "A failure to move the source back from the trash is reported but not tested."

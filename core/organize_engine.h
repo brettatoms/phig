@@ -54,6 +54,12 @@ struct OrganizeAction {
     // run-level policy. Carries the authority that lets apply() replace a file
     // that exists on disk.
     bool overridden = false;
+    // The destination already holds the source's bytes — on disk, or from an
+    // earlier item in this plan — and the two can merge without losing an
+    // attachment or user metadata. Not a conflict: `dest` is the intended
+    // destination under every policy, and apply() resolves the item with
+    // execute_identical_action rather than writing a second copy.
+    bool identical = false;
 };
 
 // A caller-owned plan. Editable: a caller may override the resolution of any
@@ -92,6 +98,7 @@ struct OrganizeProgress {
     size_t done = 0, total = 0;
     size_t files_written = 0;
     size_t skipped = 0, errors = 0;
+    size_t identical = 0;  // resolved against a destination that already held the bytes
     std::string path;
     // Non-empty when this file failed: already-formatted warning text the
     // CALLER logs. Matches ScanProgress and ThumbsProgress — the engine does
@@ -101,6 +108,7 @@ struct OrganizeProgress {
 
 struct OrganizeResult {
     size_t applied = 0, skipped = 0, errors = 0;
+    size_t identical = 0;  // already present at the destination; nothing was written for them
     size_t attachment_errors = 0;  // attachments not carried; their parents count in applied
     size_t files_written = 0;
     bool cancelled = false;  // stopped by the cancel token

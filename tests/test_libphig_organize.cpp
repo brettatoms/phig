@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
 #include <cstdint>
 #include <cstdlib>
@@ -7,6 +8,7 @@
 #include <string>
 
 #include "database.h"
+#include "hasher.h"
 #include "phig/phig.h"
 #include "temp_dir.h"
 #include "types.h"
@@ -242,6 +244,53 @@ TEST_F(AbiOrganizeTest, ConflictIsReportedWithWhetherPhigTracksTheOccupant) {
     EXPECT_TRUE(phig_organize_plan_conflicts_at(plan, 0));
     EXPECT_FALSE(phig_organize_plan_occupant_tracked_at(plan, 0));
 
+    phig_organize_plan_free(plan);
+}
+
+// The occupant holds the source's bytes, so it is not a conflict: a move trashes
+// the source rather than writing img0_1.jpg beside an identical file.
+TEST_F(AbiOrganizeTest, AnIdenticalDestinationIsReportedAndAMoveTrashesTheSource) {
+    OrganizeFixture fx(1);
+    const fs::path source = fx.dir / "src" / "img0.jpg";
+    const fs::path dest = fs::path(fx.out_dir) / "2019" / "img0.jpg";
+    fs::create_directories(dest.parent_path());
+    fs::copy_file(source, dest);
+    {
+        // The fixture's sha256 is a placeholder; give the row its file's real one.
+        Database db(fx.db_path);
+        const std::string sha = compute_sha256(source.string());
+        sqlite3_stmt* s = nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(db.db_ptr(), "UPDATE images SET sha256 = ? WHERE path = ?", -1,
+                                     &s, nullptr),
+                  SQLITE_OK);
+        sqlite3_bind_text(s, 1, sha.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(s, 2, source.c_str(), -1, SQLITE_TRANSIENT);
+        ASSERT_EQ(sqlite3_step(s), SQLITE_DONE);
+        sqlite3_finalize(s);
+    }
+    open(fx);
+
+    phig_organize_plan* plan = make_plan(fx);
+    ASSERT_EQ(phig_organize_plan_count(plan), 1u);
+    EXPECT_TRUE(phig_organize_plan_identical_at(plan, 0));
+    EXPECT_FALSE(phig_organize_plan_conflicts_at(plan, 0));
+    EXPECT_EQ(std::string(phig_organize_plan_dest_at(plan, 0)), dest.string());
+    EXPECT_FALSE(phig_organize_plan_identical_at(plan, 1)) << "out of range";
+    EXPECT_FALSE(phig_organize_plan_identical_at(nullptr, 0));
+
+    phig_op* apply_op = nullptr;
+    ASSERT_EQ(phig_op_move_start(ctx, plan, &apply_op), PHIG_OK);
+    phig_op_wait(apply_op);
+    ASSERT_EQ(phig_op_status(apply_op), PHIG_OP_DONE);
+    phig_organize_result r{};
+    ASSERT_EQ(phig_op_organize_result(apply_op, &r), PHIG_OK);
+    EXPECT_EQ(r.identical, 1u);
+    EXPECT_EQ(r.applied, 0u);
+    EXPECT_TRUE(r.completed);
+    EXPECT_FALSE(fs::exists(source));
+    EXPECT_FALSE(fs::exists(fs::path(fx.out_dir) / "2019" / "img0_1.jpg"));
+
+    phig_op_free(apply_op);
     phig_organize_plan_free(plan);
 }
 

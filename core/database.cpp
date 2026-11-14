@@ -1145,6 +1145,34 @@ std::optional<std::string> Database::get_sha256(const std::string& path) {
     return result;
 }
 
+void Database::set_modified_at_in_txn(int64_t id, const std::string& modified_at) {
+    std::string metadata;
+    {
+        sqlite3_stmt* s = nullptr;
+        if (sqlite3_prepare_v2(db_, "SELECT metadata FROM images WHERE id = ?", -1, &s, nullptr) !=
+            SQLITE_OK)
+            throw std::runtime_error("Failed to prepare metadata read: " +
+                                     std::string(sqlite3_errmsg(db_)));
+        sqlite3_bind_int64(s, 1, id);
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            const unsigned char* t = sqlite3_column_text(s, 0);
+            if (t) metadata = reinterpret_cast<const char*>(t);
+        }
+        sqlite3_finalize(s);
+    }
+    const std::string effective = compute_effective_date(metadata, modified_at);
+    sqlite3_stmt* u = nullptr;
+    if (sqlite3_prepare_v2(db_,
+                           "UPDATE images SET modified_at = ?, effective_date = ? WHERE id = ?", -1,
+                           &u, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Failed to prepare modified_at update: " +
+                                 std::string(sqlite3_errmsg(db_)));
+    sqlite3_bind_text(u, 1, modified_at.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(u, 2, effective.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(u, 3, id);
+    step_write_or_throw(db_, u, "Failed to update modified_at");
+}
+
 void Database::update_path_in_txn(const std::string& old_path, const std::string& new_path) {
     // No-op move (source == dest): the DELETE-then-UPDATE below would delete the
     // row (as the "stale dest") and then find nothing to repoint, losing the
@@ -1293,12 +1321,24 @@ void Database::delete_paths(const std::vector<std::string>& paths) {
 int Database::delete_paths_logged(const std::vector<std::string>& paths, int64_t op_id) {
     if (paths.empty()) return 0;
     exec("BEGIN IMMEDIATE TRANSACTION");
+    int deleted = 0;
+    try {
+        deleted = delete_paths_logged_in_txn(paths, op_id);
+        exec("COMMIT");
+    } catch (...) {
+        rollback_if_open();
+        throw;
+    }
+    return deleted;
+}
+
+int Database::delete_paths_logged_in_txn(const std::vector<std::string>& paths, int64_t op_id) {
     auto fail = [&](const std::string& what) {
         throw std::runtime_error(what + ": " + std::string(sqlite3_errmsg(db_)));
     };
 
     int deleted = 0;
-    try {
+    {
         static const char* cols[] = {"path",        "filename",    "extension",  "file_size",
                                      "created_at",  "modified_at", "sha256",     "phash",
                                      "width",       "height",      "metadata",   "media_type",
@@ -1375,11 +1415,6 @@ int Database::delete_paths_logged(const std::vector<std::string>& paths, int64_t
             if (rc != SQLITE_DONE) fail("Failed to delete path '" + path + "'");
             deleted++;
         }
-
-        exec("COMMIT");
-    } catch (...) {
-        rollback_if_open();
-        throw;
     }
     return deleted;
 }

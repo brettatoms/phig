@@ -134,6 +134,7 @@ add_executable(phig-tests
     tests/test_settings.cpp
     tests/test_organize_exec.cpp
     tests/test_organize_engine.cpp
+    tests/test_organize_identical.cpp
     tests/test_libphig_organize.cpp
     tests/test_remove_exec.cpp
     tests/test_relink.cpp

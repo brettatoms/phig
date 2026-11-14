@@ -6,8 +6,11 @@
 #include <string>
 #include <system_error>
 
+#include "dates.h"
+#include "hasher.h"
 #include "live_photo.h"
 #include "paths.h"
+#include "remove_exec.h"
 #include "scanner.h"
 #include "sidecar.h"
 
@@ -158,19 +161,15 @@ void refuse_occupied_carry_destination(const fs::path& dest) {
 
 }  // namespace
 
-CarryResult carry_sidecars(Database& db, const std::string& parent_source,
-                           const std::string& parent_dest, bool is_move, int64_t op_id) {
-    const bool logging = op_id > 0;
-    CarryResult result;
+std::vector<AttachmentMove> attachment_moves(Database& db, const std::string& parent_source,
+                                             const std::string& parent_dest) {
+    std::vector<AttachmentMove> moves;
     fs::path src_media(parent_source);
     fs::path dst_media(parent_dest);
     std::string src_stem = src_media.stem().string();      // IMG_1
     std::string src_name = src_media.filename().string();  // IMG_1.CR2
     std::string dst_stem = dst_media.stem().string();      // IMG_1-1
     fs::path dst_dir = dst_media.parent_path();
-
-    // Parent id for linking (parent row already repointed to dst by the caller).
-    int64_t parent_id = logging ? db.get_image_id(parent_dest) : 0;
 
     for (const auto& side : find_sidecars(src_media)) {
         std::string side_name = side.filename().string();  // IMG_1.xmp or IMG_1.CR2.xmp
@@ -190,25 +189,7 @@ CarryResult carry_sidecars(Database& db, const std::string& parent_source,
         fs::path side_dst = dst_dir / tail;
 
         if (src_media.parent_path() == dst_dir && side == side_dst) continue;  // no-op
-
-        try {
-            refuse_occupied_carry_destination(side_dst);
-            if (is_move) {
-                move_file(side.string(), side_dst.string());
-            } else {
-                atomic_copy_file(side.string(), side_dst.string());
-            }
-            result.carried++;
-            if (logging) {
-                std::string rj = parent_id > 0
-                                     ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
-                                     : "";
-                db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar", side.string(),
-                                         side_dst.string(), rj});
-            }
-        } catch (const std::exception& e) {
-            result.failures.push_back(side.string() + ": " + e.what());
-        }
+        moves.push_back({side, side_dst});
     }
 
     // A Live Photo's video is an attachment of its still (plan 038): scan does
@@ -235,29 +216,7 @@ CarryResult carry_sidecars(Database& db, const std::string& parent_source,
         // has a row. Carrying an indexed file moves it out from under its own
         // row, which then points nowhere and is logged as a sidecar move.
         if (!lp_src.empty() && db.get_image_id(lp_src.string()) < 0) {
-            fs::path lp_dst = dst_dir / (dst_stem + lp_src.extension().string());
-
-            try {
-                refuse_occupied_carry_destination(lp_dst);
-                if (is_move) {
-                    move_file(lp_src.string(), lp_dst.string());
-                } else {
-                    atomic_copy_file(lp_src.string(), lp_dst.string());
-                }
-                // Counted like any other carried file: OrganizeEngine adds this
-                // to result.files_written, so omitting it would report fewer
-                // files than were actually written.
-                result.carried++;
-                if (logging) {
-                    std::string rj =
-                        parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
-                                      : "";
-                    db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar",
-                                             lp_src.string(), lp_dst.string(), rj});
-                }
-            } catch (const std::exception& e) {
-                result.failures.push_back(lp_src.string() + ": " + e.what());
-            }
+            moves.push_back({lp_src, dst_dir / (dst_stem + lp_src.extension().string())});
         }
     }
 
@@ -269,29 +228,225 @@ CarryResult carry_sidecars(Database& db, const std::string& parent_source,
         fs::path jpeg_src = sibling_jpeg_path(src_media);
         if (!jpeg_src.empty()) {
             fs::path jpeg_dst = dst_dir / (dst_stem + jpeg_src.extension().string());
-
             if (!(src_media.parent_path() == dst_dir && jpeg_src == jpeg_dst)) {  // skip no-op
-                try {
-                    refuse_occupied_carry_destination(jpeg_dst);
-                    if (is_move) {
-                        move_file(jpeg_src.string(), jpeg_dst.string());
-                    } else {
-                        atomic_copy_file(jpeg_src.string(), jpeg_dst.string());
-                    }
-                    result.carried++;
-                    if (logging) {
-                        std::string rj =
-                            parent_id > 0
-                                ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}")
-                                : "";
-                        db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar",
-                                                 jpeg_src.string(), jpeg_dst.string(), rj});
-                    }
-                } catch (const std::exception& e) {
-                    result.failures.push_back(jpeg_src.string() + ": " + e.what());
-                }
+                moves.push_back({jpeg_src, jpeg_dst});
             }
         }
     }
+    return moves;
+}
+
+namespace {
+
+// Moves or copies one attachment and logs it, reporting a failure rather than
+// throwing so the rest are still carried.
+void carry_one(Database& db, const AttachmentMove& m, bool is_move, int64_t op_id,
+               int64_t parent_id, CarryResult& result) {
+    try {
+        refuse_occupied_carry_destination(m.dest);
+        if (is_move) {
+            move_file(m.source.string(), m.dest.string());
+        } else {
+            atomic_copy_file(m.source.string(), m.dest.string());
+        }
+        result.carried++;
+        if (op_id > 0) {
+            std::string rj =
+                parent_id > 0 ? ("{\"parent_image_id\":" + std::to_string(parent_id) + "}") : "";
+            db.log_add_entry(op_id, {is_move ? "move_sidecar" : "copy_sidecar", m.source.string(),
+                                     m.dest.string(), rj});
+        }
+    } catch (const std::exception& e) {
+        result.failures.push_back(m.source.string() + ": " + e.what());
+    }
+}
+
+}  // namespace
+
+CarryResult carry_sidecars(Database& db, const std::string& parent_source,
+                           const std::string& parent_dest, bool is_move, int64_t op_id) {
+    CarryResult result;
+    // Parent id for linking (parent row already repointed to dst by the caller).
+    const int64_t parent_id = op_id > 0 ? db.get_image_id(parent_dest) : 0;
+    for (const auto& m : attachment_moves(db, parent_source, parent_dest)) {
+        carry_one(db, m, is_move, op_id, parent_id, result);
+    }
     return result;
+}
+
+bool same_bytes(const std::string& a, const std::string& b) {
+    std::error_code ec_a, ec_b;
+    const auto size_a = fs::file_size(a, ec_a);
+    const auto size_b = fs::file_size(b, ec_b);
+    if (ec_a || ec_b || size_a != size_b) return false;
+    try {
+        return compute_sha256(a) == compute_sha256(b);
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool attachments_mergeable(const std::vector<AttachmentMove>& moves) {
+    for (const auto& m : moves) {
+        std::error_code ec;
+        const bool there = fs::exists(m.dest, ec);
+        if (ec) return false;
+        if (there && !same_bytes(m.source.string(), m.dest.string())) return false;
+    }
+    return true;
+}
+
+std::string metadata_merge_blocker(Database& db, int64_t from_id, int64_t to_id) {
+    const auto rows = db.get_images_by_ids({from_id, to_id});
+    const ImageInfo* from = nullptr;
+    const ImageInfo* to = nullptr;
+    for (const auto& r : rows) {
+        if (r.id == from_id) from = &r;
+        if (r.id == to_id) to = &r;
+    }
+    if (!from || !to) return "";
+    if (!from->gallery.empty() && !to->gallery.empty() && from->gallery != to->gallery) {
+        return "the two photos are in different galleries";
+    }
+    if (!db.get_labelled_faces_for_image(from_id).empty() && db.has_faces(to->path)) {
+        return "the source has named faces and the destination already has faces";
+    }
+    return "";
+}
+
+namespace {
+
+bool dated_by_mtime(ImageInfo info, fs::file_time_type mtime) {
+    info.modified_at = format_time(mtime);
+    DateSource source;
+    get_best_date(info, source);
+    return source == DateSource::Mtime;
+}
+
+bool plausible_mtime(fs::file_time_type t) {
+    const std::string s = format_time(t);
+    return s >= "1990-01-01" && s <= format_time(fs::file_time_type::clock::now());
+}
+
+}  // namespace
+
+fs::file_time_type mtime_to_keep(const ImageInfo& keep, fs::file_time_type keep_mtime,
+                                 const ImageInfo& other, fs::file_time_type other_mtime) {
+    if (other_mtime >= keep_mtime || !plausible_mtime(other_mtime)) return keep_mtime;
+    if (!dated_by_mtime(keep, keep_mtime) || !dated_by_mtime(other, other_mtime)) return keep_mtime;
+    return other_mtime;
+}
+
+IdenticalResult execute_identical_action(Database& db, const std::string& source,
+                                         const std::string& dest, bool is_move, int64_t op_id) {
+    IdenticalResult out;
+    const bool logging = op_id > 0;
+
+    if (!same_bytes(source, dest)) return out;
+    const std::vector<AttachmentMove> moves = attachment_moves(db, source, dest);
+    if (!attachments_mergeable(moves)) return out;
+    const int64_t src_id = db.get_image_id(source);
+    const int64_t dst_id = db.get_image_id(dest);
+    if (is_move && src_id >= 0 && dst_id >= 0 &&
+        !metadata_merge_blocker(db, src_id, dst_id).empty())
+        return out;
+
+    if (!is_move) {
+        if (dst_id < 0) {
+            db.begin_transaction();
+            try {
+                db.insert_copy(source, dest);
+                if (logging) db.log_add_entry(op_id, {"adopt", source, dest, ""});
+                db.commit_transaction();
+            } catch (...) {
+                db.rollback_transaction();
+                throw;
+            }
+        }
+    } else {
+        // Both rows describe the same bytes, so an untracked destination is
+        // judged by the source row's metadata at the destination's path.
+        ImageInfo src_info, dst_info;
+        for (const auto& r : db.get_images_by_ids({src_id, dst_id})) {
+            if (r.id == src_id) src_info = r;
+            if (r.id == dst_id) dst_info = r;
+        }
+        src_info.path = source;
+        if (dst_id < 0) dst_info.metadata_json = src_info.metadata_json;
+        dst_info.path = dest;
+        const fs::file_time_type src_mtime = fs::last_write_time(source);
+        const fs::file_time_type dst_mtime = fs::last_write_time(dest);
+        const fs::file_time_type final_mtime =
+            mtime_to_keep(dst_info, dst_mtime, src_info, src_mtime);
+        const bool retime = final_mtime != dst_mtime;
+        auto restore_mtime = [&] {
+            if (!retime) return;
+            std::error_code ec;
+            fs::last_write_time(dest, dst_mtime, ec);
+        };
+
+        if (retime) fs::last_write_time(dest, final_mtime);
+        // Out of the way next, unlogged: the trash entry commits with the row
+        // changes below, so the log never records a trash that was undone.
+        std::string trashed;
+        try {
+            trashed = execute_trash_action(db, source, /*op_id=*/0);
+        } catch (...) {
+            restore_mtime();
+            throw;
+        }
+        try {
+            db.begin_transaction();
+            try {
+                int64_t survivor = dst_id;
+                if (dst_id >= 0) {
+                    db.transfer_user_metadata(src_id, dst_id);
+                    if (logging) db.log_add_entry(op_id, {"relink", source, dest, ""});
+                    db.delete_paths_logged_in_txn({source}, op_id);
+                } else {
+                    db.update_path_in_txn(source, dest);
+                    survivor = src_id;
+                    if (logging) db.log_add_entry(op_id, {"adopt", source, dest, ""});
+                }
+                if (survivor >= 0) db.set_modified_at_in_txn(survivor, format_time(final_mtime));
+                if (retime && logging) {
+                    db.log_add_entry(op_id,
+                                     {"set_mtime", dest, dest,
+                                      "{\"previous_mtime\":\"" + format_time(dst_mtime) + "\"}"});
+                }
+                if (logging) db.log_add_entry(op_id, {"trash", source, trashed, ""});
+                db.commit_transaction();
+            } catch (...) {
+                db.rollback_transaction();
+                throw;
+            }
+        } catch (...) {
+            restore_mtime();
+            try {
+                move_file(trashed, source);
+            } catch (const std::exception& back) {
+                throw std::runtime_error("database update failed and could not restore " + source +
+                                         " from the trash at " + trashed + ": " + back.what());
+            }
+            throw;
+        }
+    }
+    out.resolved = true;
+
+    // Attachments follow their parent only once it is resolved (R44).
+    const int64_t parent_id = logging ? db.get_image_id(dest) : 0;
+    for (const auto& m : moves) {
+        std::error_code ec;
+        if (!fs::exists(m.dest, ec) && !ec) {
+            carry_one(db, m, is_move, op_id, parent_id, out.carry);
+            continue;
+        }
+        if (!is_move) continue;  // the same bytes are already there
+        try {
+            execute_trash_action(db, m.source.string(), op_id);
+        } catch (const std::exception& e) {
+            out.carry.failures.push_back(m.source.string() + ": " + e.what());
+        }
+    }
+    return out;
 }
