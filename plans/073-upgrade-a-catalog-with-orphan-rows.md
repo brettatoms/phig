@@ -106,6 +106,24 @@ build theirs:
 - Measured: upgrade time and backup size on a synthetic catalog of 30,000
   images with faces and embeddings.
 
+## Measured
+
+2026-11-13, on an AMD Ryzen 5 5600X (6 cores, 12 threads), Linux 6.18, system
+SQLite 3.54.1, release build of `phig-tests`. A synthetic v7 catalog of 30,000
+images, each with one face and its embedding, every tenth image tagged and
+favorited, and 21 images deleted with foreign keys off so 21 face rows are
+orphans. The database was 67 MB after a WAL checkpoint. Opening it with
+`CatalogAccess::Write` upgraded it from v7 to v10, backup included, in:
+
+- 340-346 ms with the catalog on tmpfs (three runs), of which the backup's
+  `VACUUM INTO` was about 50 ms;
+- 415-424 ms on ext4 on NVMe (three runs), of which the backup was 70-76 ms.
+
+The backup was 50 MB, smaller than the database because `VACUUM INTO` writes
+no free pages. One `PRAGMA foreign_key_check` over the upgraded catalog took
+10-11 ms; each of the three steps runs two, so the before-and-after comparison
+costs about 60 ms of the upgrade.
+
 ## Relationship to other plans
 
 - **066** found the orphan rows and owns whether and how to repair them.
