@@ -587,7 +587,7 @@ TEST(FacesEngineRun, RebuildDropsALabelWhenTheFileChangedUnderItsRowAndTheModelC
     // Mirrored, then shifted so the mirrored face lands on the old box: the same size and a
     // detection that overlaps the old face, but different pixels.
     cv::flip(img, rotated, 1);
-    cv::Mat shift = (cv::Mat_<double>(2, 3) << 1, 0, 32, 0, 1, 0);
+    const cv::Matx23d shift(1, 0, 32, 0, 1, 0);
     cv::warpAffine(rotated, rotated, shift, rotated.size(), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
     ASSERT_TRUE(cv::imwrite(file.string(), rotated));
