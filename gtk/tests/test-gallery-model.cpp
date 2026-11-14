@@ -1,8 +1,11 @@
 #include <glib.h>
 
 #include <chrono>
+#include <cstdint>
+#include <numeric>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "connect.h"
 #include "fake-collection.h"
@@ -16,10 +19,17 @@ typedef struct {
     PhigGalleryModel* model;
 } Fixture;
 
+/* Ids 1 to n in order: the fake's whole collection. */
+static std::vector<int64_t> first_ids(guint n) {
+    std::vector<int64_t> ids(n);
+    std::iota(ids.begin(), ids.end(), 1);
+    return ids;
+}
+
 static void fixture_set_up(Fixture* f, gconstpointer unused) {
     (void)unused;
     f->coll = phig::gtk::fake::make(N_ROWS).release();
-    f->model = phig_gallery_model_new(*f->coll);
+    f->model = phig_gallery_model_new(*f->coll, first_ids(N_ROWS));
 }
 
 /* The model goes first: its dispose waits for any page fetch still using the
@@ -225,6 +235,66 @@ static void test_final_unref_waits_for_a_fetch_in_progress(Fixture* f, gconstpoi
     releaser.join();
 }
 
+/* Positions follow the ids the model was built from, not the collection's
+ * order. */
+static void test_positions_follow_the_ids_given(Fixture* f, gconstpointer unused) {
+    (void)unused;
+    PhigGalleryModel* model = phig_gallery_model_new(*f->coll, {9, 3, 700});
+    g_assert_cmpuint(g_list_model_get_n_items(G_LIST_MODEL(model)), ==, 3);
+    g_assert_cmpint(phig_gallery_model_id_at(model, 0), ==, 9);
+    g_assert_cmpint(phig_gallery_model_id_at(model, 2), ==, 700);
+    g_assert_cmpint(phig_gallery_model_id_at(model, 3), ==, 0);
+
+    phig_gallery_model_fetch_page_sync(model, 0);
+    PhigImageRow* row = PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(model), 1));
+    g_assert_false(phig_image_row_is_placeholder(row));
+    g_assert_cmpint(phig_image_row_get_id(row), ==, 3);
+    g_assert_cmpstr(phig_image_row_get_path(row).c_str(), ==, "/fake/2.jpg");
+    g_object_unref(row);
+    g_object_unref(model);
+}
+
+/* A row deleted after the ids were read keeps its position, so the rows after
+ * it do not shift onto the wrong cells. */
+static void test_a_row_deleted_since_keeps_its_position(Fixture* f, gconstpointer unused) {
+    (void)unused;
+    PhigGalleryModel* model = phig_gallery_model_new(*f->coll, {2, N_ROWS + 5, 4});
+    phig_gallery_model_fetch_page_sync(model, 0);
+
+    PhigImageRow* gone = PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(model), 1));
+    g_assert_false(phig_image_row_is_placeholder(gone));
+    g_assert_cmpint(phig_image_row_get_id(gone), ==, N_ROWS + 5);
+    g_assert_true(phig_image_row_get_path(gone).empty());
+    g_assert_true(phig_image_row_get_sha256(gone).empty());
+    g_object_unref(gone);
+
+    PhigImageRow* after = PHIG_IMAGE_ROW(g_list_model_get_item(G_LIST_MODEL(model), 2));
+    g_assert_cmpint(phig_image_row_get_id(after), ==, 4);
+    g_assert_cmpstr(phig_image_row_get_path(after).c_str(), ==, "/fake/3.jpg");
+    g_object_unref(after);
+    g_object_unref(model);
+}
+
+/* A selection resolves from the ids alone, including positions on pages never
+ * fetched. */
+static void test_a_selection_resolves_to_ids_without_a_fetch(Fixture* f, gconstpointer unused) {
+    (void)unused;
+    GtkBitset* selection = gtk_bitset_new_empty();
+    gtk_bitset_add(selection, 0);
+    gtk_bitset_add_range(selection, 998, 3);
+    gtk_bitset_add(selection, N_ROWS + 10);  // past the end: ignored
+
+    std::vector<int64_t> ids = phig_gallery_model_ids_in(f->model, selection);
+    gtk_bitset_unref(selection);
+
+    g_assert_cmpuint(ids.size(), ==, 4);
+    g_assert_cmpint(ids[0], ==, 1);
+    g_assert_cmpint(ids[1], ==, 999);
+    g_assert_cmpint(ids[2], ==, 1000);
+    g_assert_cmpint(ids[3], ==, 1001);
+    g_assert_cmpuint(phig_gallery_model_resident_page_count(f->model), ==, 0);
+}
+
 int main(int argc, char** argv) {
     g_test_init(&argc, &argv, NULL);
 #define T(name, fn) \
@@ -240,6 +310,10 @@ int main(int argc, char** argv) {
     T("async-fetch-emits-items-changed", test_async_fetch_emits_items_changed);
     T("failed-fetch-emits-page-fetch-failed", test_failed_fetch_emits_page_fetch_failed);
     T("final-unref-waits-for-a-fetch-in-progress", test_final_unref_waits_for_a_fetch_in_progress);
+    T("positions-follow-the-ids-given", test_positions_follow_the_ids_given);
+    T("a-row-deleted-since-keeps-its-position", test_a_row_deleted_since_keeps_its_position);
+    T("a-selection-resolves-to-ids-without-a-fetch",
+      test_a_selection_resolves_to_ids_without_a_fetch);
 #undef T
     return g_test_run();
 }

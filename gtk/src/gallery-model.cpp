@@ -1,5 +1,6 @@
 #include "gallery-model.h"
 
+#include <algorithm>
 #include <condition_variable>
 #include <expected>
 #include <iterator>
@@ -8,6 +9,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -112,13 +114,14 @@ struct Placeholder {
 // reference to the model. dispose sets disposed and waits for in_flight to reach
 // zero, which is what makes the header's "caller must not close coll while any
 // reference to the model is outstanding" contract true: the caller's final unref
-// does not return while a worker is inside phig::gtk::page, and no worker enters
+// does not return while a worker is inside phig::gtk::rows, and no worker enters
 // once it has.
 struct FetchShared {
     phig::gtk::Collection* coll = nullptr;  // borrowed; see phig_gallery_model_new
+    std::vector<int64_t> ids;               // set before any fetch, then never written
     std::mutex mutex;
     std::condition_variable cv;
-    guint in_flight = 0;    // workers inside phig::gtk::page; guarded by mutex
+    guint in_flight = 0;    // workers inside phig::gtk::rows; guarded by mutex
     bool disposed = false;  // guarded by mutex
 };
 
@@ -197,13 +200,30 @@ void drop_placeholders(Impl& impl, guint position, guint n_rows) {
     }
 }
 
+// The ids page_index covers.
+std::span<const int64_t> page_ids(const FetchShared& shared, guint page_index) {
+    const size_t start = static_cast<size_t>(page_index) * PHIG_PAGE_SIZE;
+    if (start >= shared.ids.size()) return {};
+    return std::span<const int64_t>(shared.ids)
+        .subspan(start, std::min<size_t>(PHIG_PAGE_SIZE, shared.ids.size() - start));
+}
+
 // Installs a fetched page as the most recently used, evicts if over budget,
-// and emits items-changed for the range it covers.
+// and emits items-changed for the range it covers. rows are the page's ids in
+// order with any deleted since left out; a deleted one keeps its position as a
+// row with only its id.
 void install_page(PhigGalleryModel* self, guint page_index, std::vector<phig::gtk::Row> rows) {
     Impl& impl = self->impl;
     Page page;
-    page.rows.reserve(rows.size());
-    for (phig::gtk::Row& row : rows) page.rows.push_back(new_row(std::move(row)));
+    std::span<const int64_t> ids = page_ids(*impl.shared, page_index);
+    page.rows.reserve(ids.size());
+    size_t next = 0;
+    for (int64_t id : ids) {
+        if (next < rows.size() && rows[next].id == id)
+            page.rows.push_back(new_row(std::move(rows[next++])));
+        else
+            page.rows.push_back(new_row(phig::gtk::Row{id, {}, {}, {}}));
+    }
     const guint n_rows = static_cast<guint>(page.rows.size());
     const guint position = page_index * PHIG_PAGE_SIZE;
 
@@ -252,8 +272,7 @@ void fetch_thread(GTask* task, gpointer source_object, gpointer task_data,
         }
         shared.in_flight++;
     }
-    data.fetched.emplace(
-        phig::gtk::page(*shared.coll, data.page_index * PHIG_PAGE_SIZE, PHIG_PAGE_SIZE));
+    data.fetched.emplace(phig::gtk::rows(*shared.coll, page_ids(shared, data.page_index)));
     {
         std::lock_guard lock(shared.mutex);
         shared.in_flight--;
@@ -337,7 +356,7 @@ static void phig_gallery_model_list_model_iface_init(GListModelInterface* iface)
 
 /* The caller may close coll as soon as its last reference to this model is
  * released, so dispose must not return while a worker is still inside
- * phig::gtk::page. It runs on the thread that dropped the last reference. */
+ * phig::gtk::rows. It runs on the thread that dropped the last reference. */
 static void phig_gallery_model_dispose(GObject* obj) noexcept {
     FetchShared& shared = *PHIG_GALLERY_MODEL(obj)->impl.shared;
     {
@@ -364,24 +383,42 @@ static void phig_gallery_model_class_init(PhigGalleryModelClass* klass) {
 
 static void phig_gallery_model_init(PhigGalleryModel* self) { new (&self->impl) Impl(); }
 
-PhigGalleryModel* phig_gallery_model_new(phig::gtk::Collection& coll) {
+PhigGalleryModel* phig_gallery_model_new(phig::gtk::Collection& coll, std::vector<int64_t> ids) {
     auto* self = PHIG_GALLERY_MODEL(g_object_new(PHIG_TYPE_GALLERY_MODEL, nullptr));
     self->impl.shared->coll = &coll;
-    if (auto total = phig::gtk::count(coll))
-        self->impl.total = *total;
-    else
-        g_warning("gallery model: count failed: %s", total.error().c_str());
+    self->impl.total = static_cast<guint>(ids.size());
+    self->impl.shared->ids = std::move(ids);
     return self;
 }
 
+int64_t phig_gallery_model_id_at(PhigGalleryModel* self, guint position) {
+    const std::vector<int64_t>& ids = self->impl.shared->ids;
+    return position < ids.size() ? ids[position] : 0;
+}
+
+std::vector<int64_t> phig_gallery_model_ids_in(PhigGalleryModel* self, GtkBitset* selection) {
+    const std::vector<int64_t>& ids = self->impl.shared->ids;
+    std::vector<int64_t> out;
+    out.reserve(static_cast<size_t>(std::min<guint64>(gtk_bitset_get_size(selection), ids.size())));
+    GtkBitsetIter iter;
+    guint position = 0;
+    for (bool more = gtk_bitset_iter_init_first(&iter, selection, &position);
+         more && position < ids.size(); more = gtk_bitset_iter_next(&iter, &position))
+        out.push_back(ids[position]);
+    return out;
+}
+
 void phig_gallery_model_fetch_page_sync(PhigGalleryModel* self, guint page_index) {
-    auto rows =
-        phig::gtk::page(*self->impl.shared->coll, page_index * PHIG_PAGE_SIZE, PHIG_PAGE_SIZE);
+    auto rows = phig::gtk::rows(*self->impl.shared->coll, page_ids(*self->impl.shared, page_index));
     if (rows) install_page(self, page_index, std::move(*rows));
 }
 
 guint phig_gallery_model_resident_page_count(PhigGalleryModel* self) {
     return static_cast<guint>(self->impl.pages.size());
+}
+
+guint phig_gallery_model_pending_page_count(PhigGalleryModel* self) {
+    return static_cast<guint>(self->impl.pending.size());
 }
 
 guint phig_gallery_model_get_max_resident_pages(PhigGalleryModel* self) {

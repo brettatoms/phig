@@ -66,7 +66,9 @@ void test_a_failed_open_carries_its_reason() {
     wait_for(outcome);
 
     g_assert_false(outcome.result->has_value());
-    g_assert_cmpstr(outcome.result->error().c_str(), ==, "fake: no catalog at /fake/missing");
+    g_assert_cmpstr(outcome.result->error().message.c_str(), ==,
+                    "fake: no catalog at /fake/missing");
+    g_assert_true(outcome.result->error().missing);
 }
 
 void test_the_result_is_delivered_on_the_calling_thread() {
