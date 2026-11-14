@@ -34,6 +34,17 @@ cmake --build build --target phig-gtk -j
 ctest --test-dir build -L gtk
 ```
 
+To add phig to your desktop's application launcher, install it into a prefix
+whose `share/` your desktop reads, such as `~/.local`:
+
+```bash
+cmake --install build --prefix ~/.local
+```
+
+That installs `phig-gtk`, its desktop entry `org.phig.Gtk.desktop` and its
+icon, along with the `phig` CLI and libphig. The icon's master is
+`assets/icon/phig.svg` at the repository root.
+
 The client opens phig's default catalog (`phig::gtk::default_catalog`), so
 `PHIG_CATALOG` and the config file apply. It takes no arguments.
 

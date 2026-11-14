@@ -18,6 +18,13 @@ add_executable(phig-gtk src/main.cpp src/gallery-model.cpp src/gallery-selection
 target_compile_options(phig-gtk PRIVATE ${PHIG_GTK_WARNINGS})
 target_link_libraries(phig-gtk PRIVATE phig-core PkgConfig::GTK)
 
+# The desktop entry and icon are named for the application id main.cpp
+# registers, so launchers match the running window to them.
+install(TARGETS phig-gtk RUNTIME DESTINATION bin)
+install(FILES data/org.phig.Gtk.desktop DESTINATION share/applications)
+install(FILES ${CMAKE_SOURCE_DIR}/assets/icon/phig.svg
+        DESTINATION share/icons/hicolor/scalable/apps RENAME org.phig.Gtk.svg)
+
 # `--target gtk-all` builds the client and every gtk test binary.
 add_custom_target(gtk-all)
 add_dependencies(gtk-all phig-gtk)

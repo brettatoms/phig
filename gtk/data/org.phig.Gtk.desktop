@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=phig
+Comment=Browse and organize your photo collection
+Exec=phig-gtk
+Icon=org.phig.Gtk
+Terminal=false
+Categories=Graphics;Photography;Viewer;
+Keywords=photo;image;picture;gallery;collection;duplicates;
+StartupNotify=true
