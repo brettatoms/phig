@@ -43,6 +43,7 @@ phig_gtk_test(connect tests/test-connect.cpp)
 phig_gtk_test(background tests/test-background.cpp)
 phig_gtk_test(query tests/test-query.cpp src/query.cpp)
 phig_gtk_test(format tests/test-format.cpp src/format.cpp)
+phig_gtk_test(scan-watch tests/test-scan-watch.cpp src/scan-watch.cpp tests/fake-collection.cpp)
 phig_gtk_test(startup tests/test-startup.cpp src/startup.cpp tests/fake-collection.cpp)
 
 # Tests collection.cpp itself, against a database it builds, so unlike the
