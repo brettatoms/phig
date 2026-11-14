@@ -36,7 +36,7 @@ enforced_at = ["core/database.cpp:init_schema", "core/database.cpp:apply_migrati
 binds = [
     "scan.walk", "scan.reconcile", "organize.plan", "organize.copy", "organize.move",
     "remove.trash", "remove.hard", "remove.db-only", "remove.orphans",
-    "thumbs.rebuild", "faces.rebuild", "faces.identify",
+    "thumbs.rebuild", "thumbs.clean", "faces.rebuild", "faces.identify",
     "relink.transfer", "relink.demote", "relink.demote_live_photo", "metadata.write",
 ]
 protects = ["db-row", "user-metadata", "activity-log"]
@@ -221,17 +221,18 @@ id = "R88"
 tier = "engine"
 concern = "atomicity"
 statement = "A schema migration step fails only on foreign key violations it creates, and no step runs until a backup of the database has been written."
-rationale = "Steps run with foreign keys off (R84), so apply_migration_step reads PRAGMA foreign_key_check inside the step's transaction before and after the step, and rolls back only if the after set holds a violation the before set does not. A violation is identified by child table, child rowid and parent table, not by the foreign key's index, which a table rebuild can renumber. Checking the whole database instead failed every step on rows no step had made: a catalog carrying faces rows whose images row was deleted before foreign keys were enforced could not reach any later version, and since reads refuse an outdated catalog (R70) and every write opens through an upgrade, no version of phig could open it for writing. Existing orphans are carried through unchanged; deleting them would make an upgrade destroy rows, labels among them, on its own authority, and whether to repair them is a separate destructive decision this rule does not make. Upgrades are automatic and forward-only and a catalog newer than the build is refused, so an upgrade cannot be undone by running the older phig. begin_upgrade therefore writes VACUUM INTO a new file beside the database, named for the version read and the UTC second (phig.db.v7-backup-20261113T201500Z), before the first step's transaction — VACUUM INTO cannot run inside one — and before the pre-migration path's schema repair. The name is claimed with an exclusive create, so an existing file is never overwritten; a name already taken, as by a second process upgrading in the same second, gets a numeric suffix. If the copy cannot be written, init_schema throws before any step and the database is unchanged. Two processes upgrading at once may each write a copy, and the second may hold a later version than its name says, but neither runs a step before its own copy exists. phig never deletes a backup. Measured on a synthetic catalog of 30,000 images with one face and embedding each: the copy took about 50 ms on tmpfs and 70 ms on ext4/NVMe within a 340-420 ms upgrade from v7, and the 67 MB database produced a 50 MB backup."
+rationale = "Steps run with foreign keys off (R84), so apply_migration_step reads PRAGMA foreign_key_check inside the step's transaction before and after the step, and rolls back only if the after set holds a violation the before set does not. A violation is identified by child table, child rowid and parent table, not by the foreign key's index, which a table rebuild can renumber. Because the identity is the rowid, a future step that rebuilds a table without an INTEGER PRIMARY KEY, such as image_tags, renumbers its rows and makes every orphan in it read as new, so the step would fail; such a step must carry the rowids across (INSERT ... SELECT rowid, ...). Checking the whole database instead failed every step on rows no step had made: a catalog carrying faces rows whose images row was deleted before foreign keys were enforced could not reach any later version, and since reads refuse an outdated catalog (R70) and every write opens through an upgrade, no version of phig could open it for writing. Existing orphans are carried through unchanged; deleting them would make an upgrade destroy rows, labels among them, on its own authority, and whether to repair them is a separate destructive decision this rule does not make. Upgrades are automatic and forward-only and a catalog newer than the build is refused, so an upgrade cannot be undone by running the older phig. write_upgrade_backup therefore writes VACUUM INTO a new file beside the database, named for the version read and the UTC second (phig.db.v7-backup-20261113T201500Z), and flushes the file and its directory to disk, before the first step's transaction — VACUUM INTO cannot run inside one — and before the pre-migration path's schema repair. The name is claimed with an exclusive create, so an existing file is never overwritten; a name already taken, as by a second process upgrading in the same second, gets a numeric suffix. If the copy cannot be written or flushed, init_schema throws before any step and the database is unchanged. settle_upgrade_backup keeps the copy, reports it through upgrade_backup_path and logs it at warning level only when this connection committed a step. When it committed none — the upgrade failed before its first commit, or another process applied every step first — the database is not what the copy guards against losing, so the copy is removed; otherwise every retried open of a catalog that cannot upgrade would leave another one. A process that loses a concurrent upgrade partway keeps its copy, which may hold a later version than its name says, but no process runs a step before its own copy is on disk. phig never deletes a copy that a committed step depends on. Measured on a synthetic catalog of 30,000 images with one face and embedding each: the copy took about 50 ms on tmpfs and 70-76 ms on ext4/NVMe within a 340-424 ms upgrade from v7."
 enforced_at = [
     "core/database.cpp:init_schema",
-    "core/database.cpp:begin_upgrade",
+    "core/database.cpp:write_upgrade_backup",
+    "core/database.cpp:settle_upgrade_backup",
     "core/database.cpp:apply_migration_step",
     "core/database.cpp:foreign_key_violations",
 ]
 binds = [
     "scan.walk", "scan.reconcile", "organize.plan", "organize.copy", "organize.move",
     "remove.trash", "remove.hard", "remove.db-only", "remove.orphans",
-    "thumbs.rebuild", "faces.rebuild", "faces.identify",
+    "thumbs.rebuild", "thumbs.clean", "faces.rebuild", "faces.identify",
     "relink.transfer", "relink.demote", "relink.demote_live_photo", "metadata.write",
 ]
 protects = ["db-row"]
@@ -242,8 +243,12 @@ tests = [
     "SchemaUpgradeTest.NoBackupIsWrittenWhenNoStepIsPending",
     "SchemaUpgradeTest.AnExistingFileAtTheBackupsNameIsLeftAlone",
     "SchemaUpgradeTest.WhenTheBackupCannotBeWrittenNoStepRuns",
+    "SchemaUpgradeTest.AnUpgradeThatFailsBeforeAnyStepCommitsRemovesItsBackup",
+    "SchemaUpgradeTest.AnUpgradeThatFailsAfterAStepCommittedKeepsItsBackup",
+    "SchemaUpgradeTest.AConnectionWhoseStepsAnotherAppliedKeepsNoBackup",
+    "SchemaUpgradeTest.APreMetaDatabaseIsBackedUpAsV0",
     "SchemaUpgradeCliTest.ScanUpgradesAV7CatalogWithOrphansAndNamesTheBackup",
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The step that adds a violation is a test's own step run through apply_migration_step, not a shipped migration, since none strands a row. The backup's ordering is pinned for the numbered steps; the pre-migration path, which takes the same backup before its schema repair, has no test with a backup that cannot be written. The cannot-write case is reached through a read-only catalog directory while another connection keeps the WAL files open, so a disk-full failure partway through VACUUM INTO, and the removal of the partial file, are not exercised. Two concurrent upgrades writing two copies in the same second run in DatabaseConcurrency's migration tests, but nothing asserts the suffixed name."
+test_gap = "The step that adds a violation is a test's own step run through apply_migration_step, not a shipped migration, since none strands a row. The cannot-write case is reached through a read-only catalog directory while another connection keeps the WAL files open, so a disk-full failure partway through VACUUM INTO, a failed flush, and the removal of the partial file are not exercised, and nothing observes that the flush happened. The pre-migration path's copy is pinned, but not its behaviour when the copy cannot be written. The suffixed name for two copies in the same second is reached by DatabaseConcurrency's migration tests and asserted by none."

@@ -20,6 +20,7 @@
 #endif
 #include "dates.h"
 #include "log.h"
+#include "paths.h"
 #include "selection.h"
 #include "sqlite-vec.h"
 
@@ -407,6 +408,17 @@ void Database::set_schema_version(int version) {
 }
 
 void Database::init_schema() {
+    UpgradeRun run;
+    try {
+        create_or_upgrade_schema(run);
+    } catch (...) {
+        settle_upgrade_backup(run, /*failed=*/true);
+        throw;
+    }
+    settle_upgrade_backup(run, /*failed=*/false);
+}
+
+void Database::create_or_upgrade_schema(UpgradeRun& run) {
     int db_version = get_schema_version();
 
     if (db_version > CURRENT_SCHEMA_VERSION) {
@@ -415,9 +427,6 @@ void Database::init_schema() {
                                  std::to_string(CURRENT_SCHEMA_VERSION) + "). Please update phig.");
     }
 
-    // Set once the backup is written, so a pre-migration database that goes on
-    // to the numbered steps is copied once, before anything changes.
-    bool upgrading = false;
     if (db_version == 0) {
         // Check if this is a pre-migration DB (has images table but no meta table)
         bool has_images_table = false;
@@ -433,8 +442,8 @@ void Database::init_schema() {
         }
 
         if (has_images_table) {
-            begin_upgrade(0);
-            upgrading = true;
+            run.from = 0;
+            run.backup = write_upgrade_backup(0);
             // Pre-migration DB — set version to 1, then run migrations forward.
             // Re-establish the face-recognition schema that the old init_schema
             // used to guarantee on every startup, in case the existing DB
@@ -484,6 +493,7 @@ void Database::init_schema() {
                 }
                 set_schema_version(1);
                 exec("COMMIT");
+                run.committed++;
             } catch (...) {
                 exec("ROLLBACK");
                 throw;
@@ -609,15 +619,19 @@ void Database::init_schema() {
     }
 
     if (db_version > 0 && db_version < CURRENT_SCHEMA_VERSION) {
-        if (!upgrading) begin_upgrade(db_version);
+        // A pre-migration database was copied above, before its repair.
+        if (run.backup.empty()) {
+            run.from = db_version;
+            run.backup = write_upgrade_backup(db_version);
+        }
         for (int v = db_version + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
-            apply_migration_step(v, migrations()[v]);
+            if (apply_migration_step(v, migrations()[v])) run.committed++;
         }
     }
     // else: db_version == CURRENT_SCHEMA_VERSION, nothing to do
 }
 
-void Database::apply_migration_step(int version, const std::string& sql) {
+bool Database::apply_migration_step(int version, const std::string& sql) {
     // Foreign keys off for every step, not only the ones that rebuild a table.
     // SQLite's DROP TABLE performs an implicit DELETE of every row before
     // dropping, so dropping a table with ON DELETE CASCADE children takes their
@@ -636,7 +650,7 @@ void Database::apply_migration_step(int version, const std::string& sql) {
         if (get_schema_version() >= version) {
             exec("COMMIT");
             exec("PRAGMA foreign_keys=ON");
-            return;
+            return false;
         }
         // Read inside the transaction, so nothing another connection writes
         // can land between this read and the step.
@@ -665,6 +679,11 @@ void Database::apply_migration_step(int version, const std::string& sql) {
         // child rows. It does not catch one that let the cascade delete them —
         // deleted children leave no orphans, so that case adds no violation and
         // is only visible to a test that asserts the rows are still there.
+        //
+        // A violation is named by its child's rowid, so a step that rebuilds a
+        // table without an INTEGER PRIMARY KEY, such as image_tags, renumbers
+        // its rows and makes every orphan in it read as new: such a step must
+        // carry the rowids across (INSERT ... SELECT rowid, ...).
         std::vector<ForeignKeyViolation> added;
         const auto after = foreign_key_violations();
         std::set_difference(after.begin(), after.end(), before.begin(), before.end(),
@@ -685,9 +704,10 @@ void Database::apply_migration_step(int version, const std::string& sql) {
         throw;
     }
     exec("PRAGMA foreign_keys=ON");
+    return true;
 }
 
-void Database::begin_upgrade(int from_version) {
+std::string Database::write_upgrade_backup(int from_version) {
     // Beside the database, named for the version it holds and the UTC second:
     // phig.db.v7-backup-20261113T201500Z. VACUUM INTO cannot run inside a
     // transaction, so this precedes the first step's. Under a concurrent
@@ -730,17 +750,51 @@ void Database::begin_upgrade(int from_version) {
         rc = sqlite3_step(stmt);
     }
     sqlite3_finalize(stmt);
+    std::string reason;
     if (rc != SQLITE_DONE) {
-        const std::string reason = sqlite3_errmsg(db_);
+        reason = sqlite3_errmsg(db_);
+    } else if (!fsync_file(path)) {
+        // A step must not run on the strength of a copy still in the page
+        // cache: a crash then could lose the copy and keep the step.
+        reason = "the copy could not be flushed to disk";
+    }
+    if (!reason.empty()) {
         std::error_code ec;
         fs::remove(path, ec);  // the claimed name, empty or partly written
         throw failed(path, reason);
     }
+    fsync_dir(fs::path(path).parent_path());
+    return path;
+}
 
-    upgrade_backup_path_ = path;
-    log_warn("Upgrading the catalog database from schema v" + std::to_string(from_version) +
-             " to v" + std::to_string(CURRENT_SCHEMA_VERSION) +
-             ". A copy from before the upgrade is at " + path);
+void Database::settle_upgrade_backup(const UpgradeRun& run, bool failed) {
+    if (run.backup.empty()) return;
+    const std::string from = "schema v" + std::to_string(run.from);
+    if (run.committed > 0) {
+        upgrade_backup_path_ = run.backup;
+        if (failed) {
+            log_warn("The catalog database upgrade from " + from + " stopped at v" +
+                     std::to_string(get_schema_version()) +
+                     ". A copy from before the upgrade is at " + run.backup);
+        } else {
+            log_warn("Upgraded the catalog database from " + from + " to v" +
+                     std::to_string(CURRENT_SCHEMA_VERSION) +
+                     ". A copy from before the upgrade is at " + run.backup);
+        }
+        return;
+    }
+    // This connection changed nothing: the upgrade failed before its first
+    // commit, or another process applied every step and wrote its own copy.
+    // Either way the database is not what this copy guards against losing, so
+    // repeated failed opens do not accumulate copies.
+    std::error_code ec;
+    fs::remove(run.backup, ec);
+    if (failed) {
+        log_warn("The catalog database upgrade from " + from +
+                 " failed before changing the database" +
+                 (ec ? "; its unneeded copy remains at " + run.backup
+                     : ", so its copy at " + run.backup + " was removed"));
+    }
 }
 
 void Database::insert(const ImageInfo& info) {

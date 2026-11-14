@@ -1,14 +1,16 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "catalog.h"
@@ -208,6 +210,10 @@ std::vector<fs::path> backups_in(const fs::path& dir) {
     return found;
 }
 
+}  // namespace
+
+// Outside the anonymous namespace: Database names it a friend, so it can run a
+// step of its own through the private apply_migration_step.
 class SchemaUpgradeTest : public ::testing::Test {
    protected:
     fs::path dir;
@@ -221,9 +227,10 @@ class SchemaUpgradeTest : public ::testing::Test {
         fs::permissions(dir, fs::perms::owner_all, fs::perm_options::add, ec);
         fs::remove_all(dir, ec);
     }
+    static bool apply_migration_step(Database& db, int version, const std::string& sql) {
+        return db.apply_migration_step(version, sql);
+    }
 };
-
-}  // namespace
 
 // Plan 066 found 36 faces rows with no images row in a real catalog. Every
 // upgrade step checked the whole database for violations, so those rows, which
@@ -267,7 +274,7 @@ TEST_F(SchemaUpgradeTest, AStepThatAddsAViolationFailsAndRollsBackBesideExisting
     const Snapshot before = snapshot(db->db_ptr());
 
     try {
-        db->apply_migration_step(current + 1, "DELETE FROM images WHERE path = '/p/keep.jpg'");
+        apply_migration_step(*db, current + 1, "DELETE FROM images WHERE path = '/p/keep.jpg'");
         FAIL() << "a step that stranded keep.jpg's tag and face committed";
     } catch (const std::runtime_error& e) {
         const std::string msg = e.what();
@@ -349,7 +356,6 @@ TEST_F(SchemaUpgradeTest, AnExistingFileAtTheBackupsNameIsLeftAlone) {
 }
 
 TEST_F(SchemaUpgradeTest, WhenTheBackupCannotBeWrittenNoStepRuns) {
-    if (::geteuid() == 0) GTEST_SKIP() << "root writes into a read-only directory";
     make_v7_with_orphans(db_path);
     Snapshot before;
     {
@@ -362,6 +368,13 @@ TEST_F(SchemaUpgradeTest, WhenTheBackupCannotBeWrittenNoStepRuns) {
     Database holder(db_path);
     fs::permissions(dir, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write,
                     fs::perm_options::remove);
+    // Root, and some filesystems, ignore the mode.
+    const fs::path probe = dir / "probe";
+    if (std::FILE* f = std::fopen(probe.c_str(), "wx")) {
+        std::fclose(f);
+        fs::remove(probe);
+        GTEST_SKIP() << "a file can still be created in a read-only directory here";
+    }
     try {
         open_catalog_db(db_path, CatalogAccess::Write);
         FAIL() << "the upgrade ran without a backup";
@@ -375,6 +388,150 @@ TEST_F(SchemaUpgradeTest, WhenTheBackupCannotBeWrittenNoStepRuns) {
     EXPECT_EQ(holder.schema_version(), 7) << "a step ran before the backup existed";
     EXPECT_EQ(snapshot(holder.db_ptr()), before);
     EXPECT_TRUE(backups_in(dir).empty());
+}
+
+// A failure before the first commit leaves the database as the copy has it, so
+// the copy goes: otherwise every retried open of a catalog that cannot upgrade
+// would leave another one.
+TEST_F(SchemaUpgradeTest, AnUpgradeThatFailsBeforeAnyStepCommitsRemovesItsBackup) {
+    make_v7_with_orphans(db_path);
+    {
+        // The v8 step creates faces_new, so a table already holding the name
+        // fails it.
+        Database v7(db_path);
+        exec_or_fail(v7.db_ptr(), "CREATE TABLE faces_new (x INTEGER)");
+    }
+    Snapshot before;
+    {
+        Database v7(db_path, /*read_only=*/true);
+        before = snapshot(v7.db_ptr());
+    }
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        Database db(db_path);
+        EXPECT_THROW(db.init_schema(), std::runtime_error);
+        EXPECT_TRUE(db.upgrade_backup_path().empty());
+    }
+    EXPECT_TRUE(backups_in(dir).empty()) << "a failed upgrade left its copy behind";
+    Database after(db_path, /*read_only=*/true);
+    EXPECT_EQ(after.schema_version(), 7);
+    EXPECT_EQ(snapshot(after.db_ptr()), before);
+}
+
+// Once a step has committed, the copy is the only way back to the old version.
+TEST_F(SchemaUpgradeTest, AnUpgradeThatFailsAfterAStepCommittedKeepsItsBackup) {
+    make_v7_with_orphans(db_path);
+    {
+        // v8 commits; v9 creates images_new and fails on this one.
+        Database v7(db_path);
+        exec_or_fail(v7.db_ptr(), "CREATE TABLE images_new (x INTEGER)");
+    }
+
+    Database db(db_path);
+    EXPECT_THROW(db.init_schema(), std::runtime_error);
+    EXPECT_EQ(db.schema_version(), 8);
+    const auto backups = backups_in(dir);
+    ASSERT_EQ(backups.size(), 1u);
+    EXPECT_EQ(db.upgrade_backup_path(), backups[0].string());
+    Database backup(backups[0].string(), /*read_only=*/true);
+    EXPECT_EQ(backup.schema_version(), 7);
+}
+
+// Two processes upgrading at once each copy the database before their first
+// step. The one that finds every step already applied changed nothing, so its
+// copy goes and it reports none. The interleave is forced: another connection
+// holds the write lock until the upgrading one has written its copy, then
+// applies the only pending step itself.
+TEST_F(SchemaUpgradeTest, AConnectionWhoseStepsAnotherAppliedKeepsNoBackup) {
+    {
+        Database db(db_path);
+        db.init_schema();
+        exec_or_fail(db.db_ptr(), R"(
+            ALTER TABLE faces DROP COLUMN frame_source;
+            ALTER TABLE faces DROP COLUMN frame_width;
+            ALTER TABLE faces DROP COLUMN frame_height;
+            ALTER TABLE faces DROP COLUMN frame_sha256;
+            ALTER TABLE faces DROP COLUMN model_sha256;
+            UPDATE meta SET value = '9' WHERE key = 'schema_version';
+        )");
+    }
+    ASSERT_EQ(Database::expected_schema_version(), 10)
+        << "the other connection below applies the v10 step by hand";
+
+    Database other(db_path);
+    other.begin_transaction();
+
+    Database loser(db_path);
+    std::string error;
+    std::thread upgrade([&] {
+        try {
+            loser.init_schema();
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+    });
+    // The copy is written outside any transaction, so it completes while the
+    // write lock is held; the step after it then waits.
+    bool copied = false;
+    for (int i = 0; i < 500 && !copied; i++) {
+        for (const auto& b : backups_in(dir)) {
+            if (fs::file_size(b) > 0) copied = true;
+        }
+        if (!copied) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    exec_or_fail(other.db_ptr(), R"(
+        ALTER TABLE faces ADD COLUMN frame_source TEXT;
+        ALTER TABLE faces ADD COLUMN frame_width INTEGER;
+        ALTER TABLE faces ADD COLUMN frame_height INTEGER;
+        ALTER TABLE faces ADD COLUMN frame_sha256 TEXT;
+        ALTER TABLE faces ADD COLUMN model_sha256 TEXT;
+        UPDATE meta SET value = '10' WHERE key = 'schema_version';
+    )");
+    other.commit_transaction();
+    upgrade.join();
+
+    ASSERT_TRUE(copied) << "the upgrading connection never wrote its copy";
+    EXPECT_EQ(error, "");
+    EXPECT_EQ(loser.schema_version(), 10);
+    EXPECT_TRUE(loser.upgrade_backup_path().empty());
+    EXPECT_TRUE(backups_in(dir).empty()) << "the connection that applied nothing kept a copy";
+}
+
+// A database from before the meta table is copied before its schema repair,
+// which is the first change made to it, under the version it is read as.
+TEST_F(SchemaUpgradeTest, APreMetaDatabaseIsBackedUpAsV0) {
+    {
+        sqlite3* raw = nullptr;
+        ASSERT_EQ(sqlite3_open(db_path.c_str(), &raw), SQLITE_OK);
+        exec_or_fail(raw, R"(
+            CREATE TABLE images (
+                id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+                filename TEXT NOT NULL, extension TEXT NOT NULL,
+                file_size INTEGER NOT NULL, created_at TEXT, modified_at TEXT,
+                sha256 TEXT NOT NULL, phash INTEGER NOT NULL,
+                width INTEGER, height INTEGER, exif TEXT
+            );
+            INSERT INTO images (path, filename, extension, file_size, sha256, phash, exif)
+            VALUES ('/old/photo.jpg', 'photo.jpg', 'jpg', 1000, 'abc', 0, '{}');
+        )");
+        sqlite3_close(raw);
+    }
+
+    Database db(db_path);
+    db.init_schema();
+    EXPECT_EQ(db.schema_version(), Database::expected_schema_version());
+    const auto backups = backups_in(dir);
+    ASSERT_EQ(backups.size(), 1u);
+    EXPECT_EQ(backups[0].filename().string().rfind("phig.db.v0-backup-", 0), 0u) << backups[0];
+    EXPECT_EQ(db.upgrade_backup_path(), backups[0].string());
+
+    sqlite3* copy = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(backups[0].c_str(), &copy, SQLITE_OPEN_READONLY, nullptr), SQLITE_OK);
+    EXPECT_EQ(dump(copy, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"),
+              std::vector<std::string>{"images"})
+        << "the copy was taken after the schema repair";
+    EXPECT_EQ(dump(copy, "SELECT path FROM images"), std::vector<std::string>{"/old/photo.jpg"});
+    sqlite3_close(copy);
 }
 
 namespace {

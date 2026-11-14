@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite, 1044 tests
+./build/phig-tests        # fast suite, 1048 tests
 ./build/phig-perf-tests   # performance suite (~2s), 6 tests
-ctest --test-dir build --parallel   # both — 1050 (~19s; 48s without --parallel)
+ctest --test-dir build --parallel   # both — 1054 (~19s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -490,8 +490,9 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   CASCADE` children would empty them and report success. A step fails only on
   violations it adds, so rows that were already orphans do not block an
   upgrade. Before the first step the database is copied to
-  `phig.db.v<N>-backup-<UTC time>` beside it, and the upgrade does not start
-  if the copy fails (R88).
+  `phig.db.v<N>-backup-<UTC time>` beside it and flushed to disk. The upgrade
+  does not start if the copy fails, and the copy is removed again if the run
+  commits no step (R88).
 - **`exif` column renamed to `metadata`** — stores JSON blob for any media
   type (EXIF for images, container metadata for videos).
 - **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.

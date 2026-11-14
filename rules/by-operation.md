@@ -19,7 +19,7 @@
 | **remove.trash** | R02 | — | R28 R29 R31 R33 R34 R88 | R04 R18 R19 R23 R25 R26 R27 R83 | — | R46 | R49 R50 R53 R84 | — | R20 R22 R61 R74 |
 | **scan.reconcile** | — | R12 R13 R14 R15 R16 R17 R75 | R28 R29 R30 R31 R34 R80 R88 | R04 R18 R19 R25 R26 R83 | R37 R38 R39 | R43 | R49 R50 R53 R84 | R56 | R59 |
 | scan.walk | — | — | R28 R29 R34 R72 R80 R88 | — | R35 R36 R76 | R42 R43 | R49 R50 R53 R55 | R57 R58 | R60 |
-| **thumbs.clean** | — | — | — | — | — | — | — | — | R77 |
+| **thumbs.clean** | — | — | R29 R88 | — | — | — | — | — | R77 |
 | thumbs.rebuild | — | — | R29 R88 | — | — | — | R49 R50 R53 R55 | R57 R58 | R74 |
 | **trash.empty** | — | — | — | — | — | — | R49 R50 | — | R68 |
 

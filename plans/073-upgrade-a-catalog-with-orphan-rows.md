@@ -119,8 +119,10 @@ orphans. The database was 67 MB after a WAL checkpoint. Opening it with
   `VACUUM INTO` was about 50 ms;
 - 415-424 ms on ext4 on NVMe (three runs), of which the backup was 70-76 ms.
 
-The backup was 50 MB, smaller than the database because `VACUUM INTO` writes
-no free pages. One `PRAGMA foreign_key_check` over the upgraded catalog took
+The backup was 50 MB. It is smaller than the 67 MB database because building
+the fixture rebuilt and dropped the images and faces tables, which left free
+pages, and `VACUUM INTO` writes none. A real catalog without that churn will
+produce a backup close to its own size. One `PRAGMA foreign_key_check` over the upgraded catalog took
 10-11 ms; each of the three steps runs two, so the before-and-after comparison
 costs about 60 ms of the upgrade.
 
