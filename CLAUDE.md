@@ -502,7 +502,8 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
   Both keep a file's mtime, which dates a photo with no EXIF or sidecar date
   (R89).
 - **Identical destinations** — a destination already holding the source's
-  bytes is not a conflict: `cp` writes nothing, and `mv` trashes the source
+  bytes is not a conflict: `cp` writes no file but gives the destination's row
+  the source's tags, gallery and faces (R100), and `mv` trashes the source
   after merging its tags, gallery and faces into the destination's row, taking
   the older mtime when the pair is dated by mtime. It falls back to the conflict
   policy when the merge would lose a gallery, named faces or a differing

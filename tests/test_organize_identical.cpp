@@ -369,22 +369,123 @@ TEST_F(OrganizeIdenticalTest, CopyOntoAnIdenticalUntrackedFileWritesNothingAndTr
     EXPECT_EQ(entries("adopt"), 1);
 }
 
-TEST_F(OrganizeIdenticalTest, CopyOntoAnIdenticalTrackedFileChangesNothing) {
+TEST_F(OrganizeIdenticalTest, CopyOntoAnIdenticalUntrackedFileCarriesTheMetadata) {
     const fs::path src = dir / "src" / "a.jpg";
     write(src, "SAME BYTES");
     write(dest_for("a.jpg"), "SAME BYTES");
     const int64_t id = track(src);
-    track(dest_for("a.jpg"));
+    db->set_tag({src.string()}, "trip", true);
+    db->set_tag({src.string()}, "favorite", true);
+    db->set_gallery({src.string()}, "summer", false);
+    FaceInfo face{};
+    face.width = face.height = 10;
+    ASSERT_TRUE(db->set_face_person(db->insert_face(id, face), db->get_or_create_person("Ann")));
 
     OrganizeEngine engine(opts({id}, ConflictResolution::Rename), *db);
     CancelToken cancel;
-    OrganizeResult r =
-        engine.apply(engine.plan(cancel, nullptr), /*is_move=*/false, cancel, nullptr);
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    ASSERT_TRUE(plan.at(0).identical);
+    OrganizeResult r = engine.apply(plan, /*is_move=*/false, cancel, nullptr);
+
+    ASSERT_EQ(r.identical, 1u);
+    const int64_t dst_id = db->get_image_id(dest_for("a.jpg").string());
+    auto tags = db->get_tags_for_image(dest_for("a.jpg").string());
+    std::sort(tags.begin(), tags.end());
+    EXPECT_EQ(tags, (std::vector<std::string>{"favorite", "trip"}));
+    EXPECT_EQ(db->get_images_by_ids({dst_id}).at(0).gallery, "summer");
+    ASSERT_EQ(db->get_labelled_faces_for_image(dst_id).size(), 1u);
+    EXPECT_EQ(db->get_labelled_faces_for_image(id).size(), 1u) << "the original lost its face";
+}
+
+TEST_F(OrganizeIdenticalTest, CopyOntoAnIdenticalTrackedFileMergesTheMetadata) {
+    const fs::path src = dir / "src" / "a.jpg";
+    write(src, "SAME BYTES");
+    write(dest_for("a.jpg"), "SAME BYTES");
+    const int64_t src_id = track(src);
+    const int64_t dst_id = track(dest_for("a.jpg"));
+    db->set_tag({src.string()}, "trip", true);
+    db->set_gallery({src.string()}, "summer", false);
+    db->set_tag({dest_for("a.jpg").string()}, "other", true);
+    FaceInfo face{};
+    face.width = face.height = 10;
+    ASSERT_TRUE(
+        db->set_face_person(db->insert_face(src_id, face), db->get_or_create_person("Ann")));
+
+    OrganizeEngine engine(opts({src_id}, ConflictResolution::Rename), *db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    ASSERT_TRUE(plan.at(0).identical);
+    OrganizeResult r = engine.apply(plan, /*is_move=*/false, cancel, nullptr);
 
     EXPECT_EQ(r.identical, 1u);
     EXPECT_EQ(db->count(), 2);
     EXPECT_EQ(files_in(out() / "2019"), std::vector<std::string>{"a.jpg"});
+    auto tags = db->get_tags_for_image(dest_for("a.jpg").string());
+    std::sort(tags.begin(), tags.end());
+    EXPECT_EQ(tags, (std::vector<std::string>{"other", "trip"}));
+    EXPECT_EQ(db->get_images_by_ids({dst_id}).at(0).gallery, "summer");
+    EXPECT_EQ(db->get_labelled_faces_for_image(dst_id).size(), 1u);
+
+    // A copy removes nothing from the original.
+    EXPECT_EQ(db->get_tags_for_image(src.string()), std::vector<std::string>{"trip"});
+    EXPECT_EQ(db->get_images_by_ids({src_id}).at(0).gallery, "summer");
+    EXPECT_EQ(db->get_labelled_faces_for_image(src_id).size(), 1u);
+
+    EXPECT_EQ(entries("copy_metadata"), 1);
     EXPECT_EQ(entries("copy"), 0);
+}
+
+TEST_F(OrganizeIdenticalTest, CopyOntoAnIdenticalTrackedFileWithFacesKeepsItsOwn) {
+    const fs::path src = dir / "src" / "a.jpg";
+    write(src, "SAME BYTES");
+    write(dest_for("a.jpg"), "SAME BYTES");
+    const int64_t src_id = track(src);
+    const int64_t dst_id = track(dest_for("a.jpg"));
+    FaceInfo face{};
+    face.width = face.height = 10;
+    db->insert_face(src_id, face);
+    db->insert_face(src_id, face);
+    const int64_t own = db->insert_face(dst_id, face);
+
+    OrganizeEngine engine(opts({src_id}, ConflictResolution::Rename), *db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    ASSERT_TRUE(plan.at(0).identical);
+    OrganizeResult r = engine.apply(plan, /*is_move=*/false, cancel, nullptr);
+
+    ASSERT_EQ(r.identical, 1u);
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db->db_ptr(), "SELECT id FROM faces WHERE image_id = ?", -1, &s, nullptr);
+    sqlite3_bind_int64(s, 1, dst_id);
+    std::vector<int64_t> ids;
+    while (sqlite3_step(s) == SQLITE_ROW) ids.push_back(sqlite3_column_int64(s, 0));
+    sqlite3_finalize(s);
+    EXPECT_EQ(ids, std::vector<int64_t>{own});
+}
+
+TEST_F(OrganizeIdenticalTest, CopyFallsBackWhenAGalleryChangesBetweenPlanAndApply) {
+    const fs::path src = dir / "src" / "a.jpg";
+    write(src, "SAME BYTES");
+    write(dest_for("a.jpg"), "SAME BYTES");
+    const int64_t src_id = track(src);
+    const int64_t dst_id = track(dest_for("a.jpg"));
+    db->set_gallery({src.string()}, "summer", false);
+    db->set_tag({src.string()}, "trip", true);
+
+    OrganizeEngine engine(opts({src_id}, ConflictResolution::Rename), *db);
+    CancelToken cancel;
+    OrganizePlan plan = engine.plan(cancel, nullptr);
+    ASSERT_TRUE(plan.at(0).identical);
+    db->set_gallery({dest_for("a.jpg").string()}, "2010", false);
+
+    OrganizeResult r = engine.apply(plan, /*is_move=*/false, cancel, nullptr);
+
+    EXPECT_EQ(r.identical, 0u);
+    EXPECT_EQ(r.skipped, 1u);
+    EXPECT_EQ(db->get_images_by_ids({dst_id}).at(0).gallery, "2010");
+    EXPECT_TRUE(db->get_tags_for_image(dest_for("a.jpg").string()).empty())
+        << "a blocked merge still merged the tags";
+    EXPECT_EQ(entries("copy_metadata"), 0);
 }
 
 TEST_F(OrganizeIdenticalTest, AFailedCommitBringsTheTrashedSourceBack) {

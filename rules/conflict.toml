@@ -151,7 +151,7 @@ status = "holds"
 id = "R90"
 tier = "engine"
 concern = "conflict"
-statement = "A destination that already holds the source's bytes, on disk or from an earlier item in the same run, is not a conflict under any on_conflict policy: a copy writes nothing, and a move sends the source to the trash after carrying its user metadata to the destination's row."
+statement = "A destination that already holds the source's bytes, on disk or from an earlier item in the same run, is not a conflict under any on_conflict policy: a copy writes no file and gives the destination's row the source's user metadata (R100), and a move sends the source to the trash after carrying its user metadata to the destination's row."
 rationale = "Renaming around identical content writes a second copy of the same bytes under a _1 name, and skipping leaves the duplicate where it was, so merging two copies of a collection multiplied its duplicates. A copy that adopts an untracked identical file is logged as adopt rather than copy, because undoing a copy deletes the file it wrote and phig wrote none."
 enforced_at = ["core/organize_engine.cpp:identical_occupant", "core/organize_engine.cpp:OrganizeEngine::apply", "core/organize_exec.cpp:execute_identical_action"]
 binds = ["organize.copy", "organize.move", "organize.plan"]
@@ -163,7 +163,7 @@ tests = [
     "OrganizeIdenticalTest.WhenTheFirstOfTwoIdenticalSourcesFailsTheSecondMovesNormally",
     "OrganizeIdenticalTest.AMissingSidecarIsCarriedAndAnIdenticalOneIsTrashed",
     "OrganizeIdenticalTest.CopyOntoAnIdenticalUntrackedFileWritesNothingAndTracksIt",
-    "OrganizeIdenticalTest.CopyOntoAnIdenticalTrackedFileChangesNothing",
+    "OrganizeIdenticalTest.CopyOntoAnIdenticalTrackedFileMergesTheMetadata",
     "AbiOrganizeTest.AnIdenticalDestinationIsReportedAndAMoveTrashesTheSource",
 ]
 test_kind = "witness"

@@ -102,6 +102,7 @@ void execute_organize_action(Database& db, const std::string& source, const std:
             db.begin_transaction();
             try {
                 db.insert_copy(source, dest);
+                db.copy_user_metadata(db.get_image_id(source), db.get_image_id(dest));
                 if (logging) db.log_add_entry(op_id, {"copy", source, dest, ""});
                 db.commit_transaction();
             } catch (...) {
@@ -377,21 +378,26 @@ IdenticalResult execute_identical_action(Database& db, const std::string& source
     if (!attachments_mergeable(moves)) return out;
     const int64_t src_id = db.get_image_id(source);
     const int64_t dst_id = db.get_image_id(dest);
-    if (is_move && src_id >= 0 && dst_id >= 0 &&
-        !metadata_merge_blocker(db, src_id, dst_id).empty())
+    if (src_id >= 0 && dst_id >= 0 && !metadata_merge_blocker(db, src_id, dst_id).empty())
         return out;
 
     if (!is_move) {
-        if (dst_id < 0) {
-            db.begin_transaction();
-            try {
+        // The copy carries the source's metadata whether it adopts the file
+        // there or merges into the row that already tracks it.
+        db.begin_transaction();
+        try {
+            if (dst_id < 0) {
                 db.insert_copy(source, dest);
+                db.copy_user_metadata(src_id, db.get_image_id(dest));
                 if (logging) db.log_add_entry(op_id, {"adopt", source, dest, ""});
-                db.commit_transaction();
-            } catch (...) {
-                db.rollback_transaction();
-                throw;
+            } else if (src_id >= 0) {
+                db.copy_user_metadata(src_id, dst_id);
+                if (logging) db.log_add_entry(op_id, {"copy_metadata", source, dest, ""});
             }
+            db.commit_transaction();
+        } catch (...) {
+            db.rollback_transaction();
+            throw;
         }
     } else {
         // Both rows describe the same bytes, so an untracked destination is

@@ -1,6 +1,6 @@
 ---
 name: Copy Carries User Metadata
-status: planned
+status: in-progress
 created: 2026-11-14
 description: >
   `phig cp` gives the copy a catalog row filled from the original's, but leaves

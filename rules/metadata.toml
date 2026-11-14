@@ -258,7 +258,7 @@ tests = [
 ]
 test_kind = "witness"
 status = "holds"
-test_gap = "The checks are pinned at plan time. apply() repeats them before a move, but no test changes a gallery, a face or a sidecar between plan and apply. A copy falls back on the same conditions although it merges nothing, because one plan serves both."
+test_gap = "apply() repeats the checks before acting, but only a gallery changed between plan and apply on a copy is tested; no test changes a face or a sidecar in that window, or anything before a move."
 
 [[rule]]
 id = "R93"
@@ -300,3 +300,29 @@ test_kind = "witness"
 status = "holds"
 test_gap = "Two removed members carrying different sidecars to the same name beside the kept file reach the same check and are not tested. apply() repeats the check, but no test changes a gallery or a face between plan and apply."
 
+[[rule]]
+id = "R100"
+tier = "engine"
+concern = "metadata"
+statement = "A copy's row carries the original's tags, favorite, gallery and faces, and a copy onto a tracked file holding the same bytes merges them into that row by R37's rules without moving anything off the original."
+rationale = "Tags, favorites, galleries and faces exist only in the catalog, so a copy that left them behind would arrive bare and the user's work would survive only on the original. Copying is the safe way to reorganize, because the originals stay untouched until the result is checked, which makes the copy the row the user goes on to keep. The faces are new rows with their own vec_faces entries rather than shared ones, so renaming or removing the copy's face never reaches the original's. The metadata commits in the transaction that inserts the copy's row, so a copy whose metadata cannot be written is rolled back with its file. A merge into a tracked row keeps the target's gallery and faces, which R92's blockers make safe: a gallery conflict, or named faces against existing faces, never reaches the merge."
+enforced_at = [
+    "core/database.cpp:Database::copy_user_metadata",
+    "core/organize_exec.cpp:execute_organize_action",
+    "core/organize_exec.cpp:execute_identical_action",
+]
+binds = ["organize.copy"]
+protects = ["user-metadata"]
+tests = [
+    "OrganizeCopyMetadataTest.CopyCarriesTagsFavoriteGalleryAndFaces",
+    "OrganizeCopyMetadataTest.RenamingTheCopysFaceLeavesTheOriginalsAlone",
+    "OrganizeCopyMetadataTest.AFailedMetadataWriteRollsTheCopyBack",
+    "OrganizeIdenticalTest.CopyOntoAnIdenticalUntrackedFileCarriesTheMetadata",
+    "OrganizeIdenticalTest.CopyOntoAnIdenticalTrackedFileMergesTheMetadata",
+    "OrganizeIdenticalTest.CopyOntoAnIdenticalTrackedFileWithFacesKeepsItsOwn",
+    "OrganizeIdenticalTest.CopyFallsBackWhenAGalleryChangesBetweenPlanAndApply",
+    "OrganizeEngineTest.CliCopyCarriesTagsAndGalleryToTheCopy",
+]
+test_kind = "witness"
+status = "holds"
+test_gap = "No test drives a copy through libphig, which runs the same executor. A face whose stored embedding is not 128 floats is copied with a zeroed embedding, untested."

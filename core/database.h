@@ -90,7 +90,7 @@ class Database {
     // One operation_entries row: an inverse-able record of a single file change.
     struct OperationEntry {
         std::string kind;  // "move" | "copy" | "purge_row" | "relink" | "move_sidecar" |
-                           // "copy_sidecar" | "trash" | "delete_file"
+                           // "copy_sidecar" | "trash" | "delete_file" | "copy_metadata"
         std::string src;
         std::string dst;           // "" when N/A (purge)
         std::string restore_json;  // "" unless kind == "purge_row"
@@ -163,6 +163,12 @@ class Database {
     // NULL; faces repoint only when `to_id` has none (vec_faces rows are keyed
     // by face_id and are unaffected). Runs in the caller's transaction.
     void transfer_user_metadata(int64_t from_id, int64_t to_id);
+
+    // Give `to_id` a copy of `from_id`'s user-authored metadata (plan 079): tags
+    // and gallery as transfer_user_metadata does, and faces as new rows with
+    // their box, embedding, provenance and person, only when `to_id` has none.
+    // `from_id` keeps everything. Runs in the caller's transaction.
+    void copy_user_metadata(int64_t from_id, int64_t to_id);
 
     // Get all images, optionally filtered by path prefix
     std::vector<ImageInfo> get_all_images(const std::string& path_prefix = "");

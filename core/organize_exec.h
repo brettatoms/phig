@@ -115,8 +115,8 @@ std::filesystem::file_time_type mtime_to_keep(const ImageInfo& keep,
                                               std::filesystem::file_time_type other_mtime);
 
 struct IdenticalResult {
-    // False when the files, their attachments or (for a move) their metadata no
-    // longer match what was planned. Nothing was changed; the caller skips it.
+    // False when the files, their attachments or their metadata no longer match
+    // what was planned. Nothing was changed; the caller skips it.
     bool resolved = false;
     CarryResult carry;  // attachments carried after the parent was resolved
 };
@@ -124,9 +124,11 @@ struct IdenticalResult {
 // Resolve an item whose destination already holds the source's bytes. Every
 // condition is re-checked from disk first, because a move trashes the source.
 //
-// Copy: nothing is written. An untracked destination gets a row as insert_copy
-// gives one, logged as "adopt" rather than "copy", since undoing a copy deletes
-// the file it wrote and phig wrote none here.
+// Copy: no file is written. An untracked destination gets a row as insert_copy
+// gives one, carrying the source's user metadata, logged as "adopt" rather than
+// "copy", since undoing a copy deletes the file it wrote and phig wrote none
+// here. A tracked destination receives the source's user metadata through
+// copy_user_metadata, logged as "copy_metadata"; the source keeps its own.
 //
 // Move: the destination takes the source's mtime when mtime_to_keep says so,
 // and the source goes to the trash. In one transaction, a tracked destination

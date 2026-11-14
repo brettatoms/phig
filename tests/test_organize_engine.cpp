@@ -260,6 +260,38 @@ TEST_F(OrganizeEngineTest, CliCopyKeepsAFileWhoseModelClimbsInsideTheDestination
     EXPECT_FALSE(fs::exists(dir / "escaped")) << run.output;
 }
 
+TEST_F(OrganizeEngineTest, CliCopyCarriesTagsAndGalleryToTheCopy) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    const fs::path src = dir / "src" / "a.jpg";
+    {
+        Database db(db_path);
+        db.init_schema();
+        add_image(db, "a.jpg", "2019:07:04 10:00:00");
+        db.set_tag({src.string()}, "trip", true);
+        db.set_gallery({src.string()}, "summer", false);
+    }
+    const fs::path copy = dir / "out" / "2019" / "a.jpg";
+    const std::string catalog = " --catalog '" + dir.string() + "'";
+
+    PhigRun cp = run_phig(phig_bin, dir,
+                          "cp '" + (dir / "out").string() + "' --format '%Y/%original'" + catalog);
+    ASSERT_EQ(cp.exit_code, 0) << cp.output;
+    ASSERT_TRUE(fs::exists(copy)) << cp.output;
+
+    for (const std::string filter : {"--tag trip", "--gallery summer"}) {
+        PhigRun found = run_phig(phig_bin, dir, "search " + filter + " --porcelain" + catalog);
+        EXPECT_EQ(found.exit_code, 0) << found.output;
+        EXPECT_NE(found.output.find(copy.string()), std::string::npos)
+            << filter << " did not find the copy: " << found.output;
+        EXPECT_NE(found.output.find(src.string()), std::string::npos)
+            << filter << " no longer finds the original: " << found.output;
+    }
+}
+
 TEST_F(OrganizeEngineTest, PlanHonorsItsIdSelection) {
     Database db(db_path);
     db.init_schema();
