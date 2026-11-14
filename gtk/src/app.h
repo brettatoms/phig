@@ -10,6 +10,7 @@
 #include "collection.h"
 #include "gallery-model.h"
 #include "gref.h"
+#include "scan-watch.h"
 #include "thumb-loader.h"
 
 // The viewer page: one image, its metadata and the edits it offers.
@@ -59,8 +60,7 @@ struct FilterFields {
     GtkEntry* extension = nullptr;
 };
 
-// What the content area's status page offers, when it shows instead of the
-// grid.
+// What the content area's status page offers, when it shows instead of the grid.
 enum class Status { NoPhotos, NoMatches, Error };
 
 struct PhigApp {
@@ -81,6 +81,10 @@ struct PhigApp {
     GtkLabel* selection_label = nullptr;
     GtkEntry* selection_tag = nullptr;
     GtkEntry* selection_gallery = nullptr;
+    GtkButton* scan_button = nullptr;
+    GtkWidget* scan_bar = nullptr;
+    GtkLabel* scan_label = nullptr;
+    GtkProgressBar* scan_progress = nullptr;
     GtkGridView* grid = nullptr;
     GtkScrolledWindow* scroller = nullptr;
     GtkLabel* failed_label = nullptr;  // header-bar counter for THUMB_FAILED results
@@ -101,6 +105,8 @@ struct PhigApp {
     GRef<PhigGalleryModel> model;
     GtkSelectionModel* selection = nullptr;  // the grid's; owned by the grid
     Viewer viewer;
+    phig::gtk::ScanWatchPtr scan;  // the scan running, if any
+    std::string scan_folder;
 
     guint thumb_failed_count = 0;
     bool page_fetch_toast_shown = false;  // one toast per session, not one per failed page
@@ -160,3 +166,7 @@ void run_write(
 void viewer_build(PhigApp& app);
 void viewer_open(PhigApp& app, guint position);
 void viewer_refresh(PhigApp& app);  // re-reads the shown image's metadata
+
+// scan-ui.cpp
+GtkWidget* scan_bar_new(PhigApp& app);
+void scan_dialog_present(PhigApp& app);

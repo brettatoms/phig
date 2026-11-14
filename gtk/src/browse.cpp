@@ -262,13 +262,16 @@ GtkWidget* filter_button_new(PhigApp& app) {
 }
 
 void on_status_clicked(PhigApp& app) {
-    if (app.status_kind != Status::NoMatches) return;
-    app.query.filter = {};
-    app.query.search.clear();
-    // Clearing the entry emits search-changed, which finds the query already
-    // matches it.
-    gtk_editable_set_text(GTK_EDITABLE(app.search), "");
-    query_changed(app);
+    if (app.status_kind == Status::NoPhotos) {
+        scan_dialog_present(app);
+    } else if (app.status_kind == Status::NoMatches) {
+        app.query.filter = {};
+        app.query.search.clear();
+        // Clearing the entry emits search-changed, which finds the query
+        // already matches it.
+        gtk_editable_set_text(GTK_EDITABLE(app.search), "");
+        query_changed(app);
+    }
 }
 
 std::vector<int64_t> selected_ids(PhigApp& app) {
@@ -426,7 +429,7 @@ void show_status(PhigApp& app, Status status, const std::string& message) {
     const char* icon = "image-x-generic-symbolic";
     const char* title = "No Photos Yet";
     std::string description = "Scan a folder to add its photos to the collection.";
-    const char* button = nullptr;
+    const char* button = "Scan…";
     if (status == Status::NoMatches) {
         icon = "edit-find-symbolic";
         title = "No Matches";

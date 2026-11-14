@@ -13,8 +13,8 @@ pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk4 libadwaita-1)
 
 add_executable(phig-gtk src/main.cpp src/gallery-model.cpp src/gallery-selection.cpp
                src/thumb-loader.cpp src/collection.cpp
-               src/startup.cpp src/browse.cpp src/viewer.cpp src/query.cpp
-               src/format.cpp)
+               src/startup.cpp src/browse.cpp src/viewer.cpp src/scan-ui.cpp src/query.cpp
+               src/format.cpp src/scan-watch.cpp)
 target_compile_options(phig-gtk PRIVATE ${PHIG_GTK_WARNINGS})
 target_link_libraries(phig-gtk PRIVATE phig-core PkgConfig::GTK)
 

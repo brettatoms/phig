@@ -94,7 +94,10 @@ static guint env_override_uint(const char* name, guint fallback) {
 // last reference drops: the viewer's and app's references go here, and the
 // grid's here too if it is still alive, or earlier, when GTK finalized it with
 // the last window. Either way it runs before member destruction closes coll.
+// The scan goes first: its thread opens its own connection, but it must not
+// outlive the process's catalog.
 PhigApp::~PhigApp() {
+    scan.reset();
     if (relayout_id != 0) g_source_remove(relayout_id);
     if (loader) {
         thumb_loader_shutdown(*loader);
@@ -685,6 +688,9 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
                                                  g_source_remove(app->relayout_id);
                                                  app->relayout_id = 0;
                                              }
+                                             /* The scan's poll updates widgets that die with the
+                                              * window: cancel it and wait for its thread. */
+                                             app->scan.reset();
                                              app->selection = nullptr;
                                              app->selection_bar = nullptr;
                                              app->selection_label = nullptr;
@@ -707,6 +713,7 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
     header_fill(*app, header_bar);
     adw_toolbar_view_add_top_bar(app->toolbar_view, GTK_WIDGET(header_bar));
     adw_toolbar_view_add_top_bar(app->toolbar_view, chips_new(*app));
+    adw_toolbar_view_add_top_bar(app->toolbar_view, scan_bar_new(*app));
 
     app->grid = GTK_GRID_VIEW(gtk_grid_view_new(NULL, NULL));
     /* Cleared when the grid is finalized, so ~PhigApp can tell it is gone. */
@@ -787,6 +794,10 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
 
     AdwToolbarView* sidebar_view = ADW_TOOLBAR_VIEW(adw_toolbar_view_new());
     AdwHeaderBar* sidebar_header = ADW_HEADER_BAR(adw_header_bar_new());
+    app->scan_button = GTK_BUTTON(gtk_button_new_with_label("Scan…"));
+    phig::gtk::connect<void(GtkButton*)>(app->scan_button, "clicked",
+                                         [app](GtkButton*) noexcept { scan_dialog_present(*app); });
+    adw_header_bar_pack_start(sidebar_header, GTK_WIDGET(app->scan_button));
     adw_toolbar_view_add_top_bar(sidebar_view, GTK_WIDGET(sidebar_header));
     adw_toolbar_view_set_content(sidebar_view, sidebar_new(*app));
     AdwNavigationPage* sidebar_page = adw_navigation_page_new(GTK_WIDGET(sidebar_view), "phig");
