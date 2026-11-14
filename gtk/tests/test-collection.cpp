@@ -6,8 +6,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <latch>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -389,6 +391,62 @@ void test_a_write_is_busy_while_another_process_holds_the_writer_lock() {
     g_assert_cmpuint(f.tags_of("/nowhere/a.jpg").size(), ==, 1);
 }
 
+// The writer lock contends between this process's own descriptors too, so two
+// writes from the window's workers would see each other as another process
+// without write_mutex. Each round releases two writes on different ids together.
+void test_writes_started_together_in_this_process_both_land() {
+    Fixture f;
+    phig::gtk::CollectionPtr coll = f.open();
+    constexpr int kRounds = 50;
+    for (int round = 0; round < kRounds; round++) {
+        const std::string tag = "round-" + std::to_string(round);
+        std::latch start(2);
+        phig::gtk::WriteResult first, second;
+        std::thread one([&] {
+            start.arrive_and_wait();
+            first = phig::gtk::tag_add(*coll, {f.a}, tag);
+        });
+        std::thread two([&] {
+            start.arrive_and_wait();
+            second = phig::gtk::tag_add(*coll, {f.c}, tag);
+        });
+        one.join();
+        two.join();
+        for (const phig::gtk::WriteResult* r : {&first, &second})
+            if (!r->has_value())
+                g_error("round %d: busy=%d %s", round, r->error().busy, r->error().message.c_str());
+    }
+    g_assert_cmpuint(f.tags_of("/nowhere/a.jpg").size(), ==, kRounds);
+    g_assert_cmpuint(f.tags_of("/nowhere/c.mov").size(), ==, kRounds);
+}
+
+// A CLI rm can delete a row between the click that captured its id and the
+// write. The write skips that id and changes the others.
+void test_a_write_skips_an_id_whose_row_was_deleted() {
+    Fixture f;
+    phig::gtk::CollectionPtr coll = f.open();
+    {
+        Database db(f.db_path);
+        db.delete_paths({"/nowhere/c.mov"});
+    }
+
+    g_assert_true(phig::gtk::tag_add(*coll, {f.a, f.c}, "kept").has_value());
+    g_assert_cmpuint(f.tags_of("/nowhere/a.jpg").size(), ==, 1);
+    assert_text(f.tags_of("/nowhere/a.jpg").front(), "kept");
+    g_assert_true(phig::gtk::gallery_set(*coll, {f.c, f.a}, "Still").has_value());
+    assert_text(f.gallery_of(f.a), "Still");
+    g_assert_true(phig::gtk::favorite_set(*coll, {f.a, f.c}, true).has_value());
+    g_assert_true(f.favorite_of(f.a));
+    g_assert_true(phig::gtk::tag_remove(*coll, {f.c, f.a}, "kept").has_value());
+    g_assert_cmpuint(f.tags_of("/nowhere/a.jpg").size(), ==, 1);
+    assert_text(f.tags_of("/nowhere/a.jpg").front(), "favorite");
+    g_assert_true(phig::gtk::gallery_clear(*coll, {f.a, f.c}).has_value());
+    g_assert_true(f.gallery_of(f.a).empty());
+
+    // No write brought the deleted row back.
+    assert_ids(ids_for(*coll, {}), {f.b, f.a});
+}
+
 void test_an_image_decodes_upright_within_its_max_edge() {
     Fixture f;
     int64_t id = 0;
@@ -622,6 +680,10 @@ int main(int argc, char** argv) {
                     test_a_write_refuses_an_empty_name);
     g_test_add_func("/collection/a-write-is-busy-while-another-process-holds-the-writer-lock",
                     test_a_write_is_busy_while_another_process_holds_the_writer_lock);
+    g_test_add_func("/collection/writes-started-together-in-this-process-both-land",
+                    test_writes_started_together_in_this_process_both_land);
+    g_test_add_func("/collection/a-write-skips-an-id-whose-row-was-deleted",
+                    test_a_write_skips_an_id_whose_row_was_deleted);
     g_test_add_func("/collection/an-image-decodes-upright-within-its-max-edge",
                     test_an_image_decodes_upright_within_its_max_edge);
     g_test_add_func("/collection/an-image-names-a-missing-file-and-an-unknown-id",
