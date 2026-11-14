@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "app.h"
 #include "gallery-model.h"
 #include "collection.h"
 #include "connect.h"
@@ -89,51 +90,10 @@ static guint env_override_uint(const char* name, guint fallback) {
     return (guint)parsed;
 }
 
-struct PhigApp {
-    AdwApplicationWindow* window = nullptr;
-    AdwToolbarView* toolbar_view = nullptr;
-    GtkGridView* grid = nullptr;
-    GtkScrolledWindow* scroller = nullptr;
-    AdwToastOverlay* toast_overlay = nullptr;
-    GtkLabel* failed_label = nullptr;  // header-bar counter for THUMB_FAILED results
-    std::string catalog_dir;
-
-    // Set once startup finishes. The loader's workers and the model's page
-    // fetches both use coll from worker threads, so ~PhigApp stops both before
-    // coll closes. coll is declared before loader, but the destructor body
-    // releases the loader and drops the model first, then member destruction
-    // closes coll.
-    phig::gtk::CollectionPtr coll;
-    std::shared_ptr<ThumbLoader> loader;
-
-    guint thumb_failed_count = 0;
-    bool page_fetch_toast_shown = false;  // one toast per session, not one per failed page
-    // An open is running. A second activation then builds a window and leaves
-    // startup_done to fill it, rather than starting a second open whose result
-    // would replace coll under the first's loader.
-    bool opening = false;
-
-    gint64 startup_start_us = 0;  // g_get_monotonic_time() at process start, for PHIG_MEASURE
-
-    // Zoom state. columns is the resting column count; pinch_cell tracks the
-    // live size during a pinch so the snap can see which way it is going.
-    guint target_cell_px = 0;     // what zoom sets; held across window resizes
-    guint columns = 0;            // derived from target_cell_px and the viewport width
-    guint relayout_id = 0;        // pending phig_relayout_idle, 0 if none
-    bool relayout_needs_rebind = false;  // geometry changed: re-request textures
-    double pinch_cell = 0.0;      // live target size during a pinch
-    guint pinch_base_cell = 0;    // target size when the gesture began
-
-    PhigApp() = default;
-    PhigApp(const PhigApp&) = delete;
-    PhigApp& operator=(const PhigApp&) = delete;
-    ~PhigApp();
-};
-
-// The model's dispose waits for in-flight page fetches, and runs when its last
-// reference drops: here if the grid is still alive, or earlier, when GTK
-// finalized the grid with the last window. Either way it runs before member
-// destruction closes coll.
+// A model's dispose waits for its in-flight page fetches, and runs when its
+// last reference drops: the app's reference goes here, and the grid's here too
+// if it is still alive, or earlier, when GTK finalized it with the last window.
+// Either way it runs before member destruction closes coll.
 PhigApp::~PhigApp() {
     if (relayout_id != 0) g_source_remove(relayout_id);
     if (loader) {
@@ -144,6 +104,7 @@ PhigApp::~PhigApp() {
         g_object_remove_weak_pointer(G_OBJECT(grid), reinterpret_cast<gpointer*>(&grid));
         gtk_grid_view_set_model(grid, nullptr);
     }
+    model.reset();
 }
 
 /* Measurement harness (task-7-report.md). Entirely gated on PHIG_MEASURE=1,
@@ -296,6 +257,12 @@ static void on_launched(GObject* source, GAsyncResult* result, gpointer user_dat
     }
 
     g_object_unref(launcher);
+}
+
+void show_toast(PhigApp& app, const std::string& text) {
+    AdwToast* toast = adw_toast_new(text.c_str());
+    adw_toast_set_use_markup(toast, FALSE);
+    adw_toast_overlay_add_toast(app.toast_overlay, toast);
 }
 
 
@@ -676,36 +643,17 @@ static void on_cell_activate(PhigApp* app, guint position) noexcept {
     g_object_unref(list_model);
 }
 
-/* One toast for the whole session, not one per failed page: a scroll that
- * outruns several page fetches would otherwise stack a toast per failure.
- * The affected cells already keep their placeholders (the model's contract
- * for this signal), so this is purely a "something is wrong" notice. */
-static void on_page_fetch_failed(PhigApp* app) noexcept {
-    if (app->page_fetch_toast_shown)
-        return;
-    app->page_fetch_toast_shown = true;
-
-    AdwToast* toast = adw_toast_new("Some images could not be loaded");
-    adw_toast_overlay_add_toast(app->toast_overlay, toast);
-}
-
-/* Replaces the grid with an in-window error page carrying phig's own message.
- * The window and its header bar stay up; only the content area changes, so
- * this is never a dialog and never blocks anything. */
-static void show_startup_error(PhigApp* app, const char* message) {
-    GtkWidget* status_page = adw_status_page_new();
-    adw_status_page_set_icon_name(ADW_STATUS_PAGE(status_page), "dialog-error-symbolic");
-    adw_status_page_set_title(ADW_STATUS_PAGE(status_page), "Could Not Open Collection");
-    adw_status_page_set_description(ADW_STATUS_PAGE(status_page), message);
-    adw_toolbar_view_set_content(app->toolbar_view, status_page);
-}
-
 // Runs on the main thread when the open finishes. The window may have closed
 // while the worker ran; the result then closes with opened.
 static void startup_done(PhigApp* app, phig::gtk::OpenResult opened) noexcept {
     if (app->window == nullptr) return;
     if (!opened) {
-        show_startup_error(app, opened.error().message.c_str());
+        /* A missing catalog is not an error: the client offers to scan, and a
+         * scan is what creates one. */
+        if (opened.error().missing)
+            show_status(*app, Status::NoPhotos);
+        else
+            show_status(*app, Status::Error, opened.error().message);
         return;
     }
 
@@ -714,45 +662,26 @@ static void startup_done(PhigApp* app, phig::gtk::OpenResult opened) noexcept {
     gsize cache_bytes =
         (gsize)env_override_uint("PHIG_THUMB_CACHE_BYTES", PHIG_THUMB_CACHE_BYTES);
     app->loader = thumb_loader_new(*app->coll, n_threads, cache_bytes);
-
-    /* The model borrows coll, which app owns until ~PhigApp. */
-    auto ids = phig::gtk::ids(*app->coll, phig::gtk::Query{});
-    if (!ids) {
-        show_startup_error(app, ids.error().c_str());
-        return;
-    }
-    PhigGalleryModel* model = phig_gallery_model_new(*app->coll, std::move(*ids));
-    phig::gtk::connect<void(PhigGalleryModel*, const char*)>(
-        model, "page-fetch-failed",
-        [app](PhigGalleryModel*, const char*) noexcept { on_page_fetch_failed(app); });
-    GtkSelectionModel* selection = GTK_SELECTION_MODEL(gtk_no_selection_new(G_LIST_MODEL(model)));
-    gtk_grid_view_set_model(app->grid, selection);
-    g_object_unref(selection);
-
-    GtkListItemFactory* factory = gtk_signal_list_item_factory_new();
-    phig::gtk::connect<void(GtkSignalListItemFactory*, GtkListItem*)>(
-        factory, "setup",
-        [](GtkSignalListItemFactory*, GtkListItem* item) noexcept { on_factory_setup(item); });
-    phig::gtk::connect<void(GtkSignalListItemFactory*, GtkListItem*)>(
-        factory, "bind",
-        [app](GtkSignalListItemFactory*, GtkListItem* item) noexcept { on_factory_bind(app, item); });
-    phig::gtk::connect<void(GtkSignalListItemFactory*, GtkListItem*)>(
-        factory, "unbind",
-        [](GtkSignalListItemFactory*, GtkListItem* item) noexcept { on_factory_unbind(item); });
-    gtk_grid_view_set_factory(app->grid, factory);
-    g_object_unref(factory);
-
-    /* First-page-applied: the model now has a real GListModel attached and
-     * GTK will query it on the next layout pass. This is the end of the
-     * window announced under PHIG_MEASURE=1 (task-7-report.md's startup
-     * table); nothing here waits for that layout pass to actually run, since
-     * the model attach itself is the last thing this codebase controls. */
-    if (g_getenv("PHIG_MEASURE") != NULL) {
-        gint64 elapsed_us = g_get_monotonic_time() - app->startup_start_us;
-        g_printerr("PHIG_MEASURE startup_ms=%.3f\n", elapsed_us / 1000.0);
-    }
-
+    browse_set_sensitive(*app, true);
+    reload(*app);
     phig_measure_maybe_start(app);
+}
+
+void open_catalog(PhigApp& app) {
+    if (app.opening || app.coll) return;
+    /* Held until startup_done has run, so closing the window during a slow open
+     * keeps the process up until the worker finishes, rather than exiting with
+     * it mid-open. */
+    GApplication* gapp = g_application_get_default();
+    g_application_hold(gapp);
+    app.opening = true;
+    PhigApp* a = &app;
+    phig::gtk::open_in_background(app.catalog_dir,
+                                  [a, gapp](phig::gtk::OpenResult opened) noexcept {
+                                      a->opening = false;
+                                      startup_done(a, std::move(opened));
+                                      g_application_release(gapp);
+                                  });
 }
 
 static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
@@ -765,8 +694,8 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
     }
 
     app->window = ADW_APPLICATION_WINDOW(adw_application_window_new(gtk_app));
-    /* Cleared on destroy, so startup_done can tell the window closed while the
-     * catalog was opening. */
+    /* Cleared on destroy, so startup_done and every background job can tell the
+     * window closed while they ran. */
     phig::gtk::connect<void(GtkWidget*)>(app->window, "destroy",
                                          [app](GtkWidget*) noexcept {
                                              app->window = nullptr;
@@ -778,19 +707,21 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
                                              }
                                          });
     gtk_window_set_title(GTK_WINDOW(app->window), "phig");
-    gtk_window_set_default_size(GTK_WINDOW(app->window), 1100, 750);
+    gtk_window_set_default_size(GTK_WINDOW(app->window), 1200, 800);
 
     app->toolbar_view = ADW_TOOLBAR_VIEW(adw_toolbar_view_new());
     AdwHeaderBar* header_bar = ADW_HEADER_BAR(adw_header_bar_new());
 
-    /* Unobtrusive running count of THUMB_FAILED results (Step 3). Hidden
-     * until the first failure so a normal run — all hits and misses — shows
-     * nothing extra in the header bar. */
+    /* Unobtrusive running count of THUMB_FAILED results. Hidden until the
+     * first failure so a normal run — all hits and misses — shows nothing
+     * extra in the header bar. */
     app->failed_label = GTK_LABEL(gtk_label_new(NULL));
     gtk_widget_add_css_class(GTK_WIDGET(app->failed_label), "error");
     gtk_widget_set_visible(GTK_WIDGET(app->failed_label), FALSE);
     adw_header_bar_pack_end(header_bar, GTK_WIDGET(app->failed_label));
+    header_fill(*app, header_bar);
     adw_toolbar_view_add_top_bar(app->toolbar_view, GTK_WIDGET(header_bar));
+    adw_toolbar_view_add_top_bar(app->toolbar_view, chips_new(*app));
 
     app->grid = GTK_GRID_VIEW(gtk_grid_view_new(NULL, NULL));
     /* Cleared when the grid is finalized, so ~PhigApp can tell it is gone. */
@@ -807,6 +738,20 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
     phig::gtk::connect<void(GtkGridView*, guint)>(
         app->grid, "activate",
         [app](GtkGridView*, guint position) noexcept { on_cell_activate(app, position); });
+
+    GtkListItemFactory* factory = gtk_signal_list_item_factory_new();
+    phig::gtk::connect<void(GtkSignalListItemFactory*, GtkListItem*)>(
+        factory, "setup",
+        [](GtkSignalListItemFactory*, GtkListItem* item) noexcept { on_factory_setup(item); });
+    phig::gtk::connect<void(GtkSignalListItemFactory*, GtkListItem*)>(
+        factory, "bind",
+        [app](GtkSignalListItemFactory*, GtkListItem* item) noexcept { on_factory_bind(app, item); });
+    phig::gtk::connect<void(GtkSignalListItemFactory*, GtkListItem*)>(
+        factory, "unbind",
+        [](GtkSignalListItemFactory*, GtkListItem* item) noexcept { on_factory_unbind(item); });
+    gtk_grid_view_set_factory(app->grid, factory);
+    g_object_unref(factory);
+
     app->scroller = GTK_SCROLLED_WINDOW(gtk_scrolled_window_new());
     gtk_scrolled_window_set_child(app->scroller, GTK_WIDGET(app->grid));
     /* Never scroll horizontally: cell size is derived from the viewport width,
@@ -844,43 +789,55 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
             return on_scroll(app, controller, dy);
         });
     gtk_widget_add_controller(GTK_WIDGET(app->grid), scroll);
-    adw_toolbar_view_set_content(app->toolbar_view, GTK_WIDGET(app->scroller));
+
+    /* The grid, or the status page when there is nothing to show in it. */
+    app->content = GTK_STACK(gtk_stack_new());
+    gtk_stack_add_named(app->content, GTK_WIDGET(app->scroller), "grid");
+    gtk_stack_add_named(app->content, status_new(*app), "status");
+    adw_toolbar_view_set_content(app->toolbar_view, GTK_WIDGET(app->content));
+    AdwNavigationPage* content_page =
+        adw_navigation_page_new(GTK_WIDGET(app->toolbar_view), "Photos");
+
+    AdwToolbarView* sidebar_view = ADW_TOOLBAR_VIEW(adw_toolbar_view_new());
+    AdwHeaderBar* sidebar_header = ADW_HEADER_BAR(adw_header_bar_new());
+    adw_toolbar_view_add_top_bar(sidebar_view, GTK_WIDGET(sidebar_header));
+    adw_toolbar_view_set_content(sidebar_view, sidebar_new(*app));
+    AdwNavigationPage* sidebar_page = adw_navigation_page_new(GTK_WIDGET(sidebar_view), "phig");
+
+    AdwNavigationSplitView* split = ADW_NAVIGATION_SPLIT_VIEW(adw_navigation_split_view_new());
+    adw_navigation_split_view_set_sidebar(split, sidebar_page);
+    adw_navigation_split_view_set_content(split, content_page);
+
+    /* The gallery is the root page; the viewer is pushed over it. */
+    app->nav = ADW_NAVIGATION_VIEW(adw_navigation_view_new());
+    adw_navigation_view_add(app->nav, adw_navigation_page_new(GTK_WIDGET(split), "phig"));
 
     app->toast_overlay = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
-    adw_toast_overlay_set_child(app->toast_overlay, GTK_WIDGET(app->toolbar_view));
+    adw_toast_overlay_set_child(app->toast_overlay, GTK_WIDGET(app->nav));
 
     adw_application_window_set_content(app->window, GTK_WIDGET(app->toast_overlay));
+    browse_set_sensitive(*app, app->coll != nullptr);
 
-    /* The window maps with an empty grid; the query runs on a worker and the
-     * model is not attached until it finishes (startup_done, above). */
+    /* The window maps with an empty grid; the open and the first query run on
+     * workers, and the model is attached when they finish. */
     gtk_window_present(GTK_WINDOW(app->window));
 
     if (app->opening) return;  // startup_done fills this window
-    /* The catalog is already open; a second open would replace coll under the
-     * loader. */
-    if (app->coll) return;
+    /* The catalog is already open: fill this window from it. */
+    if (app->coll) {
+        reload(*app);
+        return;
+    }
 
     /* Empty when no catalog was named and the default could not be resolved:
      * opening "" would resolve to a path at the filesystem root. */
     if (app->catalog_dir.empty()) {
-        show_startup_error(app,
-                           "phig could not resolve its default catalog. Check [paths] catalog "
-                           "in the config file, or name a catalog directory.");
+        show_status(*app, Status::Error,
+                    "phig could not resolve its default catalog. Check [paths] catalog "
+                    "in the config file, or name a catalog directory.");
         return;
     }
-
-    /* Held until startup_done has run, so closing the window during a slow open
-     * keeps the process up until the worker finishes, rather than exiting with
-     * it mid-open. */
-    GApplication* gapp = G_APPLICATION(gtk_app);
-    g_application_hold(gapp);
-    app->opening = true;
-    phig::gtk::open_in_background(app->catalog_dir,
-                                  [app, gapp](phig::gtk::OpenResult opened) noexcept {
-                                      app->opening = false;
-                                      startup_done(app, std::move(opened));
-                                      g_application_release(gapp);
-                                  });
+    open_catalog(*app);
 }
 
 // phig's own default, from core/ through the collection seam. Empty, after a
