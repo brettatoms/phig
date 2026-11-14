@@ -1,7 +1,8 @@
 ---
 name: Escape CSV and JSON Output
-status: planned
+status: completed
 created: 2026-11-14
+completed: 2026-11-14
 description: >
   The CSV and JSON written by `duplicates`, `search` and `fav list` do not
   escape their text fields, so a filename with a comma breaks a CSV row, and a
@@ -35,9 +36,11 @@ snapshots, but it is not reachable from `cli/`.
 ## Decisions
 
 1. **One pair of helpers in `core/`**, since formatting is not GUI-specific:
-   `csv_field(std::string_view)` and `json_string(std::string_view)`. The
-   existing escaper in `database.cpp` moves there, so the activity log and the
-   CLI escape the same way.
+   `csv_field(std::string_view)` and `json_string(std::string_view)`, in
+   `core/output_escape.h`. They are for output other programs read. The three
+   escapers phig uses for its own stored JSON (`database.cpp`'s activity-log
+   snapshots, `exif.cpp` and `metadata.cpp`) stay as they are: a snapshot must
+   keep a path's exact bytes for a restore, which decision 4 would break.
 2. **CSV follows RFC 4180.** Every text field is quoted, and an embedded `"` is
    doubled. A newline inside a quoted field is legal and is left as it is.
    Numeric fields stay unquoted.
@@ -63,3 +66,17 @@ snapshots, but it is not reachable from `cli/`.
 - **077** uses these helpers for `duplicates resolve --format json`.
 - **R69** and **R81** record the truncating writes in `cmd_search`. Their
   output path is unchanged here.
+
+## Outcome
+
+Built 2026-11-14. `core/output_escape.{h,cpp}` holds `csv_field` and
+`json_string`; the UTF-8 check rejects stray continuation bytes, truncated
+sequences, overlong encodings, surrogates and code points above U+10FFFF, each
+byte of which becomes U+FFFD. All six writers use them, and `--help` for
+`duplicates` and `search` says which formats keep a path's exact bytes.
+
+Ten tests: four on the helpers, and six that run the built binary on files named
+`a,b.jpg`, `q"uote.jpg` and `back\slash.jpg` and parse its output, CSV with an
+RFC 4180 reader in the test and JSON with SQLite's `json_valid` and
+`json_extract`. All six failed against the old writers. The face-search one runs
+only where the face models are installed.

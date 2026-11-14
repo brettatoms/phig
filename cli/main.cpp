@@ -41,6 +41,7 @@
 #include "organize_engine.h"
 #include "organize_exec.h"
 #include "organize_plan.h"
+#include "output_escape.h"
 #include "paths.h"
 #include "relink.h"
 #include "remove_exec.h"
@@ -161,7 +162,8 @@ void print_usage() {
         << "\nDuplicates flags:\n"
         << "  --type exact|near|all    Duplicate type to find (default: all)\n"
         << "  --threshold [0-64]       Hamming distance for near duplicates (default: 5)\n"
-        << "  --format text|csv|json   Output format (default: text)\n"
+        << "  --format text|csv|json   Output format (default: text). JSON shows a path that\n"
+        << "                           is not valid UTF-8 with U+FFFD in place of its bad bytes\n"
         << "  --output <path>          Write to file instead of stdout\n"
         << "  --overwrite              Replace the --output file if it exists\n"
         << "  --match <glob>           Show groups containing matching files (repeatable, matches "
@@ -214,7 +216,9 @@ void print_usage() {
         << "  --count                  Show count of matches only\n"
         << "  --porcelain              Tab-separated machine output\n"
         << "  --print0                 Null-separated paths\n"
-        << "  --format text|csv|json   Output format (default: text)\n"
+        << "  --format text|csv|json   Output format (default: text). JSON shows a path that\n"
+        << "                           is not valid UTF-8 with U+FFFD in place of its bad bytes;\n"
+        << "                           --print0 and --porcelain keep a path's exact bytes\n"
         << "  --output <path>          Write to file\n"
         << "  --overwrite              Replace the --output file if it exists\n"
         << "\nThumbs rebuild flags:\n"
@@ -496,22 +500,18 @@ void output_csv(std::ostream& out, const std::vector<DuplicateGroup>& exact,
     out << "group,type,path,filename,sha256,phash,width,height,file_size\n";
     int group_num = 0;
 
-    for (const auto& g : exact) {
-        group_num++;
-        for (const auto& img : g.images) {
-            out << group_num << ",exact,\"" << img.path << "\"," << img.filename << ","
-                << img.sha256 << "," << img.phash << "," << img.width << "," << img.height << ","
-                << img.file_size << "\n";
+    auto write_groups = [&](const std::vector<DuplicateGroup>& groups, const char* type) {
+        for (const auto& g : groups) {
+            group_num++;
+            for (const auto& img : g.images) {
+                out << group_num << "," << csv_field(type) << "," << csv_field(img.path) << ","
+                    << csv_field(img.filename) << "," << csv_field(img.sha256) << "," << img.phash
+                    << "," << img.width << "," << img.height << "," << img.file_size << "\n";
+            }
         }
-    }
-    for (const auto& g : near) {
-        group_num++;
-        for (const auto& img : g.images) {
-            out << group_num << ",near,\"" << img.path << "\"," << img.filename << "," << img.sha256
-                << "," << img.phash << "," << img.width << "," << img.height << "," << img.file_size
-                << "\n";
-        }
-    }
+    };
+    write_groups(exact, "exact");
+    write_groups(near, "near");
 }
 
 void output_json(std::ostream& out, const std::vector<DuplicateGroup>& exact,
@@ -520,15 +520,15 @@ void output_json(std::ostream& out, const std::vector<DuplicateGroup>& exact,
         for (const auto& g : groups) {
             if (!first_group) out << ",";
             first_group = false;
-            out << "{\"type\":\"" << g.type << "\",\"files\":[";
+            out << "{\"type\":" << json_string(g.type) << ",\"files\":[";
             for (size_t i = 0; i < g.images.size(); i++) {
                 if (i > 0) out << ",";
                 const auto& img = g.images[i];
-                out << "{\"path\":\"" << img.path << "\""
-                    << ",\"filename\":\"" << img.filename << "\""
-                    << ",\"sha256\":\"" << img.sha256 << "\""
-                    << ",\"phash\":" << img.phash << ",\"width\":" << img.width
-                    << ",\"height\":" << img.height << ",\"file_size\":" << img.file_size << "}";
+                out << "{\"path\":" << json_string(img.path)
+                    << ",\"filename\":" << json_string(img.filename)
+                    << ",\"sha256\":" << json_string(img.sha256) << ",\"phash\":" << img.phash
+                    << ",\"width\":" << img.width << ",\"height\":" << img.height
+                    << ",\"file_size\":" << img.file_size << "}";
             }
             out << "]}";
         }
@@ -1050,7 +1050,7 @@ int cmd_search(const SearchOptions& opts) {
             out << "{\"results\":[";
             for (size_t i = 0; i < face_results.size(); i++) {
                 if (i > 0) out << ",";
-                out << "{\"path\":\"" << face_results[i].path << "\""
+                out << "{\"path\":" << json_string(face_results[i].path)
                     << ",\"distance\":" << face_results[i].distance
                     << ",\"face_x\":" << face_results[i].face_x
                     << ",\"face_y\":" << face_results[i].face_y
@@ -1100,10 +1100,10 @@ int cmd_search(const SearchOptions& opts) {
             std::string camera = json_get(img.metadata_json, "Model");
             std::string tpath =
                 img.sha256.size() >= 2 ? get_thumb_path(img.sha256, PHIG_DEFAULT_THUMB_SIZE) : "";
-            out << "\"" << img.path << "\"," << img.filename << "," << img.width << ","
-                << img.height << "," << img.file_size << "," << date << ","
-                << "\"" << camera << "\"," << img.sha256 << "," << img.phash << ","
-                << "\"" << tpath << "\"\n";
+            out << csv_field(img.path) << "," << csv_field(img.filename) << "," << img.width << ","
+                << img.height << "," << img.file_size << "," << csv_field(date) << ","
+                << csv_field(camera) << "," << csv_field(img.sha256) << "," << img.phash << ","
+                << csv_field(tpath) << "\n";
         }
     } else if (opts.format == "json") {
         out << "{\"results\":[";
@@ -1114,14 +1114,12 @@ int cmd_search(const SearchOptions& opts) {
             std::string camera = json_get(img.metadata_json, "Model");
             std::string tpath =
                 img.sha256.size() >= 2 ? get_thumb_path(img.sha256, PHIG_DEFAULT_THUMB_SIZE) : "";
-            out << "{\"path\":\"" << img.path << "\""
-                << ",\"filename\":\"" << img.filename << "\""
-                << ",\"width\":" << img.width << ",\"height\":" << img.height
-                << ",\"file_size\":" << img.file_size << ",\"date\":\"" << date << "\""
-                << ",\"camera\":\"" << camera << "\""
-                << ",\"sha256\":\"" << img.sha256 << "\""
-                << ",\"phash\":" << img.phash << ",\"thumb_path\":\"" << tpath << "\""
-                << "}";
+            out << "{\"path\":" << json_string(img.path)
+                << ",\"filename\":" << json_string(img.filename) << ",\"width\":" << img.width
+                << ",\"height\":" << img.height << ",\"file_size\":" << img.file_size
+                << ",\"date\":" << json_string(date) << ",\"camera\":" << json_string(camera)
+                << ",\"sha256\":" << json_string(img.sha256) << ",\"phash\":" << img.phash
+                << ",\"thumb_path\":" << json_string(tpath) << "}";
         }
         out << "],\"count\":" << results.size() << "}\n";
     } else {
