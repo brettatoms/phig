@@ -152,7 +152,7 @@ search --similar - and search --face - read stdin into memory first, so empty st
 
 ### R90 — holds (test gap)
 
-A destination that already holds the source's bytes, on disk or from an earlier item in the same run, is not a conflict under any on_conflict policy: a copy writes nothing, and a move sends the source to the trash after carrying its user metadata to the destination's row.
+A destination that already holds the source's bytes, on disk or from an earlier item in the same run, is not a conflict under any on_conflict policy: a copy writes no file and gives the destination's row the source's user metadata (R100), and a move sends the source to the trash after carrying its user metadata to the destination's row.
 
 Renaming around identical content writes a second copy of the same bytes under a _1 name, and skipping leaves the duplicate where it was, so merging two copies of a collection multiplied its duplicates. A copy that adopts an untracked identical file is logged as adopt rather than copy, because undoing a copy deletes the file it wrote and phig wrote none.
 
@@ -161,7 +161,7 @@ Renaming around identical content writes a second copy of the same bytes under a
 | Enforced at | `core/organize_engine.cpp:identical_occupant`, `core/organize_engine.cpp:OrganizeEngine::apply`, `core/organize_exec.cpp:execute_identical_action` |
 | Binds | `organize.copy`, `organize.move`, `organize.plan` |
 | Protects | original-file, user-metadata |
-| Evidence | witness: `OrganizeIdenticalTest.MoveOntoAnIdenticalUntrackedFileTrashesTheSourceAndAdoptsTheDest`, `OrganizeIdenticalTest.MoveOntoAnIdenticalTrackedFileCarriesMetadataAndDropsTheSourceRow`, `OrganizeIdenticalTest.TwoIdenticalSourcesPlannedToOneDestinationLeaveOneFile`, `OrganizeIdenticalTest.WhenTheFirstOfTwoIdenticalSourcesFailsTheSecondMovesNormally`, `OrganizeIdenticalTest.AMissingSidecarIsCarriedAndAnIdenticalOneIsTrashed`, `OrganizeIdenticalTest.CopyOntoAnIdenticalUntrackedFileWritesNothingAndTracksIt`, `OrganizeIdenticalTest.CopyOntoAnIdenticalTrackedFileChangesNothing`, `AbiOrganizeTest.AnIdenticalDestinationIsReportedAndAMoveTrashesTheSource` |
+| Evidence | witness: `OrganizeIdenticalTest.MoveOntoAnIdenticalUntrackedFileTrashesTheSourceAndAdoptsTheDest`, `OrganizeIdenticalTest.MoveOntoAnIdenticalTrackedFileCarriesMetadataAndDropsTheSourceRow`, `OrganizeIdenticalTest.TwoIdenticalSourcesPlannedToOneDestinationLeaveOneFile`, `OrganizeIdenticalTest.WhenTheFirstOfTwoIdenticalSourcesFailsTheSecondMovesNormally`, `OrganizeIdenticalTest.AMissingSidecarIsCarriedAndAnIdenticalOneIsTrashed`, `OrganizeIdenticalTest.CopyOntoAnIdenticalUntrackedFileWritesNothingAndTracksIt`, `OrganizeIdenticalTest.CopyOntoAnIdenticalTrackedFileMergesTheMetadata`, `AbiOrganizeTest.AnIdenticalDestinationIsReportedAndAMoveTrashesTheSource` |
 | Test gap | Only the skip and rename policies are exercised; overwrite reaches the same branch. A RAW's attached JPEG and a Live Photo video go through the same attachment list as a sidecar and are not tested here. |
 
 ### R91 — holds (test gap)
@@ -623,6 +623,20 @@ The command removes thousands of files on a judgement about which copy to keep, 
 
 ## metadata
 
+### R100 — holds (test gap)
+
+A copy's row carries the original's tags, favorite, gallery and faces, and a copy onto a tracked file holding the same bytes merges them into that row by R37's rules without moving anything off the original.
+
+Tags, favorites, galleries and faces exist only in the catalog, so a copy that left them behind would arrive bare and the user's work would survive only on the original. Copying is the safe way to reorganize, because the originals stay untouched until the result is checked, which makes the copy the row the user goes on to keep. The faces are new rows with their own vec_faces entries rather than shared ones, so renaming or removing the copy's face never reaches the original's. The metadata commits in the transaction that inserts the copy's row, so a copy whose metadata cannot be written is rolled back with its file. A merge into a tracked row keeps the target's gallery and faces, which R92's blockers make safe: a gallery conflict, or named faces against existing faces, never reaches the merge.
+
+| | |
+|---|---|
+| Enforced at | `core/database.cpp:Database::copy_user_metadata`, `core/organize_exec.cpp:execute_organize_action`, `core/organize_exec.cpp:execute_identical_action` |
+| Binds | `organize.copy` |
+| Protects | user-metadata |
+| Evidence | witness: `OrganizeCopyMetadataTest.CopyCarriesTagsFavoriteGalleryAndFaces`, `OrganizeCopyMetadataTest.RenamingTheCopysFaceLeavesTheOriginalsAlone`, `OrganizeCopyMetadataTest.AFailedMetadataWriteRollsTheCopyBack`, `OrganizeIdenticalTest.CopyOntoAnIdenticalUntrackedFileCarriesTheMetadata`, `OrganizeIdenticalTest.CopyOntoAnIdenticalTrackedFileMergesTheMetadata`, `OrganizeIdenticalTest.CopyOntoAnIdenticalTrackedFileWithFacesKeepsItsOwn`, `OrganizeIdenticalTest.CopyFallsBackWhenAGalleryChangesBetweenPlanAndApply`, `OrganizeEngineTest.CliCopyCarriesTagsAndGalleryToTheCopy` |
+| Test gap | No test drives a copy through libphig, which runs the same executor. A face whose stored embedding is not 128 floats is copied with a zeroed embedding, untested. |
+
 ### R35 — holds
 
 A re-scan of an already-indexed path updates that row in place rather than replacing it, so the row keeps its id and the tags, favorite and gallery attached to it.
@@ -786,7 +800,7 @@ Absorbing a move trashes the source and merges its row through R37, which keeps 
 | Binds | `organize.copy`, `organize.move`, `organize.plan` |
 | Protects | user-metadata, attachment |
 | Evidence | witness: `OrganizeIdenticalTest.DifferentGalleriesFallBackToTheConflictPolicy`, `OrganizeIdenticalTest.NamedFacesOnTheSourceAndFacesOnTheDestFallBack`, `OrganizeIdenticalTest.ASidecarWithDifferentBytesAtTheDestinationFallsBack` |
-| Test gap | The checks are pinned at plan time. apply() repeats them before a move, but no test changes a gallery, a face or a sidecar between plan and apply. A copy falls back on the same conditions although it merges nothing, because one plan serves both. |
+| Test gap | apply() repeats the checks before acting, but only a gallery changed between plan and apply on a copy is tested; no test changes a face or a sidecar in that window, or anything before a move. |
 
 ### R93 — holds (test gap)
 

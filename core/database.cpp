@@ -1533,19 +1533,73 @@ std::vector<std::string> Database::get_paths_for_sha256(const std::string& sha25
     return paths;
 }
 
-void Database::transfer_user_metadata(int64_t from_id, int64_t to_id) {
+namespace {
+
+// An image's faces in id order, all of them or only the named ones. An unnamed
+// face reads with person_id -1.
+std::vector<LabelledFace> read_faces(sqlite3* db, int64_t image_id, bool labelled_only) {
+    std::string sql =
+        "SELECT x, y, width, height, embedding, person_id, frame_source, frame_width, "
+        "frame_height, frame_sha256, model_sha256 FROM faces WHERE image_id = ?";
+    if (labelled_only) sql += " AND person_id IS NOT NULL";
+    sql += " ORDER BY id";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare faces read: " +
+                                 std::string(sqlite3_errmsg(db)));
+    }
+    sqlite3_bind_int64(stmt, 1, image_id);
+
+    std::vector<LabelledFace> out;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        LabelledFace lf{};
+        lf.face.x = sqlite3_column_int(stmt, 0);
+        lf.face.y = sqlite3_column_int(stmt, 1);
+        lf.face.width = sqlite3_column_int(stmt, 2);
+        lf.face.height = sqlite3_column_int(stmt, 3);
+        // A malformed embedding blob is left zeroed rather than costing the
+        // face its label: a rebuild matches on the box only.
+        const void* blob = sqlite3_column_blob(stmt, 4);
+        if (blob != nullptr &&
+            sqlite3_column_bytes(stmt, 4) == static_cast<int>(sizeof(lf.face.embedding))) {
+            std::memcpy(lf.face.embedding.data(), blob, sizeof(lf.face.embedding));
+        }
+        lf.person_id =
+            sqlite3_column_type(stmt, 5) == SQLITE_NULL ? -1 : sqlite3_column_int64(stmt, 5);
+        // NULL reads as empty text or zero, which is how unknown is spelled.
+        auto text = [&](int col) {
+            const unsigned char* t = sqlite3_column_text(stmt, col);
+            return t ? std::string(reinterpret_cast<const char*>(t)) : std::string();
+        };
+        lf.provenance.frame_source = text(6);
+        lf.provenance.frame_width = sqlite3_column_int(stmt, 7);
+        lf.provenance.frame_height = sqlite3_column_int(stmt, 8);
+        lf.provenance.frame_sha256 = text(9);
+        lf.provenance.model_sha256 = text(10);
+        out.push_back(lf);
+    }
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        throw std::runtime_error("Failed to read faces: " + std::string(sqlite3_errmsg(db)));
+    }
+    return out;
+}
+
+// The part of a metadata transfer that a move and a copy share (R37).
+void union_tags_and_fill_gallery(sqlite3* db, int64_t from_id, int64_t to_id) {
     // Tags: union — the target keeps its own and gains the source's.
     {
         const char* sql =
             "INSERT OR IGNORE INTO image_tags (image_id, tag_id) "
             "SELECT ?, tag_id FROM image_tags WHERE image_id = ?";
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
             throw std::runtime_error("Failed to prepare tag transfer: " +
-                                     std::string(sqlite3_errmsg(db_)));
+                                     std::string(sqlite3_errmsg(db)));
         sqlite3_bind_int64(stmt, 1, to_id);
         sqlite3_bind_int64(stmt, 2, from_id);
-        step_write_or_throw(db_, stmt, "Failed to transfer tags");
+        step_write_or_throw(db, stmt, "Failed to transfer tags");
     }
 
     // Gallery: fill only an empty target — a user-set gallery on the target wins.
@@ -1554,29 +1608,39 @@ void Database::transfer_user_metadata(int64_t from_id, int64_t to_id) {
             "UPDATE images SET gallery = (SELECT gallery FROM images WHERE id = ?) "
             "WHERE id = ? AND gallery IS NULL";
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
             throw std::runtime_error("Failed to prepare gallery transfer: " +
-                                     std::string(sqlite3_errmsg(db_)));
+                                     std::string(sqlite3_errmsg(db)));
         sqlite3_bind_int64(stmt, 1, from_id);
         sqlite3_bind_int64(stmt, 2, to_id);
-        step_write_or_throw(db_, stmt, "Failed to transfer gallery");
+        step_write_or_throw(db, stmt, "Failed to transfer gallery");
     }
+}
+
+// How many faces the image has.
+int64_t count_faces(sqlite3* db, int64_t image_id) {
+    int64_t n = 0;
+    sqlite3_stmt* c = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM faces WHERE image_id = ?", -1, &c, nullptr) !=
+        SQLITE_OK)
+        throw std::runtime_error("Failed to prepare face count: " +
+                                 std::string(sqlite3_errmsg(db)));
+    sqlite3_bind_int64(c, 1, image_id);
+    if (sqlite3_step(c) == SQLITE_ROW) n = sqlite3_column_int64(c, 0);
+    sqlite3_finalize(c);
+    return n;
+}
+
+}  // namespace
+
+void Database::transfer_user_metadata(int64_t from_id, int64_t to_id) {
+    union_tags_and_fill_gallery(db_, from_id, to_id);
 
     // Faces: repoint only when the target has none. Checked in C++ first — a
     // NOT EXISTS in the UPDATE's WHERE would see the rows it just moved and
     // stop after one. Fresh detections on the target win over stale ones.
     {
-        int64_t target_faces = 0;
-        sqlite3_stmt* c = nullptr;
-        if (sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM faces WHERE image_id = ?", -1, &c,
-                               nullptr) != SQLITE_OK)
-            throw std::runtime_error("Failed to prepare face count: " +
-                                     std::string(sqlite3_errmsg(db_)));
-        sqlite3_bind_int64(c, 1, to_id);
-        if (sqlite3_step(c) == SQLITE_ROW) target_faces = sqlite3_column_int64(c, 0);
-        sqlite3_finalize(c);
-
-        if (target_faces == 0) {
+        if (count_faces(db_, to_id) == 0) {
             sqlite3_stmt* stmt = nullptr;
             if (sqlite3_prepare_v2(db_, "UPDATE faces SET image_id = ? WHERE image_id = ?", -1,
                                    &stmt, nullptr) != SQLITE_OK)
@@ -1586,6 +1650,19 @@ void Database::transfer_user_metadata(int64_t from_id, int64_t to_id) {
             sqlite3_bind_int64(stmt, 2, from_id);
             step_write_or_throw(db_, stmt, "Failed to transfer faces");
         }
+    }
+}
+
+void Database::copy_user_metadata(int64_t from_id, int64_t to_id) {
+    union_tags_and_fill_gallery(db_, from_id, to_id);
+
+    // Faces: new rows for the target, so the two images' faces are separate
+    // from here on. Only onto a target with none, as for a transfer.
+    if (count_faces(db_, to_id) != 0) return;
+    for (const LabelledFace& f : read_faces(db_, from_id, /*labelled_only=*/false)) {
+        const int64_t face_id = insert_face(to_id, f.face, f.provenance);
+        if (f.person_id >= 0 && !set_face_person(face_id, f.person_id))
+            throw std::runtime_error("Failed to name copied face " + std::to_string(face_id));
     }
 }
 
@@ -2041,54 +2118,7 @@ bool Database::has_replaced_faces(int64_t image_id) {
 }
 
 std::vector<LabelledFace> Database::get_labelled_faces_for_image(int64_t image_id) {
-    const char* sql = R"(
-        SELECT x, y, width, height, embedding, person_id,
-               frame_source, frame_width, frame_height, frame_sha256, model_sha256
-        FROM faces
-        WHERE image_id = ? AND person_id IS NOT NULL
-        ORDER BY id
-    )";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare labelled faces read: " +
-                                 std::string(sqlite3_errmsg(db_)));
-    }
-    sqlite3_bind_int64(stmt, 1, image_id);
-
-    std::vector<LabelledFace> out;
-    int rc;
-    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        LabelledFace lf{};
-        lf.face.x = sqlite3_column_int(stmt, 0);
-        lf.face.y = sqlite3_column_int(stmt, 1);
-        lf.face.width = sqlite3_column_int(stmt, 2);
-        lf.face.height = sqlite3_column_int(stmt, 3);
-        // Matching uses the box only, so a malformed embedding blob is left
-        // zeroed rather than costing the face its label.
-        const void* blob = sqlite3_column_blob(stmt, 4);
-        if (blob != nullptr &&
-            sqlite3_column_bytes(stmt, 4) == static_cast<int>(sizeof(lf.face.embedding))) {
-            std::memcpy(lf.face.embedding.data(), blob, sizeof(lf.face.embedding));
-        }
-        lf.person_id = sqlite3_column_int64(stmt, 5);
-        // NULL reads as empty text or zero, which is how unknown is spelled.
-        auto text = [&](int col) {
-            const unsigned char* t = sqlite3_column_text(stmt, col);
-            return t ? std::string(reinterpret_cast<const char*>(t)) : std::string();
-        };
-        lf.provenance.frame_source = text(6);
-        lf.provenance.frame_width = sqlite3_column_int(stmt, 7);
-        lf.provenance.frame_height = sqlite3_column_int(stmt, 8);
-        lf.provenance.frame_sha256 = text(9);
-        lf.provenance.model_sha256 = text(10);
-        out.push_back(lf);
-    }
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) {
-        throw std::runtime_error("Failed to read labelled faces: " +
-                                 std::string(sqlite3_errmsg(db_)));
-    }
-    return out;
+    return read_faces(db_, image_id, /*labelled_only=*/true);
 }
 
 int64_t Database::insert_face(int64_t image_id, const FaceInfo& face) {

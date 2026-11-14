@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -115,6 +116,146 @@ TEST_F(OrganizeExecTest, CopyLeavesSourceAndTracksDest) {
     EXPECT_TRUE(fs::exists(dst));
     EXPECT_EQ(read_file(dst), "AAA");
     EXPECT_EQ(db->count(), 2);  // source + copy
+}
+
+// ---- A copy carries the original's user metadata (plan 079) ----
+
+namespace {
+
+// One face row as the catalog holds it: its person's name, or "" when unnamed.
+struct StoredFace {
+    int64_t id;
+    std::string person;
+    int x;
+    std::string frame_source;
+    bool indexed;  // has its vec_faces entry
+};
+
+std::vector<StoredFace> faces_of(Database& db, int64_t image_id) {
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db.db_ptr(),
+                       "SELECT f.id, COALESCE(p.name, ''), f.x, COALESCE(f.frame_source, ''), "
+                       "EXISTS(SELECT 1 FROM vec_faces v WHERE v.face_id = f.id) "
+                       "FROM faces f LEFT JOIN people p ON p.id = f.person_id "
+                       "WHERE f.image_id = ? ORDER BY f.id",
+                       -1, &s, nullptr);
+    sqlite3_bind_int64(s, 1, image_id);
+    std::vector<StoredFace> out;
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        out.push_back(
+            {sqlite3_column_int64(s, 0), reinterpret_cast<const char*>(sqlite3_column_text(s, 1)),
+             sqlite3_column_int(s, 2), reinterpret_cast<const char*>(sqlite3_column_text(s, 3)),
+             sqlite3_column_int(s, 4) != 0});
+    }
+    sqlite3_finalize(s);
+    return out;
+}
+
+std::string gallery_of(Database& db, const std::string& path) {
+    auto rows = db.get_images_by_ids({db.get_image_id(path)});
+    return rows.empty() ? "<no row>" : rows[0].gallery;
+}
+
+std::vector<std::string> sorted_tags(Database& db, const std::string& path) {
+    auto tags = db.get_tags_for_image(path);
+    std::sort(tags.begin(), tags.end());
+    return tags;
+}
+
+}  // namespace
+
+class OrganizeCopyMetadataTest : public OrganizeExecTest {
+   protected:
+    fs::path src, dst;
+    int64_t src_id = -1;
+
+    // A source photo with two tags (one the favorite), a gallery, a named face
+    // and an unnamed one.
+    void SetUp() override {
+        OrganizeExecTest::SetUp();
+        src = dir / "src" / "a.jpg";
+        dst = dir / "dest" / "a.jpg";
+        write_file(src, "AAA");
+        insert_row(src.string());
+        src_id = db->get_image_id(src.string());
+        db->set_tag({src.string()}, "trip", true);
+        db->set_tag({src.string()}, "favorite", true);
+        db->set_gallery({src.string()}, "summer", false);
+        FaceInfo face{};
+        face.x = 7;
+        face.width = face.height = 10;
+        face.embedding.fill(0.25f);
+        FaceProvenance prov;
+        prov.frame_source = "file";
+        prov.model_sha256 = "model";
+        const int64_t named = db->insert_face(src_id, face, prov);
+        ASSERT_TRUE(db->set_face_person(named, db->get_or_create_person("Ann")));
+        face.x = 9;
+        db->insert_face(src_id, face, prov);
+    }
+};
+
+TEST_F(OrganizeCopyMetadataTest, CopyCarriesTagsFavoriteGalleryAndFaces) {
+    const auto original_faces = faces_of(*db, src_id);
+
+    execute_organize_action(*db, src.string(), dst.string(), /*is_move=*/false, /*op_id=*/0);
+
+    EXPECT_EQ(sorted_tags(*db, dst.string()), (std::vector<std::string>{"favorite", "trip"}));
+    EXPECT_EQ(gallery_of(*db, dst.string()), "summer");
+    const auto copied = faces_of(*db, db->get_image_id(dst.string()));
+    ASSERT_EQ(copied.size(), 2u);
+    EXPECT_EQ(copied[0].person, "Ann");
+    EXPECT_EQ(copied[0].x, 7);
+    EXPECT_EQ(copied[1].person, "");
+    EXPECT_EQ(copied[1].x, 9);
+    for (const auto& f : copied) {
+        EXPECT_EQ(f.frame_source, "file") << "provenance was not carried";
+        EXPECT_TRUE(f.indexed) << "face " << f.id << " has no vec_faces entry";
+        EXPECT_NE(f.id, original_faces[0].id);
+        EXPECT_NE(f.id, original_faces[1].id);
+    }
+
+    // The original keeps everything it had.
+    EXPECT_EQ(sorted_tags(*db, src.string()), (std::vector<std::string>{"favorite", "trip"}));
+    EXPECT_EQ(gallery_of(*db, src.string()), "summer");
+    const auto after = faces_of(*db, src_id);
+    ASSERT_EQ(after.size(), 2u);
+    EXPECT_EQ(after[0].id, original_faces[0].id);
+    EXPECT_EQ(after[0].person, "Ann");
+}
+
+TEST_F(OrganizeCopyMetadataTest, RenamingTheCopysFaceLeavesTheOriginalsAlone) {
+    execute_organize_action(*db, src.string(), dst.string(), /*is_move=*/false, /*op_id=*/0);
+    const auto copied = faces_of(*db, db->get_image_id(dst.string()));
+    ASSERT_EQ(copied.size(), 2u);
+
+    ASSERT_TRUE(db->set_face_person(copied[0].id, db->get_or_create_person("Bea")));
+
+    EXPECT_EQ(faces_of(*db, db->get_image_id(dst.string()))[0].person, "Bea");
+    EXPECT_EQ(faces_of(*db, src_id)[0].person, "Ann");
+}
+
+TEST_F(OrganizeCopyMetadataTest, AFailedMetadataWriteRollsTheCopyBack) {
+    ASSERT_EQ(sqlite3_exec(db->db_ptr(),
+                           "CREATE TEMP TRIGGER block_tags BEFORE INSERT ON image_tags "
+                           "BEGIN SELECT RAISE(ABORT, 'blocked tag write'); END",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    int64_t op = db->log_begin_operation("cp", "phig cp dest", "2026-11-14T00:00:00Z");
+
+    try {
+        execute_organize_action(*db, src.string(), dst.string(), /*is_move=*/false, op);
+        FAIL() << "the copy succeeded although its tags could not be written";
+    } catch (const std::exception& e) {
+        EXPECT_NE(std::string(e.what()).find("blocked tag write"), std::string::npos)
+            << "the fault never fired, so this test pins nothing: " << e.what();
+    }
+
+    EXPECT_FALSE(fs::exists(dst));
+    EXPECT_TRUE(fs::exists(src));
+    EXPECT_EQ(db->count(), 1);
+    EXPECT_EQ(count_entries("copy"), 0);
+    EXPECT_EQ(faces_of(*db, src_id).size(), 2u);
 }
 
 // ---- Compensator paths (DB write forced to fail after the disk op) ----
