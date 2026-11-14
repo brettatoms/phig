@@ -66,7 +66,8 @@ struct FilterFields {
 };
 
 // What the content area's status page offers, when it shows instead of the grid.
-enum class Status { NoPhotos, NoMatches, Error };
+// Error is a catalog that did not open; LoadError a gallery query that failed.
+enum class Status { NoPhotos, NoMatches, Error, LoadError };
 
 // One metadata write, run against the collection on a worker.
 using WriteFn = std::move_only_function<phig::gtk::WriteResult(phig::gtk::Collection&) noexcept>;

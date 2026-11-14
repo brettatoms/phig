@@ -325,7 +325,7 @@ void reload(PhigApp& app) {
         [a, seq](std::expected<std::vector<int64_t>, std::string> found) noexcept {
             if (a->window == nullptr || seq != a->query_seq) return;
             if (!found) {
-                show_status(*a, Status::Error, found.error());
+                show_status(*a, Status::LoadError, found.error());
                 return;
             }
             attach_model(*a, std::move(*found));
@@ -450,11 +450,14 @@ void show_status(PhigApp& app, Status status, const std::string& message) {
         title = "No Matches";
         description = "No photos match these filters.";
         button = "Clear Filters";
-    } else if (status == Status::Error) {
+    } else if (status == Status::Error || status == Status::LoadError) {
         icon = "dialog-error-symbolic";
-        title = "Could Not Open Collection";
+        title = status == Status::Error ? "Could Not Open Collection" : "Could Not Load Photos";
         description = message;
         button = nullptr;
+        // The grid is hidden, so no write may act on a selection in it.
+        if (app.selection != nullptr) gtk_selection_model_unselect_all(app.selection);
+        gtk_action_bar_set_revealed(app.selection_bar, FALSE);
     }
     adw_status_page_set_icon_name(app.status, icon);
     adw_status_page_set_title(app.status, title);

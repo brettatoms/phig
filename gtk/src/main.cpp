@@ -253,9 +253,8 @@ static void on_launched(GObject* source, GAsyncResult* result, gpointer user_dat
     GError* error = NULL;
 
     if (!gtk_file_launcher_launch_finish(launcher, result, &error)) {
-        const char* message = error != NULL ? error->message : "Unknown error";
-        AdwToast* toast = adw_toast_new(message);
-        adw_toast_overlay_add_toast(app->toast_overlay, toast);
+        if (app->window != nullptr)
+            show_toast(*app, error != NULL ? error->message : "Unknown error");
         if (error != NULL)
             g_error_free(error);
     }

@@ -74,6 +74,7 @@ void clear_details(Viewer& v) {
     for (GtkLabel* label : {v.filename, v.date, v.camera, v.exposure, v.size, v.sharpness})
         gtk_label_set_text(label, "");
     gtk_flow_box_remove_all(v.tags);
+    gtk_editable_set_text(GTK_EDITABLE(v.tag_entry), "");
     gtk_editable_set_text(GTK_EDITABLE(v.gallery_entry), "");
 }
 
