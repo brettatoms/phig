@@ -33,17 +33,18 @@ read_only_abi = [
 ]
 
 # CLI top-level commands that map to no operation in this record set. Only help
-# mutates nothing. The other two mutate through --output, which truncates
-# whatever file it names (R69), recorded rather than fixed here. They stay on
-# this list because the list's job is to account for every top-level command,
-# and neither is an operation — no core/ primitive backs either one.
+# mutates nothing. search mutates through --output, which truncates whatever
+# file it names (R69), recorded rather than fixed here. It stays on this list
+# because the list's job is to account for every top-level command, and it is
+# not an operation — no core/ primitive backs it. duplicates is not here: its
+# resolve subcommand surfaces duplicates.resolve.
 #
 # models mutates too — it writes the YuNet and SFace files into the models
 # cache under a lock of its own in that directory — but touches none of the
 # seven assets in taxonomy.toml, so no operation covers it either. Same
 # position as phig_settings_save above. Face-model download is listed as missing from the
 # ABI in libphig/CLAUDE.md, owned by 053.
-read_only_cli = ["search", "duplicates", "help", "models"]
+read_only_cli = ["search", "help", "models"]
 
 # Every long flag cli/main.cpp parses, split by whether it can change what is
 # written. read_only_cli above accounts for top-level commands; these two lists
@@ -116,16 +117,19 @@ mutating_cli_flags = [
     # cp, mv, rm, thumbs rebuild, face rebuild, tag, gallery and fav. Which
     # files an operation moves, deletes, re-detects or labels (R74).
     "--match", "--exclude",
-    # cp and mv (R21), rm (R20), thumbs clean (R77). The flag whose failure
-    # mode is a write.
+    # cp and mv (R21), rm (R20), thumbs clean (R77), duplicates resolve. The
+    # flag whose failure mode is a write.
     "--dry-run",
+    # duplicates resolve. Decides which file of each group is kept and which
+    # are moved to the trash.
+    "--keep",
     # cp and mv. `overwrite` replaces the file at an occupied destination
     # (R01, R02, R05, R06, R08, R09, R10, R11).
     "--on-conflict",
     # rm. Which removal mode runs: permanent instead of trash, row without
     # file, or rows whose files are already gone (R12, R13, R14, R22, R23).
     "--hard", "--db-only", "--orphans",
-    # rm (R22) and trash empty (R68). Skips the confirmation.
+    # rm (R22), trash empty (R68) and duplicates resolve. Skips the confirmation.
     "--yes",
     # tag, gallery and fav. A directory prefix selecting which rows are
     # written; one of the two flags that satisfies the named-selection guard
@@ -218,6 +222,10 @@ core_internal = [
                                     # (refuse_occupied_carry_destination)
                                     # rather than overwriting it — unlike
                                     # move, it is not destructive
+    "settle_attachments",          # carries or trashes the attachments of a
+                                    # photo resolved against identical bytes;
+                                    # called from execute_identical_action and
+                                    # duplicates.resolve
     "execute_identical_action",    # organize.copy/organize.move's action
                                     # for a destination that already holds
                                     # the source's bytes (plan 076); a move
@@ -278,6 +286,7 @@ core_read_only = [
     "same_bytes", "attachments_mergeable",  # size and SHA-256 comparisons, no mutation
     "metadata_merge_blocker",  # reads two rows' gallery and faces, no mutation
     "mtime_to_keep",         # pure choice between two file times
+    "plausible_mtime",       # pure predicate on a file time
 
     # core/remove_exec.h
     "lifecycle", "mount", "action", "on", "bool", "success", "required",  # prose
@@ -454,4 +463,12 @@ core_entry = "core/relink.h:demote_live_photo_rows"
 destructive = true
 surfaces_abi = []
 surfaces_cli = ["scan"]
+surfaces_http = []
+
+[[operation]]
+id = "duplicates.resolve"
+core_entry = "core/duplicates_resolve.h:DuplicatesResolver::apply"
+destructive = true
+surfaces_abi = []            # plans 062 and 064
+surfaces_cli = ["duplicates"]
 surfaces_http = []

@@ -24,6 +24,7 @@ add_library(phig-core STATIC
     log.cpp
     sidecar.cpp
     dates.cpp
+    duplicates_resolve.cpp
     duplicates.cpp
     raw.cpp
     image_codec.cpp

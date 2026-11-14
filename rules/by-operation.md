@@ -4,6 +4,7 @@
 
 | Operation | conflict | reconcile | atomicity | recoverability | metadata | attachments | concurrency | cancellation | authorization |
 |---|---|---|---|---|---|---|---|---|---|
+| **duplicates.resolve** | — | — | R98 | R97 | R93 R96 | — | — | R99 | R95 |
 | faces.identify | — | — | R28 R29 R34 R88 | — | — | — | R07 R51 R53 R71 | — | — |
 | **faces.rebuild** | — | — | R28 R29 R34 R72 R88 | — | R85 R86 | — | R51 R52 R53 R55 | R57 R58 | R60 R74 |
 | metadata.write | — | — | R28 R29 R34 R88 | — | R79 | — | R49 R50 R53 R54 R55 R84 | — | R74 R78 |

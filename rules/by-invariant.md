@@ -483,6 +483,20 @@ The source is trashed before the transaction that merges and deletes its row, so
 | Evidence | witness: `OrganizeIdenticalTest.AFailedCommitBringsTheTrashedSourceBack`, `OrganizeIdenticalMtimeTest.AFailedCommitRestoresTheDestinationsMtime` |
 | Test gap | A failure to move the source back from the trash is reported but not tested. |
 
+### R98 — holds (test gap)
+
+When resolving a duplicate group fails to commit its row changes, the group's trashed files are moved back and the kept file's mtime restored before the error is reported.
+
+The removed members go to the trash before the transaction that merges and deletes their rows, so a failed commit would otherwise leave rows pointing into the trash. Their trash entries are logged inside that transaction, so the log never records a trash that was undone.
+
+| | |
+|---|---|
+| Enforced at | `core/duplicates_resolve.cpp:resolve_group` |
+| Binds | `duplicates.resolve` |
+| Protects | original-file, db-row, activity-log |
+| Evidence | witness: `DuplicatesResolveTest.AFailedCommitBringsTheTrashedFilesBack` |
+| Test gap | A failure to move a file back from the trash is reported but not tested. |
+
 ## recoverability
 
 ### R04 — partial (test gap)
@@ -593,6 +607,19 @@ Each of the three delete-path sites in core/database.cpp (delete_paths, delete_p
 | Protects | activity-log |
 | Evidence | witness: `DatabaseTest.DeletePathsReportsTheCauseItRolledBack`, `DatabaseTest.DeletePathsLoggedReportsTheCauseItRolledBack`, `DatabaseTest.LogPruneReportsTheCauseItRolledBack`, `DatabaseTest.DeletePathsLoggedClosesItsTransactionWhenAnEntryFails` |
 | Test gap | The faults are raised by triggers, not by a full disk or an expired busy timeout; the message path is the same. |
+
+### R97 — holds
+
+Resolving duplicates moves every removed member to the trash, never deleting it, and deletes its row with a restore snapshot after carrying its user metadata to the file kept.
+
+The command removes thousands of files on a judgement about which copy to keep, made by rules a person did not check one by one. The trash and the snapshots make every one of those removals reversible until the trash is emptied.
+
+| | |
+|---|---|
+| Enforced at | `core/duplicates_resolve.cpp:resolve_group` |
+| Binds | `duplicates.resolve` |
+| Protects | original-file, db-row |
+| Evidence | witness: `DuplicatesResolveTest.AResolvedGroupLeavesOneFileAndCarriesTheMetadata`, `DuplicatesResolveCliTest.YesResolvesTheGroup` |
 
 ## metadata
 
@@ -763,17 +790,31 @@ Absorbing a move trashes the source and merges its row through R37, which keeps 
 
 ### R93 — holds (test gap)
 
-When a move absorbs its source into a destination with the same bytes, the destination takes the source's modification time only when both are dated by their mtime and the source's is older and plausible, on or after 1990-01-01 and not in the future; the surviving row records the destination's final mtime, and a changed time is logged with the one it replaced.
+When a move absorbs its source into a destination with the same bytes, or resolving duplicates keeps one file of a group, the file kept takes another copy's modification time only when both are dated by their mtime and the other's is older and plausible, on or after 1990-01-01 and not in the future; the surviving row records the kept file's final mtime, and a changed time is logged with the one it replaced.
 
 A copy takes the time it was made, so of two identical files the older mtime is usually the original's, and for a photo with no EXIF or sidecar date that time is its date. A photo dated by EXIF or a sidecar does not depend on its mtime, so it is left alone. Times before 1990 are the Unix epoch, the FAT default of 1980-01-01, or an unset clock, and would misdate the photo worse than the copy time.
 
 | | |
 |---|---|
-| Enforced at | `core/organize_exec.cpp:mtime_to_keep`, `core/organize_exec.cpp:execute_identical_action` |
-| Binds | `organize.move` |
+| Enforced at | `core/organize_exec.cpp:mtime_to_keep`, `core/organize_exec.cpp:execute_identical_action`, `core/duplicates_resolve.cpp:resolve_group` |
+| Binds | `organize.move`, `duplicates.resolve` |
 | Protects | original-file, db-row |
-| Evidence | witness: `OrganizeIdenticalMtimeTest.AnUndatedDestinationTakesTheSourcesOlderMtime`, `OrganizeIdenticalMtimeTest.ANewerSourceMtimeIsNotTaken`, `OrganizeIdenticalMtimeTest.ImplausibleSourceTimesAreIgnored`, `OrganizeIdenticalMtimeTest.AnExifDatedDestinationKeepsItsMtime` |
+| Evidence | witness: `OrganizeIdenticalMtimeTest.AnUndatedDestinationTakesTheSourcesOlderMtime`, `OrganizeIdenticalMtimeTest.ANewerSourceMtimeIsNotTaken`, `OrganizeIdenticalMtimeTest.ImplausibleSourceTimesAreIgnored`, `OrganizeIdenticalMtimeTest.AnExifDatedDestinationKeepsItsMtime`, `DuplicatesResolveTest.AnUndatedKeeperTakesTheOldestPlausibleMtimeInTheGroup` |
 | Test gap | A sidecar-dated pair is not tested; the EXIF case reaches the same branch. The logged previous time has one-second resolution, so restoring it from the log loses the fraction. |
+
+### R96 — holds (test gap)
+
+A duplicate group is resolved only when every removed member's user metadata and attachments can be carried to the file kept; two different galleries, named faces the kept file cannot take, or an attachment that differs from the one beside the kept file leave the whole group as it is.
+
+Each removed member's row is merged through R37, which keeps the target's gallery and moves faces only onto a target with none, so in those cases the merge would drop a gallery or a person label. A sidecar with different contents is user data the kept file does not have. Leaving the group keeps every copy; the plan names the reason so a person can decide.
+
+| | |
+|---|---|
+| Enforced at | `core/duplicates_resolve.cpp:check_group` |
+| Binds | `duplicates.resolve` |
+| Protects | user-metadata, attachment |
+| Evidence | witness: `DuplicatesResolveTest.DifferentGalleriesLeaveTheGroupAlone`, `DuplicatesResolveTest.NamedFacesThatCannotMoveLeaveTheGroupAlone`, `DuplicatesResolveTest.ADifferentSidecarBesideTheKeeperLeavesTheGroupAlone`, `DuplicatesResolveTest.AResolvedGroupLeavesOneFileAndCarriesTheMetadata`, `DuplicatesResolveTest.ARemovedMembersSidecarIsCarriedToTheKeeper` |
+| Test gap | Two removed members carrying different sidecars to the same name beside the kept file reach the same check and are not tested. apply() repeats the check, but no test changes a gallery or a face between plan and apply. |
 
 ## attachments
 
@@ -1078,6 +1119,19 @@ The worker holds raw pointers to the phig_op and to the per-operation Database t
 | Protects | db-row |
 | Evidence | witness: `AbiOperations.FreeWhileRunningWaitsForTheWorker`, `AbiOperations.CancelIsIdempotentAndSafeAfterCompletion` |
 
+### R99 — holds
+
+Resolving duplicates stops only between groups: a group in progress is finished, groups not yet started are untouched, and the run is recorded as interrupted.
+
+A group's trash moves, metadata merge and row deletions belong together; stopping inside one would leave some copies trashed with their rows still present. Checking the token only between groups keeps every group either resolved or untouched.
+
+| | |
+|---|---|
+| Enforced at | `core/duplicates_resolve.cpp:DuplicatesResolver::apply` |
+| Binds | `duplicates.resolve` |
+| Protects | original-file, db-row, activity-log |
+| Evidence | witness: `DuplicatesResolveTest.CancellingBetweenGroupsFinishesTheCurrentOneAndStops` |
+
 ## authorization
 
 ### R20 — holds (test gap)
@@ -1274,3 +1328,16 @@ A format's tokens are substituted into a path joined onto the destination, and %
 | Protects | original-file |
 | Evidence | conformance: `OrganizeEngineTest.AMakeOrModelThatClimbsOrIsAbsoluteStaysInsideTheDestination`, `OrganizeEngineTest.AGalleryNameWithASlashPlansOneFolder`, `OrganizeEngineTest.AValueThatCleansToNothingOrADotTakesItsPlaceholder`, `OrganizeEngineTest.AFormatThatLeavesTheDestinationOrHasAnUnknownTokenIsRefused`, `OrganizeEngineTest.CliCopyKeepsAFileWhoseModelClimbsInsideTheDestination`, `AbiOrganizeTest.PlanRefusesAFormatThatLeavesTheDestination` |
 | Test gap | The containment check in plan() is unreachable once the other two guards hold, so no test reaches it; it is pinned only by reading. A symlinked directory inside the destination that points elsewhere passes, by design: the check is lexical, and following the user's own link is what they asked for. |
+
+### R95 — holds
+
+Resolving duplicates moves a member to the trash only after its bytes, and the kept file's, are compared with the group's sha256 on disk when the group is applied; a member that no longer matches stays where it is, and a kept file that no longer matches leaves the group alone.
+
+The plan groups rows by their recorded sha256, which can be stale, and a person may edit a file between the plan and the apply. Trashing a copy is safe only because another file holds the same bytes, so that has to be true on disk at the moment it is acted on.
+
+| | |
+|---|---|
+| Enforced at | `core/duplicates_resolve.cpp:resolve_group` |
+| Binds | `duplicates.resolve` |
+| Protects | original-file |
+| Evidence | witness: `DuplicatesResolveTest.AMemberEditedAfterPlanningIsNotTrashed`, `DuplicatesResolveTest.AnEditedKeeperLeavesTheGroupAlone` |

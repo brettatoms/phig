@@ -166,3 +166,20 @@ tests = [
 test_kind = "witness"
 status = "holds"
 test_gap = "The faults are raised by triggers, not by a full disk or an expired busy timeout; the message path is the same."
+
+[[rule]]
+id = "R97"
+tier = "engine"
+concern = "recoverability"
+statement = "Resolving duplicates moves every removed member to the trash, never deleting it, and deletes its row with a restore snapshot after carrying its user metadata to the file kept."
+rationale = "The command removes thousands of files on a judgement about which copy to keep, made by rules a person did not check one by one. The trash and the snapshots make every one of those removals reversible until the trash is emptied."
+enforced_at = ["core/duplicates_resolve.cpp:resolve_group"]
+binds = ["duplicates.resolve"]
+protects = ["original-file", "db-row"]
+tests = [
+    "DuplicatesResolveTest.AResolvedGroupLeavesOneFileAndCarriesTheMetadata",
+    "DuplicatesResolveCliTest.YesResolvesTheGroup",
+]
+test_kind = "witness"
+status = "holds"
+

@@ -323,12 +323,42 @@ bool dated_by_mtime(ImageInfo info, fs::file_time_type mtime) {
     return source == DateSource::Mtime;
 }
 
+}  // namespace
+
 bool plausible_mtime(fs::file_time_type t) {
     const std::string s = format_time(t);
     return s >= "1990-01-01" && s <= format_time(fs::file_time_type::clock::now());
 }
 
-}  // namespace
+CarryResult settle_attachments(Database& db, const std::vector<AttachmentMove>& moves, bool is_move,
+                               int64_t op_id, int64_t parent_id) {
+    CarryResult result;
+    for (const auto& m : moves) {
+        std::error_code ec;
+        const bool there = fs::exists(m.dest, ec);
+        if (ec) {
+            result.failures.push_back(m.source.string() + ": cannot check " + m.dest.string() +
+                                      ": " + ec.message());
+            continue;
+        }
+        if (!there) {
+            carry_one(db, m, is_move, op_id, parent_id, result);
+            continue;
+        }
+        if (!same_bytes(m.source.string(), m.dest.string())) {
+            result.failures.push_back(m.source.string() + ": " + m.dest.string() +
+                                      " already exists with different contents");
+            continue;
+        }
+        if (!is_move) continue;  // the same bytes are already there
+        try {
+            execute_trash_action(db, m.source.string(), op_id);
+        } catch (const std::exception& e) {
+            result.failures.push_back(m.source.string() + ": " + e.what());
+        }
+    }
+    return result;
+}
 
 fs::file_time_type mtime_to_keep(const ImageInfo& keep, fs::file_time_type keep_mtime,
                                  const ImageInfo& other, fs::file_time_type other_mtime) {
@@ -434,19 +464,6 @@ IdenticalResult execute_identical_action(Database& db, const std::string& source
     out.resolved = true;
 
     // Attachments follow their parent only once it is resolved (R44).
-    const int64_t parent_id = logging ? db.get_image_id(dest) : 0;
-    for (const auto& m : moves) {
-        std::error_code ec;
-        if (!fs::exists(m.dest, ec) && !ec) {
-            carry_one(db, m, is_move, op_id, parent_id, out.carry);
-            continue;
-        }
-        if (!is_move) continue;  // the same bytes are already there
-        try {
-            execute_trash_action(db, m.source.string(), op_id);
-        } catch (const std::exception& e) {
-            out.carry.failures.push_back(m.source.string() + ": " + e.what());
-        }
-    }
+    out.carry = settle_attachments(db, moves, is_move, op_id, logging ? db.get_image_id(dest) : 0);
     return out;
 }

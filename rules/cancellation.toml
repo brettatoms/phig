@@ -66,3 +66,17 @@ tests = [
 test_kind = "witness"
 status = "partial"
 test_gap = "The two engines that have the guard have the empty-selection test; the two that lack it have no such case, which is exactly the uncovered branch. FacesEngineRun.AlreadyCancelledDetectsNothingAndReportsIncomplete is deliberately not listed: it calls face_path_blocker() and skips wherever the face path cannot run — no models, or an OpenCV below the 4.8.0 floor (R72) — which is every machine but the ubuntu-26.04 CI leg and one that has downloaded them. Its empty-selection sibling needs neither and is listed instead."
+
+[[rule]]
+id = "R99"
+tier = "engine"
+concern = "cancellation"
+statement = "Resolving duplicates stops only between groups: a group in progress is finished, groups not yet started are untouched, and the run is recorded as interrupted."
+rationale = "A group's trash moves, metadata merge and row deletions belong together; stopping inside one would leave some copies trashed with their rows still present. Checking the token only between groups keeps every group either resolved or untouched."
+enforced_at = ["core/duplicates_resolve.cpp:DuplicatesResolver::apply"]
+binds = ["duplicates.resolve"]
+protects = ["original-file", "db-row", "activity-log"]
+tests = ["DuplicatesResolveTest.CancellingBetweenGroupsFinishesTheCurrentOneAndStops"]
+test_kind = "witness"
+status = "holds"
+

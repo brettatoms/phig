@@ -1,7 +1,8 @@
 ---
 name: Resolve Exact Duplicates
-status: planned
+status: completed
 created: 2026-11-14
+completed: 2026-11-14
 description: >
   A `core/` operation that keeps one file from each group of byte-identical
   files and trashes the rest, after carrying their user metadata to the file
@@ -176,3 +177,45 @@ Real-behavior tests against the engine and the built binary:
 - **064** gives remove a plan/apply ABI; exposing this operation follows the
   same shape.
 - **078** provides the JSON escaping for `--format json`.
+
+## Outcome
+
+Built 2026-11-14 on branch `076-organize-mtimes-identical`, as decided above,
+with these details settled in the code:
+
+- `core/duplicates_resolve.{h,cpp}`: `DuplicatesResolver::plan` and `apply`, a
+  caller-owned `DuplicatesPlan` with `set_keeper` and `set_skip`, and keep rules
+  parsed by `parse_keep_rule`. Reasons and blockers are enums; the CLI words
+  them, per `core/CLAUDE.md`.
+- A keep rule that matches no candidate is passed over rather than emptying the
+  set. `under:` compares path components, so `under:/a/lib` does not match
+  `/a/library`. `oldest` reads mtimes from disk and ignores implausible ones.
+- `set_keeper` re-checks the group against the new keeper, which is why the plan
+  keeps a pointer to the database.
+- Named faces block a group when a removed member has named faces and any other
+  member, the keeper included, has faces: R37 moves faces only onto a target
+  with none, so only the first face-bearing member's faces would land.
+- `organize_exec`'s `settle_attachments` and `plausible_mtime` are shared with
+  076's identical-move path; `settle_attachments` now checks the bytes of an
+  attachment already present before trashing the one being removed.
+- `--format json` needs `--dry-run`: it prints the plan. The first `--keep`
+  replaces the default order.
+- `duplicates` left `read_only_cli`; `duplicates.resolve` is a new operation with
+  no ABI surface yet.
+
+Rules R95–R99 record it, and R93's older-mtime rule now binds
+`duplicates.resolve` too. 24 tests, each confirmed to fail with its piece of the
+resolver disabled.
+
+### Dry run on the real catalog
+
+2026-11-14, read-only, 53 s: 5,036 groups, all resolvable, 5,400 files to
+trash. With the default rules, `oldest` chose 4,157 keepers and `unsuffixed`
+879. In 3,081 groups the two copies' mtimes were both copy times, five days
+apart, so `oldest` kept whichever copy was written first rather than the one
+in the tree meant to be kept. A collection like this one should name that tree
+with `--keep under:<dir>` rather than rely on `oldest`.
+
+Apply reads every member of every group it resolves, the same cost 076
+measured: about 58 GB here, on the order of ten minutes on this HDD. Not
+measured; closed on 076's measurement of the same reads, 2026-11-14.

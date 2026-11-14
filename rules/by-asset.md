@@ -51,6 +51,7 @@ Tags, favorites, gallery, face labels. The only collection asset nothing can rec
 | R86 | metadata | holds (test gap) | Under an unchanged recognition model a carried face label lands only on a re-detected face whose unit-normalized embedding lies within kLabelCarryMaxDistance of the labelled face's; after a model change it lands only on a face overlapping at kLabelCarryMinOverlap within a frame recorded as identical (same bytes by sha256 and same size); any other label is dropped and counted, and a label never moves by box position across frames that are not recorded identical. |
 | R90 | conflict | holds (test gap) | A destination that already holds the source's bytes, on disk or from an earlier item in the same run, is not a conflict under any on_conflict policy: a copy writes nothing, and a move sends the source to the trash after carrying its user metadata to the destination's row. |
 | R92 | metadata | holds (test gap) | A destination holding the source's bytes absorbs the source only when nothing the source carries would be lost; two different galleries, named faces on the source when the destination already has faces, or an attachment whose counterpart at the destination has different bytes leave the item to the run's conflict policy. |
+| R96 | metadata | holds (test gap) | A duplicate group is resolved only when every removed member's user metadata and attachments can be carried to the file kept; two different galleries, named faces the kept file cannot take, or an attachment that differs from the one beside the kept file leave the whole group as it is. |
 
 ## original-file — rebuildable: backup-only
 
@@ -89,8 +90,12 @@ The bytes on disk.
 | R89 | metadata | holds (test gap) | A file phig copies, or moves across filesystems, keeps its source's modification time. |
 | R90 | conflict | holds (test gap) | A destination that already holds the source's bytes, on disk or from an earlier item in the same run, is not a conflict under any on_conflict policy: a copy writes nothing, and a move sends the source to the trash after carrying its user metadata to the destination's row. |
 | R91 | conflict | holds (test gap) | A source is trashed as identical to its destination only after the two files, and their attachments, are compared byte for byte on disk when the move runs; an item that no longer matches is skipped. |
-| R93 | metadata | holds (test gap) | When a move absorbs its source into a destination with the same bytes, the destination takes the source's modification time only when both are dated by their mtime and the source's is older and plausible, on or after 1990-01-01 and not in the future; the surviving row records the destination's final mtime, and a changed time is logged with the one it replaced. |
+| R93 | metadata | holds (test gap) | When a move absorbs its source into a destination with the same bytes, or resolving duplicates keeps one file of a group, the file kept takes another copy's modification time only when both are dated by their mtime and the other's is older and plausible, on or after 1990-01-01 and not in the future; the surviving row records the kept file's final mtime, and a changed time is logged with the one it replaced. |
 | R94 | atomicity | holds (test gap) | When a move that absorbs its source into an identical destination fails to commit its row changes, the source is moved back from the trash and the destination's mtime restored before the error is reported. |
+| R95 | authorization | holds | Resolving duplicates moves a member to the trash only after its bytes, and the kept file's, are compared with the group's sha256 on disk when the group is applied; a member that no longer matches stays where it is, and a kept file that no longer matches leaves the group alone. |
+| R97 | recoverability | holds | Resolving duplicates moves every removed member to the trash, never deleting it, and deletes its row with a restore snapshot after carrying its user metadata to the file kept. |
+| R98 | atomicity | holds (test gap) | When resolving a duplicate group fails to commit its row changes, the group's trashed files are moved back and the kept file's mtime restored before the error is reported. |
+| R99 | cancellation | holds | Resolving duplicates stops only between groups: a group in progress is finished, groups not yet started are untouched, and the run is recorded as interrupted. |
 
 ## attachment — rebuildable: backup-only
 
@@ -111,6 +116,7 @@ Sidecar, paired JPEG, Live Photo MOV. Easier to orphan than an original.
 | R48 | atomicity | holds | A copy or move counts each selected item once: an item is reported as applied or as failed, never as both. |
 | R68 | authorization | violated (test gap) | Trash empty destroys its contents permanently and only after authorization: an empty trash returns without asking, --yes skips the prompt, and otherwise it refuses outright unless run at an interactive terminal where the operator types the literal string 'yes' in response to a prompt naming the item count and the trash directory. |
 | R92 | metadata | holds (test gap) | A destination holding the source's bytes absorbs the source only when nothing the source carries would be lost; two different galleries, named faces on the source when the destination already has faces, or an attachment whose counterpart at the destination has different bytes leave the item to the run's conflict policy. |
+| R96 | metadata | holds (test gap) | A duplicate group is resolved only when every removed member's user metadata and attachments can be carried to the file kept; two different galleries, named faces the kept file cannot take, or an attachment that differs from the one beside the kept file leave the whole group as it is. |
 
 ## db-row — rebuildable: rescan
 
@@ -162,8 +168,11 @@ Rebuilt by a rescan, except the user-metadata it carries.
 | R80 | atomicity | violated (test gap) | A scan whose indexing phase failed does not run its reconcile phase, so nothing is deleted on the strength of a walk that did not finish. |
 | R84 | concurrency | holds | An image id names the same image for as long as that image exists: images.id is AUTOINCREMENT, so a deleted id is never handed to a later insert. |
 | R88 | atomicity | holds (test gap) | A schema migration step fails only on foreign key violations it creates, and no step runs until a backup of the database has been written. |
-| R93 | metadata | holds (test gap) | When a move absorbs its source into a destination with the same bytes, the destination takes the source's modification time only when both are dated by their mtime and the source's is older and plausible, on or after 1990-01-01 and not in the future; the surviving row records the destination's final mtime, and a changed time is logged with the one it replaced. |
+| R93 | metadata | holds (test gap) | When a move absorbs its source into a destination with the same bytes, or resolving duplicates keeps one file of a group, the file kept takes another copy's modification time only when both are dated by their mtime and the other's is older and plausible, on or after 1990-01-01 and not in the future; the surviving row records the kept file's final mtime, and a changed time is logged with the one it replaced. |
 | R94 | atomicity | holds (test gap) | When a move that absorbs its source into an identical destination fails to commit its row changes, the source is moved back from the trash and the destination's mtime restored before the error is reported. |
+| R97 | recoverability | holds | Resolving duplicates moves every removed member to the trash, never deleting it, and deletes its row with a restore snapshot after carrying its user metadata to the file kept. |
+| R98 | atomicity | holds (test gap) | When resolving a duplicate group fails to commit its row changes, the group's trashed files are moved back and the kept file's mtime restored before the error is reported. |
+| R99 | cancellation | holds | Resolving duplicates stops only between groups: a group in progress is finished, groups not yet started are untouched, and the run is recorded as interrupted. |
 
 ## activity-log — rebuildable: no
 
@@ -191,6 +200,8 @@ The record of what happened.
 | R58 | cancellation | partial (test gap) | A run whose token is already cancelled does no work and reports itself incomplete. |
 | R83 | recoverability | holds (test gap) | An operation that fails against the database reports the cause: the message it raises names what SQLite refused, not the state of the connection after the rollback that followed. |
 | R94 | atomicity | holds (test gap) | When a move that absorbs its source into an identical destination fails to commit its row changes, the source is moved back from the trash and the destination's mtime restored before the error is reported. |
+| R98 | atomicity | holds (test gap) | When resolving a duplicate group fails to commit its row changes, the group's trashed files are moved back and the kept file's mtime restored before the error is reported. |
+| R99 | cancellation | holds | Resolving duplicates stops only between groups: a group in progress is finished, groups not yet started are untouched, and the run is recorded as interrupted. |
 
 ## thumb-cache — rebuildable: yes
 

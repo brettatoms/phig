@@ -88,15 +88,27 @@ bool attachments_mergeable(const std::vector<AttachmentMove>& moves);
 // named faces on the source when the target already has faces, cannot merge.
 std::string metadata_merge_blocker(Database& db, int64_t from_id, int64_t to_id);
 
+// Whether a file time can be a photo's real date: on or after 1990-01-01 and not
+// in the future. Earlier times are the Unix epoch, the FAT default of
+// 1980-01-01, or a clock that was never set.
+bool plausible_mtime(std::filesystem::file_time_type t);
+
+// Settles the attachments of a photo whose bytes already sit at another path:
+// one missing beside that path is carried there (moved, or copied when
+// `is_move` is false), one already there with the same bytes is trashed on a
+// move and left alone on a copy, and one already there with different bytes is
+// left where it is and reported. Each action is logged against `parent_id` as
+// carry_sidecars logs it; failures are reported, never thrown.
+CarryResult settle_attachments(Database& db, const std::vector<AttachmentMove>& moves, bool is_move,
+                               int64_t op_id, int64_t parent_id);
+
 // The older-mtime rule. Given the file being kept and a byte-identical copy
 // about to be removed, the mtime the kept file should end up with:
 // `other_mtime` when both are dated by their mtime (no EXIF and no sidecar
 // date, so the time is what files them) and `other_mtime` is older and
-// plausible — on or after 1990-01-01 and not in the future. Otherwise
-// `keep_mtime`. A copy takes the time it was made, so the older of two is
-// usually the original's; a time before 1990 is the Unix epoch, the FAT default
-// of 1980-01-01, or a clock that was never set. Only `path` and `metadata_json`
-// of the two rows are read.
+// plausible (plausible_mtime). Otherwise `keep_mtime`. A copy takes the time it
+// was made, so the older of two is usually the original's. Only `path` and
+// `metadata_json` of the two rows are read.
 std::filesystem::file_time_type mtime_to_keep(const ImageInfo& keep,
                                               std::filesystem::file_time_type keep_mtime,
                                               const ImageInfo& other,
