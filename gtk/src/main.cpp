@@ -844,8 +844,8 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
      * opening "" would resolve to a path at the filesystem root. */
     if (app->catalog_dir.empty()) {
         show_status(*app, Status::Error,
-                    "phig could not resolve its default catalog. Check [paths] catalog "
-                    "in the config file, or name a catalog directory.");
+                    "phig could not resolve its default catalog. Check PHIG_CATALOG and "
+                    "[paths] catalog in the config file.");
         return;
     }
     open_catalog(*app);
@@ -862,7 +862,9 @@ static std::string resolve_default_catalog() {
 
 int main(int argc, char** argv) {
     if (argc > 1) {
-        g_printerr("phig-gtk takes no arguments: it opens phig's default catalog.\n");
+        g_printerr(
+            "phig-gtk takes no arguments. It opens phig's default catalog: PHIG_CATALOG, then "
+            "[paths] catalog in the config file, then ~/.local/share/phig.\n");
         return 2;
     }
     auto app = std::make_unique<PhigApp>();
