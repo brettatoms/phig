@@ -1,11 +1,16 @@
 #include "database.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
+#include <system_error>
 
 #ifndef SQLITE_VEC_STATIC
 #define SQLITE_VEC_STATIC
@@ -14,6 +19,7 @@
 #define SQLITE_CORE
 #endif
 #include "dates.h"
+#include "log.h"
 #include "selection.h"
 #include "sqlite-vec.h"
 
@@ -367,16 +373,23 @@ int Database::schema_version() { return get_schema_version(); }
 
 int Database::expected_schema_version() { return CURRENT_SCHEMA_VERSION; }
 
-int Database::foreign_key_violations() {
+std::set<Database::ForeignKeyViolation> Database::foreign_key_violations() {
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, "PRAGMA foreign_key_check", -1, &stmt, nullptr) != SQLITE_OK) {
         throw std::runtime_error("Failed to prepare foreign_key_check: " +
                                  std::string(sqlite3_errmsg(db_)));
     }
-    int count = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) count++;
+    // Columns: table, rowid, parent, fkid.
+    std::set<ForeignKeyViolation> found;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        ForeignKeyViolation v;
+        v.table = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        v.rowid = sqlite3_column_int64(stmt, 1);
+        v.parent = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        found.insert(std::move(v));
+    }
     sqlite3_finalize(stmt);
-    return count;
+    return found;
 }
 
 void Database::set_schema_version(int version) {
@@ -402,6 +415,9 @@ void Database::init_schema() {
                                  std::to_string(CURRENT_SCHEMA_VERSION) + "). Please update phig.");
     }
 
+    // Set once the backup is written, so a pre-migration database that goes on
+    // to the numbered steps is copied once, before anything changes.
+    bool upgrading = false;
     if (db_version == 0) {
         // Check if this is a pre-migration DB (has images table but no meta table)
         bool has_images_table = false;
@@ -417,6 +433,8 @@ void Database::init_schema() {
         }
 
         if (has_images_table) {
+            begin_upgrade(0);
+            upgrading = true;
             // Pre-migration DB — set version to 1, then run migrations forward.
             // Re-establish the face-recognition schema that the old init_schema
             // used to guarantee on every startup, in case the existing DB
@@ -591,66 +609,138 @@ void Database::init_schema() {
     }
 
     if (db_version > 0 && db_version < CURRENT_SCHEMA_VERSION) {
-        // Run pending migrations. Each step takes the write lock up front
-        // (IMMEDIATE) and re-reads the version inside the transaction, so if a
-        // concurrent process already applied this step we skip it instead of
-        // re-running non-idempotent DDL (e.g. ALTER TABLE ADD COLUMN).
+        if (!upgrading) begin_upgrade(db_version);
         for (int v = db_version + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
-            // Foreign keys off for every migration, not only the ones that
-            // rebuild a table. SQLite's DROP TABLE performs an implicit DELETE
-            // of every row before dropping, so dropping a table with ON DELETE
-            // CASCADE children takes their rows with it and still reports
-            // success — and the pragma is a no-op inside a transaction, so it
-            // cannot be set where a migration runs. Conditioning it on the
-            // version number would leave that to the next migration author to
-            // notice. The pragma is per-connection, so no other process is
-            // affected.
-            exec("PRAGMA foreign_keys=OFF");
-            exec("BEGIN IMMEDIATE TRANSACTION");
-            try {
-                if (get_schema_version() >= v) {
-                    // Another process already applied v while we waited.
-                    exec("COMMIT");
-                    exec("PRAGMA foreign_keys=ON");
-                    continue;
-                }
-                if (v == 6) {
-                    // Probe first (SQLite lacks IF NOT EXISTS for ALTER TABLE):
-                    // a DB created fresh at a later CURRENT_SCHEMA_VERSION already
-                    // has this column via init_schema()'s CREATE TABLE.
-                    sqlite3_stmt* stmt;
-                    int rc = sqlite3_prepare_v2(db_, "SELECT effective_date FROM images LIMIT 0",
-                                                -1, &stmt, nullptr);
-                    if (rc != SQLITE_OK) {
-                        exec("ALTER TABLE images ADD COLUMN effective_date TEXT");
-                    } else {
-                        sqlite3_finalize(stmt);
-                    }
-                }
-                if (!migrations()[v].empty()) exec(migrations()[v]);
-                set_schema_version(v);
-                // Before COMMIT, not after: a violation found afterwards is
-                // already durable and there is nothing left to roll back. This
-                // catches a migration that stranded child rows. It does not
-                // catch one that let the cascade delete them — deleted children
-                // leave no orphans, so that case reports zero violations and is
-                // only visible to a test that asserts the rows are still there.
-                int violations = foreign_key_violations();
-                if (violations > 0) {
-                    throw std::runtime_error("Migration to schema v" + std::to_string(v) +
-                                             " left " + std::to_string(violations) +
-                                             " foreign key violations");
-                }
-                exec("COMMIT");
-            } catch (...) {
-                exec("ROLLBACK");
-                exec("PRAGMA foreign_keys=ON");
-                throw;
-            }
-            exec("PRAGMA foreign_keys=ON");
+            apply_migration_step(v, migrations()[v]);
         }
     }
     // else: db_version == CURRENT_SCHEMA_VERSION, nothing to do
+}
+
+void Database::apply_migration_step(int version, const std::string& sql) {
+    // Foreign keys off for every step, not only the ones that rebuild a table.
+    // SQLite's DROP TABLE performs an implicit DELETE of every row before
+    // dropping, so dropping a table with ON DELETE CASCADE children takes their
+    // rows with it and still reports success — and the pragma is a no-op inside
+    // a transaction, so it cannot be set where a step runs. Conditioning it on
+    // the version number would leave that to the next migration author to
+    // notice. The pragma is per-connection, so no other process is affected.
+    //
+    // The step takes the write lock up front (IMMEDIATE) and re-reads the
+    // version inside the transaction, so a step a concurrent process already
+    // applied is skipped instead of re-running non-idempotent DDL (e.g. ALTER
+    // TABLE ADD COLUMN).
+    exec("PRAGMA foreign_keys=OFF");
+    exec("BEGIN IMMEDIATE TRANSACTION");
+    try {
+        if (get_schema_version() >= version) {
+            exec("COMMIT");
+            exec("PRAGMA foreign_keys=ON");
+            return;
+        }
+        // Read inside the transaction, so nothing another connection writes
+        // can land between this read and the step.
+        const auto before = foreign_key_violations();
+        if (version == 6) {
+            // Probe first (SQLite lacks IF NOT EXISTS for ALTER TABLE): a DB
+            // created fresh at a later CURRENT_SCHEMA_VERSION already has this
+            // column via init_schema()'s CREATE TABLE.
+            sqlite3_stmt* stmt;
+            int rc = sqlite3_prepare_v2(db_, "SELECT effective_date FROM images LIMIT 0", -1, &stmt,
+                                        nullptr);
+            if (rc != SQLITE_OK) {
+                exec("ALTER TABLE images ADD COLUMN effective_date TEXT");
+            } else {
+                sqlite3_finalize(stmt);
+            }
+        }
+        if (!sql.empty()) exec(sql);
+        set_schema_version(version);
+        // Before COMMIT, not after: a violation found afterwards is already
+        // durable and there is nothing left to roll back. Only a violation the
+        // step added fails it. A row that was already an orphan, such as a face
+        // whose image was deleted while foreign keys were not enforced, is
+        // carried through as it is; failing on it would leave the catalog
+        // unable to reach any later version. This catches a step that stranded
+        // child rows. It does not catch one that let the cascade delete them —
+        // deleted children leave no orphans, so that case adds no violation and
+        // is only visible to a test that asserts the rows are still there.
+        std::vector<ForeignKeyViolation> added;
+        const auto after = foreign_key_violations();
+        std::set_difference(after.begin(), after.end(), before.begin(), before.end(),
+                            std::back_inserter(added));
+        if (!added.empty()) {
+            std::set<std::string> tables;
+            for (const auto& v : added) tables.insert(v.table);
+            std::string names;
+            for (const auto& t : tables) names += (names.empty() ? "" : ", ") + t;
+            throw std::runtime_error("Migration to schema v" + std::to_string(version) + " added " +
+                                     std::to_string(added.size()) + " new foreign key violation" +
+                                     (added.size() == 1 ? "" : "s") + " in " + names);
+        }
+        exec("COMMIT");
+    } catch (...) {
+        exec("ROLLBACK");
+        exec("PRAGMA foreign_keys=ON");
+        throw;
+    }
+    exec("PRAGMA foreign_keys=ON");
+}
+
+void Database::begin_upgrade(int from_version) {
+    // Beside the database, named for the version it holds and the UTC second:
+    // phig.db.v7-backup-20261113T201500Z. VACUUM INTO cannot run inside a
+    // transaction, so this precedes the first step's. Under a concurrent
+    // upgrade by another process the copy can hold a later step than the name
+    // says, but it is always taken before this connection's first step.
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    gmtime_r(&now, &tm);
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%dT%H%M%SZ", &tm);
+    const std::string base = std::string(sqlite3_db_filename(db_, "main")) + ".v" +
+                             std::to_string(from_version) + "-backup-" + stamp;
+    const auto failed = [&](const std::string& path, const std::string& reason) {
+        return std::runtime_error("Could not back up the database to " + path +
+                                  " before upgrading it, so it was not upgraded: " + reason);
+    };
+
+    // The name is claimed with an exclusive create, so an existing file is
+    // never overwritten. One already taken, as by a second process upgrading
+    // in the same second, gets a numeric suffix. VACUUM INTO accepts an empty
+    // file as its target.
+    std::string path;
+    for (int n = 1;; n++) {
+        path = n == 1 ? base : base + "-" + std::to_string(n);
+        std::FILE* claimed = std::fopen(path.c_str(), "wx");
+        if (claimed) {
+            std::fclose(claimed);
+            break;
+        }
+        const int err = errno;
+        if (err != EEXIST) {
+            throw failed(path, std::error_code(err, std::generic_category()).message());
+        }
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, "VACUUM INTO ?", -1, &stmt, nullptr);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+        rc = sqlite3_step(stmt);
+    }
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        const std::string reason = sqlite3_errmsg(db_);
+        std::error_code ec;
+        fs::remove(path, ec);  // the claimed name, empty or partly written
+        throw failed(path, reason);
+    }
+
+    upgrade_backup_path_ = path;
+    log_warn("Upgrading the catalog database from schema v" + std::to_string(from_version) +
+             " to v" + std::to_string(CURRENT_SCHEMA_VERSION) +
+             ". A copy from before the upgrade is at " + path);
 }
 
 void Database::insert(const ImageInfo& info) {
