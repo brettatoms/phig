@@ -463,8 +463,7 @@ void show_status(PhigApp& app, Status status, const std::string& message) {
     } else if (status == Status::Upgrading) {
         icon = "document-save-symbolic";
         title = "Upgrading Your Collection";
-        description =
-            "phig is upgrading this collection for this version and keeps a copy of it first.";
+        description = "phig keeps a copy of this collection, then upgrades it for this version.";
         button = nullptr;
     } else if (status == Status::Error || status == Status::LoadError) {
         icon = "dialog-error-symbolic";

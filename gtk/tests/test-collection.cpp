@@ -16,6 +16,7 @@
 
 #include "collection.h"
 #include "database.h"
+#include "schema_rewind.h"
 #include "types.h"
 
 namespace fs = std::filesystem;
@@ -135,64 +136,6 @@ void test_open_reports_a_missing_catalog_without_creating_it() {
     g_assert_false(fs::exists(absent));
 }
 
-// Turns a current database into a genuine v7 one: images and faces back to a
-// plain INTEGER PRIMARY KEY, faces without the v10 provenance columns, version
-// stamped 7. Mirrors rewind_to_v7 in tests/test_schema_upgrade.cpp.
-void rewind_to_v7(sqlite3* db) {
-    char* err = nullptr;
-    int rc = sqlite3_exec(db, R"(
-        PRAGMA foreign_keys=OFF;
-        BEGIN;
-        CREATE TABLE images_old (
-            id          INTEGER PRIMARY KEY,
-            path        TEXT NOT NULL UNIQUE,
-            filename    TEXT NOT NULL,
-            extension   TEXT NOT NULL,
-            file_size   INTEGER NOT NULL,
-            created_at  TEXT,
-            modified_at TEXT,
-            sha256      TEXT NOT NULL,
-            phash       INTEGER NOT NULL,
-            width       INTEGER,
-            height      INTEGER,
-            metadata    TEXT,
-            media_type  TEXT NOT NULL DEFAULT 'image',
-            duration_ms INTEGER,
-            gallery     TEXT,
-            blur_score  REAL,
-            effective_date TEXT
-        );
-        INSERT INTO images_old SELECT id, path, filename, extension, file_size, created_at,
-            modified_at, sha256, phash, width, height, metadata, media_type, duration_ms,
-            gallery, blur_score, effective_date FROM images;
-        DROP TABLE images;
-        ALTER TABLE images_old RENAME TO images;
-        CREATE INDEX idx_phash ON images(phash);
-        CREATE INDEX idx_sha256 ON images(sha256);
-        CREATE INDEX idx_path ON images(path);
-        CREATE INDEX idx_gallery ON images(gallery);
-        CREATE INDEX idx_effective_date ON images(effective_date DESC, id DESC);
-        CREATE TABLE faces_old (
-            id          INTEGER PRIMARY KEY,
-            image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-            embedding   BLOB NOT NULL,
-            x INTEGER, y INTEGER, width INTEGER, height INTEGER,
-            person_id   INTEGER REFERENCES people(id)
-        );
-        INSERT INTO faces_old SELECT id, image_id, embedding, x, y, width, height, person_id
-            FROM faces;
-        DROP TABLE faces;
-        ALTER TABLE faces_old RENAME TO faces;
-        CREATE INDEX idx_faces_image ON faces(image_id);
-        UPDATE meta SET value = '7' WHERE key = 'schema_version';
-        COMMIT;
-        PRAGMA foreign_keys=ON;
-    )",
-                          nullptr, nullptr, &err);
-    if (rc != SQLITE_OK) g_error("rewind to v7 failed: %s", err ? err : "?");
-    sqlite3_free(err);
-}
-
 void test_upgrade_pending_is_false_for_a_current_catalog() {
     Fixture f;
     auto pending = phig::gtk::upgrade_pending(f.dir.string());
@@ -209,11 +152,41 @@ void test_upgrade_pending_is_false_for_a_missing_catalog_and_creates_nothing() {
     g_assert_false(fs::exists(absent));
 }
 
+sqlite3_int64 count_rows(sqlite3* db, const char* table) {
+    sqlite3_stmt* stmt = nullptr;
+    const std::string sql = std::string("SELECT COUNT(*) FROM ") + table;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
+        g_error("prepare failed: %s", sqlite3_errmsg(db));
+    g_assert_cmpint(sqlite3_step(stmt), ==, SQLITE_ROW);
+    sqlite3_int64 n = sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+    return n;
+}
+
+void exec_sql(sqlite3* db, const char* sql) {
+    char* err = nullptr;
+    if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK)
+        g_error("sql failed: %s", err ? err : "?");
+    sqlite3_free(err);
+}
+
+// A v7 catalog holding rows whose parents are gone: a face, an image tag and
+// an activity-log entry. They must survive the upgrade.
 void test_an_outdated_catalog_is_pending_until_open_upgrades_it() {
     Fixture f;
     {
         Database db(f.db_path);
-        rewind_to_v7(db.db_ptr());
+        const std::string failure = phig_test::rewind_to_v7(db.db_ptr());
+        g_assert_true(failure.empty());
+        exec_sql(db.db_ptr(), R"(
+            PRAGMA foreign_keys=OFF;
+            INSERT INTO faces(image_id, embedding, x, y, width, height)
+                VALUES (9999, zeroblob(512), 1, 1, 1, 1);
+            INSERT INTO image_tags(image_id, tag_id) VALUES (9999, 1);
+            INSERT INTO operation_entries(op_id, kind, src, dst)
+                VALUES (9999, 'move', '/gone', '/dest');
+            PRAGMA foreign_keys=ON;
+        )");
     }
     auto pending = phig::gtk::upgrade_pending(f.dir.string());
     g_assert_true(pending.has_value());
@@ -231,6 +204,14 @@ void test_an_outdated_catalog_is_pending_until_open_upgrades_it() {
     auto after = phig::gtk::upgrade_pending(f.dir.string());
     g_assert_true(after.has_value());
     g_assert_false(*after);
+    {
+        Database db(f.db_path, /*read_only=*/true);
+        g_assert_cmpint(db.schema_version(), ==, Database::expected_schema_version());
+        g_assert_cmpint(count_rows(db.db_ptr(), "faces"), ==, 1);
+        g_assert_cmpint(count_rows(db.db_ptr(), "operation_entries"), ==, 1);
+        // The favorite tag row of the fixture is not an image_tags row.
+        g_assert_cmpint(count_rows(db.db_ptr(), "image_tags"), ==, 1);
+    }
 }
 
 void test_open_of_a_current_catalog_has_no_backup() {

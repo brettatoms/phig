@@ -47,10 +47,6 @@ inline constexpr const char* kMissingCatalog = "/fake/missing";
 // While hold is set, open waits before it reads its argument.
 void hold_open(bool hold);
 
-// What upgrade_pending reports, and what upgrade_backup names for any
-// collection. Defaults: not pending, no backup.
-void set_upgrade(bool pending, const std::string& backup);
-
 // The catalog_dir that open last read.
 std::string last_opened();
 

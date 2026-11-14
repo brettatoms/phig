@@ -269,6 +269,13 @@ void show_toast(PhigApp& app, const std::string& text) {
     adw_toast_overlay_add_toast(app.toast_overlay, toast);
 }
 
+void show_persistent_toast(PhigApp& app, const std::string& text) {
+    AdwToast* toast = adw_toast_new(text.c_str());
+    adw_toast_set_use_markup(toast, FALSE);
+    adw_toast_set_timeout(toast, 0);
+    adw_toast_overlay_add_toast(app.toast_overlay, toast);
+}
+
 void launch_file(PhigApp& app, const std::string& path) {
     GFile* file = g_file_new_for_path(path.c_str());
     GtkFileLauncher* launcher = gtk_file_launcher_new(file);
@@ -650,8 +657,9 @@ static void startup_done(PhigApp* app, phig::gtk::OpenResult opened) noexcept {
     reload(*app);
     std::string backup = phig::gtk::upgrade_backup(*app->coll);
     if (!backup.empty())
-        show_toast(*app, "Your collection was upgraded. A copy from before the upgrade is at " +
-                             backup + ".");
+        show_persistent_toast(
+            *app, "Your collection was upgraded. A copy from before the upgrade is at " + backup +
+                      ".");
 }
 
 void open_catalog(PhigApp& app) {

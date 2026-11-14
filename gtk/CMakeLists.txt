@@ -56,4 +56,5 @@ phig_gtk_test(startup tests/test-startup.cpp src/startup.cpp tests/fake-collecti
 # other gtk tests it links phig-core.
 phig_gtk_test(collection tests/test-collection.cpp src/collection.cpp)
 target_link_libraries(test-collection PRIVATE phig-core)
+target_include_directories(test-collection PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_compile_definitions(test-collection PRIVATE PHIG_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

@@ -50,7 +50,7 @@ std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noe
 
 // Whether opening catalog_dir would upgrade its schema: true when the catalog
 // exists and a read-only open refuses it as outdated, false when it is current
-// or has no database. Changes nothing and creates nothing.
+// or has no database. Creates no catalog and changes no data.
 std::expected<bool, std::string> upgrade_pending(const std::string& catalog_dir) noexcept;
 
 // The copy of the catalog taken before the upgrade that open performed, or
