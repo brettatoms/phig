@@ -39,7 +39,9 @@ GtkWidget* tag_chip(PhigApp& app, const std::string& tag) {
     return button;
 }
 
-void show_details(PhigApp& app) {
+// keep_gallery leaves the gallery entry as it is, for a refresh of the same
+// image while the user is typing in it.
+void show_details(PhigApp& app, bool keep_gallery) {
     Viewer& v = app.viewer;
     const phig::gtk::Details& d = v.details;
     adw_navigation_page_set_title(v.page, d.filename.c_str());
@@ -51,13 +53,24 @@ void show_details(PhigApp& app) {
     set_text(v.sharpness, phig::gtk::sharpness_text(d));
     gtk_flow_box_remove_all(v.tags);
     for (const std::string& tag : d.tags) gtk_flow_box_append(v.tags, tag_chip(app, tag));
-    gtk_editable_set_text(GTK_EDITABLE(v.gallery_entry), d.gallery.c_str());
+    if (!keep_gallery) gtk_editable_set_text(GTK_EDITABLE(v.gallery_entry), d.gallery.c_str());
     gtk_button_set_icon_name(v.favorite, d.favorite ? "starred-symbolic" : "non-starred-symbolic");
     gtk_widget_set_tooltip_text(GTK_WIDGET(v.favorite),
                                 d.favorite ? "Remove from Favorites" : "Add to Favorites");
 }
 
+// True when the keyboard focus is in the gallery entry (its inner text widget).
+bool gallery_entry_focused(const Viewer& v) {
+    GtkRoot* root = gtk_widget_get_root(GTK_WIDGET(v.gallery_entry));
+    GtkWidget* focus = root != nullptr ? gtk_root_get_focus(root) : nullptr;
+    return focus != nullptr && (focus == GTK_WIDGET(v.gallery_entry) ||
+                                gtk_widget_is_ancestor(focus, GTK_WIDGET(v.gallery_entry)));
+}
+
 void clear_details(Viewer& v) {
+    adw_navigation_page_set_title(v.page, "Photo");
+    gtk_button_set_icon_name(v.favorite, "non-starred-symbolic");
+    gtk_widget_set_tooltip_text(GTK_WIDGET(v.favorite), "Add to Favorites");
     for (GtkLabel* label : {v.filename, v.date, v.camera, v.exposure, v.size, v.sharpness})
         gtk_label_set_text(label, "");
     gtk_flow_box_remove_all(v.tags);
@@ -86,10 +99,13 @@ void load_details(PhigApp& app) {
     phig::gtk::Collection* coll = app.coll.get();
     PhigApp* a = &app;
     const guint seq = app.viewer.seq;
+    const guint details_seq = ++app.viewer.details_seq;
     phig::gtk::run_in_background<std::expected<phig::gtk::Details, std::string>>(
         [coll, id = app.viewer.id]() noexcept { return phig::gtk::details(*coll, id); },
-        [a, seq](std::expected<phig::gtk::Details, std::string> found) noexcept {
-            if (a->window == nullptr || seq != a->viewer.seq) return;
+        [a, seq, details_seq](std::expected<phig::gtk::Details, std::string> found) noexcept {
+            if (a->window == nullptr || seq != a->viewer.seq ||
+                details_seq != a->viewer.details_seq)
+                return;
             if (!found) {
                 show_toast(*a, found.error());
                 return;
@@ -97,12 +113,16 @@ void load_details(PhigApp& app) {
             const bool first = !a->viewer.details_loaded;
             a->viewer.details = std::move(*found);
             a->viewer.details_loaded = true;
-            show_details(*a);
+            show_details(*a, !first && gallery_entry_focused(a->viewer));
             if (first) request_thumbnail(*a);
         });
 }
 
+// Keeps one decode in flight. A decode that lands for an older image is
+// dropped and one for the current image starts in its place.
 void load_image(PhigApp& app) {
+    if (app.viewer.decode_running) return;
+    app.viewer.decode_running = true;
     phig::gtk::Collection* coll = app.coll.get();
     PhigApp* a = &app;
     const guint seq = app.viewer.seq;
@@ -111,7 +131,12 @@ void load_image(PhigApp& app) {
             return phig::gtk::image(*coll, id, kViewerMaxEdge);
         },
         [a, seq](std::expected<GRef<GdkTexture>, std::string> decoded) noexcept {
-            if (a->window == nullptr || seq != a->viewer.seq) return;
+            a->viewer.decode_running = false;
+            if (a->window == nullptr) return;
+            if (seq != a->viewer.seq) {
+                if (a->viewer.model) load_image(*a);
+                return;
+            }
             if (!decoded) {
                 show_toast(*a, decoded.error());
                 return;
@@ -348,6 +373,7 @@ void viewer_build(PhigApp& app) {
     // Dropping the model when the page is popped lets a gallery reload free the
     // old one.
     connect<void(AdwNavigationPage*)>(v.page, "hidden", [a](AdwNavigationPage*) noexcept {
+        if (a->window == nullptr) return;
         Viewer& viewer = a->viewer;
         if (viewer.thumb_cancel) g_cancellable_cancel(viewer.thumb_cancel.get());
         viewer.seq++;

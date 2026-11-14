@@ -41,6 +41,8 @@ struct Viewer {
     bool details_loaded = false;
     phig::gtk::Details details;       // of id, once details_loaded
     GRef<GCancellable> thumb_cancel;  // the thumbnail request for seq
+    guint details_seq = 0;            // bumped per details read; an older read's result is dropped
+    bool decode_running = false;      // at most one full decode is in flight
 };
 
 // The filter popover's fields.
