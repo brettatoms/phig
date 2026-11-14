@@ -507,7 +507,11 @@ void test_an_index_reports_progress_and_a_directory_it_cannot_walk() {
 
     auto bad = phig::gtk::index_start(f.dir.string(), {(f.dir / "absent").string(), true, false});
     g_assert_true(bad.has_value());
-    while (!phig::gtk::index_result(**bad)) g_usleep(10000);
+    const gint64 bad_deadline = g_get_monotonic_time() + 30 * G_USEC_PER_SEC;
+    while (!phig::gtk::index_result(**bad) && g_get_monotonic_time() < bad_deadline)
+        g_usleep(10000);
+    if (!phig::gtk::index_result(**bad))
+        g_error("index of an absent directory did not finish within 30s");
     g_assert_false(phig::gtk::index_result(**bad)->has_value());
 
     g_assert_false(phig::gtk::index_start(f.dir.string(), {"", true, false}).has_value());

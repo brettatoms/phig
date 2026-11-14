@@ -52,8 +52,8 @@ std::string last_opened();
 
 // An index reports one more of kIndexFiles files done on each index_poll, and
 // finishes once all are. A cancelled one finishes at once with completed
-// false. One whose directory is kIndexFailDirectory finishes on its first poll
-// with kIndexError.
+// false. One whose directory is kIndexFailDirectory is finished from the start:
+// index_result returns kIndexError at once and index_poll reports nothing.
 inline constexpr size_t kIndexFiles = 3;
 inline constexpr const char* kIndexFailDirectory = "/fake/unreadable";
 inline constexpr const char* kIndexError = "fake: the scan failed";
