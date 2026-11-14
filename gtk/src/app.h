@@ -90,6 +90,8 @@ struct PhigApp {
 // main.cpp
 void show_toast(PhigApp& app, const std::string& text);
 void open_catalog(PhigApp& app);  // opens app.catalog_dir in the background, then startup_done
+// PHIG_MEASURE's scroll harness; reload starts it when the first model attaches.
+void phig_measure_maybe_start(PhigApp* app);
 
 // browse.cpp: the sidebar, the header's search, sort and filter, the chips and
 // the status page.

@@ -229,7 +229,7 @@ static gboolean phig_measure_step(gpointer user_data) noexcept {
  * units advance per 8ms timeout tick — the full 29,953-row grid is roughly
  * 2,000,000px tall at the default column count, so the default sweeps
  * end to end in a few seconds. */
-static void phig_measure_maybe_start(PhigApp* app) {
+void phig_measure_maybe_start(PhigApp* app) {
     if (g_getenv("PHIG_MEASURE") == NULL)
         return;
 
@@ -664,7 +664,6 @@ static void startup_done(PhigApp* app, phig::gtk::OpenResult opened) noexcept {
     app->loader = thumb_loader_new(*app->coll, n_threads, cache_bytes);
     browse_set_sensitive(*app, true);
     reload(*app);
-    phig_measure_maybe_start(app);
 }
 
 void open_catalog(PhigApp& app) {

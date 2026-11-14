@@ -33,7 +33,7 @@ void on_page_fetch_failed(PhigApp& app) {
     // One toast for the whole session, not one per failed page: a scroll that
     // outruns several page fetches would otherwise stack a toast per failure.
     // The affected cells keep their placeholders.
-    if (app.page_fetch_toast_shown) return;
+    if (app.window == nullptr || app.page_fetch_toast_shown) return;
     app.page_fetch_toast_shown = true;
     show_toast(app, "Some images could not be loaded");
 }
@@ -285,6 +285,7 @@ void reload(PhigApp& app) {
                 a->measured = true;
                 const gint64 elapsed_us = g_get_monotonic_time() - a->startup_start_us;
                 g_printerr("PHIG_MEASURE startup_ms=%.3f\n", elapsed_us / 1000.0);
+                phig_measure_maybe_start(a);
             }
         });
     refresh_counts(app);
