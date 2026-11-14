@@ -24,12 +24,17 @@ ScanForm& form_of(AdwAlertDialog* dialog) {
     return *static_cast<ScanForm*>(g_object_get_data(G_OBJECT(dialog), "phig-scan-form"));
 }
 
+bool cancelling(const PhigApp& app) {
+    return app.scan_cancel_button != nullptr &&
+           !gtk_widget_get_sensitive(GTK_WIDGET(app.scan_cancel_button));
+}
+
 void scan_finished(PhigApp& app, std::expected<phig::gtk::IndexSummary, std::string> result) {
     // The watch is idle once its on_done runs, and may be destroyed here.
     app.scan.reset();
     if (app.window == nullptr) return;
     gtk_widget_set_visible(app.scan_bar, FALSE);
-    gtk_widget_set_sensitive(GTK_WIDGET(app.scan_button), TRUE);
+    scan_update_sensitivity(app);
     show_toast(app, result ? phig::gtk::summary_text(*result) : "Scan failed: " + result.error());
     if (app.coll)
         reload(app);
@@ -38,7 +43,7 @@ void scan_finished(PhigApp& app, std::expected<phig::gtk::IndexSummary, std::str
 }
 
 void scan_progressed(PhigApp& app, const phig::gtk::IndexProgress& p) {
-    if (app.window == nullptr) return;
+    if (app.window == nullptr || cancelling(app)) return;
     const std::string text = "Scanning " + app.scan_folder + " — " + phig::gtk::progress_text(p);
     gtk_label_set_text(app.scan_label, text.c_str());
     if (p.total > 0)
@@ -67,7 +72,8 @@ void start_scan(PhigApp& app, phig::gtk::IndexOptions options) {
     scan_progressed(app, {});
     gtk_progress_bar_set_fraction(app.scan_progress, 0.0);
     gtk_widget_set_visible(app.scan_bar, TRUE);
-    gtk_widget_set_sensitive(GTK_WIDGET(app.scan_button), FALSE);
+    gtk_widget_set_sensitive(GTK_WIDGET(app.scan_cancel_button), TRUE);
+    scan_update_sensitivity(app);
 }
 
 void on_folder_chosen(GObject* source, GAsyncResult* result, gpointer data) noexcept {
@@ -105,9 +111,13 @@ GtkWidget* scan_bar_new(PhigApp& app) {
     gtk_widget_set_size_request(GTK_WIDGET(app.scan_progress), 200, -1);
     gtk_widget_set_valign(GTK_WIDGET(app.scan_progress), GTK_ALIGN_CENTER);
     GtkWidget* cancel = gtk_button_new_with_label("Cancel");
+    app.scan_cancel_button = GTK_BUTTON(cancel);
     PhigApp* a = &app;
     connect<void(GtkButton*)>(cancel, "clicked", [a](GtkButton*) noexcept {
-        if (a->scan) phig::gtk::scan_cancel(*a->scan);
+        if (!a->scan) return;
+        phig::gtk::scan_cancel(*a->scan);
+        gtk_widget_set_sensitive(GTK_WIDGET(a->scan_cancel_button), FALSE);
+        gtk_label_set_text(a->scan_label, "Cancelling…");
     });
     gtk_box_append(GTK_BOX(bar), GTK_WIDGET(app.scan_label));
     gtk_box_append(GTK_BOX(bar), GTK_WIDGET(app.scan_progress));
@@ -115,6 +125,12 @@ GtkWidget* scan_bar_new(PhigApp& app) {
     gtk_widget_set_visible(bar, FALSE);
     app.scan_bar = bar;
     return bar;
+}
+
+void scan_update_sensitivity(PhigApp& app) {
+    const gboolean on = !app.scan && !app.opening;
+    if (app.scan_button != nullptr) gtk_widget_set_sensitive(GTK_WIDGET(app.scan_button), on);
+    if (app.status_button != nullptr) gtk_widget_set_sensitive(GTK_WIDGET(app.status_button), on);
 }
 
 void scan_dialog_present(PhigApp& app) {

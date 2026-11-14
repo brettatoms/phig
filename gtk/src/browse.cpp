@@ -448,6 +448,7 @@ void show_status(PhigApp& app, Status status, const std::string& message) {
     g_free(escaped);
     gtk_widget_set_visible(GTK_WIDGET(app.status_button), button != nullptr);
     if (button != nullptr) gtk_button_set_label(app.status_button, button);
+    scan_update_sensitivity(app);
     gtk_stack_set_visible_child_name(app.content, "status");
 }
 

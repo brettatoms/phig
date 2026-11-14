@@ -85,6 +85,7 @@ struct PhigApp {
     GtkWidget* scan_bar = nullptr;
     GtkLabel* scan_label = nullptr;
     GtkProgressBar* scan_progress = nullptr;
+    GtkButton* scan_cancel_button = nullptr;
     GtkGridView* grid = nullptr;
     GtkScrolledWindow* scroller = nullptr;
     GtkLabel* failed_label = nullptr;  // header-bar counter for THUMB_FAILED results
@@ -170,3 +171,5 @@ void viewer_refresh(PhigApp& app);  // re-reads the shown image's metadata
 // scan-ui.cpp
 GtkWidget* scan_bar_new(PhigApp& app);
 void scan_dialog_present(PhigApp& app);
+// Scan… (header and status page) is sensitive unless a scan runs or the catalog is opening.
+void scan_update_sensitivity(PhigApp& app);

@@ -94,9 +94,9 @@ static guint env_override_uint(const char* name, guint fallback) {
 // last reference drops: the viewer's and app's references go here, and the
 // grid's here too if it is still alive, or earlier, when GTK finalized it with
 // the last window. Either way it runs before member destruction closes coll.
-// The scan goes first: its thread opens its own connection, but it must not
-// outlive the process's catalog.
 PhigApp::~PhigApp() {
+    // The scan goes first: its thread opens its own connection, but it must not
+    // outlive the process's catalog.
     scan.reset();
     if (relayout_id != 0) g_source_remove(relayout_id);
     if (loader) {
@@ -658,11 +658,13 @@ void open_catalog(PhigApp& app) {
     GApplication* gapp = g_application_get_default();
     g_application_hold(gapp);
     app.opening = true;
+    scan_update_sensitivity(app);
     PhigApp* a = &app;
     phig::gtk::open_in_background(app.catalog_dir,
                                   [a, gapp](phig::gtk::OpenResult opened) noexcept {
                                       a->opening = false;
                                       startup_done(a, std::move(opened));
+                                      scan_update_sensitivity(*a);
                                       g_application_release(gapp);
                                   });
 }
@@ -696,6 +698,12 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
                                              app->selection_label = nullptr;
                                              app->selection_tag = nullptr;
                                              app->selection_gallery = nullptr;
+                                             app->scan_button = nullptr;
+                                             app->scan_bar = nullptr;
+                                             app->scan_label = nullptr;
+                                             app->scan_progress = nullptr;
+                                             app->scan_cancel_button = nullptr;
+                                             app->status_button = nullptr;
                                          });
     gtk_window_set_title(GTK_WINDOW(app->window), "phig");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 1200, 800);
