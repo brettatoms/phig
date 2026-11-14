@@ -863,7 +863,8 @@ int main(int argc, char** argv) {
     if (argc > 1) {
         g_printerr(
             "phig-gtk takes no arguments. It opens phig's default catalog: PHIG_CATALOG, then "
-            "[paths] catalog in the config file, then ~/.local/share/phig.\n");
+            "[paths] catalog in the config file, then $XDG_DATA_HOME/phig "
+            "(~/.local/share/phig by default).\n");
         return 2;
     }
     auto app = std::make_unique<PhigApp>();

@@ -357,6 +357,9 @@ void start_next_write(PhigApp& app) {
             if (a->window == nullptr) return;
             if (!result) {
                 show_toast(*a, phig::gtk::write_error_text(result.error()));
+                // A refused write leaves the stored state; the re-read resets the
+                // viewer's requested star to it.
+                viewer_refresh(*a);
             } else {
                 refresh_counts(*a);
                 if (phig::gtk::selects_by_annotation(a->query.filter)) reload(*a);
