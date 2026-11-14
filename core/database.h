@@ -6,7 +6,9 @@
 #include <functional>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "faces.h"
@@ -23,6 +25,19 @@
 std::string compute_effective_date(const std::string& metadata_json,
                                    const std::string& modified_at);
 
+// Thrown by Database::init_schema() when the database's schema is newer than
+// this build's, including when another process upgraded it past this build
+// while init_schema() ran.
+class SchemaNewerError : public std::runtime_error {
+   public:
+    SchemaNewerError(int version, const std::string& message)
+        : std::runtime_error(message), version_(version) {}
+    int version() const { return version_; }
+
+   private:
+    int version_;
+};
+
 class Database {
    public:
     // read_only opens with SQLITE_OPEN_READONLY: the file must already exist
@@ -34,7 +49,15 @@ class Database {
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
+    // Creates a missing schema, or upgrades an older one step by step. Before
+    // the first step it copies the database beside itself (see
+    // upgrade_backup_path()) and throws, changing nothing, if it cannot. The
+    // copy is removed again if this connection then commits no step.
     void init_schema();
+
+    // The copy init_schema() wrote before the first upgrade step this
+    // connection committed, or empty when it committed none.
+    const std::string& upgrade_backup_path() const { return upgrade_backup_path_; }
 
     // Schema version recorded in the database (0 = fresh/pre-migration), and
     // the version this build's queries assume. init_schema() reconciles them,
@@ -43,12 +66,21 @@ class Database {
     int schema_version();
     static int expected_schema_version();
 
-    // Runs PRAGMA foreign_key_check and returns the number of violations it
-    // reports; 0 means every foreign key resolves. init_schema() calls this
-    // inside each migration's transaction, because migrations run with
-    // foreign_keys disabled and nothing else would catch a migration that left
-    // child rows pointing at parents it did not carry across.
-    int foreign_key_violations();
+    // One row of PRAGMA foreign_key_check: the child table, the child row, and
+    // the table it fails to reference. The foreign key's index is left out
+    // because a table rebuild can renumber a table's foreign keys.
+    struct ForeignKeyViolation {
+        std::string table;
+        int64_t rowid = 0;
+        std::string parent;
+        bool operator==(const ForeignKeyViolation&) const = default;
+        bool operator<(const ForeignKeyViolation& o) const {
+            return std::tie(table, rowid, parent) < std::tie(o.table, o.rowid, o.parent);
+        }
+    };
+    // Every violation PRAGMA foreign_key_check reports; empty means every
+    // foreign key resolves.
+    std::set<ForeignKeyViolation> foreign_key_violations();
 
     void insert(const ImageInfo& info);
     void insert_batch(const std::vector<ImageInfo>& infos);
@@ -318,7 +350,38 @@ class Database {
     sqlite3* db_ptr() { return db_; }
 
    private:
+    // Runs steps of its own through apply_migration_step.
+    friend class SchemaUpgradeTest;
+
     sqlite3* db_ = nullptr;
+    std::string upgrade_backup_path_;
+
+    // What one init_schema() call's upgrade has done so far.
+    struct UpgradeRun {
+        int from = 0;
+        std::string backup;  // empty until written
+        int committed = 0;   // steps this connection committed
+    };
+    void create_or_upgrade_schema(UpgradeRun& run);
+    // Writes and flushes the copy taken before the first step, returning its
+    // path. Throws if it cannot, removing whatever it wrote.
+    std::string write_upgrade_backup(int from_version);
+    // Keeps and logs the copy if this connection committed a step, and
+    // otherwise removes it.
+    void settle_upgrade_backup(const UpgradeRun& run, bool failed);
+
+    // Runs one schema step: `sql` and the version stamp `version`, in one
+    // IMMEDIATE transaction with foreign keys off, skipped if the database is
+    // already at `version`. Migrations run with foreign keys off, so nothing
+    // else would catch a step that strands child rows: it reads the violations
+    // before and after and throws, rolled back, if the step added any. Rows
+    // that were already orphans are carried through, identified by rowid, so a
+    // step that rebuilds a table without an INTEGER PRIMARY KEY (image_tags)
+    // must keep its rowids or its orphans read as new and the step fails.
+    // init_schema() runs every pending step through this; tests run steps of
+    // their own. Returns false when the step was already applied.
+    bool apply_migration_step(int version, const std::string& sql);
+
     void exec(const std::string& sql);
     void rollback_if_open() noexcept;
     int get_schema_version();

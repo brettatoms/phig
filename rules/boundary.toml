@@ -156,10 +156,11 @@ id = "R70"
 tier = "boundary"
 concern = "authorization"
 statement = "A command that only reads a collection neither creates its database nor migrates its schema."
-rationale = "open_catalog_db is the one open policy. Read opens read-only, so it can neither create the file nor migrate it, and it refuses a missing database and any schema version other than this build's with a CatalogError naming the catalog. Write and Create migrate; only Create makes a missing database. So of the commands that write, only scan and libphig's read-write context create a missing catalog; every other write opens with Write, or calls require_catalog before taking its lock, and refuses a missing catalog without creating its directory. Which access a command passes is decided at its call site: every CLI command that only reads, including the dry runs of rm, cp, mv and thumbs clean, passes Read. libphig's read-only context passes Read too, through open_catalog_db, so it refuses a missing database or another schema version the same way. A migration is forward-only and init_schema refuses a database newer than the build, so a read that migrated would make the catalog unopenable by an older phig on another machine. A read that created would turn a mistyped catalog path into an empty catalog reported as empty."
+rationale = "open_catalog_db is the one open policy. Read opens read-only, so it can neither create the file nor migrate it, and it refuses a missing database and any schema version other than this build's with a CatalogError naming the catalog. Write and Create migrate; only Create makes a missing database. So of the commands that write, only scan and libphig's read-write context create a missing catalog; every other write opens with Write, or calls require_catalog before taking its lock, and refuses a missing catalog without creating its directory. Which access a command passes is decided at its call site: every CLI command that only reads, including the dry runs of rm, cp, mv and thumbs clean, passes Read. libphig's read-only context passes Read too, through open_catalog_db, so it refuses a missing database or another schema version the same way. A migration is forward-only and init_schema refuses a database newer than the build, so a read that migrated would make the catalog unopenable by an older phig on another machine. A read that created would turn a mistyped catalog path into an empty catalog reported as empty. The refusal of a newer catalog also covers a concurrent upgrade: another build can upgrade past this one between open_catalog_db's read and init_schema's transactions, a window the pre-upgrade copy widens, and every step and schema path then finds its version already reached and skips. init_schema therefore re-reads the version where every path ends and throws SchemaNewerError, which open_catalog_db turns into the same CatalogError::Kind::Newer it raises for its own read, so the open does not succeed against a schema this build does not know. It does not stop another build upgrading the catalog later, while this connection stays open."
 enforced_at = [
     "core/catalog.cpp:open_catalog_db",
     "libphig/context.cpp:phig_init",
+    "core/database.cpp:refuse_if_newer",
 ]
 binds_surface = ["cli"]
 # db-row is the whole exposure: the migration rewrites the tables rows live in
@@ -174,6 +175,9 @@ tests = [
     "CatalogCliTest.ReadsRefuseAnOutdatedCatalogAndLeaveItsVersion",
     "CatalogCliTest.WritesRefuseAMissingCatalogAndCreateNothing",
     "CatalogCliTest.ScanCreatesAMissingCatalog",
+    "OpenCatalogTest.EveryAccessRefusesANewerCatalog",
+    "SchemaUpgradeTest.AnUpgradeOvertakenByANewerBuildIsRefused",
+    "SchemaUpgradeTest.AFreshSchemaOvertakenByANewerBuildIsRefusedAndNotRestamped",
 ]
 test_kind = "subprocess"
 status = "holds"

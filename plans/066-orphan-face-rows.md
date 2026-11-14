@@ -74,3 +74,6 @@ file first.
 - **Plan 060** — the measurement that found these.
 - **Plan 045** — rebuilt `faces` for schema v8, the migration at
   `core/database.cpp:514`.
+- **Plan 073** — the live collection fails its v8 upgrade with 36 foreign key
+  violations, most likely these rows. 073 lets an upgrade carry existing
+  orphans through; whether to repair them stays here.

@@ -146,8 +146,6 @@ std::filesystem::path temp_sibling(const std::filesystem::path& dest) {
     return dest.parent_path() / name;
 }
 
-namespace {
-// Flush a file's bytes to stable storage. Returns false on failure.
 bool fsync_file(const std::filesystem::path& p) {
     int fd = ::open(p.c_str(), O_RDONLY);
     if (fd < 0) return false;
@@ -165,6 +163,8 @@ void fsync_dir(const std::filesystem::path& dir) {
         ::close(fd);
     }
 }
+
+namespace {
 
 // Rename that NEVER overwrites dest. Returns 0 on success or an errno:
 // EEXIST = dest exists, EXDEV = cross-device (caller falls back), other =

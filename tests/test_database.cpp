@@ -1733,7 +1733,7 @@ TEST_F(DatabaseTest, ForeignKeyViolationsReportsZeroOnAConsistentDatabase) {
     db->insert(info);
     db->set_tag({info.path}, "keep", true);
 
-    EXPECT_EQ(db->foreign_key_violations(), 0);
+    EXPECT_TRUE(db->foreign_key_violations().empty());
 }
 
 TEST_F(DatabaseTest, ForeignKeyViolationsCountsAnOrphanedChildRow) {
@@ -1751,7 +1751,7 @@ TEST_F(DatabaseTest, ForeignKeyViolationsCountsAnOrphanedChildRow) {
     ASSERT_EQ(sqlite3_exec(db->db_ptr(), orphan, nullptr, nullptr, nullptr), SQLITE_OK)
         << sqlite3_errmsg(db->db_ptr());
 
-    EXPECT_GT(db->foreign_key_violations(), 0);
+    EXPECT_FALSE(db->foreign_key_violations().empty());
 }
 
 // R84: an image id names the same image for as long as that image exists.
@@ -1890,7 +1890,7 @@ TEST(ImagesMigrationV9, PreservesRowsIdsTagsFavoritesFacesAndLabels) {
     Database db(db_path);
     db.init_schema();
     EXPECT_EQ(db.schema_version(), Database::expected_schema_version());
-    EXPECT_EQ(db.foreign_key_violations(), 0);
+    EXPECT_TRUE(db.foreign_key_violations().empty());
 
     // Every row and every id survived.
     std::vector<int64_t> after;
@@ -1982,7 +1982,7 @@ TEST(FacesMigrationV10, MigrationToV10KeepsLabelledFacesWithUnknownProvenance) {
     Database db(db_path);
     db.init_schema();
     EXPECT_EQ(db.schema_version(), 10);
-    EXPECT_EQ(db.foreign_key_violations(), 0);
+    EXPECT_TRUE(db.foreign_key_violations().empty());
 
     auto people = db.list_people();
     ASSERT_EQ(people.size(), 1u);

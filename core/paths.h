@@ -81,6 +81,15 @@ std::string expand_tilde(const std::string& path);
 // std::filesystem_error on any other failure.
 void move_file(const std::string& source, const std::string& dest);
 
+// Flush a file's bytes to stable storage. False if it cannot be opened or
+// flushed.
+bool fsync_file(const std::filesystem::path& p);
+
+// Best-effort: flush `dir`'s entries, so a file just created or renamed in it
+// survives a crash. Errors are ignored, so a caller cannot rely on the entry
+// being durable, only on the attempt having been made.
+void fsync_dir(const std::filesystem::path& dir);
+
 // Copy source to dest atomically: copy into a temp file in dest's directory,
 // then rename it into place only after the copy fully succeeds. A crash or
 // error mid-copy leaves the temp behind (best-effort removed) and never

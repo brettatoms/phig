@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite, 1037 tests
+./build/phig-tests        # fast suite, 1051 tests
 ./build/phig-perf-tests   # performance suite (~2s), 6 tests
-ctest --test-dir build --parallel   # both — 1043 (~19s; 48s without --parallel)
+ctest --test-dir build --parallel   # both — 1057 (~19s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -485,9 +485,14 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
 - **Schema migrations** — `meta` table tracks schema version. Forward-only.
   Version check on startup bails if DB is newer than code. Current: v10.
   Migrations run with `PRAGMA foreign_keys=OFF` around each transaction, with
-  `foreign_key_check` inside it before the commit: SQLite's `DROP TABLE`
-  deletes every row first, so a rebuild of a table with `ON DELETE CASCADE`
-  children would empty them and report success.
+  `foreign_key_check` inside it before and after the step: SQLite's `DROP
+  TABLE` deletes every row first, so a rebuild of a table with `ON DELETE
+  CASCADE` children would empty them and report success. A step fails only on
+  violations it adds, so rows that were already orphans do not block an
+  upgrade. Before the first step the database is copied to
+  `phig.db.v<N>-backup-<UTC time>` beside it and flushed to disk. The upgrade
+  does not start if the copy fails, and the copy is removed again if the run
+  commits no step (R88).
 - **`exif` column renamed to `metadata`** — stores JSON blob for any media
   type (EXIF for images, container metadata for videos).
 - **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.

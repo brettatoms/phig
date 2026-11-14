@@ -1,11 +1,16 @@
 #include "database.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
+#include <system_error>
 
 #ifndef SQLITE_VEC_STATIC
 #define SQLITE_VEC_STATIC
@@ -14,6 +19,8 @@
 #define SQLITE_CORE
 #endif
 #include "dates.h"
+#include "log.h"
+#include "paths.h"
 #include "selection.h"
 #include "sqlite-vec.h"
 
@@ -367,16 +374,23 @@ int Database::schema_version() { return get_schema_version(); }
 
 int Database::expected_schema_version() { return CURRENT_SCHEMA_VERSION; }
 
-int Database::foreign_key_violations() {
+std::set<Database::ForeignKeyViolation> Database::foreign_key_violations() {
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, "PRAGMA foreign_key_check", -1, &stmt, nullptr) != SQLITE_OK) {
         throw std::runtime_error("Failed to prepare foreign_key_check: " +
                                  std::string(sqlite3_errmsg(db_)));
     }
-    int count = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) count++;
+    // Columns: table, rowid, parent, fkid.
+    std::set<ForeignKeyViolation> found;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        ForeignKeyViolation v;
+        v.table = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        v.rowid = sqlite3_column_int64(stmt, 1);
+        v.parent = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        found.insert(std::move(v));
+    }
     sqlite3_finalize(stmt);
-    return count;
+    return found;
 }
 
 void Database::set_schema_version(int version) {
@@ -394,13 +408,30 @@ void Database::set_schema_version(int version) {
 }
 
 void Database::init_schema() {
-    int db_version = get_schema_version();
-
-    if (db_version > CURRENT_SCHEMA_VERSION) {
-        throw std::runtime_error("Database schema (v" + std::to_string(db_version) +
-                                 ") is newer than this version of phig (v" +
-                                 std::to_string(CURRENT_SCHEMA_VERSION) + "). Please update phig.");
+    UpgradeRun run;
+    try {
+        create_or_upgrade_schema(run);
+    } catch (...) {
+        settle_upgrade_backup(run, /*failed=*/true);
+        throw;
     }
+    settle_upgrade_backup(run, /*failed=*/false);
+}
+
+namespace {
+void refuse_if_newer(int version) {
+    if (version > CURRENT_SCHEMA_VERSION) {
+        throw SchemaNewerError(version, "Database schema (v" + std::to_string(version) +
+                                            ") is newer than this version of phig (v" +
+                                            std::to_string(CURRENT_SCHEMA_VERSION) +
+                                            "). Please update phig.");
+    }
+}
+}  // namespace
+
+void Database::create_or_upgrade_schema(UpgradeRun& run) {
+    int db_version = get_schema_version();
+    refuse_if_newer(db_version);
 
     if (db_version == 0) {
         // Check if this is a pre-migration DB (has images table but no meta table)
@@ -417,6 +448,8 @@ void Database::init_schema() {
         }
 
         if (has_images_table) {
+            run.from = 0;
+            run.backup = write_upgrade_backup(0);
             // Pre-migration DB — set version to 1, then run migrations forward.
             // Re-establish the face-recognition schema that the old init_schema
             // used to guarantee on every startup, in case the existing DB
@@ -426,51 +459,63 @@ void Database::init_schema() {
             // (whose re-run would then race the ALTER TABLE probe below).
             exec("BEGIN IMMEDIATE TRANSACTION");
             try {
-                exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS faces (
-                        id          INTEGER PRIMARY KEY,
-                        image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-                        embedding   BLOB NOT NULL,
-                        x           INTEGER,
-                        y           INTEGER,
-                        width       INTEGER,
-                        height      INTEGER
-                    )
-                )");
-                exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS people (
-                        id   INTEGER PRIMARY KEY,
-                        name TEXT NOT NULL UNIQUE
-                    )
-                )");
-                exec(R"(
-                    CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
-                        face_id INTEGER PRIMARY KEY,
-                        embedding float[128]
-                    )
-                )");
-                // Add person_id to faces if not present (SQLite lacks
-                // IF NOT EXISTS for ALTER TABLE, so probe first).
-                {
-                    sqlite3_stmt* stmt;
-                    int rc = sqlite3_prepare_v2(db_, "SELECT person_id FROM faces LIMIT 0", -1,
-                                                &stmt, nullptr);
-                    if (rc != SQLITE_OK) {
-                        exec(
-                            "ALTER TABLE faces ADD COLUMN person_id INTEGER REFERENCES people(id)");
-                    } else {
-                        sqlite3_finalize(stmt);
+                // Re-read inside the transaction, as the numbered steps do:
+                // another process may have created or upgraded the schema since
+                // the read above, and stamping it v1 would send it back through
+                // steps it has already taken.
+                const int now = get_schema_version();
+                if (now > 0) {
+                    exec("COMMIT");
+                    db_version = now;
+                } else {
+                    exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS faces (
+                            id          INTEGER PRIMARY KEY,
+                            image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                            embedding   BLOB NOT NULL,
+                            x           INTEGER,
+                            y           INTEGER,
+                            width       INTEGER,
+                            height      INTEGER
+                        )
+                    )");
+                    exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS people (
+                            id   INTEGER PRIMARY KEY,
+                            name TEXT NOT NULL UNIQUE
+                        )
+                    )");
+                    exec(R"(
+                        CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
+                            face_id INTEGER PRIMARY KEY,
+                            embedding float[128]
+                        )
+                    )");
+                    // Add person_id to faces if not present (SQLite lacks
+                    // IF NOT EXISTS for ALTER TABLE, so probe first).
+                    {
+                        sqlite3_stmt* stmt;
+                        int rc = sqlite3_prepare_v2(db_, "SELECT person_id FROM faces LIMIT 0", -1,
+                                                    &stmt, nullptr);
+                        if (rc != SQLITE_OK) {
+                            exec(
+                                "ALTER TABLE faces ADD COLUMN person_id INTEGER REFERENCES "
+                                "people(id)");
+                        } else {
+                            sqlite3_finalize(stmt);
+                        }
                     }
+                    set_schema_version(1);
+                    exec("COMMIT");
+                    run.committed++;
+                    db_version = 1;
                 }
-                set_schema_version(1);
-                exec("COMMIT");
             } catch (...) {
                 exec("ROLLBACK");
                 throw;
             }
-            db_version = 1;
             // Fall through to migration path below
         } else {
             // Truly fresh database — create the full schema at the latest
@@ -479,110 +524,120 @@ void Database::init_schema() {
             // pre-migration v1 DB (whose v2 migration would then fail).
             exec("BEGIN IMMEDIATE TRANSACTION");
             try {
-                exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+                // Re-read inside the transaction, as the other paths do. Every
+                // statement below is idempotent except the version stamp, which
+                // would replace a version another build wrote since the read
+                // above.
+                const int now = get_schema_version();
+                if (now > 0) {
+                    exec("COMMIT");
+                    db_version = now;
+                } else {
+                    exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
 
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS images (
-                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                        path        TEXT NOT NULL UNIQUE,
-                        filename    TEXT NOT NULL,
-                        extension   TEXT NOT NULL,
-                        file_size   INTEGER NOT NULL,
-                        created_at  TEXT,
-                        modified_at TEXT,
-                        sha256      TEXT NOT NULL,
-                        phash       INTEGER NOT NULL,
-                        width       INTEGER,
-                        height      INTEGER,
-                        metadata    TEXT,
-                        media_type  TEXT NOT NULL DEFAULT 'image',
-                        duration_ms INTEGER,
-                        gallery     TEXT,
-                        blur_score  REAL,
-                        effective_date TEXT
-                    )
-                )");
-                exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
-                exec("CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256)");
-                exec("CREATE INDEX IF NOT EXISTS idx_path ON images(path)");
-                exec("CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery)");
-                exec(
-                    "CREATE INDEX IF NOT EXISTS idx_effective_date "
-                    "ON images(effective_date DESC, id DESC)");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS images (
+                            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                            path        TEXT NOT NULL UNIQUE,
+                            filename    TEXT NOT NULL,
+                            extension   TEXT NOT NULL,
+                            file_size   INTEGER NOT NULL,
+                            created_at  TEXT,
+                            modified_at TEXT,
+                            sha256      TEXT NOT NULL,
+                            phash       INTEGER NOT NULL,
+                            width       INTEGER,
+                            height      INTEGER,
+                            metadata    TEXT,
+                            media_type  TEXT NOT NULL DEFAULT 'image',
+                            duration_ms INTEGER,
+                            gallery     TEXT,
+                            blur_score  REAL,
+                            effective_date TEXT
+                        )
+                    )");
+                    exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
+                    exec("CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256)");
+                    exec("CREATE INDEX IF NOT EXISTS idx_path ON images(path)");
+                    exec("CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery)");
+                    exec(
+                        "CREATE INDEX IF NOT EXISTS idx_effective_date "
+                        "ON images(effective_date DESC, id DESC)");
 
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS tags (
-                        id   INTEGER PRIMARY KEY,
-                        name TEXT NOT NULL UNIQUE
-                    )
-                )");
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS image_tags (
-                        image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-                        tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-                        PRIMARY KEY (image_id, tag_id)
-                    )
-                )");
-                exec("INSERT OR IGNORE INTO tags(name) VALUES ('favorite')");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS tags (
+                            id   INTEGER PRIMARY KEY,
+                            name TEXT NOT NULL UNIQUE
+                        )
+                    )");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS image_tags (
+                            image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                            tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                            PRIMARY KEY (image_id, tag_id)
+                        )
+                    )");
+                    exec("INSERT OR IGNORE INTO tags(name) VALUES ('favorite')");
 
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS faces (
-                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                        image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-                        embedding   BLOB NOT NULL,
-                        x           INTEGER,
-                        y           INTEGER,
-                        width       INTEGER,
-                        height      INTEGER,
-                        person_id   INTEGER REFERENCES people(id),
-                        frame_source TEXT,
-                        frame_width  INTEGER,
-                        frame_height INTEGER,
-                        frame_sha256 TEXT,
-                        model_sha256 TEXT
-                    )
-                )");
-                exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS faces (
+                            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                            image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                            embedding   BLOB NOT NULL,
+                            x           INTEGER,
+                            y           INTEGER,
+                            width       INTEGER,
+                            height      INTEGER,
+                            person_id   INTEGER REFERENCES people(id),
+                            frame_source TEXT,
+                            frame_width  INTEGER,
+                            frame_height INTEGER,
+                            frame_sha256 TEXT,
+                            model_sha256 TEXT
+                        )
+                    )");
+                    exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
 
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS people (
-                        id   INTEGER PRIMARY KEY,
-                        name TEXT NOT NULL UNIQUE
-                    )
-                )");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS people (
+                            id   INTEGER PRIMARY KEY,
+                            name TEXT NOT NULL UNIQUE
+                        )
+                    )");
 
-                exec(R"(
-                    CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
-                        face_id INTEGER PRIMARY KEY,
-                        embedding float[128]
-                    )
-                )");
+                    exec(R"(
+                        CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
+                            face_id INTEGER PRIMARY KEY,
+                            embedding float[128]
+                        )
+                    )");
 
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS operations (
-                        id          INTEGER PRIMARY KEY,
-                        ts          TEXT NOT NULL,
-                        command     TEXT NOT NULL,
-                        argv        TEXT,
-                        status      TEXT NOT NULL,
-                        undoes_id   INTEGER REFERENCES operations(id),
-                        entry_count INTEGER NOT NULL DEFAULT 0
-                    )
-                )");
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS operation_entries (
-                        id           INTEGER PRIMARY KEY,
-                        op_id        INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
-                        kind         TEXT NOT NULL,
-                        src          TEXT,
-                        dst          TEXT,
-                        restore_json TEXT
-                    )
-                )");
-                exec("CREATE INDEX IF NOT EXISTS idx_op_entries ON operation_entries(op_id)");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS operations (
+                            id          INTEGER PRIMARY KEY,
+                            ts          TEXT NOT NULL,
+                            command     TEXT NOT NULL,
+                            argv        TEXT,
+                            status      TEXT NOT NULL,
+                            undoes_id   INTEGER REFERENCES operations(id),
+                            entry_count INTEGER NOT NULL DEFAULT 0
+                        )
+                    )");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS operation_entries (
+                            id           INTEGER PRIMARY KEY,
+                            op_id        INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+                            kind         TEXT NOT NULL,
+                            src          TEXT,
+                            dst          TEXT,
+                            restore_json TEXT
+                        )
+                    )");
+                    exec("CREATE INDEX IF NOT EXISTS idx_op_entries ON operation_entries(op_id)");
 
-                set_schema_version(CURRENT_SCHEMA_VERSION);
-                exec("COMMIT");
+                    set_schema_version(CURRENT_SCHEMA_VERSION);
+                    exec("COMMIT");
+                }
             } catch (...) {
                 exec("ROLLBACK");
                 throw;
@@ -591,66 +646,186 @@ void Database::init_schema() {
     }
 
     if (db_version > 0 && db_version < CURRENT_SCHEMA_VERSION) {
-        // Run pending migrations. Each step takes the write lock up front
-        // (IMMEDIATE) and re-reads the version inside the transaction, so if a
-        // concurrent process already applied this step we skip it instead of
-        // re-running non-idempotent DDL (e.g. ALTER TABLE ADD COLUMN).
+        // A pre-migration database was copied above, before its repair.
+        if (run.backup.empty()) {
+            run.from = db_version;
+            run.backup = write_upgrade_backup(db_version);
+        }
         for (int v = db_version + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
-            // Foreign keys off for every migration, not only the ones that
-            // rebuild a table. SQLite's DROP TABLE performs an implicit DELETE
-            // of every row before dropping, so dropping a table with ON DELETE
-            // CASCADE children takes their rows with it and still reports
-            // success — and the pragma is a no-op inside a transaction, so it
-            // cannot be set where a migration runs. Conditioning it on the
-            // version number would leave that to the next migration author to
-            // notice. The pragma is per-connection, so no other process is
-            // affected.
-            exec("PRAGMA foreign_keys=OFF");
-            exec("BEGIN IMMEDIATE TRANSACTION");
-            try {
-                if (get_schema_version() >= v) {
-                    // Another process already applied v while we waited.
-                    exec("COMMIT");
-                    exec("PRAGMA foreign_keys=ON");
-                    continue;
-                }
-                if (v == 6) {
-                    // Probe first (SQLite lacks IF NOT EXISTS for ALTER TABLE):
-                    // a DB created fresh at a later CURRENT_SCHEMA_VERSION already
-                    // has this column via init_schema()'s CREATE TABLE.
-                    sqlite3_stmt* stmt;
-                    int rc = sqlite3_prepare_v2(db_, "SELECT effective_date FROM images LIMIT 0",
-                                                -1, &stmt, nullptr);
-                    if (rc != SQLITE_OK) {
-                        exec("ALTER TABLE images ADD COLUMN effective_date TEXT");
-                    } else {
-                        sqlite3_finalize(stmt);
-                    }
-                }
-                if (!migrations()[v].empty()) exec(migrations()[v]);
-                set_schema_version(v);
-                // Before COMMIT, not after: a violation found afterwards is
-                // already durable and there is nothing left to roll back. This
-                // catches a migration that stranded child rows. It does not
-                // catch one that let the cascade delete them — deleted children
-                // leave no orphans, so that case reports zero violations and is
-                // only visible to a test that asserts the rows are still there.
-                int violations = foreign_key_violations();
-                if (violations > 0) {
-                    throw std::runtime_error("Migration to schema v" + std::to_string(v) +
-                                             " left " + std::to_string(violations) +
-                                             " foreign key violations");
-                }
-                exec("COMMIT");
-            } catch (...) {
-                exec("ROLLBACK");
-                exec("PRAGMA foreign_keys=ON");
-                throw;
-            }
-            exec("PRAGMA foreign_keys=ON");
+            if (apply_migration_step(v, migrations()[v])) run.committed++;
         }
     }
-    // else: db_version == CURRENT_SCHEMA_VERSION, nothing to do
+
+    // Every path re-reads the version inside its transactions, so another build
+    // can have upgraded past this one since the read above. Writing on would
+    // put rows this build understands into a schema it does not.
+    refuse_if_newer(get_schema_version());
+}
+
+bool Database::apply_migration_step(int version, const std::string& sql) {
+    // Foreign keys off for every step, not only the ones that rebuild a table.
+    // SQLite's DROP TABLE performs an implicit DELETE of every row before
+    // dropping, so dropping a table with ON DELETE CASCADE children takes their
+    // rows with it and still reports success — and the pragma is a no-op inside
+    // a transaction, so it cannot be set where a step runs. Conditioning it on
+    // the version number would leave that to the next migration author to
+    // notice. The pragma is per-connection, so no other process is affected.
+    //
+    // The step takes the write lock up front (IMMEDIATE) and re-reads the
+    // version inside the transaction, so a step a concurrent process already
+    // applied is skipped instead of re-running non-idempotent DDL (e.g. ALTER
+    // TABLE ADD COLUMN).
+    exec("PRAGMA foreign_keys=OFF");
+    exec("BEGIN IMMEDIATE TRANSACTION");
+    try {
+        if (get_schema_version() >= version) {
+            exec("COMMIT");
+            exec("PRAGMA foreign_keys=ON");
+            return false;
+        }
+        // Read inside the transaction, so nothing another connection writes
+        // can land between this read and the step.
+        const auto before = foreign_key_violations();
+        if (version == 6) {
+            // Probe first (SQLite lacks IF NOT EXISTS for ALTER TABLE): a DB
+            // created fresh at a later CURRENT_SCHEMA_VERSION already has this
+            // column via init_schema()'s CREATE TABLE.
+            sqlite3_stmt* stmt;
+            int rc = sqlite3_prepare_v2(db_, "SELECT effective_date FROM images LIMIT 0", -1, &stmt,
+                                        nullptr);
+            if (rc != SQLITE_OK) {
+                exec("ALTER TABLE images ADD COLUMN effective_date TEXT");
+            } else {
+                sqlite3_finalize(stmt);
+            }
+        }
+        if (!sql.empty()) exec(sql);
+        set_schema_version(version);
+        // Before COMMIT, not after: a violation found afterwards is already
+        // durable and there is nothing left to roll back. Only a violation the
+        // step added fails it. A row that was already an orphan, such as a face
+        // whose image was deleted while foreign keys were not enforced, is
+        // carried through as it is; failing on it would leave the catalog
+        // unable to reach any later version. This catches a step that stranded
+        // child rows. It does not catch one that let the cascade delete them —
+        // deleted children leave no orphans, so that case adds no violation and
+        // is only visible to a test that asserts the rows are still there.
+        //
+        // A violation is named by its child's rowid, so a step that rebuilds a
+        // table without an INTEGER PRIMARY KEY, such as image_tags, renumbers
+        // its rows and makes every orphan in it read as new: such a step must
+        // carry the rowids across (INSERT ... SELECT rowid, ...).
+        std::vector<ForeignKeyViolation> added;
+        const auto after = foreign_key_violations();
+        std::set_difference(after.begin(), after.end(), before.begin(), before.end(),
+                            std::back_inserter(added));
+        if (!added.empty()) {
+            std::set<std::string> tables;
+            for (const auto& v : added) tables.insert(v.table);
+            std::string names;
+            for (const auto& t : tables) names += (names.empty() ? "" : ", ") + t;
+            throw std::runtime_error("Migration to schema v" + std::to_string(version) + " added " +
+                                     std::to_string(added.size()) + " new foreign key violation" +
+                                     (added.size() == 1 ? "" : "s") + " in " + names);
+        }
+        exec("COMMIT");
+    } catch (...) {
+        exec("ROLLBACK");
+        exec("PRAGMA foreign_keys=ON");
+        throw;
+    }
+    exec("PRAGMA foreign_keys=ON");
+    return true;
+}
+
+std::string Database::write_upgrade_backup(int from_version) {
+    // Beside the database, named for the version it holds and the UTC second:
+    // phig.db.v7-backup-20261113T201500Z. VACUUM INTO cannot run inside a
+    // transaction, so this precedes the first step's. Under a concurrent
+    // upgrade by another process the copy can hold a later step than the name
+    // says, but it is always taken before this connection's first step.
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    gmtime_r(&now, &tm);
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%dT%H%M%SZ", &tm);
+    const std::string base = std::string(sqlite3_db_filename(db_, "main")) + ".v" +
+                             std::to_string(from_version) + "-backup-" + stamp;
+    const auto failed = [&](const std::string& path, const std::string& reason) {
+        return std::runtime_error("Could not back up the database to " + path +
+                                  " before upgrading it, so it was not upgraded: " + reason);
+    };
+
+    // The name is claimed with an exclusive create, so an existing file is
+    // never overwritten. One already taken, as by a second process upgrading
+    // in the same second, gets a numeric suffix. VACUUM INTO accepts an empty
+    // file as its target.
+    std::string path;
+    for (int n = 1;; n++) {
+        path = n == 1 ? base : base + "-" + std::to_string(n);
+        std::FILE* claimed = std::fopen(path.c_str(), "wx");
+        if (claimed) {
+            std::fclose(claimed);
+            break;
+        }
+        const int err = errno;
+        if (err != EEXIST) {
+            throw failed(path, std::error_code(err, std::generic_category()).message());
+        }
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, "VACUUM INTO ?", -1, &stmt, nullptr);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+        rc = sqlite3_step(stmt);
+    }
+    sqlite3_finalize(stmt);
+    std::string reason;
+    if (rc != SQLITE_DONE) {
+        reason = sqlite3_errmsg(db_);
+    } else if (!fsync_file(path)) {
+        // A step must not run on the strength of a copy still in the page
+        // cache: a crash then could lose the copy and keep the step.
+        reason = "the copy could not be flushed to disk";
+    }
+    if (!reason.empty()) {
+        std::error_code ec;
+        fs::remove(path, ec);  // the claimed name, empty or partly written
+        throw failed(path, reason);
+    }
+    fsync_dir(fs::path(path).parent_path());
+    return path;
+}
+
+void Database::settle_upgrade_backup(const UpgradeRun& run, bool failed) {
+    if (run.backup.empty()) return;
+    const std::string from = "schema v" + std::to_string(run.from);
+    if (run.committed > 0) {
+        upgrade_backup_path_ = run.backup;
+        if (failed) {
+            log_warn("The catalog database upgrade from " + from + " stopped at v" +
+                     std::to_string(get_schema_version()) +
+                     ". A copy from before the upgrade is at " + run.backup);
+        } else {
+            log_warn("Upgraded the catalog database from " + from + " to v" +
+                     std::to_string(CURRENT_SCHEMA_VERSION) +
+                     ". A copy from before the upgrade is at " + run.backup);
+        }
+        return;
+    }
+    // This connection changed nothing: the upgrade failed before its first
+    // commit, or another process applied every step and wrote its own copy.
+    // Either way the database is not what this copy guards against losing, so
+    // repeated failed opens do not accumulate copies.
+    std::error_code ec;
+    fs::remove(run.backup, ec);
+    if (failed) {
+        log_warn("The catalog database upgrade from " + from +
+                 " failed before changing the database" +
+                 (ec ? "; its unneeded copy remains at " + run.backup
+                     : ", so its copy at " + run.backup + " was removed"));
+    }
 }
 
 void Database::insert(const ImageInfo& info) {
