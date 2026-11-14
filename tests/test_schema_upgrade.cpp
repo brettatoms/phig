@@ -497,6 +497,58 @@ TEST_F(SchemaUpgradeTest, AConnectionWhoseStepsAnotherAppliedKeepsNoBackup) {
     EXPECT_TRUE(backups_in(dir).empty()) << "the connection that applied nothing kept a copy";
 }
 
+// The pre-migration path re-reads the version inside its transaction, as the
+// numbered steps do. Here the database reads as pre-migration (an images table
+// and no meta) when the upgrading connection looks, and another connection,
+// holding the write lock until that one has committed to the path, then gives
+// it a current schema and version. Without the re-read the waiting connection
+// stamps that current schema v1, commits, and fails its v2 step for good.
+TEST_F(SchemaUpgradeTest, APreMigrationRepairAnotherConnectionOvertookIsSkipped) {
+    {
+        Database db(db_path);
+        db.init_schema();
+        exec_or_fail(db.db_ptr(), "DROP TABLE meta");
+    }
+
+    Database other(db_path);
+    other.begin_transaction();
+
+    Database waiting(db_path);
+    ASSERT_EQ(waiting.schema_version(), 0);
+    std::string error;
+    std::thread upgrade([&] {
+        try {
+            waiting.init_schema();
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+    });
+    // The copy is written after the version and table reads and before the
+    // transaction, so once it exists the connection is past both reads.
+    bool copied = false;
+    for (int i = 0; i < 500 && !copied; i++) {
+        for (const auto& b : backups_in(dir)) {
+            if (fs::file_size(b) > 0) copied = true;
+        }
+        if (!copied) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const std::string stamp =
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        "INSERT INTO meta VALUES ('schema_version', '" +
+        std::to_string(Database::expected_schema_version()) + "');";
+    exec_or_fail(other.db_ptr(), stamp.c_str());
+    other.commit_transaction();
+    upgrade.join();
+
+    ASSERT_TRUE(copied) << "the upgrading connection never reached the pre-migration path";
+    EXPECT_EQ(error, "");
+    Database after(db_path, /*read_only=*/true);
+    EXPECT_EQ(after.schema_version(), Database::expected_schema_version())
+        << "a current schema was stamped back to an older version";
+    EXPECT_TRUE(waiting.upgrade_backup_path().empty());
+    EXPECT_TRUE(backups_in(dir).empty()) << "the connection that changed nothing kept a copy";
+}
+
 // A database from before the meta table is copied before its schema repair,
 // which is the first change made to it, under the version it is read as.
 TEST_F(SchemaUpgradeTest, APreMetaDatabaseIsBackedUpAsV0) {

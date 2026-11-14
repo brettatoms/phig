@@ -453,52 +453,63 @@ void Database::create_or_upgrade_schema(UpgradeRun& run) {
             // (whose re-run would then race the ALTER TABLE probe below).
             exec("BEGIN IMMEDIATE TRANSACTION");
             try {
-                exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS faces (
-                        id          INTEGER PRIMARY KEY,
-                        image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-                        embedding   BLOB NOT NULL,
-                        x           INTEGER,
-                        y           INTEGER,
-                        width       INTEGER,
-                        height      INTEGER
-                    )
-                )");
-                exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS people (
-                        id   INTEGER PRIMARY KEY,
-                        name TEXT NOT NULL UNIQUE
-                    )
-                )");
-                exec(R"(
-                    CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
-                        face_id INTEGER PRIMARY KEY,
-                        embedding float[128]
-                    )
-                )");
-                // Add person_id to faces if not present (SQLite lacks
-                // IF NOT EXISTS for ALTER TABLE, so probe first).
-                {
-                    sqlite3_stmt* stmt;
-                    int rc = sqlite3_prepare_v2(db_, "SELECT person_id FROM faces LIMIT 0", -1,
-                                                &stmt, nullptr);
-                    if (rc != SQLITE_OK) {
-                        exec(
-                            "ALTER TABLE faces ADD COLUMN person_id INTEGER REFERENCES people(id)");
-                    } else {
-                        sqlite3_finalize(stmt);
+                // Re-read inside the transaction, as the numbered steps do:
+                // another process may have created or upgraded the schema since
+                // the read above, and stamping it v1 would send it back through
+                // steps it has already taken.
+                const int now = get_schema_version();
+                if (now > 0) {
+                    exec("COMMIT");
+                    db_version = now;
+                } else {
+                    exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS faces (
+                            id          INTEGER PRIMARY KEY,
+                            image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                            embedding   BLOB NOT NULL,
+                            x           INTEGER,
+                            y           INTEGER,
+                            width       INTEGER,
+                            height      INTEGER
+                        )
+                    )");
+                    exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS people (
+                            id   INTEGER PRIMARY KEY,
+                            name TEXT NOT NULL UNIQUE
+                        )
+                    )");
+                    exec(R"(
+                        CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
+                            face_id INTEGER PRIMARY KEY,
+                            embedding float[128]
+                        )
+                    )");
+                    // Add person_id to faces if not present (SQLite lacks
+                    // IF NOT EXISTS for ALTER TABLE, so probe first).
+                    {
+                        sqlite3_stmt* stmt;
+                        int rc = sqlite3_prepare_v2(db_, "SELECT person_id FROM faces LIMIT 0", -1,
+                                                    &stmt, nullptr);
+                        if (rc != SQLITE_OK) {
+                            exec(
+                                "ALTER TABLE faces ADD COLUMN person_id INTEGER REFERENCES "
+                                "people(id)");
+                        } else {
+                            sqlite3_finalize(stmt);
+                        }
                     }
+                    set_schema_version(1);
+                    exec("COMMIT");
+                    run.committed++;
+                    db_version = 1;
                 }
-                set_schema_version(1);
-                exec("COMMIT");
-                run.committed++;
             } catch (...) {
                 exec("ROLLBACK");
                 throw;
             }
-            db_version = 1;
             // Fall through to migration path below
         } else {
             // Truly fresh database — create the full schema at the latest

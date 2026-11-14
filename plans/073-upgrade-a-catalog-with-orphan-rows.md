@@ -2,6 +2,7 @@
 name: Upgrade a Catalog With Orphan Rows
 status: planned
 created: 2026-11-13
+closes_rules: [R29]
 description: >
   A catalog whose rows already break a foreign key cannot be upgraded: each
   migration step checks the whole database before committing and fails on any
@@ -36,6 +37,17 @@ The effect reaches every client. `phig scan` and every other CLI command that
 writes opens with `CatalogAccess::Write` and fails the same way, and reads
 refuse an outdated catalog (R70). M0's client opened read-only, which is why
 this did not surface before.
+
+The review of this plan's core change found a second way an upgrade can strand
+a catalog. The pre-migration path, for a database from before the `meta`
+table, reads version 0 outside a transaction and does not re-read it inside its
+IMMEDIATE one. If another process creates a fresh current schema between the
+two, this one finds an `images` table, stamps the current schema v1, commits,
+and fails its v2 step, leaving a database stamped v1 that no later open can
+upgrade. Two Create opens reach it without the catalog lock, as two libphig
+read-write contexts on a missing catalog do. R29 states that every migration
+re-reads the version inside its transaction, so it is recorded as partial, and
+this plan fixes it.
 
 ## Decisions
 
