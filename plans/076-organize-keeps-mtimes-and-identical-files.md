@@ -1,7 +1,8 @@
 ---
 name: Organize Keeps mtimes and Recognizes Identical Files
-status: in-progress
+status: completed
 created: 2026-11-14
+completed: 2026-11-14
 description: >
   Two organize defects found while preparing a real collection for
   reorganization. A copy, or a move across filesystems, stamps the file with
@@ -252,5 +253,35 @@ with these details settled in the code:
 Rules R89–R94 record it. 22 new tests, each confirmed to fail with its piece of
 the change removed.
 
-Still to do before closing: measure the apply-time hashing on the real
-collection (see Cost).
+### Measured cost
+
+2026-11-14, on scratch copies of 1,354 real photos (8.8 GB) on
+the HDD, with the page cache emptied before each run. The destination tree was
+written by `phig cp`, so every item met a destination holding the same bytes.
+
+| Run | Wall time |
+|---|---|
+| `mv` into an empty destination (same-filesystem rename) | 14 s |
+| `mv --dry-run`, destination untracked | 71 s |
+| `mv`, destination untracked, catalog on the NVMe | 240 s |
+| `mv --dry-run`, destination tracked | 14 s |
+| `mv`, destination tracked, catalog on the NVMe | 183 s |
+| `mv`, destination untracked, catalog on the HDD | 232 s |
+| `cat` of the 8.8 GB destination tree | 66 s (136 MB/s) |
+| `sha256sum` of the same tree | 69 s |
+
+The cost is reading the files, not hashing them: `sha256sum` takes 3 s more than
+`cat`. Apply reads the source and the destination once each, about 170 s, which
+is two sequential reads plus the seeks between two locations on one disk. An
+untracked destination adds one more read at plan time (71 s). The trash crossing
+to the NVMe adds about 8 s, so the trash location does not matter here.
+
+Per photo, an identical item costs about 0.13 s on this disk, against 0.01 s for
+a rename. Merging a 90 GB copy into a tree that already holds it would take
+about 30 minutes to apply, plus about 12 for the plan when the destination is
+untracked. That is the price of R91's on-disk check, accepted 2026-11-14. The cost falls
+only on items whose destination is occupied: an empty destination is a rename as
+before, and a different-sized occupant is not read. Skipping the plan-time hash
+of an untracked destination would save the 12 minutes, at the cost of a dry run
+that shows matches by size and name only; scanning the destination first saves
+the same time without that loss.
