@@ -693,6 +693,10 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
                                              /* The scan's poll updates widgets that die with the
                                               * window: cancel it and wait for its thread. */
                                              app->scan.reset();
+                                             /* Queued writes not yet started are dropped,
+                                              * with no window left to report them to. A
+                                              * started write still completes. */
+                                             app->write_queue.clear();
                                              app->selection = nullptr;
                                              app->selection_bar = nullptr;
                                              app->selection_label = nullptr;

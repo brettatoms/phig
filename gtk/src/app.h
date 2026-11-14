@@ -3,8 +3,10 @@
 #include <adwaita.h>
 #include <gtk/gtk.h>
 
+#include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "collection.h"
@@ -44,6 +46,9 @@ struct Viewer {
     GRef<GCancellable> thumb_cancel;  // the thumbnail request for seq
     guint details_seq = 0;            // bumped per details read; an older read's result is dropped
     bool decode_running = false;      // at most one full decode is in flight
+    // The star's last request for id. The star toggles from it rather than from
+    // details, which a queued write may not have reached yet.
+    std::optional<bool> favorite_requested;
 };
 
 // The filter popover's fields.
@@ -62,6 +67,9 @@ struct FilterFields {
 
 // What the content area's status page offers, when it shows instead of the grid.
 enum class Status { NoPhotos, NoMatches, Error };
+
+// One metadata write, run against the collection on a worker.
+using WriteFn = std::move_only_function<phig::gtk::WriteResult(phig::gtk::Collection&) noexcept>;
 
 struct PhigApp {
     AdwApplicationWindow* window = nullptr;
@@ -108,6 +116,10 @@ struct PhigApp {
     Viewer viewer;
     phig::gtk::ScanWatchPtr scan;  // the scan running, if any
     std::string scan_folder;
+    // Metadata writes waiting to run, oldest first. One runs at a time, so they
+    // apply in the order they were asked for.
+    std::deque<WriteFn> write_queue;
+    bool write_running = false;
 
     guint thumb_failed_count = 0;
     bool page_fetch_toast_shown = false;  // one toast per session, not one per failed page
@@ -155,13 +167,11 @@ void show_status(PhigApp& app, Status status, const std::string& message = {});
 void reload(PhigApp& app);
 void update_selection_bar(PhigApp& app);
 
-// Runs a metadata write against the collection on a worker. On success the
-// sidebar's counts refresh, the gallery reloads if the write can change what
-// it shows, and the viewer re-reads its image. On failure a toast says why and
-// that nothing changed.
-void run_write(
-    PhigApp& app,
-    std::move_only_function<phig::gtk::WriteResult(phig::gtk::Collection&) noexcept> write);
+// Queues a metadata write. Queued writes run one at a time on a worker, in the
+// order they were queued. On success the sidebar's counts refresh, the gallery
+// reloads if the write can change what it shows, and the viewer re-reads its
+// image. On failure a toast says why and that nothing changed.
+void run_write(PhigApp& app, WriteFn write);
 
 // viewer.cpp
 void viewer_build(PhigApp& app);

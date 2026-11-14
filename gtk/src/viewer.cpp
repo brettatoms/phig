@@ -113,6 +113,8 @@ void load_details(PhigApp& app) {
             const bool first = !a->viewer.details_loaded;
             a->viewer.details = std::move(*found);
             a->viewer.details_loaded = true;
+            // With no write running or queued, the details are the image's state.
+            if (!a->write_running) a->viewer.favorite_requested.reset();
             show_details(*a, !first && gallery_entry_focused(a->viewer));
             if (first) request_thumbnail(*a);
         });
@@ -158,6 +160,7 @@ void show_position(PhigApp& app, guint position) {
     v.full_shown = false;
     v.details_loaded = false;
     v.details = {};
+    v.favorite_requested.reset();
     gtk_picture_set_paintable(v.picture, nullptr);
     clear_details(v);
     gtk_widget_set_sensitive(GTK_WIDGET(v.prev), position > 0);
@@ -336,9 +339,11 @@ void viewer_build(PhigApp& app) {
     adw_header_bar_pack_start(header, GTK_WIDGET(v.next));
     v.favorite = GTK_BUTTON(gtk_button_new_from_icon_name("non-starred-symbolic"));
     connect<void(GtkButton*)>(v.favorite, "clicked", [a](GtkButton*) noexcept {
-        if (!a->viewer.details_loaded) return;
-        run_write(*a, [id = a->viewer.id,
-                       on = !a->viewer.details.favorite](phig::gtk::Collection& coll) noexcept {
+        Viewer& viewer = a->viewer;
+        if (!viewer.details_loaded) return;
+        const bool on = !viewer.favorite_requested.value_or(viewer.details.favorite);
+        viewer.favorite_requested = on;
+        run_write(*a, [id = viewer.id, on](phig::gtk::Collection& coll) noexcept {
             return phig::gtk::favorite_set(coll, {id}, on);
         });
     });

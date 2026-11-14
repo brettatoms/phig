@@ -339,24 +339,39 @@ void reload(PhigApp& app) {
     refresh_counts(app);
 }
 
-void run_write(
-    PhigApp& app,
-    std::move_only_function<phig::gtk::WriteResult(phig::gtk::Collection&) noexcept> write) {
-    if (!app.coll) return;
+namespace {
+
+// Starts the oldest queued write unless one is running. Each write's
+// completion starts the next, so writes apply in the order they were queued.
+void start_next_write(PhigApp& app) {
+    if (app.write_running || app.write_queue.empty() || !app.coll) return;
+    WriteFn write = std::move(app.write_queue.front());
+    app.write_queue.pop_front();
+    app.write_running = true;
     phig::gtk::Collection* coll = app.coll.get();
     PhigApp* a = &app;
     phig::gtk::run_in_background<phig::gtk::WriteResult>(
         [coll, write = std::move(write)]() mutable noexcept { return write(*coll); },
         [a](phig::gtk::WriteResult result) noexcept {
+            a->write_running = false;
             if (a->window == nullptr) return;
             if (!result) {
                 show_toast(*a, phig::gtk::write_error_text(result.error()));
-                return;
+            } else {
+                refresh_counts(*a);
+                if (phig::gtk::selects_by_annotation(a->query.filter)) reload(*a);
+                viewer_refresh(*a);
             }
-            refresh_counts(*a);
-            if (phig::gtk::selects_by_annotation(a->query.filter)) reload(*a);
-            viewer_refresh(*a);
+            start_next_write(*a);
         });
+}
+
+}  // namespace
+
+void run_write(PhigApp& app, WriteFn write) {
+    if (!app.coll) return;
+    app.write_queue.push_back(std::move(write));
+    start_next_write(app);
 }
 
 GtkWidget* sidebar_new(PhigApp& app) {
