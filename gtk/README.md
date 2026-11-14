@@ -30,12 +30,27 @@ phig's own native libraries are needed too; see the root `README.md`.
 cd ..   # the repository root
 cmake -B build -DPHIG_BUILD_GTK=ON
 cmake --build build --target phig-gtk -j
-./build/gtk/phig-gtk [path/to/catalog-dir]
+./build/gtk/phig-gtk
 ctest --test-dir build -L gtk
 ```
 
-The argument is a catalog directory. Without one the client uses
-`phig::gtk::default_catalog`, so `PHIG_CATALOG` and the config file apply.
+The client opens phig's default catalog (`phig::gtk::default_catalog`), so
+`PHIG_CATALOG` and the config file apply. It takes no arguments.
+
+## What it does
+
+M1 (plan 071): a gallery with a sidebar of favorites, galleries and tags; a
+filter popover with removable chips, filename and path search, and sort;
+multi-select with tag, gallery and favorite actions; a viewer with the image,
+its metadata and the same edits; and Scan…, which adds new and changed files
+and never removes a row. The client moves, deletes and overwrites nothing.
+
+Window code is in `src/main.cpp` (window, grid, zoom, startup),
+`src/browse.cpp` (sidebar, header, chips, status page, selection bar),
+`src/viewer.cpp` and `src/scan-ui.cpp`. The logic they use is in
+`src/query.cpp`, `src/format.cpp`, `src/scan-watch.cpp`,
+`src/gallery-selection.cpp` (the grid's selection, kept on positions) and
+`src/background.h`, each with its own test.
 
 ## Measured performance (Task 7)
 

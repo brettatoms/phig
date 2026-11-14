@@ -3,8 +3,8 @@
 phig is an image-management engine: it scans image and video directories,
 builds a metadata/hash database, detects duplicates, and organizes files into
 a structured folder layout. Three consumers sit on top of the engine: the
-`cli/` command-line tool, the `gtk/` desktop client (M0 — a working thumbnail
-grid, not a finished app), and `libphig/`, the versioned C ABI for clients
+`cli/` command-line tool, the `gtk/` desktop client (M1 — browse, search,
+annotate and scan; plan 071), and `libphig/`, the versioned C ABI for clients
 that cannot link `core/`, such as the planned macOS and Windows clients.
 
 This file is the single root guidance file for the monorepo. Each directory
@@ -19,7 +19,7 @@ tools that look for that filename resolve to something.
 | `core/` | C++ engine: scanning, hashing, EXIF, database, the five engines. | Internal, no promise |
 | `libphig/` | Versioned C ABI (`libphig.so`) for clients that cannot link `core/`. | Versioned boundary |
 | `cli/` | `phig` command-line tool: argv parsing, output rendering. | — |
-| `gtk/` | GTK4/libadwaita desktop client. | M0, in progress |
+| `gtk/` | GTK4/libadwaita desktop client. | M1, in progress |
 | `tests/` | GoogleTest suite (fast + perf) covering `core/`, `libphig/`. | — |
 | `vendor/` | Vendored third-party code, built without `-Wall -Wextra`. | — |
 | `scripts/` | Dev tooling (e.g. `clang-tidy.sh`). | — |
@@ -104,7 +104,7 @@ for this reason, not only for runtime.**
 `gtk/` builds inside the root build when configured with
 `-DPHIG_BUILD_GTK=ON`. The option is off by default, so a plain build needs
 neither gtk4 nor libadwaita. `cmake --build build --target phig-gtk` then
-builds the client and `phig-core` only. Its 46 tests across five binaries
+builds the client and `phig-core` only. Its 96 tests across ten binaries
 carry the ctest label `gtk` (`ctest --test-dir build -L gtk`) and need no
 collection. See `gtk/CLAUDE.md`.
 
