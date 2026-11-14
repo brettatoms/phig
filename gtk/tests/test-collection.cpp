@@ -163,6 +163,14 @@ sqlite3_int64 count_rows(sqlite3* db, const char* table) {
     return n;
 }
 
+// The copies an upgrade left beside the database in catalog_dir.
+size_t backups_in(const fs::path& catalog_dir) {
+    size_t n = 0;
+    for (const auto& entry : fs::directory_iterator(catalog_dir))
+        if (entry.path().filename().string().starts_with("phig.db.v")) n++;
+    return n;
+}
+
 void exec_sql(sqlite3* db, const char* sql) {
     char* err = nullptr;
     if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK)
@@ -197,9 +205,7 @@ void test_an_outdated_catalog_is_pending_until_open_upgrades_it() {
     }
 
     phig::gtk::CollectionPtr coll = f.open();
-    std::string backup = phig::gtk::upgrade_backup(*coll);
-    g_assert_false(backup.empty());
-    g_assert_true(fs::exists(backup));
+    g_assert_cmpuint(backups_in(f.dir), ==, 1);
 
     auto after = phig::gtk::upgrade_pending(f.dir.string());
     g_assert_true(after.has_value());
@@ -217,7 +223,7 @@ void test_an_outdated_catalog_is_pending_until_open_upgrades_it() {
 void test_open_of_a_current_catalog_has_no_backup() {
     Fixture f;
     phig::gtk::CollectionPtr coll = f.open();
-    g_assert_true(phig::gtk::upgrade_backup(*coll).empty());
+    g_assert_cmpuint(backups_in(f.dir), ==, 0);
 }
 
 void test_ids_come_newest_first_by_default() {

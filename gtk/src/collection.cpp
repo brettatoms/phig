@@ -226,14 +226,6 @@ std::expected<bool, std::string> upgrade_pending(const std::string& catalog_dir)
     }
 }
 
-std::string upgrade_backup(const Collection& coll) noexcept {
-    try {
-        return coll.db->upgrade_backup_path();
-    } catch (...) {
-        return {};
-    }
-}
-
 std::expected<std::string, std::string> default_catalog() noexcept {
     try {
         const Config cfg = load_config(config_path());

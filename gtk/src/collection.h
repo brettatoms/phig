@@ -53,10 +53,6 @@ std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noe
 // or has no database. Creates no catalog and changes no data.
 std::expected<bool, std::string> upgrade_pending(const std::string& catalog_dir) noexcept;
 
-// The copy of the catalog taken before the upgrade that open performed, or
-// empty when open upgraded nothing.
-std::string upgrade_backup(const Collection& coll) noexcept;
-
 // The catalog phig uses when none is named: PHIG_CATALOG, then the config
 // file's [paths] catalog, then $XDG_DATA_HOME/phig. Fails if the config file
 // cannot be read or names an empty catalog.

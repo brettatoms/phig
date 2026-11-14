@@ -48,7 +48,7 @@ named by id, and the scan are its only changes. The client deletes, moves and
 overwrites no file and deletes no row, except that opening the default catalog
 moves legacy thumbnails and the log into it, as the CLI does. A collection
 from an older phig is upgraded when it opens, after an "Upgrading Your
-Collection" page shows and with a copy kept first; a toast names the copy.
+Collection" page shows and with a copy kept first, beside the database.
 
 Window code is in `src/main.cpp` (window, grid, zoom, startup),
 `src/browse.cpp` (sidebar, header, chips, status page, selection bar),

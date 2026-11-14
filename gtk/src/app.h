@@ -151,8 +151,6 @@ struct PhigApp {
 
 // main.cpp
 void show_toast(PhigApp& app, const std::string& text);
-// A toast that stays until the user dismisses it.
-void show_persistent_toast(PhigApp& app, const std::string& text);
 void launch_file(PhigApp& app, const std::string& path);
 void open_catalog(PhigApp& app);  // opens app.catalog_dir in the background, then startup_done
 // PHIG_MEASURE's scroll harness; reload starts it when the first model attaches.

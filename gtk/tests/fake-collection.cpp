@@ -305,8 +305,6 @@ std::expected<CollectionPtr, OpenError> open(const std::string& catalog_dir) noe
 // The fake never has an upgrade pending and never upgrades.
 std::expected<bool, std::string> upgrade_pending(const std::string&) noexcept { return false; }
 
-std::string upgrade_backup(const Collection&) noexcept { return {}; }
-
 std::expected<std::string, std::string> default_catalog() noexcept {
     return std::string("/fake/default");
 }

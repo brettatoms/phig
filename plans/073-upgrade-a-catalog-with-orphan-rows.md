@@ -74,8 +74,9 @@ Decided 2026-11-13.
    of disk once per upgrade; the thumbnail cache is not copied.
 4. **The user is told.** Core logs the upgrade and the backup path at warning
    level, which the CLI prints on stderr. The GTK client shows an "Upgrading
-   your collection…" page while the upgrade runs, then a toast naming the
-   backup.
+   your collection…" page while the upgrade runs. A toast naming the backup
+   was built and then removed on 2026-11-14 at the user's request; the client
+   does not name the backup.
 5. **The GTK client always shows the page when an upgrade is pending**, rather
    than only when it is expected to be slow. It knows one is pending from a
    read-only open, which refuses an outdated catalog with
@@ -152,8 +153,7 @@ Built as decided, 2026-11-13, in `core/` on master and in the GTK client on the
   database and flushes it; its directory is flushed best effort. A copy is
   kept only when a step committed, so a failed attempt and a process that loses
   a concurrent upgrade leave none. The CLI prints the copy's path; the GTK
-  client shows "Upgrading Your Collection" while it runs and a toast naming
-  the copy that stays until dismissed.
+  client shows "Upgrading Your Collection" while it runs.
 - Two races in the same code were fixed with the user's agreement. The
   pre-migration and fresh-schema paths now re-read the version inside their
   transactions, so a connection that read version 0 no longer stamps a
@@ -162,9 +162,9 @@ Built as decided, 2026-11-13, in `core/` on master and in the GTK client on the
   (R70).
 - New rule R88; R29, R70 and R84 updated.
 
-Known gap: when a step after the first commits and a later one fails, the copy
-is kept and logged, but the GTK client's error page does not name it, because
-the open's error carries no path.
+The GTK client names no copy, after a successful upgrade or a partial one where
+a step committed and a later one failed. The copy is beside the database and
+in the diagnostic log.
 
 ## Relationship to other plans
 
