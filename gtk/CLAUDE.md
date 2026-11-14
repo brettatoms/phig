@@ -1,8 +1,8 @@
 # gtk/
 
 GTK4/libadwaita desktop client. M1 status: browse, search, annotate and scan,
-and nothing that moves, deletes or overwrites (plan 071). See
-`gtk/README.md` for M0's measured performance numbers.
+and nothing that deletes, moves or overwrites a file or deletes a row (plan
+071). See `gtk/README.md` for M0's measured performance numbers.
 
 Links `phig-core` directly, as `cli/` does, through one seam:
 `src/collection.h`. Built from the repository root with
@@ -42,13 +42,15 @@ way to open another catalog.
   time. It is not named `signal.h`: `src/` is on the include path, and a
   `signal.h` there shadows the system header GLib includes.
 - **Every destructive action goes through a `core/` plan the user reviews and
-  then applies.** Anything that deletes, moves or overwrites is authorized by
-  a plan `core/` computes, which the client shows and the user approves before
-  it is applied (R66): never a confirmation dialog around a one-shot call, and
-  never `cmd_rm`'s `ConfirmFn`. The client shows no destructive action until
-  that plan exists — not even a disabled menu item. Removal, organize, scan's
-  reconcile, face rebuild and thumbnail clean each wait for the plan that makes
-  them safe (plan 071's table).
+  then applies.** Anything that deletes, moves or overwrites a file, or deletes
+  a row, is authorized by a plan `core/` computes, which the client shows and
+  the user approves before it is applied (R66): never a confirmation dialog
+  around a one-shot call, and never `cmd_rm`'s `ConfirmFn`. The client shows
+  no destructive action until that plan exists — not even a disabled menu
+  item. Removal, organize, scan's reconcile, face rebuild and thumbnail clean
+  each wait for the plan that makes them safe (plan 071's table). Tag, gallery
+  and favorite writes on images named by id are outside this rule; the next
+  one covers them.
 - **Writes name their images and never wait for the lock.** A metadata write
   takes an explicit id list, resolved from the gallery model's ids
   (`phig_gallery_model_ids_in`), never from a query re-run at write time. It

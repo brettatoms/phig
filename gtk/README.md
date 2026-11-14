@@ -43,7 +43,10 @@ M1 (plan 071): a gallery with a sidebar of favorites, galleries and tags; a
 filter popover with removable chips, filename and path search, and sort;
 multi-select with tag, gallery and favorite actions; a viewer with the image,
 its metadata and the same edits; and Scan…, which adds new and changed files
-and never removes a row. The client moves, deletes and overwrites nothing.
+and never removes a row. Those tag, gallery and favorite writes, on images
+named by id, and the scan are its only changes. The client deletes, moves and
+overwrites no file and deletes no row, except that opening the default catalog
+moves legacy thumbnails and the log into it, as the CLI does.
 
 Window code is in `src/main.cpp` (window, grid, zoom, startup),
 `src/browse.cpp` (sidebar, header, chips, status page, selection bar),
