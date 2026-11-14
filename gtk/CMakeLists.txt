@@ -41,6 +41,7 @@ phig_gtk_test(thumb-loader tests/test-thumb-loader.cpp src/thumb-loader.cpp
 
 phig_gtk_test(connect tests/test-connect.cpp)
 phig_gtk_test(background tests/test-background.cpp)
+phig_gtk_test(query tests/test-query.cpp src/query.cpp)
 phig_gtk_test(startup tests/test-startup.cpp src/startup.cpp tests/fake-collection.cpp)
 
 # Tests collection.cpp itself, against a database it builds, so unlike the
