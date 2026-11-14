@@ -3,6 +3,7 @@
 #include <adwaita.h>
 #include <gtk/gtk.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -43,6 +44,10 @@ struct PhigApp {
     GtkDropDown* sort = nullptr;
     FilterFields filter;
     GtkFlowBox* chips = nullptr;
+    GtkActionBar* selection_bar = nullptr;
+    GtkLabel* selection_label = nullptr;
+    GtkEntry* selection_tag = nullptr;
+    GtkEntry* selection_gallery = nullptr;
     GtkGridView* grid = nullptr;
     GtkScrolledWindow* scroller = nullptr;
     GtkLabel* failed_label = nullptr;  // header-bar counter for THUMB_FAILED results
@@ -61,6 +66,7 @@ struct PhigApp {
     phig::gtk::Query query;
     guint query_seq = 0;
     GRef<PhigGalleryModel> model;
+    GtkSelectionModel* selection = nullptr;  // the grid's; owned by the grid
 
     guint thumb_failed_count = 0;
     bool page_fetch_toast_shown = false;  // one toast per session, not one per failed page
@@ -93,14 +99,23 @@ void open_catalog(PhigApp& app);  // opens app.catalog_dir in the background, th
 // PHIG_MEASURE's scroll harness; reload starts it when the first model attaches.
 void phig_measure_maybe_start(PhigApp* app);
 
-// browse.cpp: the sidebar, the header's search, sort and filter, the chips and
-// the status page.
+// browse.cpp: the sidebar, the header's search, sort and filter, the chips,
+// the status page and the selection bar.
 GtkWidget* sidebar_new(PhigApp& app);
 void header_fill(PhigApp& app, AdwHeaderBar* header);
 GtkWidget* chips_new(PhigApp& app);
 GtkWidget* status_new(PhigApp& app);
+GtkWidget* selection_bar_new(PhigApp& app);
 void browse_set_sensitive(PhigApp& app, bool sensitive);
 void show_status(PhigApp& app, Status status, const std::string& message = {});
 // Reads the ids for app.query on a worker and attaches a model for them, and
 // refreshes the sidebar's counts.
 void reload(PhigApp& app);
+void update_selection_bar(PhigApp& app);
+
+// Runs a metadata write against the collection on a worker. On success the
+// sidebar's counts refresh and the gallery reloads if the write can change
+// what it shows. On failure a toast says why and that nothing changed.
+void run_write(
+    PhigApp& app,
+    std::move_only_function<phig::gtk::WriteResult(phig::gtk::Collection&) noexcept> write);

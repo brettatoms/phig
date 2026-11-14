@@ -5,6 +5,7 @@
 #include "app.h"
 #include "background.h"
 #include "connect.h"
+#include "format.h"
 #include "query.h"
 
 namespace {
@@ -45,13 +46,17 @@ void attach_model(PhigApp& app, std::vector<int64_t> ids) {
     connect<void(PhigGalleryModel*, const char*)>(
         model.get(), "page-fetch-failed",
         [a](PhigGalleryModel*, const char*) noexcept { on_page_fetch_failed(*a); });
-    GtkSelectionModel* selection =
-        GTK_SELECTION_MODEL(gtk_no_selection_new(G_LIST_MODEL(g_object_ref(model.get()))));
-    gtk_grid_view_set_model(app.grid, selection);
+    GtkMultiSelection* selection = gtk_multi_selection_new(G_LIST_MODEL(g_object_ref(model.get())));
+    connect<void(GtkSelectionModel*, guint, guint)>(
+        selection, "selection-changed",
+        [a](GtkSelectionModel*, guint, guint) noexcept { update_selection_bar(*a); });
+    app.selection = GTK_SELECTION_MODEL(selection);
+    gtk_grid_view_set_model(app.grid, app.selection);
     g_object_unref(selection);
     // The previous model's last reference drops here, and its dispose waits for
     // a page fetch it has in flight.
     app.model = std::move(model);
+    update_selection_bar(app);
 
     if (empty)
         show_status(app, phig::gtk::narrows(app.query) ? Status::NoMatches : Status::NoPhotos);
@@ -265,6 +270,45 @@ void on_status_clicked(PhigApp& app) {
     query_changed(app);
 }
 
+std::vector<int64_t> selected_ids(PhigApp& app) {
+    if (app.selection == nullptr || !app.model) return {};
+    GtkBitset* set = gtk_selection_model_get_selection(app.selection);
+    std::vector<int64_t> ids = phig_gallery_model_ids_in(app.model.get(), set);
+    gtk_bitset_unref(set);
+    return ids;
+}
+
+// A selection-bar action: a write over the selected images.
+void write_selection(PhigApp& app,
+                     std::move_only_function<phig::gtk::WriteResult(
+                         phig::gtk::Collection&, const std::vector<int64_t>&) noexcept>
+                         write) {
+    std::vector<int64_t> ids = selected_ids(app);
+    if (ids.empty()) return;
+    run_write(app, [ids = std::move(ids), write = std::move(write)](
+                       phig::gtk::Collection& coll) mutable noexcept { return write(coll, ids); });
+}
+
+GtkWidget* popover_button(const char* label, GtkWidget* content) {
+    GtkWidget* popover = gtk_popover_new();
+    gtk_popover_set_child(GTK_POPOVER(popover), content);
+    GtkWidget* button = gtk_menu_button_new();
+    gtk_menu_button_set_label(GTK_MENU_BUTTON(button), label);
+    gtk_menu_button_set_popover(GTK_MENU_BUTTON(button), popover);
+    return button;
+}
+
+// An entry and the buttons that act on its text, for the selection bar.
+GtkWidget* entry_with_buttons(GtkEntry** entry, const char* placeholder,
+                              std::vector<GtkWidget*> buttons) {
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    *entry = GTK_ENTRY(gtk_entry_new());
+    gtk_entry_set_placeholder_text(*entry, placeholder);
+    gtk_box_append(GTK_BOX(box), GTK_WIDGET(*entry));
+    for (GtkWidget* button : buttons) gtk_box_append(GTK_BOX(box), button);
+    return box;
+}
+
 }  // namespace
 
 void reload(PhigApp& app) {
@@ -289,6 +333,25 @@ void reload(PhigApp& app) {
             }
         });
     refresh_counts(app);
+}
+
+void run_write(
+    PhigApp& app,
+    std::move_only_function<phig::gtk::WriteResult(phig::gtk::Collection&) noexcept> write) {
+    if (!app.coll) return;
+    phig::gtk::Collection* coll = app.coll.get();
+    PhigApp* a = &app;
+    phig::gtk::run_in_background<phig::gtk::WriteResult>(
+        [coll, write = std::move(write)]() mutable noexcept { return write(*coll); },
+        [a](phig::gtk::WriteResult result) noexcept {
+            if (a->window == nullptr) return;
+            if (!result) {
+                show_toast(*a, phig::gtk::write_error_text(result.error()));
+                return;
+            }
+            refresh_counts(*a);
+            if (phig::gtk::selects_by_annotation(a->query.filter)) reload(*a);
+        });
 }
 
 GtkWidget* sidebar_new(PhigApp& app) {
@@ -387,4 +450,88 @@ void browse_set_sensitive(PhigApp& app, bool sensitive) {
     gtk_widget_set_sensitive(GTK_WIDGET(app.search), sensitive);
     gtk_widget_set_sensitive(GTK_WIDGET(app.sort), sensitive);
     gtk_widget_set_sensitive(GTK_WIDGET(app.filter.button), sensitive);
+}
+
+GtkWidget* selection_bar_new(PhigApp& app) {
+    PhigApp* a = &app;
+    app.selection_bar = GTK_ACTION_BAR(gtk_action_bar_new());
+    app.selection_label = GTK_LABEL(gtk_label_new(nullptr));
+    gtk_action_bar_pack_start(app.selection_bar, GTK_WIDGET(app.selection_label));
+
+    GtkWidget* add_tag = gtk_button_new_with_label("Add");
+    GtkWidget* remove_tag = gtk_button_new_with_label("Remove");
+    connect<void(GtkButton*)>(add_tag, "clicked", [a](GtkButton*) noexcept {
+        write_selection(
+            *a, [tag = entry_text(a->selection_tag)](phig::gtk::Collection& coll,
+                                                     const std::vector<int64_t>& ids) noexcept {
+                return phig::gtk::tag_add(coll, ids, tag);
+            });
+    });
+    connect<void(GtkButton*)>(remove_tag, "clicked", [a](GtkButton*) noexcept {
+        write_selection(
+            *a, [tag = entry_text(a->selection_tag)](phig::gtk::Collection& coll,
+                                                     const std::vector<int64_t>& ids) noexcept {
+                return phig::gtk::tag_remove(coll, ids, tag);
+            });
+    });
+    GtkWidget* tags = entry_with_buttons(&app.selection_tag, "Tag name", {add_tag, remove_tag});
+
+    GtkWidget* set_gallery = gtk_button_new_with_label("Set");
+    gtk_widget_set_tooltip_text(set_gallery, "Replaces any gallery the photos are in");
+    GtkWidget* clear_gallery = gtk_button_new_with_label("Clear");
+    connect<void(GtkButton*)>(set_gallery, "clicked", [a](GtkButton*) noexcept {
+        write_selection(*a,
+                        [gallery = entry_text(a->selection_gallery)](
+                            phig::gtk::Collection& coll, const std::vector<int64_t>& ids) noexcept {
+                            return phig::gtk::gallery_set(coll, ids, gallery);
+                        });
+    });
+    connect<void(GtkButton*)>(clear_gallery, "clicked", [a](GtkButton*) noexcept {
+        write_selection(*a,
+                        [](phig::gtk::Collection& coll, const std::vector<int64_t>& ids) noexcept {
+                            return phig::gtk::gallery_clear(coll, ids);
+                        });
+    });
+    GtkWidget* galleries =
+        entry_with_buttons(&app.selection_gallery, "Gallery name", {set_gallery, clear_gallery});
+
+    GtkWidget* favorite = gtk_button_new_from_icon_name("starred-symbolic");
+    gtk_widget_set_tooltip_text(favorite, "Add to Favorites");
+    connect<void(GtkButton*)>(favorite, "clicked", [a](GtkButton*) noexcept {
+        write_selection(*a,
+                        [](phig::gtk::Collection& coll, const std::vector<int64_t>& ids) noexcept {
+                            return phig::gtk::favorite_set(coll, ids, true);
+                        });
+    });
+    GtkWidget* unfavorite = gtk_button_new_from_icon_name("non-starred-symbolic");
+    gtk_widget_set_tooltip_text(unfavorite, "Remove from Favorites");
+    connect<void(GtkButton*)>(unfavorite, "clicked", [a](GtkButton*) noexcept {
+        write_selection(*a,
+                        [](phig::gtk::Collection& coll, const std::vector<int64_t>& ids) noexcept {
+                            return phig::gtk::favorite_set(coll, ids, false);
+                        });
+    });
+    GtkWidget* deselect = gtk_button_new_with_label("Select None");
+    connect<void(GtkButton*)>(deselect, "clicked", [a](GtkButton*) noexcept {
+        if (a->selection != nullptr) gtk_selection_model_unselect_all(a->selection);
+    });
+
+    gtk_action_bar_pack_end(app.selection_bar, deselect);
+    gtk_action_bar_pack_end(app.selection_bar, unfavorite);
+    gtk_action_bar_pack_end(app.selection_bar, favorite);
+    gtk_action_bar_pack_end(app.selection_bar, popover_button("Gallery…", galleries));
+    gtk_action_bar_pack_end(app.selection_bar, popover_button("Tag…", tags));
+    gtk_action_bar_set_revealed(app.selection_bar, FALSE);
+    return GTK_WIDGET(app.selection_bar);
+}
+
+void update_selection_bar(PhigApp& app) {
+    guint64 n = 0;
+    if (app.selection != nullptr) {
+        GtkBitset* set = gtk_selection_model_get_selection(app.selection);
+        n = gtk_bitset_get_size(set);
+        gtk_bitset_unref(set);
+    }
+    gtk_label_set_text(app.selection_label, phig::gtk::selection_text(n).c_str());
+    gtk_action_bar_set_revealed(app.selection_bar, n > 0);
 }

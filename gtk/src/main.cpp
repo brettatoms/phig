@@ -704,6 +704,7 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
                                                  g_source_remove(app->relayout_id);
                                                  app->relayout_id = 0;
                                              }
+                                             app->selection = nullptr;
                                          });
     gtk_window_set_title(GTK_WINDOW(app->window), "phig");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 1200, 800);
@@ -734,6 +735,7 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
      * count from the cells' requested size. */
     gtk_grid_view_set_min_columns(app->grid, app->columns);
     gtk_grid_view_set_max_columns(app->grid, app->columns);
+    gtk_grid_view_set_enable_rubberband(app->grid, TRUE);
     phig::gtk::connect<void(GtkGridView*, guint)>(
         app->grid, "activate",
         [app](GtkGridView*, guint position) noexcept { on_cell_activate(app, position); });
@@ -794,6 +796,7 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
     gtk_stack_add_named(app->content, GTK_WIDGET(app->scroller), "grid");
     gtk_stack_add_named(app->content, status_new(*app), "status");
     adw_toolbar_view_set_content(app->toolbar_view, GTK_WIDGET(app->content));
+    adw_toolbar_view_add_bottom_bar(app->toolbar_view, selection_bar_new(*app));
     AdwNavigationPage* content_page =
         adw_navigation_page_new(GTK_WIDGET(app->toolbar_view), "Photos");
 
