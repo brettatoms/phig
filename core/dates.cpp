@@ -42,6 +42,12 @@ std::string json_get(const std::string& json, const std::string& key) {
 }
 
 DateParts get_best_date(const ImageInfo& img) {
+    DateSource unused;
+    return get_best_date(img, unused);
+}
+
+DateParts get_best_date(const ImageInfo& img, DateSource& source) {
+    source = DateSource::Exif;
     // 1. EXIF DateTimeOriginal
     std::string dt = json_get(img.metadata_json, "DateTimeOriginal");
     DateParts d = parse_date(dt);
@@ -52,6 +58,7 @@ DateParts get_best_date(const ImageInfo& img) {
     d = parse_date(dt);
     if (d.valid) return d;
 
+    source = DateSource::Sidecar;
     // 3. Sidecar date (e.g. f-spot .xmp, Google Takeout .json). Only consulted
     //    when the embedded EXIF has no date; a sidecar can be edited, so EXIF
     //    wins. Sits before mtime so EXIF-stripped exports still date correctly.
@@ -61,9 +68,11 @@ DateParts get_best_date(const ImageInfo& img) {
     }
 
     // 4. File modified time
+    source = DateSource::Mtime;
     d = parse_date(img.modified_at);
     if (d.valid) return d;
 
+    source = DateSource::None;
     return d;  // invalid — will go to unsorted
 }
 

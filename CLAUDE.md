@@ -41,9 +41,9 @@ package names. No prefix is needed; a plain `cmake` works:
 
 ```bash
 cmake -B build && cmake --build build
-./build/phig-tests        # fast suite, 1051 tests
+./build/phig-tests        # fast suite, 1107 tests
 ./build/phig-perf-tests   # performance suite (~2s), 6 tests
-ctest --test-dir build --parallel   # both — 1057 (~19s; 48s without --parallel)
+ctest --test-dir build --parallel   # both — 1113 (~23s; 48s without --parallel)
 clang-format -i <files>
 ```
 
@@ -355,7 +355,7 @@ surface (`unistd.h`) and has not been audited for portability.
 
 ## CLI command reference
 
-Derived from `cli/main.cpp`, which parses 53 distinct flags. Check it against
+Derived from `cli/main.cpp`, which parses 54 distinct flags. Check it against
 the source rather than trusting this block:
 `grep -oE '"--[a-z0-9-]+"' cli/main.cpp | tr -d '"' | sort -u`.
 
@@ -373,6 +373,9 @@ phig thumbs clean [--dry-run]
 
 # Find duplicate images
 phig duplicates [--type exact|near|all] [--threshold 0-64] [--format text|csv|json] [--output <path>] [--overwrite] [--match <glob>] [--exclude <glob>] [--media image|video|all] [--fav]
+
+# Keep one file of each byte-identical group, trash the rest, carry their metadata to it
+phig duplicates resolve [--keep under:<dir>|unsuffixed|oldest|shortest]... [--match <glob>] [--exclude <glob>] [--dry-run] [--format text|json] [--yes]
 
 # Copy files into YYYY/MM structure
 phig cp <destination> [--format <string>] [--match <glob>] [--exclude <glob>] [--dry-run] [--on-conflict skip|overwrite|rename]
@@ -496,10 +499,23 @@ plans/      Numbered plans, monorepo-wide (see Layout above).
 - **`exif` column renamed to `metadata`** — stores JSON blob for any media
   type (EXIF for images, container metadata for videos).
 - **Separate cp/mv commands** — cp is non-destructive, mv updates DB paths.
+  Both keep a file's mtime, which dates a photo with no EXIF or sidecar date
+  (R89).
+- **Identical destinations** — a destination already holding the source's
+  bytes is not a conflict: `cp` writes nothing, and `mv` trashes the source
+  after merging its tags, gallery and faces into the destination's row, taking
+  the older mtime when the pair is dated by mtime. It falls back to the conflict
+  policy when the merge would lose a gallery, named faces or a differing
+  sidecar (R90–R94, plan 076).
 - **Match/exclude system** — `--match` includes (repeatable), `--exclude`
   excludes (repeatable), exclude wins on overlap.
 - **Duplicates compare against full DB** — `--match` selects which groups
   to show, not which files to compare.
+- **Resolving duplicates** — `duplicates resolve` keeps one file per group of
+  identical files, chosen by ordered `--keep` rules (default `unsuffixed`,
+  `oldest`, `shortest`, then lowest id), merges the others' metadata into it and
+  trashes them. A group is left alone when the merge would lose a gallery,
+  named faces or a differing sidecar (R95–R99, plan 077).
 - **Activity log** — `mv`/`cp`/`rm` record an operation plus per-file
   entries in `phig.db` (append-only; undo is a future logged operation).
   Each entry commits in the same transaction as the DB change it

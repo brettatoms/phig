@@ -18,11 +18,13 @@ add_library(phig-core STATIC
     organize_engine.cpp
     organize_exec.cpp
     organize_plan.cpp
+    output_escape.cpp
     remove_exec.cpp
     relink.cpp
     log.cpp
     sidecar.cpp
     dates.cpp
+    duplicates_resolve.cpp
     duplicates.cpp
     raw.cpp
     image_codec.cpp

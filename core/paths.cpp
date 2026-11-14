@@ -166,6 +166,16 @@ void fsync_dir(const std::filesystem::path& dir) {
 
 namespace {
 
+// Gives a freshly copied file its source's mtime. mtime is the date of last
+// resort for a photo with no EXIF or sidecar date, so a copy that kept the
+// copy time would misfile it. Called before the fsync so the time is durable too.
+void copy_mtime(const std::filesystem::path& src, const std::filesystem::path& copy,
+                std::error_code& ec) {
+    const auto when = std::filesystem::last_write_time(src, ec);
+    if (ec) return;
+    std::filesystem::last_write_time(copy, when, ec);
+}
+
 // Rename that NEVER overwrites dest. Returns 0 on success or an errno:
 // EEXIST = dest exists, EXDEV = cross-device (caller falls back), other =
 // real failure. Uses the kernel's atomic no-replace rename where available,
@@ -239,6 +249,14 @@ void move_file(const std::string& source, const std::string& dest) {
         fs::remove(tmp, rm_ec);
         throw fs::filesystem_error("move_file: copy failed", src, dst, copy_err);
     }
+    copy_mtime(src, tmp, ec);
+    if (ec) {
+        std::error_code mtime_err = ec;
+        std::error_code rm_ec;
+        fs::remove(tmp, rm_ec);
+        throw fs::filesystem_error("move_file: could not keep the source's mtime", src, dst,
+                                   mtime_err);
+    }
     if (!fsync_file(tmp)) {
         fs::remove(tmp, ec);
         throw fs::filesystem_error("move_file: fsync failed", tmp, dst,
@@ -284,6 +302,14 @@ void atomic_copy_file(const std::string& source, const std::string& dest) {
     if (ec) {
         fs::remove(tmp, ec);
         throw fs::filesystem_error("atomic_copy_file: copy failed", source, dst, ec);
+    }
+    copy_mtime(source, tmp, ec);
+    if (ec) {
+        std::error_code mtime_err = ec;
+        std::error_code rm_ec;
+        fs::remove(tmp, rm_ec);
+        throw fs::filesystem_error("atomic_copy_file: could not keep the source's mtime", source,
+                                   dst, mtime_err);
     }
     // User data is being placed: make the bytes durable before the rename
     // publishes the path, so a power loss can't leave a valid-looking

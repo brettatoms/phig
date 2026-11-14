@@ -236,3 +236,20 @@ tests = [
 test_kind = "conformance"
 status = "holds"
 test_gap = "The containment check in plan() is unreachable once the other two guards hold, so no test reaches it; it is pinned only by reading. A symlinked directory inside the destination that points elsewhere passes, by design: the check is lexical, and following the user's own link is what they asked for."
+
+[[rule]]
+id = "R95"
+tier = "engine"
+concern = "authorization"
+statement = "Resolving duplicates moves a member to the trash only after its bytes, and the kept file's, are compared with the group's sha256 on disk when the group is applied; a member that no longer matches stays where it is, and a kept file that no longer matches leaves the group alone."
+rationale = "The plan groups rows by their recorded sha256, which can be stale, and a person may edit a file between the plan and the apply. Trashing a copy is safe only because another file holds the same bytes, so that has to be true on disk at the moment it is acted on."
+enforced_at = ["core/duplicates_resolve.cpp:resolve_group"]
+binds = ["duplicates.resolve"]
+protects = ["original-file"]
+tests = [
+    "DuplicatesResolveTest.AMemberEditedAfterPlanningIsNotTrashed",
+    "DuplicatesResolveTest.AnEditedKeeperLeavesTheGroupAlone",
+]
+test_kind = "witness"
+status = "holds"
+

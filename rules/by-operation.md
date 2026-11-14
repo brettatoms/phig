@@ -4,19 +4,20 @@
 
 | Operation | conflict | reconcile | atomicity | recoverability | metadata | attachments | concurrency | cancellation | authorization |
 |---|---|---|---|---|---|---|---|---|---|
+| **duplicates.resolve** | — | — | R98 | R97 | R93 R96 | — | — | R99 | R95 |
 | faces.identify | — | — | R28 R29 R34 R88 | — | — | — | R07 R51 R53 R71 | — | — |
 | **faces.rebuild** | — | — | R28 R29 R34 R72 R88 | — | R85 R86 | — | R51 R52 R53 R55 | R57 R58 | R60 R74 |
 | metadata.write | — | — | R28 R29 R34 R88 | — | R79 | — | R49 R50 R53 R54 R55 R84 | — | R74 R78 |
-| organize.copy | R01 R03 R05 R08 R09 R10 R11 | — | R28 R29 R31 R32 R33 R34 R48 R88 | R18 R19 R27 R83 | R40 | R41 R44 R45 R47 | R49 R50 R53 R55 | R57 R58 | R59 R74 R87 |
-| **organize.move** | R01 R02 R03 R06 R08 R09 R10 R11 | — | R28 R29 R31 R32 R33 R34 R48 R88 | R18 R19 R27 R83 | R40 | R41 R44 R45 R47 | R49 R50 R53 R55 | R57 R58 | R59 R74 R87 |
-| organize.plan | R01 R03 R08 | — | R29 R88 | — | — | — | R49 R50 R53 R55 | R57 | R21 R59 R61 R74 R87 |
+| organize.copy | R01 R03 R05 R08 R09 R10 R11 R90 | — | R28 R29 R31 R32 R33 R34 R48 R88 | R18 R19 R27 R83 | R40 R89 R92 | R41 R44 R45 R47 | R49 R50 R53 R55 | R57 R58 | R59 R74 R87 |
+| **organize.move** | R01 R02 R03 R06 R08 R09 R10 R11 R90 R91 | — | R28 R29 R31 R32 R33 R34 R48 R88 R94 | R18 R19 R27 R83 | R40 R89 R92 R93 | R41 R44 R45 R47 | R49 R50 R53 R55 | R57 R58 | R59 R74 R87 |
+| organize.plan | R01 R03 R08 R90 | — | R29 R88 | — | R92 | — | R49 R50 R53 R55 | R57 | R21 R59 R61 R74 R87 |
 | **relink.demote** | — | R17 | R28 R29 R30 R34 R88 | R18 R19 | R37 R38 R39 | R43 | R49 R50 R53 | R56 | — |
 | **relink.demote_live_photo** | — | R17 | R28 R29 R30 R34 R88 | R18 R19 | R37 R38 | — | R49 R50 R53 | R56 | — |
 | **relink.transfer** | — | R16 | R28 R29 R30 R34 R88 | R18 R19 | R37 R38 R39 | — | R49 R50 R53 | R56 | — |
 | **remove.db-only** | — | — | R28 R29 R31 R34 R88 | R04 R18 R19 R25 R26 R27 R83 | — | — | R49 R50 R53 R84 | — | R20 R22 R61 R74 |
 | **remove.hard** | — | — | R28 R29 R31 R33 R34 R88 | R04 R18 R19 R25 R26 R27 R83 | — | R46 | R49 R50 R53 R84 | — | R20 R22 R61 R74 |
 | **remove.orphans** | — | R12 R13 R14 | R28 R29 R31 R34 R88 | R04 R18 R19 R25 R26 R27 R83 | — | — | R49 R50 R53 R84 | — | R20 R22 R61 R74 |
-| **remove.trash** | R02 | — | R28 R29 R31 R33 R34 R88 | R04 R18 R19 R23 R25 R26 R27 R83 | — | R46 | R49 R50 R53 R84 | — | R20 R22 R61 R74 |
+| **remove.trash** | R02 | — | R28 R29 R31 R33 R34 R88 | R04 R18 R19 R23 R25 R26 R27 R83 | R89 | R46 | R49 R50 R53 R84 | — | R20 R22 R61 R74 |
 | **scan.reconcile** | — | R12 R13 R14 R15 R16 R17 R75 | R28 R29 R30 R31 R34 R80 R88 | R04 R18 R19 R25 R26 R83 | R37 R38 R39 | R43 | R49 R50 R53 R84 | R56 | R59 |
 | scan.walk | — | — | R28 R29 R34 R72 R80 R88 | — | R35 R36 R76 | R42 R43 | R49 R50 R53 R55 | R57 R58 | R60 |
 | **thumbs.clean** | — | — | R29 R88 | — | — | — | — | — | R77 |

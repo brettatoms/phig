@@ -150,6 +150,34 @@ search --similar - and search --face - read stdin into memory first, so empty st
 | Evidence | subprocess: `CliOutputTest.StdinQueryNeverWritesThroughAPlantedPath`, `CliOutputTest.EmptyStdinCreatesNothing`, `PathsTest.PrivateTempFilesAreUniqueAndOwnerOnly`, `PathsTest.PrivateTempFileNeverWritesThroughAPlantedSymlink` |
 | Test gap | The tests cannot plant a file at the name mkstemp will choose, so exclusivity rests on mkstemp's O_EXCL contract. The planted-symlink tests pin the old fixed name and that a fresh name is used. |
 
+### R90 — holds (test gap)
+
+A destination that already holds the source's bytes, on disk or from an earlier item in the same run, is not a conflict under any on_conflict policy: a copy writes nothing, and a move sends the source to the trash after carrying its user metadata to the destination's row.
+
+Renaming around identical content writes a second copy of the same bytes under a _1 name, and skipping leaves the duplicate where it was, so merging two copies of a collection multiplied its duplicates. A copy that adopts an untracked identical file is logged as adopt rather than copy, because undoing a copy deletes the file it wrote and phig wrote none.
+
+| | |
+|---|---|
+| Enforced at | `core/organize_engine.cpp:identical_occupant`, `core/organize_engine.cpp:OrganizeEngine::apply`, `core/organize_exec.cpp:execute_identical_action` |
+| Binds | `organize.copy`, `organize.move`, `organize.plan` |
+| Protects | original-file, user-metadata |
+| Evidence | witness: `OrganizeIdenticalTest.MoveOntoAnIdenticalUntrackedFileTrashesTheSourceAndAdoptsTheDest`, `OrganizeIdenticalTest.MoveOntoAnIdenticalTrackedFileCarriesMetadataAndDropsTheSourceRow`, `OrganizeIdenticalTest.TwoIdenticalSourcesPlannedToOneDestinationLeaveOneFile`, `OrganizeIdenticalTest.WhenTheFirstOfTwoIdenticalSourcesFailsTheSecondMovesNormally`, `OrganizeIdenticalTest.AMissingSidecarIsCarriedAndAnIdenticalOneIsTrashed`, `OrganizeIdenticalTest.CopyOntoAnIdenticalUntrackedFileWritesNothingAndTracksIt`, `OrganizeIdenticalTest.CopyOntoAnIdenticalTrackedFileChangesNothing`, `AbiOrganizeTest.AnIdenticalDestinationIsReportedAndAMoveTrashesTheSource` |
+| Test gap | Only the skip and rename policies are exercised; overwrite reaches the same branch. A RAW's attached JPEG and a Live Photo video go through the same attachment list as a sidecar and are not tested here. |
+
+### R91 — holds (test gap)
+
+A source is trashed as identical to its destination only after the two files, and their attachments, are compared byte for byte on disk when the move runs; an item that no longer matches is skipped.
+
+The plan compares the source row's recorded sha256 and is advisory. Trashing the source is the one step here that removes a file from where the user keeps it, so it rests on what is on disk at that moment, not on a hash that may be stale or a plan computed before an edit.
+
+| | |
+|---|---|
+| Enforced at | `core/organize_exec.cpp:execute_identical_action`, `core/organize_exec.cpp:same_bytes` |
+| Binds | `organize.move` |
+| Protects | original-file |
+| Evidence | witness: `OrganizeIdenticalTest.ASourceEditedAfterPlanningIsSkippedNotTrashed` |
+| Test gap | A destination edited between plan and apply, and an attachment that changes in that window, reach the same comparison and are not tested on their own. |
+
 ## reconcile
 
 ### R12 — holds
@@ -441,6 +469,34 @@ Steps run with foreign keys off (R84), so apply_migration_step reads PRAGMA fore
 | Evidence | witness: `SchemaUpgradeTest.AV7CatalogWithOrphanRowsUpgradesAndKeepsEveryRow`, `SchemaUpgradeTest.AStepThatAddsAViolationFailsAndRollsBackBesideExistingOrphans`, `SchemaUpgradeTest.TheBackupIsWrittenBeforeTheFirstStepAndHoldsTheOldDatabase`, `SchemaUpgradeTest.NoBackupIsWrittenWhenNoStepIsPending`, `SchemaUpgradeTest.AnExistingFileAtTheBackupsNameIsLeftAlone`, `SchemaUpgradeTest.WhenTheBackupCannotBeWrittenNoStepRuns`, `SchemaUpgradeTest.AnUpgradeThatFailsBeforeAnyStepCommitsRemovesItsBackup`, `SchemaUpgradeTest.AnUpgradeThatFailsAfterAStepCommittedKeepsItsBackup`, `SchemaUpgradeTest.AConnectionWhoseStepsAnotherAppliedKeepsNoBackup`, `SchemaUpgradeTest.APreMetaDatabaseIsBackedUpAsV0`, `SchemaUpgradeCliTest.ScanUpgradesAV7CatalogWithOrphansAndNamesTheBackup` |
 | Test gap | The step that adds a violation is a test's own step run through apply_migration_step, not a shipped migration, since none strands a row. The cannot-write case is reached through a read-only catalog directory while another connection keeps the WAL files open, so a disk-full failure partway through VACUUM INTO, a failed flush, and the removal of the partial file are not exercised, and nothing observes that the flush happened. The pre-migration path's copy is pinned, but not its behaviour when the copy cannot be written. The suffixed name for two copies in the same second is reached by DatabaseConcurrency's migration tests and asserted by none. |
 
+### R94 — holds (test gap)
+
+When a move that absorbs its source into an identical destination fails to commit its row changes, the source is moved back from the trash and the destination's mtime restored before the error is reported.
+
+The source is trashed before the transaction that merges and deletes its row, so a failed commit would otherwise leave a row pointing at a file in the trash and a destination with a time nothing records. The trash entry is logged inside that transaction, so the log never records a trash that was undone.
+
+| | |
+|---|---|
+| Enforced at | `core/organize_exec.cpp:execute_identical_action` |
+| Binds | `organize.move` |
+| Protects | original-file, db-row, activity-log |
+| Evidence | witness: `OrganizeIdenticalTest.AFailedCommitBringsTheTrashedSourceBack`, `OrganizeIdenticalMtimeTest.AFailedCommitRestoresTheDestinationsMtime` |
+| Test gap | A failure to move the source back from the trash is reported but not tested. |
+
+### R98 — holds (test gap)
+
+When resolving a duplicate group fails to commit its row changes, the group's trashed files are moved back and the kept file's mtime restored before the error is reported.
+
+The removed members go to the trash before the transaction that merges and deletes their rows, so a failed commit would otherwise leave rows pointing into the trash. Their trash entries are logged inside that transaction, so the log never records a trash that was undone.
+
+| | |
+|---|---|
+| Enforced at | `core/duplicates_resolve.cpp:resolve_group` |
+| Binds | `duplicates.resolve` |
+| Protects | original-file, db-row, activity-log |
+| Evidence | witness: `DuplicatesResolveTest.AFailedCommitBringsTheTrashedFilesBack` |
+| Test gap | A failure to move a file back from the trash is reported but not tested. |
+
 ## recoverability
 
 ### R04 — partial (test gap)
@@ -551,6 +607,19 @@ Each of the three delete-path sites in core/database.cpp (delete_paths, delete_p
 | Protects | activity-log |
 | Evidence | witness: `DatabaseTest.DeletePathsReportsTheCauseItRolledBack`, `DatabaseTest.DeletePathsLoggedReportsTheCauseItRolledBack`, `DatabaseTest.LogPruneReportsTheCauseItRolledBack`, `DatabaseTest.DeletePathsLoggedClosesItsTransactionWhenAnEntryFails` |
 | Test gap | The faults are raised by triggers, not by a full disk or an expired busy timeout; the message path is the same. |
+
+### R97 — holds
+
+Resolving duplicates moves every removed member to the trash, never deleting it, and deletes its row with a restore snapshot after carrying its user metadata to the file kept.
+
+The command removes thousands of files on a judgement about which copy to keep, made by rules a person did not check one by one. The trash and the snapshots make every one of those removals reversible until the trash is emptied.
+
+| | |
+|---|---|
+| Enforced at | `core/duplicates_resolve.cpp:resolve_group` |
+| Binds | `duplicates.resolve` |
+| Protects | original-file, db-row |
+| Evidence | witness: `DuplicatesResolveTest.AResolvedGroupLeavesOneFileAndCarriesTheMetadata`, `DuplicatesResolveCliTest.YesResolvesTheGroup` |
 
 ## metadata
 
@@ -690,6 +759,62 @@ kLabelCarryMaxDistance is 1.128, SFace's published same-identity threshold on un
 | Protects | user-metadata |
 | Evidence | witness: `CarryLabels.SameModelNeverMovesALabelToAnotherPersonsFace`, `CarryLabels.AModelChangeInASameSizedRotatedFrameDropsRatherThanMoves`, `CarryLabels.AModelChangeInA180RotatedFrameDropsRatherThanMoves`, `CarryLabels.ARowFromBeforeV10IsTakenAsTheSfaceModelWithAnUnknownFrame`, `CarryLabels.AnEmbeddingMatchAndAnOverlapMatchShareOneDetection`, `CarryLabels.SameModelOneDetectionTakesAtMostOneLabel`, `CarryLabels.AnEmbeddingBeyondTheThresholdDoesNotMatch`, `CarryLabels.TheEmbeddingThresholdIsAppliedToNormalizedDistance`, `FacesEngineRun.RebuildDropsALabelFromAnotherModelInAnotherFrame`, `FacesEngineRun.RebuildDropsALabelWhenTheFileChangedUnderItsRowAndTheModelChanged` |
 | Test gap | The rotated-frame cases are unit tests over synthetic embeddings; no engine test rotates a real image, because the detector does not find faces turned 90 degrees reliably. The stale-row check trusts mtime and size like scan's skip, so a file rewritten with identical mtime and size passes as unchanged. The embedding threshold is SFace's published value, not one measured on phig's data, and a same-model match is a biometric threshold: a lookalike within it can take a label, and no test exercises that. Frame identity is bytes plus size, not decoder: the same JPEG decoded under OpenCV 4.x and 5.x can orient differently when its first APP1 is XMP, so under a model change across such an OpenCV upgrade the overlap pass could compare differently oriented boxes. The engine witnesses skip without the face path, so ubuntu-26.04 is the only CI leg that runs them. |
+
+### R89 — holds (test gap)
+
+A file phig copies, or moves across filesystems, keeps its source's modification time.
+
+For a photo with no EXIF or sidecar date, mtime is the date organize files it under and search shows. A copy that took the time it was made misdates every such photo, and does so late: the copied row keeps the old modified_at, so the damage appears only when the next scan adopts the file's new mtime. The time is set on the temporary file before the rename publishes it, so the file never appears at its destination with the wrong one.
+
+| | |
+|---|---|
+| Enforced at | `core/paths.cpp:copy_mtime`, `core/paths.cpp:atomic_copy_file`, `core/paths.cpp:move_file` |
+| Binds | `organize.copy`, `organize.move`, `remove.trash` |
+| Protects | original-file |
+| Evidence | witness: `AtomicWriteTest.CopyFileKeepsSourceMtime`, `MoveFileTest.CrossDeviceKeepsSourceMtime`, `OrganizeEngineTest.CliCopyKeepsAnUndatedPhotosMtimeThroughARescan`, `OrganizeEngineTest.CliCrossDeviceMoveKeepsAnUndatedPhotosMtimeThroughARescan` |
+| Test gap | The two cross-device tests skip unless /dev/shm is a different filesystem from the temp directory. A trash move across filesystems reaches the same move_file branch and is not tested on its own. atime is not kept, and a destination filesystem with coarser timestamps (FAT's two seconds) rounds the time; neither is tested. |
+
+### R92 — holds (test gap)
+
+A destination holding the source's bytes absorbs the source only when nothing the source carries would be lost; two different galleries, named faces on the source when the destination already has faces, or an attachment whose counterpart at the destination has different bytes leave the item to the run's conflict policy.
+
+Absorbing a move trashes the source and merges its row through R37, which keeps the target's gallery and moves faces only onto a target with none. In those cases the source's gallery or its person labels would disappear, and a sidecar with different content is user data the destination does not have. Falling back to the policy keeps both files, which is what organize did before identical content was recognized.
+
+| | |
+|---|---|
+| Enforced at | `core/organize_exec.cpp:metadata_merge_blocker`, `core/organize_exec.cpp:attachments_mergeable`, `core/organize_engine.cpp:identical_occupant` |
+| Binds | `organize.copy`, `organize.move`, `organize.plan` |
+| Protects | user-metadata, attachment |
+| Evidence | witness: `OrganizeIdenticalTest.DifferentGalleriesFallBackToTheConflictPolicy`, `OrganizeIdenticalTest.NamedFacesOnTheSourceAndFacesOnTheDestFallBack`, `OrganizeIdenticalTest.ASidecarWithDifferentBytesAtTheDestinationFallsBack` |
+| Test gap | The checks are pinned at plan time. apply() repeats them before a move, but no test changes a gallery, a face or a sidecar between plan and apply. A copy falls back on the same conditions although it merges nothing, because one plan serves both. |
+
+### R93 — holds (test gap)
+
+When a move absorbs its source into a destination with the same bytes, or resolving duplicates keeps one file of a group, the file kept takes another copy's modification time only when both are dated by their mtime and the other's is older and plausible, on or after 1990-01-01 and not in the future; the surviving row records the kept file's final mtime, and a changed time is logged with the one it replaced.
+
+A copy takes the time it was made, so of two identical files the older mtime is usually the original's, and for a photo with no EXIF or sidecar date that time is its date. A photo dated by EXIF or a sidecar does not depend on its mtime, so it is left alone. Times before 1990 are the Unix epoch, the FAT default of 1980-01-01, or an unset clock, and would misdate the photo worse than the copy time.
+
+| | |
+|---|---|
+| Enforced at | `core/organize_exec.cpp:mtime_to_keep`, `core/organize_exec.cpp:execute_identical_action`, `core/duplicates_resolve.cpp:resolve_group` |
+| Binds | `organize.move`, `duplicates.resolve` |
+| Protects | original-file, db-row |
+| Evidence | witness: `OrganizeIdenticalMtimeTest.AnUndatedDestinationTakesTheSourcesOlderMtime`, `OrganizeIdenticalMtimeTest.ANewerSourceMtimeIsNotTaken`, `OrganizeIdenticalMtimeTest.ImplausibleSourceTimesAreIgnored`, `OrganizeIdenticalMtimeTest.AnExifDatedDestinationKeepsItsMtime`, `DuplicatesResolveTest.AnUndatedKeeperTakesTheOldestPlausibleMtimeInTheGroup` |
+| Test gap | A sidecar-dated pair is not tested; the EXIF case reaches the same branch. The logged previous time has one-second resolution, so restoring it from the log loses the fraction. |
+
+### R96 — holds (test gap)
+
+A duplicate group is resolved only when every removed member's user metadata and attachments can be carried to the file kept; two different galleries, named faces the kept file cannot take, or an attachment that differs from the one beside the kept file leave the whole group as it is.
+
+Each removed member's row is merged through R37, which keeps the target's gallery and moves faces only onto a target with none, so in those cases the merge would drop a gallery or a person label. A sidecar with different contents is user data the kept file does not have. Leaving the group keeps every copy; the plan names the reason so a person can decide.
+
+| | |
+|---|---|
+| Enforced at | `core/duplicates_resolve.cpp:check_group` |
+| Binds | `duplicates.resolve` |
+| Protects | user-metadata, attachment |
+| Evidence | witness: `DuplicatesResolveTest.DifferentGalleriesLeaveTheGroupAlone`, `DuplicatesResolveTest.NamedFacesThatCannotMoveLeaveTheGroupAlone`, `DuplicatesResolveTest.ADifferentSidecarBesideTheKeeperLeavesTheGroupAlone`, `DuplicatesResolveTest.AResolvedGroupLeavesOneFileAndCarriesTheMetadata`, `DuplicatesResolveTest.ARemovedMembersSidecarIsCarriedToTheKeeper` |
+| Test gap | Two removed members carrying different sidecars to the same name beside the kept file reach the same check and are not tested. apply() repeats the check, but no test changes a gallery or a face between plan and apply. |
 
 ## attachments
 
@@ -994,6 +1119,19 @@ The worker holds raw pointers to the phig_op and to the per-operation Database t
 | Protects | db-row |
 | Evidence | witness: `AbiOperations.FreeWhileRunningWaitsForTheWorker`, `AbiOperations.CancelIsIdempotentAndSafeAfterCompletion` |
 
+### R99 — holds
+
+Resolving duplicates stops only between groups: a group in progress is finished, groups not yet started are untouched, and the run is recorded as interrupted.
+
+A group's trash moves, metadata merge and row deletions belong together; stopping inside one would leave some copies trashed with their rows still present. Checking the token only between groups keeps every group either resolved or untouched.
+
+| | |
+|---|---|
+| Enforced at | `core/duplicates_resolve.cpp:DuplicatesResolver::apply` |
+| Binds | `duplicates.resolve` |
+| Protects | original-file, db-row, activity-log |
+| Evidence | witness: `DuplicatesResolveTest.CancellingBetweenGroupsFinishesTheCurrentOneAndStops` |
+
 ## authorization
 
 ### R20 — holds (test gap)
@@ -1190,3 +1328,16 @@ A format's tokens are substituted into a path joined onto the destination, and %
 | Protects | original-file |
 | Evidence | conformance: `OrganizeEngineTest.AMakeOrModelThatClimbsOrIsAbsoluteStaysInsideTheDestination`, `OrganizeEngineTest.AGalleryNameWithASlashPlansOneFolder`, `OrganizeEngineTest.AValueThatCleansToNothingOrADotTakesItsPlaceholder`, `OrganizeEngineTest.AFormatThatLeavesTheDestinationOrHasAnUnknownTokenIsRefused`, `OrganizeEngineTest.CliCopyKeepsAFileWhoseModelClimbsInsideTheDestination`, `AbiOrganizeTest.PlanRefusesAFormatThatLeavesTheDestination` |
 | Test gap | The containment check in plan() is unreachable once the other two guards hold, so no test reaches it; it is pinned only by reading. A symlinked directory inside the destination that points elsewhere passes, by design: the check is lexical, and following the user's own link is what they asked for. |
+
+### R95 — holds
+
+Resolving duplicates moves a member to the trash only after its bytes, and the kept file's, are compared with the group's sha256 on disk when the group is applied; a member that no longer matches stays where it is, and a kept file that no longer matches leaves the group alone.
+
+The plan groups rows by their recorded sha256, which can be stale, and a person may edit a file between the plan and the apply. Trashing a copy is safe only because another file holds the same bytes, so that has to be true on disk at the moment it is acted on.
+
+| | |
+|---|---|
+| Enforced at | `core/duplicates_resolve.cpp:resolve_group` |
+| Binds | `duplicates.resolve` |
+| Protects | original-file |
+| Evidence | witness: `DuplicatesResolveTest.AMemberEditedAfterPlanningIsNotTrashed`, `DuplicatesResolveTest.AnEditedKeeperLeavesTheGroupAlone` |

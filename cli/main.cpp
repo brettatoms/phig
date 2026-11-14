@@ -30,6 +30,7 @@
 #include "database.h"
 #include "dates.h"
 #include "duplicates.h"
+#include "duplicates_resolve.h"
 #include "exif.h"
 #include "faces.h"
 #include "faces_engine.h"
@@ -41,6 +42,7 @@
 #include "organize_engine.h"
 #include "organize_exec.h"
 #include "organize_plan.h"
+#include "output_escape.h"
 #include "paths.h"
 #include "relink.h"
 #include "remove_exec.h"
@@ -121,6 +123,10 @@ void print_usage() {
         << "Usage:\n"
         << "  phig scan <directory> [flags]\n"
         << "  phig duplicates [flags]\n"
+        << "  phig duplicates resolve [--keep <rule>]... [--match|--exclude] [--dry-run]\n"
+        << "                          [--format text|json] [--yes]\n"
+        << "                               Keep one file of each byte-identical group and move\n"
+        << "                               the rest to the trash, carrying their tags to it\n"
         << "  phig cp <destination> [flags]\n"
         << "  phig mv <destination> [flags]\n"
         << "  phig rm [--match|--exclude] [--hard|--db-only|--orphans] [--dry-run] [--yes]\n"
@@ -161,7 +167,8 @@ void print_usage() {
         << "\nDuplicates flags:\n"
         << "  --type exact|near|all    Duplicate type to find (default: all)\n"
         << "  --threshold [0-64]       Hamming distance for near duplicates (default: 5)\n"
-        << "  --format text|csv|json   Output format (default: text)\n"
+        << "  --format text|csv|json   Output format (default: text). JSON shows a path that\n"
+        << "                           is not valid UTF-8 with U+FFFD in place of its bad bytes\n"
         << "  --output <path>          Write to file instead of stdout\n"
         << "  --overwrite              Replace the --output file if it exists\n"
         << "  --match <glob>           Show groups containing matching files (repeatable, matches "
@@ -169,6 +176,14 @@ void print_usage() {
         << "  --exclude <glob>          Exclude matching files (repeatable, wins over --match)\n"
         << "  --media image|video|all  Filter by media type (default: all)\n"
         << "  --fav                    Only groups containing a favorite\n"
+        << "\nDuplicates resolve flags:\n"
+        << "  --keep <rule>            How to pick the file kept, in order (repeatable):\n"
+        << "                           under:<dir>, unsuffixed, oldest, shortest\n"
+        << "                           (default: unsuffixed, oldest, shortest)\n"
+        << "  --match/--exclude <glob> Only groups with a matching file (repeatable)\n"
+        << "  --dry-run                Show what would be kept and trashed\n"
+        << "  --format text|json       Dry-run output format (default: text)\n"
+        << "  --yes                    Skip the confirmation prompt\n"
         << "\nCopy/Move flags (cp, mv):\n"
         << "  --format <string>        Output path format (default: %Y/%m/%original)\n"
         << "                           Tokens: %Y %m %d %camera %make %gallery %fav %original\n"
@@ -214,7 +229,9 @@ void print_usage() {
         << "  --count                  Show count of matches only\n"
         << "  --porcelain              Tab-separated machine output\n"
         << "  --print0                 Null-separated paths\n"
-        << "  --format text|csv|json   Output format (default: text)\n"
+        << "  --format text|csv|json   Output format (default: text). JSON shows a path that\n"
+        << "                           is not valid UTF-8 with U+FFFD in place of its bad bytes;\n"
+        << "                           --print0 and --porcelain keep a path's exact bytes\n"
         << "  --output <path>          Write to file\n"
         << "  --overwrite              Replace the --output file if it exists\n"
         << "\nThumbs rebuild flags:\n"
@@ -496,22 +513,18 @@ void output_csv(std::ostream& out, const std::vector<DuplicateGroup>& exact,
     out << "group,type,path,filename,sha256,phash,width,height,file_size\n";
     int group_num = 0;
 
-    for (const auto& g : exact) {
-        group_num++;
-        for (const auto& img : g.images) {
-            out << group_num << ",exact,\"" << img.path << "\"," << img.filename << ","
-                << img.sha256 << "," << img.phash << "," << img.width << "," << img.height << ","
-                << img.file_size << "\n";
+    auto write_groups = [&](const std::vector<DuplicateGroup>& groups, const char* type) {
+        for (const auto& g : groups) {
+            group_num++;
+            for (const auto& img : g.images) {
+                out << group_num << "," << csv_field(type) << "," << csv_field(img.path) << ","
+                    << csv_field(img.filename) << "," << csv_field(img.sha256) << "," << img.phash
+                    << "," << img.width << "," << img.height << "," << img.file_size << "\n";
+            }
         }
-    }
-    for (const auto& g : near) {
-        group_num++;
-        for (const auto& img : g.images) {
-            out << group_num << ",near,\"" << img.path << "\"," << img.filename << "," << img.sha256
-                << "," << img.phash << "," << img.width << "," << img.height << "," << img.file_size
-                << "\n";
-        }
-    }
+    };
+    write_groups(exact, "exact");
+    write_groups(near, "near");
 }
 
 void output_json(std::ostream& out, const std::vector<DuplicateGroup>& exact,
@@ -520,15 +533,15 @@ void output_json(std::ostream& out, const std::vector<DuplicateGroup>& exact,
         for (const auto& g : groups) {
             if (!first_group) out << ",";
             first_group = false;
-            out << "{\"type\":\"" << g.type << "\",\"files\":[";
+            out << "{\"type\":" << json_string(g.type) << ",\"files\":[";
             for (size_t i = 0; i < g.images.size(); i++) {
                 if (i > 0) out << ",";
                 const auto& img = g.images[i];
-                out << "{\"path\":\"" << img.path << "\""
-                    << ",\"filename\":\"" << img.filename << "\""
-                    << ",\"sha256\":\"" << img.sha256 << "\""
-                    << ",\"phash\":" << img.phash << ",\"width\":" << img.width
-                    << ",\"height\":" << img.height << ",\"file_size\":" << img.file_size << "}";
+                out << "{\"path\":" << json_string(img.path)
+                    << ",\"filename\":" << json_string(img.filename)
+                    << ",\"sha256\":" << json_string(img.sha256) << ",\"phash\":" << img.phash
+                    << ",\"width\":" << img.width << ",\"height\":" << img.height
+                    << ",\"file_size\":" << img.file_size << "}";
             }
             out << "]}";
         }
@@ -674,9 +687,11 @@ int cmd_organize(Database& db, const OrganizeOptions& opts, bool is_move, bool d
     CancelToken cancel;
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
-    size_t to_process = 0, to_skip = 0;
+    size_t to_process = 0, to_skip = 0, already = 0;
     for (size_t i = 0; i < plan.size(); i++) {
-        if (plan.at(i).dest.empty())
+        if (plan.at(i).identical)
+            already++;
+        else if (plan.at(i).dest.empty())
             to_skip++;
         else
             to_process++;
@@ -685,13 +700,18 @@ int cmd_organize(Database& db, const OrganizeOptions& opts, bool is_move, bool d
     std::string verb = is_move ? "Move" : "Copy";
     std::cout << "\n"
               << verb << ": " << to_process << " files"
-              << ", skip: " << to_skip << " (conflict/exists)\n";
+              << ", already present: " << already << ", skip: " << to_skip
+              << " (conflict/exists)\n";
 
     if (dry_run) {
         std::cout << "\n[DRY RUN]\n";
         for (size_t i = 0; i < plan.size(); i++) {
             const OrganizeAction& a = plan.at(i);
-            if (a.dest.empty()) {
+            if (a.identical) {
+                std::cout << "  SAME " << a.source << " \u2192 " << a.dest
+                          << (is_move ? " (already there; source goes to the trash)\n"
+                                      : " (already there; nothing copied)\n");
+            } else if (a.dest.empty()) {
                 std::cout << "  SKIP " << a.source << " \u2192 " << a.intended_dest
                           << " (already exists)\n";
             } else {
@@ -736,12 +756,185 @@ int cmd_organize(Database& db, const OrganizeOptions& opts, bool is_move, bool d
     if (result.cancelled) std::cout << "Interrupted. Stopped at a file boundary.\n";
     std::cout << "Done.\n"
               << "  Done: " << result.applied << "\n"
+              << "  Already present: " << result.identical << "\n"
               << "  Skipped: " << result.skipped << "\n"
               << "  Errors: " << result.errors << "\n";
     if (result.attachment_errors != 0) {
         std::cout << "  Attachments not carried: " << result.attachment_errors << "\n";
     }
 
+    return result.completed ? 0 : 1;
+}
+
+// Asks on the terminal before a destructive command proceeds. Refuses, rather
+// than waiting, when stdin is not a terminal.
+bool confirm_on_terminal(const std::string& prompt) {
+    std::cout << prompt;
+    if (!::isatty(fileno(stdin))) {
+        std::cerr << "Refusing without confirmation.\n"
+                     "Re-run with --yes to proceed, or --dry-run to preview.\n";
+        return false;
+    }
+    std::cout << "Type 'yes' to proceed: " << std::flush;
+    std::string answer;
+    std::getline(std::cin, answer);
+    if (answer != "yes") {
+        std::cout << "Aborted.\n";
+        return false;
+    }
+    return true;
+}
+
+// ---- Duplicates resolve ----
+
+const char* keep_reason_name(KeepReason r) {
+    switch (r) {
+        case KeepReason::Under:
+            return "under";
+        case KeepReason::Unsuffixed:
+            return "unsuffixed";
+        case KeepReason::Oldest:
+            return "oldest";
+        case KeepReason::Shortest:
+            return "shortest";
+        case KeepReason::LowestId:
+            return "lowest id";
+        case KeepReason::Chosen:
+            return "chosen";
+    }
+    return "";
+}
+
+const char* blocker_name(ResolveBlocker b) {
+    switch (b) {
+        case ResolveBlocker::None:
+            return "";
+        case ResolveBlocker::DifferentGalleries:
+            return "different galleries";
+        case ResolveBlocker::NamedFaces:
+            return "named faces the kept file cannot take";
+        case ResolveBlocker::AttachmentDiffers:
+            return "a sidecar differs from the one beside the kept file";
+        case ResolveBlocker::TooFewOnDisk:
+            return "fewer than two files on disk";
+        case ResolveBlocker::Skipped:
+            return "skipped";
+    }
+    return "";
+}
+
+void print_resolve_plan_json(const DuplicatesPlan& plan) {
+    std::cout << "{\"groups\":[";
+    for (size_t i = 0; i < plan.size(); ++i) {
+        const ResolveGroup& g = plan.at(i);
+        if (i > 0) std::cout << ",";
+        const bool resolvable = g.blocker == ResolveBlocker::None;
+        std::cout << "{\"sha256\":" << json_string(g.sha256) << ",\"keep\":"
+                  << (resolvable ? json_string(g.members.at(g.keeper).path) : "null")
+                  << ",\"reason\":"
+                  << (resolvable ? json_string(keep_reason_name(g.reason)) : "null")
+                  << ",\"blocked\":" << (resolvable ? "null" : json_string(blocker_name(g.blocker)))
+                  << ",\"trash\":[";
+        bool first = true;
+        if (resolvable) {
+            for (size_t m = 0; m < g.members.size(); ++m) {
+                if (m == g.keeper) continue;
+                std::cout << (first ? "" : ",") << json_string(g.members[m].path);
+                first = false;
+            }
+        }
+        std::cout << "]}";
+    }
+    std::cout << "]}\n";
+}
+
+int cmd_duplicates_resolve(Database& db, const ResolveOptions& opts, bool dry_run, bool json,
+                           bool assume_yes) {
+    DuplicatesResolver resolver(opts, db);
+    DuplicatesPlan plan = resolver.plan();
+
+    size_t resolvable = 0, left = 0, to_trash = 0;
+    for (size_t i = 0; i < plan.size(); ++i) {
+        const ResolveGroup& g = plan.at(i);
+        if (g.blocker == ResolveBlocker::None) {
+            resolvable++;
+            to_trash += g.members.size() - 1;
+        } else {
+            left++;
+        }
+    }
+
+    if (json) {
+        print_resolve_plan_json(plan);
+        return 0;
+    }
+
+    std::cout << plan.size() << " duplicate groups: " << resolvable << " to resolve, " << left
+              << " left alone, " << to_trash << " files to move to the trash\n";
+
+    if (dry_run) {
+        std::cout << "\n[DRY RUN]\n";
+        for (size_t i = 0; i < plan.size(); ++i) {
+            const ResolveGroup& g = plan.at(i);
+            if (g.blocker != ResolveBlocker::None) {
+                std::cout << "  LEAVE " << (g.members.empty() ? g.sha256 : g.members[0].path)
+                          << " (" << blocker_name(g.blocker) << ")\n";
+                continue;
+            }
+            std::cout << "  KEEP  " << g.members.at(g.keeper).path << " ("
+                      << keep_reason_name(g.reason) << ")\n";
+            for (size_t m = 0; m < g.members.size(); ++m)
+                if (m != g.keeper) std::cout << "  TRASH " << g.members[m].path << "\n";
+        }
+        return 0;
+    }
+
+    if (to_trash == 0) {
+        std::cout << "Nothing to resolve.\n";
+        return 0;
+    }
+    if (!assume_yes && !confirm_on_terminal("Move " + std::to_string(to_trash) +
+                                            " files to the trash, keeping one copy in each of " +
+                                            std::to_string(resolvable) + " groups.\n")) {
+        return 1;
+    }
+
+    CancelToken cancel;
+    ProgressQueue<ResolveProgress> progress(1024);
+    ResolveResult result;
+    std::exception_ptr engine_error;
+    {
+        ScopedInterruptHandler interrupt_guard(cancel);
+        std::thread worker([&] {
+            try {
+                result = resolver.apply(plan, cancel, &progress);
+            } catch (...) {
+                engine_error = std::current_exception();
+            }
+            progress.close();
+        });
+        ResolveProgress p;
+        while (progress.pop(p)) {
+            if (!p.error.empty()) {
+                std::cout << "\r\033[K" << std::flush;
+                log_warn(p.error);
+            }
+            std::cout << "\r[" << p.done << "/" << p.total << "] " << std::flush;
+        }
+        worker.join();
+    }
+    if (engine_error) std::rethrow_exception(engine_error);
+
+    std::cout << "\n\n";
+    if (result.cancelled) std::cout << "Interrupted. Stopped between groups.\n";
+    std::cout << "Done.\n"
+              << "  Resolved: " << result.resolved << " groups\n"
+              << "  Moved to the trash: " << result.trashed << " files\n"
+              << "  Left alone: " << result.skipped << " groups\n"
+              << "  Errors: " << result.errors << "\n";
+    if (result.attachment_errors != 0) {
+        std::cout << "  Attachments not carried: " << result.attachment_errors << "\n";
+    }
     return result.completed ? 0 : 1;
 }
 
@@ -1042,7 +1235,7 @@ int cmd_search(const SearchOptions& opts) {
             out << "{\"results\":[";
             for (size_t i = 0; i < face_results.size(); i++) {
                 if (i > 0) out << ",";
-                out << "{\"path\":\"" << face_results[i].path << "\""
+                out << "{\"path\":" << json_string(face_results[i].path)
                     << ",\"distance\":" << face_results[i].distance
                     << ",\"face_x\":" << face_results[i].face_x
                     << ",\"face_y\":" << face_results[i].face_y
@@ -1092,10 +1285,10 @@ int cmd_search(const SearchOptions& opts) {
             std::string camera = json_get(img.metadata_json, "Model");
             std::string tpath =
                 img.sha256.size() >= 2 ? get_thumb_path(img.sha256, PHIG_DEFAULT_THUMB_SIZE) : "";
-            out << "\"" << img.path << "\"," << img.filename << "," << img.width << ","
-                << img.height << "," << img.file_size << "," << date << ","
-                << "\"" << camera << "\"," << img.sha256 << "," << img.phash << ","
-                << "\"" << tpath << "\"\n";
+            out << csv_field(img.path) << "," << csv_field(img.filename) << "," << img.width << ","
+                << img.height << "," << img.file_size << "," << csv_field(date) << ","
+                << csv_field(camera) << "," << csv_field(img.sha256) << "," << img.phash << ","
+                << csv_field(tpath) << "\n";
         }
     } else if (opts.format == "json") {
         out << "{\"results\":[";
@@ -1106,14 +1299,12 @@ int cmd_search(const SearchOptions& opts) {
             std::string camera = json_get(img.metadata_json, "Model");
             std::string tpath =
                 img.sha256.size() >= 2 ? get_thumb_path(img.sha256, PHIG_DEFAULT_THUMB_SIZE) : "";
-            out << "{\"path\":\"" << img.path << "\""
-                << ",\"filename\":\"" << img.filename << "\""
-                << ",\"width\":" << img.width << ",\"height\":" << img.height
-                << ",\"file_size\":" << img.file_size << ",\"date\":\"" << date << "\""
-                << ",\"camera\":\"" << camera << "\""
-                << ",\"sha256\":\"" << img.sha256 << "\""
-                << ",\"phash\":" << img.phash << ",\"thumb_path\":\"" << tpath << "\""
-                << "}";
+            out << "{\"path\":" << json_string(img.path)
+                << ",\"filename\":" << json_string(img.filename) << ",\"width\":" << img.width
+                << ",\"height\":" << img.height << ",\"file_size\":" << img.file_size
+                << ",\"date\":" << json_string(date) << ",\"camera\":" << json_string(camera)
+                << ",\"sha256\":" << json_string(img.sha256) << ",\"phash\":" << img.phash
+                << ",\"thumb_path\":" << json_string(tpath) << "}";
         }
         out << "],\"count\":" << results.size() << "}\n";
     } else {
@@ -2021,6 +2212,68 @@ int main(int argc, char* argv[]) {
             log_error(command + ": " + e.what());
             return 1;
         }
+    } else if (command == "duplicates" && argc > 2 && std::string(argv[2]) == "resolve") {
+        ResolveOptions opts;
+        std::vector<std::string> matches, excludes;
+        bool dry_run = false, assume_yes = false, keep_given = false;
+        std::string format = "text";
+        if (cfg.log_enabled) opts.log_enabled = *cfg.log_enabled;
+        if (cfg.log_max_entries) opts.log_max_entries = *cfg.log_max_entries;
+        opts.argv_str = join_argv(argc, argv);
+        try {
+            for (int i = 3; i < argc; i++) {
+                std::string arg = argv[i];
+                if (arg == "--keep" && i + 1 < argc) {
+                    // The first --keep replaces the default order rather than adding to it.
+                    if (!keep_given) opts.keep.clear();
+                    keep_given = true;
+                    opts.keep.push_back(parse_keep_rule(expand_tilde(argv[++i])));
+                } else if (arg == "--match" && i + 1 < argc) {
+                    matches.push_back(expand_tilde(argv[++i]));
+                } else if (arg == "--exclude" && i + 1 < argc) {
+                    excludes.push_back(expand_tilde(argv[++i]));
+                } else if (arg == "--dry-run") {
+                    dry_run = true;
+                } else if (arg == "--format" && i + 1 < argc) {
+                    format = argv[++i];
+                    if (format != "text" && format != "json") {
+                        std::cerr << "Error: --format must be 'text' or 'json'\n";
+                        return 1;
+                    }
+                } else if (arg == "--yes" || arg == "-y") {
+                    assume_yes = true;
+                } else {
+                    std::cerr << "Unknown option: " << arg << "\n";
+                    print_usage();
+                    return 1;
+                }
+            }
+        } catch (const InvalidOption& e) {
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
+        }
+        if (format == "json" && !dry_run) {
+            std::cerr << "Error: --format json prints the plan, so it needs --dry-run\n";
+            return 1;
+        }
+        try {
+            // A dry run only reads, so it takes no writer lock.
+            std::unique_ptr<WriterLock> lock;
+            if (!dry_run) lock = acquire_writer_lock(no_wait);
+            auto db_owner = open_catalog_db(default_db_path(),
+                                            dry_run ? CatalogAccess::Read : CatalogAccess::Write);
+            Database& db = *db_owner;
+            // No --match/--exclude means every group, as with `phig duplicates`.
+            Database::PageCriteria selection;
+            selection.filter.matches = matches;
+            selection.filter.excludes = excludes;
+            selection.limit = -1;
+            opts.ids = db.ids_matching(selection);
+            return cmd_duplicates_resolve(db, opts, dry_run, format == "json", assume_yes);
+        } catch (const std::exception& e) {
+            log_error(std::string("duplicates resolve: ") + e.what());
+            return 1;
+        }
     } else if (command == "duplicates") {
         DuplicatesOptions opts;
         opts.db_path = default_db_path();
@@ -2199,22 +2452,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: --hard, --db-only, and --orphans are mutually exclusive\n";
             return 1;
         }
-        ConfirmFn confirm = [](const std::string& prompt) {
-            std::cout << prompt;
-            if (!::isatty(fileno(stdin))) {
-                std::cerr << "Refusing without confirmation.\n"
-                             "Re-run with --yes to proceed, or --dry-run to preview.\n";
-                return false;
-            }
-            std::cout << "Type 'yes' to proceed: " << std::flush;
-            std::string answer;
-            std::getline(std::cin, answer);
-            if (answer != "yes") {
-                std::cout << "Aborted.\n";
-                return false;
-            }
-            return true;
-        };
+        ConfirmFn confirm = confirm_on_terminal;
         try {
             // A dry run only reads, so it takes no writer lock.
             std::unique_ptr<WriterLock> lock;

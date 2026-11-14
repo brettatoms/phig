@@ -85,6 +85,9 @@ constexpr AbiSymbolCount kAbiSymbolCounts[] = {
     // and phig_id_list_free — glob predicates on a query and resolving one to
     // ids (plan 053 decision 2). Additive, so the soname is unchanged.
     {1, 4, 73},
+    // 1.5 adds phig_organize_plan_identical_at — a destination that already holds
+    // the source's bytes (plan 076). Additive, so the soname is unchanged.
+    {1, 5, 74},
 };
 
 // Every exported entry point declared in the public header.

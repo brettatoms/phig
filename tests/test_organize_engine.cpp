@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -1047,4 +1049,96 @@ TEST_F(OrganizeEngineTest, AnEmptySelectionPlansNothing) {
     OrganizePlan plan = engine.plan(cancel, nullptr);
 
     EXPECT_EQ(plan.size(), 0u);
+}
+
+namespace {
+
+// Scans `src_dir` into the catalog at `catalog`, failing the test on a nonzero exit.
+void scan_into(const fs::path& bin, const fs::path& scratch, const fs::path& catalog,
+               const fs::path& src_dir) {
+    PhigRun run = run_phig(
+        bin, scratch,
+        "--catalog '" + catalog.string() + "' scan '" + src_dir.string() + "' --recursive");
+    ASSERT_EQ(run.exit_code, 0) << run.output;
+}
+
+// A JPEG with no EXIF or sidecar date, so organize can only date it by mtime.
+fs::path undated_photo_from_2011(const fs::path& dir) {
+    fs::path p = dir / "undated.jpg";
+    fs::create_directories(dir);
+    fs::copy_file("tests/data/jpeg/baseline.jpg", p);
+    const auto now = fs::file_time_type::clock::now();
+    const auto sys_now = std::chrono::system_clock::now();
+    // 2011-05-06 12:00:00 UTC.
+    const auto target =
+        std::chrono::sys_days{std::chrono::year{2011} / 5 / 6} + std::chrono::hours(12);
+    fs::last_write_time(p, now - (sys_now - target));
+    return p;
+}
+
+}  // namespace
+
+// The date is lost on the next scan rather than by the copy itself: the copied row
+// keeps the source's modified_at, the rescan sees the file's real mtime differ and
+// adopts it. So the test copies, rescans, and organizes again.
+TEST_F(OrganizeEngineTest, CliCopyKeepsAnUndatedPhotosMtimeThroughARescan) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    const fs::path catalog = dir / "catalog";
+    undated_photo_from_2011(dir / "src");
+    scan_into(phig_bin, dir, catalog, dir / "src");
+
+    const fs::path copied = dir / "copied";
+    PhigRun cp =
+        run_phig(phig_bin, dir,
+                 "--catalog '" + catalog.string() + "' cp '" + copied.string() +
+                     "' --format '%Y/%original' --match '" + (dir / "src").string() + "/*'");
+    ASSERT_EQ(cp.exit_code, 0) << cp.output;
+    ASSERT_TRUE(fs::exists(copied / "2011" / "undated.jpg")) << cp.output;
+
+    scan_into(phig_bin, dir, catalog, copied);
+    const fs::path again = dir / "again";
+    PhigRun cp2 = run_phig(phig_bin, dir,
+                           "--catalog '" + catalog.string() + "' cp '" + again.string() +
+                               "' --format '%Y/%original' --match '" + copied.string() + "/**'");
+    ASSERT_EQ(cp2.exit_code, 0) << cp2.output;
+    EXPECT_TRUE(fs::exists(again / "2011" / "undated.jpg")) << cp2.output;
+}
+
+TEST_F(OrganizeEngineTest, CliCrossDeviceMoveKeepsAnUndatedPhotosMtimeThroughARescan) {
+    fs::path phig_bin = phig_binary_path();
+    if (phig_bin.empty()) {
+        GTEST_SKIP() << "phig binary not found next to phig-tests or at ./build/phig; "
+                        "build it with `cmake --build build` to run this test";
+    }
+    const fs::path shm = "/dev/shm";
+    struct stat a{}, b{};
+    if (!fs::exists(shm) || stat(dir.c_str(), &a) != 0 || stat(shm.c_str(), &b) != 0 ||
+        a.st_dev == b.st_dev) {
+        GTEST_SKIP() << "no distinct second filesystem available for EXDEV test";
+    }
+    const fs::path other = make_temp_dir("organize-exdev-mtime", shm);
+    const fs::path catalog = dir / "catalog";
+    undated_photo_from_2011(dir / "src");
+    scan_into(phig_bin, dir, catalog, dir / "src");
+
+    PhigRun mv =
+        run_phig(phig_bin, dir,
+                 "--catalog '" + catalog.string() + "' mv '" + other.string() +
+                     "' --format '%Y/%original' --match '" + (dir / "src").string() + "/*'");
+    ASSERT_EQ(mv.exit_code, 0) << mv.output;
+    ASSERT_TRUE(fs::exists(other / "2011" / "undated.jpg")) << mv.output;
+
+    scan_into(phig_bin, dir, catalog, other);
+    const fs::path again = dir / "again";
+    PhigRun cp = run_phig(phig_bin, dir,
+                          "--catalog '" + catalog.string() + "' cp '" + again.string() +
+                              "' --format '%Y/%original' --match '" + other.string() + "/**'");
+    EXPECT_EQ(cp.exit_code, 0) << cp.output;
+    EXPECT_TRUE(fs::exists(again / "2011" / "undated.jpg")) << cp.output;
+
+    fs::remove_all(other);
 }
