@@ -6,6 +6,7 @@
 #include "background.h"
 #include "connect.h"
 #include "format.h"
+#include "gallery-selection.h"
 #include "query.h"
 
 namespace {
@@ -46,7 +47,7 @@ void attach_model(PhigApp& app, std::vector<int64_t> ids) {
     connect<void(PhigGalleryModel*, const char*)>(
         model.get(), "page-fetch-failed",
         [a](PhigGalleryModel*, const char*) noexcept { on_page_fetch_failed(*a); });
-    GtkMultiSelection* selection = gtk_multi_selection_new(G_LIST_MODEL(g_object_ref(model.get())));
+    PhigGallerySelection* selection = phig_gallery_selection_new(model.get());
     connect<void(GtkSelectionModel*, guint, guint)>(
         selection, "selection-changed",
         [a](GtkSelectionModel*, guint, guint) noexcept { update_selection_bar(*a); });
@@ -497,6 +498,8 @@ GtkWidget* selection_bar_new(PhigApp& app) {
 
     GtkWidget* favorite = gtk_button_new_from_icon_name("starred-symbolic");
     gtk_widget_set_tooltip_text(favorite, "Add to Favorites");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(favorite), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                   "Add to Favorites", -1);
     connect<void(GtkButton*)>(favorite, "clicked", [a](GtkButton*) noexcept {
         write_selection(*a,
                         [](phig::gtk::Collection& coll, const std::vector<int64_t>& ids) noexcept {
@@ -505,6 +508,8 @@ GtkWidget* selection_bar_new(PhigApp& app) {
     });
     GtkWidget* unfavorite = gtk_button_new_from_icon_name("non-starred-symbolic");
     gtk_widget_set_tooltip_text(unfavorite, "Remove from Favorites");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(unfavorite), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                   "Remove from Favorites", -1);
     connect<void(GtkButton*)>(unfavorite, "clicked", [a](GtkButton*) noexcept {
         write_selection(*a,
                         [](phig::gtk::Collection& coll, const std::vector<int64_t>& ids) noexcept {
@@ -526,6 +531,7 @@ GtkWidget* selection_bar_new(PhigApp& app) {
 }
 
 void update_selection_bar(PhigApp& app) {
+    if (app.window == nullptr) return;
     guint64 n = 0;
     if (app.selection != nullptr) {
         GtkBitset* set = gtk_selection_model_get_selection(app.selection);

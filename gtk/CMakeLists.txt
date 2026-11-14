@@ -11,7 +11,8 @@ set(PHIG_GTK_WARNINGS -Wall -Wextra)
 
 pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk4 libadwaita-1)
 
-add_executable(phig-gtk src/main.cpp src/gallery-model.cpp src/thumb-loader.cpp src/collection.cpp
+add_executable(phig-gtk src/main.cpp src/gallery-model.cpp src/gallery-selection.cpp
+               src/thumb-loader.cpp src/collection.cpp
                src/startup.cpp src/browse.cpp src/query.cpp
                src/format.cpp)
 target_compile_options(phig-gtk PRIVATE ${PHIG_GTK_WARNINGS})
@@ -37,6 +38,9 @@ endfunction()
 # it needs no collection and no phig-core.
 phig_gtk_test(gallery-model tests/test-gallery-model.cpp src/gallery-model.cpp
               tests/fake-collection.cpp)
+
+phig_gtk_test(gallery-selection tests/test-gallery-selection.cpp src/gallery-selection.cpp
+              src/gallery-model.cpp tests/fake-collection.cpp)
 
 phig_gtk_test(thumb-loader tests/test-thumb-loader.cpp src/thumb-loader.cpp
               tests/fake-collection.cpp)

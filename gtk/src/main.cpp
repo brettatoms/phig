@@ -705,6 +705,10 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
                                                  app->relayout_id = 0;
                                              }
                                              app->selection = nullptr;
+                                             app->selection_bar = nullptr;
+                                             app->selection_label = nullptr;
+                                             app->selection_tag = nullptr;
+                                             app->selection_gallery = nullptr;
                                          });
     gtk_window_set_title(GTK_WINDOW(app->window), "phig");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 1200, 800);

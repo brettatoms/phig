@@ -65,8 +65,9 @@ std::vector<int64_t> phig_gallery_model_ids_in(PhigGalleryModel* self, GtkBitset
 
 /* Test-only helpers. Production code goes through GListModel's get_item,
  * which schedules an async fetch; these exist so tests can force a page to
- * become resident, and inspect the resident-page budget, without a
- * GMainLoop. */
+ * become resident, and inspect the resident-page budget and the fetches
+ * scheduled, without a GMainLoop. */
 void phig_gallery_model_fetch_page_sync(PhigGalleryModel* self, guint page_index);
 guint phig_gallery_model_resident_page_count(PhigGalleryModel* self);
+guint phig_gallery_model_pending_page_count(PhigGalleryModel* self);
 guint phig_gallery_model_get_max_resident_pages(PhigGalleryModel* self);

@@ -417,6 +417,10 @@ guint phig_gallery_model_resident_page_count(PhigGalleryModel* self) {
     return static_cast<guint>(self->impl.pages.size());
 }
 
+guint phig_gallery_model_pending_page_count(PhigGalleryModel* self) {
+    return static_cast<guint>(self->impl.pending.size());
+}
+
 guint phig_gallery_model_get_max_resident_pages(PhigGalleryModel* self) {
     (void)self;
     return PHIG_MAX_RESIDENT_PAGES;
