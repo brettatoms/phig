@@ -1,7 +1,8 @@
 ---
 name: Upgrade a Catalog With Orphan Rows
-status: planned
+status: completed
 created: 2026-11-13
+completed: 2026-11-13
 closes_rules: [R29]
 description: >
   A catalog whose rows already break a foreign key cannot be upgraded: each
@@ -137,6 +138,33 @@ pages, and `VACUUM INTO` writes none. How a real catalog's backup compares with
 its own size was not measured. One `PRAGMA foreign_key_check` over the upgraded
 catalog took 10-11 ms; each of the three steps runs two, so the
 before-and-after comparison costs about 60 ms of the upgrade.
+
+## Outcome
+
+Built as decided, 2026-11-13, in `core/` on master and in the GTK client on the
+`071-gtk-m1` branch.
+
+- A migration step compares the foreign key violations before and after it
+  and fails only on new ones, so existing orphans are carried through
+  unchanged. A step that rebuilds a table without an INTEGER PRIMARY KEY must
+  keep its rowids, or its existing orphans would read as new; R88 says so.
+- Before the first pending step, `VACUUM INTO` writes a copy beside the
+  database and flushes it; its directory is flushed best effort. A copy is
+  kept only when a step committed, so a failed attempt and a process that loses
+  a concurrent upgrade leave none. The CLI prints the copy's path; the GTK
+  client shows "Upgrading Your Collection" while it runs and a toast naming
+  the copy that stays until dismissed.
+- Two races in the same code were fixed with the user's agreement. The
+  pre-migration and fresh-schema paths now re-read the version inside their
+  transactions, so a connection that read version 0 no longer stamps a
+  current schema v1 (R29, recorded partial and then fixed). And an open that
+  another build upgrades past this one during the open is refused as newer
+  (R70).
+- New rule R88; R29, R70 and R84 updated.
+
+Known gap: when a step after the first commits and a later one fails, the copy
+is kept and logged, but the GTK client's error page does not name it, because
+the open's error carries no path.
 
 ## Relationship to other plans
 
