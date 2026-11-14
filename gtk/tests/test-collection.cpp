@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -419,6 +420,101 @@ void test_an_image_names_a_missing_file_and_an_unknown_id() {
     g_assert_false(phig::gtk::image(*coll, 999999, 512).has_value());
 }
 
+// Runs an index of directory into catalog_dir to the end.
+phig::gtk::IndexSummary index_to_end(const std::string& catalog_dir, const fs::path& directory) {
+    auto run = phig::gtk::index_start(catalog_dir, {directory.string(), true, false});
+    if (!run) g_error("index_start failed: %s", run.error().c_str());
+    const gint64 deadline = g_get_monotonic_time() + 30 * G_USEC_PER_SEC;
+    while (!phig::gtk::index_result(**run) && g_get_monotonic_time() < deadline) {
+        phig::gtk::index_poll(**run);
+        g_usleep(10000);
+    }
+    auto result = phig::gtk::index_result(**run);
+    if (!result) g_error("index did not finish within 30s");
+    if (!*result) g_error("index failed: %s", result->error().c_str());
+    return **result;
+}
+
+// A directory holding copies of two sample photos.
+fs::path photos_in(const fs::path& parent) {
+    fs::path photos = parent / "photos";
+    fs::create_directories(photos);
+    fs::copy_file(PHIG_SOURCE_DIR "/tests/data/exif_sample.jpg", photos / "one.jpg");
+    fs::copy_file(PHIG_SOURCE_DIR "/tests/data/orient_6.jpg", photos / "two.jpg");
+    return photos;
+}
+
+void test_an_index_adds_new_files() {
+    Fixture f;
+    const fs::path photos = photos_in(f.dir);
+    const phig::gtk::IndexSummary summary = index_to_end(f.dir.string(), photos);
+    g_assert_true(summary.completed);
+    g_assert_cmpuint(summary.total_files, ==, 2);
+    g_assert_cmpuint(summary.processed, ==, 2);
+    g_assert_cmpuint(summary.errors, ==, 0);
+
+    phig::gtk::CollectionPtr coll = f.open();
+    g_assert_cmpuint(ids_for(*coll, {}).size(), ==, 5);
+    g_assert_cmpuint(ids_where(*coll, [](phig::gtk::Query& q) { q.search = "/photos/"; }).size(),
+                     ==, 2);
+}
+
+void test_an_index_deletes_no_row_for_a_file_that_went_missing() {
+    Fixture f;
+    const fs::path photos = photos_in(f.dir);
+    index_to_end(f.dir.string(), photos);
+    fs::remove(photos / "two.jpg");
+
+    const phig::gtk::IndexSummary again = index_to_end(f.dir.string(), photos);
+    g_assert_cmpuint(again.total_files, ==, 1);
+
+    phig::gtk::CollectionPtr coll = f.open();
+    // The fixture's three rows, whose files never existed, and both photos.
+    g_assert_cmpuint(ids_for(*coll, {}).size(), ==, 5);
+    g_assert_cmpuint(
+        ids_where(*coll, [](phig::gtk::Query& q) { q.search = "*/photos/two.jpg"; }).size(), ==, 1);
+}
+
+void test_an_index_creates_a_missing_catalog() {
+    Fixture f;
+    const fs::path photos = photos_in(f.dir);
+    const fs::path catalog = f.dir / "new-catalog";
+    g_assert_false(phig::gtk::open(catalog.string()).has_value());
+
+    index_to_end(catalog.string(), photos);
+
+    g_assert_true(fs::exists(catalog / "phig.db"));
+    auto coll = phig::gtk::open(catalog.string());
+    g_assert_true(coll.has_value());
+    g_assert_cmpuint(ids_for(**coll, {}).size(), ==, 2);
+}
+
+void test_an_index_reports_progress_and_a_directory_it_cannot_walk() {
+    Fixture f;
+    const fs::path photos = photos_in(f.dir);
+    auto run = phig::gtk::index_start(f.dir.string(), {photos.string(), true, false});
+    g_assert_true(run.has_value());
+    std::optional<phig::gtk::IndexProgress> last;
+    const gint64 deadline = g_get_monotonic_time() + 30 * G_USEC_PER_SEC;
+    while (!phig::gtk::index_result(**run) && g_get_monotonic_time() < deadline) {
+        if (auto p = phig::gtk::index_poll(**run)) last = p;
+        g_usleep(10000);
+    }
+    if (auto p = phig::gtk::index_poll(**run)) last = p;
+    g_assert_true(last.has_value());
+    g_assert_cmpuint(last->total, ==, 2);
+    g_assert_cmpuint(last->done, ==, 2);
+
+    auto bad = phig::gtk::index_start(f.dir.string(), {(f.dir / "absent").string(), true, false});
+    g_assert_true(bad.has_value());
+    while (!phig::gtk::index_result(**bad)) g_usleep(10000);
+    g_assert_false(phig::gtk::index_result(**bad)->has_value());
+
+    g_assert_false(phig::gtk::index_start(f.dir.string(), {"", true, false}).has_value());
+    // An empty catalog directory would resolve to a path at the filesystem root.
+    g_assert_false(phig::gtk::index_start("", {photos.string(), true, false}).has_value());
+}
+
 void test_a_thumbnail_is_generated_on_demand() {
     Fixture f;
     phig::gtk::CollectionPtr coll = f.open();
@@ -526,6 +622,13 @@ int main(int argc, char** argv) {
                     test_an_image_decodes_upright_within_its_max_edge);
     g_test_add_func("/collection/an-image-names-a-missing-file-and-an-unknown-id",
                     test_an_image_names_a_missing_file_and_an_unknown_id);
+    g_test_add_func("/collection/an-index-adds-new-files", test_an_index_adds_new_files);
+    g_test_add_func("/collection/an-index-deletes-no-row-for-a-file-that-went-missing",
+                    test_an_index_deletes_no_row_for_a_file_that_went_missing);
+    g_test_add_func("/collection/an-index-creates-a-missing-catalog",
+                    test_an_index_creates_a_missing_catalog);
+    g_test_add_func("/collection/an-index-reports-progress-and-a-directory-it-cannot-walk",
+                    test_an_index_reports_progress_and_a_directory_it_cannot_walk);
     g_test_add_func("/collection/a-thumbnail-is-generated-on-demand",
                     test_a_thumbnail_is_generated_on_demand);
     g_test_add_func("/collection/generation-names-a-missing-source-and-an-unknown-id",

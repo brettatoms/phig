@@ -50,4 +50,16 @@ void hold_open(bool hold);
 // The catalog_dir that open last read.
 std::string last_opened();
 
+// An index reports one more of kIndexFiles files done on each index_poll, and
+// finishes once all are. A cancelled one finishes at once with completed
+// false. One whose directory is kIndexFailDirectory finishes on its first poll
+// with kIndexError.
+inline constexpr size_t kIndexFiles = 3;
+inline constexpr const char* kIndexFailDirectory = "/fake/unreadable";
+inline constexpr const char* kIndexError = "fake: the scan failed";
+
+// The catalog and options index_start was last called with.
+std::string last_index_catalog();
+IndexOptions last_index_options();
+
 }  // namespace phig::gtk::fake

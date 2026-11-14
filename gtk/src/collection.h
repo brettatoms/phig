@@ -2,9 +2,11 @@
 
 #include <gdk/gdk.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -154,6 +156,52 @@ WriteResult gallery_set(Collection& coll, const std::vector<int64_t>& ids,
                         const std::string& gallery) noexcept;
 WriteResult gallery_clear(Collection& coll, const std::vector<int64_t>& ids) noexcept;
 WriteResult favorite_set(Collection& coll, const std::vector<int64_t>& ids, bool favorite) noexcept;
+
+struct IndexOptions {
+    std::string directory;
+    bool recursive = true;
+    bool include_hidden = false;
+};
+
+struct IndexProgress {
+    size_t done = 0;
+    size_t total = 0;  // 0 until the walk has counted the files
+    size_t processed = 0;
+    size_t skipped = 0;
+    size_t errors = 0;
+    std::string path;  // the file just finished; empty for the walk's own update
+};
+
+struct IndexSummary {
+    size_t total_files = 0;
+    size_t processed = 0;
+    size_t skipped = 0;
+    size_t errors = 0;
+    bool completed = true;  // false when cancelled
+};
+
+// An index of one directory into a catalog, running on a thread the handle
+// owns. It adds new files and updates changed ones and never deletes a row: it
+// is scan's walk without its reconcile. It takes no writer lock, opens the
+// catalog on its own connection, and creates the catalog if it is missing.
+struct IndexRun;
+struct IndexRunClose {
+    void operator()(IndexRun* run) const noexcept;  // cancels, then waits for the thread
+};
+using IndexRunPtr = std::unique_ptr<IndexRun, IndexRunClose>;
+
+std::expected<IndexRunPtr, std::string> index_start(const std::string& catalog_dir,
+                                                    IndexOptions options) noexcept;
+
+// The newest progress since the last call, or nothing if there is none.
+std::optional<IndexProgress> index_poll(IndexRun& run) noexcept;
+
+// Asks the run to stop once the files in progress finish. index_result then
+// reports completed false.
+void index_cancel(IndexRun& run) noexcept;
+
+// Nothing while the run is going; then its summary, or why it failed.
+std::optional<std::expected<IndexSummary, std::string>> index_result(IndexRun& run) noexcept;
 
 enum class ThumbLookup {
     Present,  // the file at path exists

@@ -46,6 +46,14 @@ void CollectionClose::operator()(Collection* coll) const noexcept {
     delete coll;
 }
 
+struct IndexRun {
+    IndexOptions options;
+    size_t done = 0;
+    bool cancelled = false;
+};
+
+void IndexRunClose::operator()(IndexRun* run) const noexcept { delete run; }
+
 namespace {
 
 constexpr int kThumbEdge = 64;
@@ -97,6 +105,10 @@ WriteResult fake_write(Collection& coll, const std::vector<int64_t>& ids, const 
         if (known(coll, id)) change(coll.meta[static_cast<size_t>(id - 1)]);
     return {};
 }
+
+std::mutex index_mutex;
+std::string index_last_catalog;   // guarded by index_mutex
+IndexOptions index_last_options;  // guarded by index_mutex
 
 }  // namespace
 
@@ -209,6 +221,39 @@ WriteResult favorite_set(Collection& coll, const std::vector<int64_t>& ids,
     return fake_write(coll, ids, [favorite](FakeRow& m) { m.favorite = favorite; });
 }
 
+std::expected<IndexRunPtr, std::string> index_start(const std::string& catalog_dir,
+                                                    IndexOptions options) noexcept {
+    if (options.directory.empty()) return std::unexpected(std::string("fake: no directory"));
+    {
+        std::lock_guard lock(index_mutex);
+        index_last_catalog = catalog_dir;
+        index_last_options = options;
+    }
+    IndexRunPtr run(new IndexRun());
+    run->options = std::move(options);
+    return run;
+}
+
+std::optional<IndexProgress> index_poll(IndexRun& run) noexcept {
+    if (run.cancelled || run.done == fake::kIndexFiles ||
+        run.options.directory == fake::kIndexFailDirectory)
+        return std::nullopt;
+    run.done++;
+    return IndexProgress{run.done, fake::kIndexFiles,
+                         run.done, 0,
+                         0,        run.options.directory + "/" + std::to_string(run.done) + ".jpg"};
+}
+
+void index_cancel(IndexRun& run) noexcept { run.cancelled = true; }
+
+std::optional<std::expected<IndexSummary, std::string>> index_result(IndexRun& run) noexcept {
+    if (run.options.directory == fake::kIndexFailDirectory)
+        return std::unexpected(std::string(fake::kIndexError));
+    if (run.cancelled) return IndexSummary{fake::kIndexFiles, run.done, 0, 0, false};
+    if (run.done < fake::kIndexFiles) return std::nullopt;
+    return IndexSummary{fake::kIndexFiles, fake::kIndexFiles, 0, 0, true};
+}
+
 ThumbLocation thumb_lookup(Collection& coll, std::string_view sha256, int size) noexcept {
     if (!is_hex64(sha256) || size <= 0) return {};
     std::filesystem::path p = thumb_path(coll, sha256, size);
@@ -314,6 +359,16 @@ void hold_pages(Collection& coll, bool hold) {
 }
 
 uint32_t pages_in_progress(Collection& coll) { return coll.pages_in_progress.load(); }
+
+std::string last_index_catalog() {
+    std::lock_guard lock(index_mutex);
+    return index_last_catalog;
+}
+
+IndexOptions last_index_options() {
+    std::lock_guard lock(index_mutex);
+    return index_last_options;
+}
 
 }  // namespace fake
 

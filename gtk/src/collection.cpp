@@ -3,15 +3,18 @@
 #include <glib.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <exception>
 #include <filesystem>
 #include <mutex>
 #include <opencv2/imgproc.hpp>
 #include <optional>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
+#include "cancel.h"
 #include "catalog.h"
 #include "config.h"
 #include "database.h"
@@ -20,6 +23,8 @@
 #include "hasher.h"
 #include "lockfile.h"
 #include "paths.h"
+#include "progress_queue.h"
+#include "scan_engine.h"
 #include "thumbs.h"
 #include "thumbs_engine.h"
 #include "types.h"
@@ -34,6 +39,21 @@ struct Collection {
 };
 
 void CollectionClose::operator()(Collection* coll) const noexcept { delete coll; }
+
+struct IndexRun {
+    CancelToken cancel;
+    ProgressQueue<ScanProgress> progress;
+    std::thread worker;
+    // Written by the worker before it sets finished, read only after finished.
+    std::optional<std::expected<IndexSummary, std::string>> result;
+    std::atomic<bool> finished{false};
+};
+
+void IndexRunClose::operator()(IndexRun* run) const noexcept {
+    run->cancel.cancel();
+    if (run->worker.joinable()) run->worker.join();
+    delete run;
+}
 
 namespace {
 
@@ -150,6 +170,27 @@ WriteResult write(Collection& coll, const std::vector<int64_t>& ids, const Body&
         return std::unexpected(WriteError{true, e.what()});
     } catch (...) {
         return std::unexpected(WriteError{false, caught("Could not change the catalog.")});
+    }
+}
+
+std::expected<IndexSummary, std::string> run_index(IndexRun& run, const std::string& catalog_dir,
+                                                   const IndexOptions& options) noexcept {
+    try {
+        const CatalogPaths paths = catalog_paths(catalog_dir);
+        std::unique_ptr<Database> db = open_catalog_db(paths.db, CatalogAccess::Create);
+        ScanOptions sopts;
+        sopts.directory = options.directory;
+        sopts.recursive = options.recursive;
+        sopts.include_hidden = options.include_hidden;
+        sopts.db_path = paths.db;
+        // force, faces and thumbs stay off: this is scan's walk and nothing else.
+        ScanEngine engine(sopts, *db);
+        // run_workers, never run_reconcile: reconcile deletes rows for files it
+        // cannot find, and this client offers no operation that deletes.
+        const ScanResult r = engine.run_workers(run.cancel, &run.progress);
+        return IndexSummary{r.total_files, r.processed, r.skipped, r.errors, r.completed};
+    } catch (...) {
+        return std::unexpected(caught("The scan failed."));
     }
 }
 
@@ -317,6 +358,48 @@ WriteResult gallery_clear(Collection& coll, const std::vector<int64_t>& ids) noe
 WriteResult favorite_set(Collection& coll, const std::vector<int64_t>& ids,
                          bool favorite) noexcept {
     return write(coll, ids, [&](Database& db) { db.set_tag_by_ids(ids, kFavoriteTag, favorite); });
+}
+
+std::expected<IndexRunPtr, std::string> index_start(const std::string& catalog_dir,
+                                                    IndexOptions options) noexcept {
+    try {
+        if (catalog_dir.empty())
+            return std::unexpected(std::string("There is no catalog to scan into."));
+        if (options.directory.empty())
+            return std::unexpected(std::string("Choose a folder to scan."));
+        IndexRunPtr run(new IndexRun());
+        IndexRun* raw = run.get();
+        raw->worker = std::thread([raw, catalog_dir, options = std::move(options)]() noexcept {
+            raw->result.emplace(run_index(*raw, catalog_dir, options));
+            raw->progress.close();
+            raw->finished.store(true, std::memory_order_release);
+        });
+        return run;
+    } catch (...) {
+        return std::unexpected(caught("Could not start the scan."));
+    }
+}
+
+std::optional<IndexProgress> index_poll(IndexRun& run) noexcept {
+    try {
+        std::optional<IndexProgress> latest;
+        ScanProgress p;
+        while (run.progress.try_pop(p)) {
+            if (p.stage == ScanStage::LoadingFaceModels) continue;
+            latest =
+                IndexProgress{p.done, p.total, p.processed, p.skipped, p.errors, std::move(p.path)};
+        }
+        return latest;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+void index_cancel(IndexRun& run) noexcept { run.cancel.cancel(); }
+
+std::optional<std::expected<IndexSummary, std::string>> index_result(IndexRun& run) noexcept {
+    if (!run.finished.load(std::memory_order_acquire)) return std::nullopt;
+    return run.result;
 }
 
 ThumbLocation thumb_lookup(Collection& coll, std::string_view sha256, int size) noexcept {
