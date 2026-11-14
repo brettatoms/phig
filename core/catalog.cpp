@@ -62,12 +62,13 @@ std::unique_ptr<Database> open_catalog_db(const std::string& db_path, CatalogAcc
     const int have = db->schema_version();
     const int want = Database::expected_schema_version();
     const std::string dir = catalog_dir_of(db_path);
-    if (have > want) {
-        throw CatalogError(CatalogError::Kind::Newer,
-                           "the catalog at " + dir + " is at schema version " +
-                               std::to_string(have) + ", newer than this build's " +
-                               std::to_string(want) + "; use a newer phig");
-    }
+    const auto newer = [&](int version) {
+        return CatalogError(CatalogError::Kind::Newer,
+                            "the catalog at " + dir + " is at schema version " +
+                                std::to_string(version) + ", newer than this build's " +
+                                std::to_string(want) + "; use a newer phig");
+    };
+    if (have > want) throw newer(have);
     if (access == CatalogAccess::Read) {
         if (have != want) {
             throw CatalogError(CatalogError::Kind::Outdated,
@@ -79,7 +80,12 @@ std::unique_ptr<Database> open_catalog_db(const std::string& db_path, CatalogAcc
         }
         return db;
     }
-    db->init_schema();
+    // Another build can upgrade past this one after the read above.
+    try {
+        db->init_schema();
+    } catch (const SchemaNewerError& e) {
+        throw newer(e.version());
+    }
     return db;
 }
 

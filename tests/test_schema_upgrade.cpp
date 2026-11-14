@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -547,6 +548,114 @@ TEST_F(SchemaUpgradeTest, APreMigrationRepairAnotherConnectionOvertookIsSkipped)
         << "a current schema was stamped back to an older version";
     EXPECT_TRUE(waiting.upgrade_backup_path().empty());
     EXPECT_TRUE(backups_in(dir).empty()) << "the connection that changed nothing kept a copy";
+}
+
+// open_catalog_db refuses a newer catalog before init_schema runs, but another
+// build can upgrade past this one after that read, here while this connection
+// waits for the write lock to apply its one pending step. The step then finds
+// a later version and skips, and without a check where every path ends this
+// build would go on writing to a schema it does not know.
+TEST_F(SchemaUpgradeTest, AnUpgradeOvertakenByANewerBuildIsRefused) {
+    {
+        Database db(db_path);
+        db.init_schema();
+        exec_or_fail(db.db_ptr(), R"(
+            ALTER TABLE faces DROP COLUMN frame_source;
+            ALTER TABLE faces DROP COLUMN frame_width;
+            ALTER TABLE faces DROP COLUMN frame_height;
+            ALTER TABLE faces DROP COLUMN frame_sha256;
+            ALTER TABLE faces DROP COLUMN model_sha256;
+            UPDATE meta SET value = '9' WHERE key = 'schema_version';
+        )");
+    }
+    ASSERT_EQ(Database::expected_schema_version(), 10)
+        << "the other connection below applies the v10 step by hand";
+    const int newer = Database::expected_schema_version() + 1;
+
+    Database other(db_path);
+    other.begin_transaction();
+
+    std::optional<CatalogError::Kind> kind;
+    std::string error;
+    std::thread upgrade([&] {
+        try {
+            open_catalog_db(db_path, CatalogAccess::Write);
+        } catch (const CatalogError& e) {
+            kind = e.kind();
+            error = e.what();
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+    });
+    bool copied = false;
+    for (int i = 0; i < 500 && !copied; i++) {
+        for (const auto& b : backups_in(dir)) {
+            if (fs::file_size(b) > 0) copied = true;
+        }
+        if (!copied) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const std::string sql = R"(
+        ALTER TABLE faces ADD COLUMN frame_source TEXT;
+        ALTER TABLE faces ADD COLUMN frame_width INTEGER;
+        ALTER TABLE faces ADD COLUMN frame_height INTEGER;
+        ALTER TABLE faces ADD COLUMN frame_sha256 TEXT;
+        ALTER TABLE faces ADD COLUMN model_sha256 TEXT;
+        UPDATE meta SET value = ')" +
+                            std::to_string(newer) + "' WHERE key = 'schema_version';";
+    exec_or_fail(other.db_ptr(), sql.c_str());
+    other.commit_transaction();
+    upgrade.join();
+
+    ASSERT_TRUE(copied) << "the upgrading connection never wrote its copy";
+    ASSERT_TRUE(kind.has_value()) << "the open succeeded against a newer schema: " << error;
+    EXPECT_EQ(*kind, CatalogError::Kind::Newer) << error;
+    EXPECT_NE(error.find("newer"), std::string::npos) << error;
+    Database after(db_path, /*read_only=*/true);
+    EXPECT_EQ(after.schema_version(), newer);
+    EXPECT_TRUE(backups_in(dir).empty()) << "a connection that applied no step kept a copy";
+}
+
+// The fresh-schema path re-reads the version inside its transaction too. Its
+// statements are idempotent, but its version stamp is INSERT OR REPLACE, so
+// without the re-read it would stamp a newer build's schema back down to this
+// one's. The connection reads an empty database, then waits for the write lock
+// while another stamps a newer version.
+TEST_F(SchemaUpgradeTest, AFreshSchemaOvertakenByANewerBuildIsRefusedAndNotRestamped) {
+    const int newer = Database::expected_schema_version() + 1;
+    Database other(db_path);  // creates the empty file
+    other.begin_transaction();
+
+    constexpr auto kHold = std::chrono::milliseconds(300);
+    std::optional<CatalogError::Kind> kind;
+    std::string error;
+    std::chrono::steady_clock::duration took{};
+    std::thread create([&] {
+        const auto t0 = std::chrono::steady_clock::now();
+        try {
+            open_catalog_db(db_path, CatalogAccess::Create);
+        } catch (const CatalogError& e) {
+            kind = e.kind();
+            error = e.what();
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        took = std::chrono::steady_clock::now() - t0;
+    });
+    std::this_thread::sleep_for(kHold);
+    const std::string sql =
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        "INSERT INTO meta VALUES ('schema_version', '" +
+        std::to_string(newer) + "');";
+    exec_or_fail(other.db_ptr(), sql.c_str());
+    other.commit_transaction();
+    create.join();
+
+    EXPECT_GE(took, kHold / 2) << "the open never waited for the write lock, so it read the "
+                                  "newer version up front and the interleave did not happen";
+    ASSERT_TRUE(kind.has_value()) << "the open succeeded against a newer schema: " << error;
+    EXPECT_EQ(*kind, CatalogError::Kind::Newer) << error;
+    Database after(db_path, /*read_only=*/true);
+    EXPECT_EQ(after.schema_version(), newer) << "the newer version was stamped back down";
 }
 
 // A database from before the meta table is copied before its schema repair,

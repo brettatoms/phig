@@ -133,10 +133,10 @@ orphans. The database was 67 MB after a WAL checkpoint. Opening it with
 
 The backup was 50 MB. It is smaller than the 67 MB database because building
 the fixture rebuilt and dropped the images and faces tables, which left free
-pages, and `VACUUM INTO` writes none. A real catalog without that churn will
-produce a backup close to its own size. One `PRAGMA foreign_key_check` over the upgraded catalog took
-10-11 ms; each of the three steps runs two, so the before-and-after comparison
-costs about 60 ms of the upgrade.
+pages, and `VACUUM INTO` writes none. How a real catalog's backup compares with
+its own size was not measured. One `PRAGMA foreign_key_check` over the upgraded
+catalog took 10-11 ms; each of the three steps runs two, so the
+before-and-after comparison costs about 60 ms of the upgrade.
 
 ## Relationship to other plans
 

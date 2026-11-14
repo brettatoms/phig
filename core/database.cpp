@@ -418,14 +418,20 @@ void Database::init_schema() {
     settle_upgrade_backup(run, /*failed=*/false);
 }
 
+namespace {
+void refuse_if_newer(int version) {
+    if (version > CURRENT_SCHEMA_VERSION) {
+        throw SchemaNewerError(version, "Database schema (v" + std::to_string(version) +
+                                            ") is newer than this version of phig (v" +
+                                            std::to_string(CURRENT_SCHEMA_VERSION) +
+                                            "). Please update phig.");
+    }
+}
+}  // namespace
+
 void Database::create_or_upgrade_schema(UpgradeRun& run) {
     int db_version = get_schema_version();
-
-    if (db_version > CURRENT_SCHEMA_VERSION) {
-        throw std::runtime_error("Database schema (v" + std::to_string(db_version) +
-                                 ") is newer than this version of phig (v" +
-                                 std::to_string(CURRENT_SCHEMA_VERSION) + "). Please update phig.");
-    }
+    refuse_if_newer(db_version);
 
     if (db_version == 0) {
         // Check if this is a pre-migration DB (has images table but no meta table)
@@ -518,110 +524,120 @@ void Database::create_or_upgrade_schema(UpgradeRun& run) {
             // pre-migration v1 DB (whose v2 migration would then fail).
             exec("BEGIN IMMEDIATE TRANSACTION");
             try {
-                exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+                // Re-read inside the transaction, as the other paths do. Every
+                // statement below is idempotent except the version stamp, which
+                // would replace a version another build wrote since the read
+                // above.
+                const int now = get_schema_version();
+                if (now > 0) {
+                    exec("COMMIT");
+                    db_version = now;
+                } else {
+                    exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
 
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS images (
-                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                        path        TEXT NOT NULL UNIQUE,
-                        filename    TEXT NOT NULL,
-                        extension   TEXT NOT NULL,
-                        file_size   INTEGER NOT NULL,
-                        created_at  TEXT,
-                        modified_at TEXT,
-                        sha256      TEXT NOT NULL,
-                        phash       INTEGER NOT NULL,
-                        width       INTEGER,
-                        height      INTEGER,
-                        metadata    TEXT,
-                        media_type  TEXT NOT NULL DEFAULT 'image',
-                        duration_ms INTEGER,
-                        gallery     TEXT,
-                        blur_score  REAL,
-                        effective_date TEXT
-                    )
-                )");
-                exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
-                exec("CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256)");
-                exec("CREATE INDEX IF NOT EXISTS idx_path ON images(path)");
-                exec("CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery)");
-                exec(
-                    "CREATE INDEX IF NOT EXISTS idx_effective_date "
-                    "ON images(effective_date DESC, id DESC)");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS images (
+                            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                            path        TEXT NOT NULL UNIQUE,
+                            filename    TEXT NOT NULL,
+                            extension   TEXT NOT NULL,
+                            file_size   INTEGER NOT NULL,
+                            created_at  TEXT,
+                            modified_at TEXT,
+                            sha256      TEXT NOT NULL,
+                            phash       INTEGER NOT NULL,
+                            width       INTEGER,
+                            height      INTEGER,
+                            metadata    TEXT,
+                            media_type  TEXT NOT NULL DEFAULT 'image',
+                            duration_ms INTEGER,
+                            gallery     TEXT,
+                            blur_score  REAL,
+                            effective_date TEXT
+                        )
+                    )");
+                    exec("CREATE INDEX IF NOT EXISTS idx_phash ON images(phash)");
+                    exec("CREATE INDEX IF NOT EXISTS idx_sha256 ON images(sha256)");
+                    exec("CREATE INDEX IF NOT EXISTS idx_path ON images(path)");
+                    exec("CREATE INDEX IF NOT EXISTS idx_gallery ON images(gallery)");
+                    exec(
+                        "CREATE INDEX IF NOT EXISTS idx_effective_date "
+                        "ON images(effective_date DESC, id DESC)");
 
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS tags (
-                        id   INTEGER PRIMARY KEY,
-                        name TEXT NOT NULL UNIQUE
-                    )
-                )");
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS image_tags (
-                        image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-                        tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-                        PRIMARY KEY (image_id, tag_id)
-                    )
-                )");
-                exec("INSERT OR IGNORE INTO tags(name) VALUES ('favorite')");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS tags (
+                            id   INTEGER PRIMARY KEY,
+                            name TEXT NOT NULL UNIQUE
+                        )
+                    )");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS image_tags (
+                            image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                            tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                            PRIMARY KEY (image_id, tag_id)
+                        )
+                    )");
+                    exec("INSERT OR IGNORE INTO tags(name) VALUES ('favorite')");
 
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS faces (
-                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                        image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-                        embedding   BLOB NOT NULL,
-                        x           INTEGER,
-                        y           INTEGER,
-                        width       INTEGER,
-                        height      INTEGER,
-                        person_id   INTEGER REFERENCES people(id),
-                        frame_source TEXT,
-                        frame_width  INTEGER,
-                        frame_height INTEGER,
-                        frame_sha256 TEXT,
-                        model_sha256 TEXT
-                    )
-                )");
-                exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS faces (
+                            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                            image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                            embedding   BLOB NOT NULL,
+                            x           INTEGER,
+                            y           INTEGER,
+                            width       INTEGER,
+                            height      INTEGER,
+                            person_id   INTEGER REFERENCES people(id),
+                            frame_source TEXT,
+                            frame_width  INTEGER,
+                            frame_height INTEGER,
+                            frame_sha256 TEXT,
+                            model_sha256 TEXT
+                        )
+                    )");
+                    exec("CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id)");
 
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS people (
-                        id   INTEGER PRIMARY KEY,
-                        name TEXT NOT NULL UNIQUE
-                    )
-                )");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS people (
+                            id   INTEGER PRIMARY KEY,
+                            name TEXT NOT NULL UNIQUE
+                        )
+                    )");
 
-                exec(R"(
-                    CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
-                        face_id INTEGER PRIMARY KEY,
-                        embedding float[128]
-                    )
-                )");
+                    exec(R"(
+                        CREATE VIRTUAL TABLE IF NOT EXISTS vec_faces USING vec0(
+                            face_id INTEGER PRIMARY KEY,
+                            embedding float[128]
+                        )
+                    )");
 
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS operations (
-                        id          INTEGER PRIMARY KEY,
-                        ts          TEXT NOT NULL,
-                        command     TEXT NOT NULL,
-                        argv        TEXT,
-                        status      TEXT NOT NULL,
-                        undoes_id   INTEGER REFERENCES operations(id),
-                        entry_count INTEGER NOT NULL DEFAULT 0
-                    )
-                )");
-                exec(R"(
-                    CREATE TABLE IF NOT EXISTS operation_entries (
-                        id           INTEGER PRIMARY KEY,
-                        op_id        INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
-                        kind         TEXT NOT NULL,
-                        src          TEXT,
-                        dst          TEXT,
-                        restore_json TEXT
-                    )
-                )");
-                exec("CREATE INDEX IF NOT EXISTS idx_op_entries ON operation_entries(op_id)");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS operations (
+                            id          INTEGER PRIMARY KEY,
+                            ts          TEXT NOT NULL,
+                            command     TEXT NOT NULL,
+                            argv        TEXT,
+                            status      TEXT NOT NULL,
+                            undoes_id   INTEGER REFERENCES operations(id),
+                            entry_count INTEGER NOT NULL DEFAULT 0
+                        )
+                    )");
+                    exec(R"(
+                        CREATE TABLE IF NOT EXISTS operation_entries (
+                            id           INTEGER PRIMARY KEY,
+                            op_id        INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+                            kind         TEXT NOT NULL,
+                            src          TEXT,
+                            dst          TEXT,
+                            restore_json TEXT
+                        )
+                    )");
+                    exec("CREATE INDEX IF NOT EXISTS idx_op_entries ON operation_entries(op_id)");
 
-                set_schema_version(CURRENT_SCHEMA_VERSION);
-                exec("COMMIT");
+                    set_schema_version(CURRENT_SCHEMA_VERSION);
+                    exec("COMMIT");
+                }
             } catch (...) {
                 exec("ROLLBACK");
                 throw;
@@ -639,7 +655,11 @@ void Database::create_or_upgrade_schema(UpgradeRun& run) {
             if (apply_migration_step(v, migrations()[v])) run.committed++;
         }
     }
-    // else: db_version == CURRENT_SCHEMA_VERSION, nothing to do
+
+    // Every path re-reads the version inside its transactions, so another build
+    // can have upgraded past this one since the read above. Writing on would
+    // put rows this build understands into a schema it does not.
+    refuse_if_newer(get_schema_version());
 }
 
 bool Database::apply_migration_step(int version, const std::string& sql) {

@@ -6,6 +6,7 @@
 #include <functional>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -23,6 +24,19 @@
 // this form and its SQL must stay byte-identical to this function.
 std::string compute_effective_date(const std::string& metadata_json,
                                    const std::string& modified_at);
+
+// Thrown by Database::init_schema() when the database's schema is newer than
+// this build's, including when another process upgraded it past this build
+// while init_schema() ran.
+class SchemaNewerError : public std::runtime_error {
+   public:
+    SchemaNewerError(int version, const std::string& message)
+        : std::runtime_error(message), version_(version) {}
+    int version() const { return version_; }
+
+   private:
+    int version_;
+};
 
 class Database {
    public:

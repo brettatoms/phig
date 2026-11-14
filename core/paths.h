@@ -85,8 +85,9 @@ void move_file(const std::string& source, const std::string& dest);
 // flushed.
 bool fsync_file(const std::filesystem::path& p);
 
-// Best-effort: make a file created or renamed in `dir` durable. Failure is
-// ignored, because the file's own bytes were flushed first.
+// Best-effort: flush `dir`'s entries, so a file just created or renamed in it
+// survives a crash. Errors are ignored, so a caller cannot rely on the entry
+// being durable, only on the attempt having been made.
 void fsync_dir(const std::filesystem::path& dir);
 
 // Copy source to dest atomically: copy into a temp file in dest's directory,
