@@ -91,15 +91,16 @@ static guint env_override_uint(const char* name, guint fallback) {
 }
 
 // A model's dispose waits for its in-flight page fetches, and runs when its
-// last reference drops: the app's reference goes here, and the grid's here too
-// if it is still alive, or earlier, when GTK finalized it with the last window.
-// Either way it runs before member destruction closes coll.
+// last reference drops: the viewer's and app's references go here, and the
+// grid's here too if it is still alive, or earlier, when GTK finalized it with
+// the last window. Either way it runs before member destruction closes coll.
 PhigApp::~PhigApp() {
     if (relayout_id != 0) g_source_remove(relayout_id);
     if (loader) {
         thumb_loader_shutdown(*loader);
         loader.reset();
     }
+    viewer.model.reset();
     if (grid != nullptr) {
         g_object_remove_weak_pointer(G_OBJECT(grid), reinterpret_cast<gpointer*>(&grid));
         gtk_grid_view_set_model(grid, nullptr);
@@ -263,6 +264,13 @@ void show_toast(PhigApp& app, const std::string& text) {
     AdwToast* toast = adw_toast_new(text.c_str());
     adw_toast_set_use_markup(toast, FALSE);
     adw_toast_overlay_add_toast(app.toast_overlay, toast);
+}
+
+void launch_file(PhigApp& app, const std::string& path) {
+    GFile* file = g_file_new_for_path(path.c_str());
+    GtkFileLauncher* launcher = gtk_file_launcher_new(file);
+    gtk_file_launcher_launch(launcher, GTK_WINDOW(app.window), NULL, on_launched, &app);
+    g_object_unref(file);
 }
 
 
@@ -611,36 +619,9 @@ static void on_factory_unbind(GtkListItem* item) noexcept {
     gtk_picture_set_paintable(GTK_PICTURE(picture), NULL);
 }
 
-/* Activated when a cell is clicked. Launches the image in the system viewer. */
+/* Activated by a double click or Enter on a cell. Opens the viewer there. */
 static void on_cell_activate(PhigApp* app, guint position) noexcept {
-
-    GtkSelectionModel* selection = gtk_grid_view_get_model(app->grid);
-    GListModel* list_model = nullptr;
-    g_object_get(selection, "model", &list_model, NULL);
-
-    if (list_model == NULL)
-        return;
-
-    PhigImageRow* row = PHIG_IMAGE_ROW(g_list_model_get_item(list_model, position));
-
-    if (row == NULL) {
-        g_object_unref(list_model);
-        return;
-    }
-
-    if (phig_image_row_is_placeholder(row)) {
-        g_object_unref(row);
-        g_object_unref(list_model);
-        return;
-    }
-
-    GFile* file = g_file_new_for_path(phig_image_row_get_path(row).c_str());
-    GtkFileLauncher* launcher = gtk_file_launcher_new(file);
-    gtk_file_launcher_launch(launcher, GTK_WINDOW(app->window), NULL, on_launched, app);
-    g_object_unref(file);
-
-    g_object_unref(row);
-    g_object_unref(list_model);
+    viewer_open(*app, position);
 }
 
 // Runs on the main thread when the open finishes. The window may have closed
@@ -817,6 +798,7 @@ static void on_activate(GtkApplication* gtk_app, PhigApp* app) noexcept {
     /* The gallery is the root page; the viewer is pushed over it. */
     app->nav = ADW_NAVIGATION_VIEW(adw_navigation_view_new());
     adw_navigation_view_add(app->nav, adw_navigation_page_new(GTK_WIDGET(split), "phig"));
+    viewer_build(*app);
 
     app->toast_overlay = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
     adw_toast_overlay_set_child(app->toast_overlay, GTK_WIDGET(app->nav));

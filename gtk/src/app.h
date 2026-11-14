@@ -12,6 +12,37 @@
 #include "gref.h"
 #include "thumb-loader.h"
 
+// The viewer page: one image, its metadata and the edits it offers.
+struct Viewer {
+    AdwNavigationPage* page = nullptr;
+    GtkPicture* picture = nullptr;
+    GtkButton* prev = nullptr;
+    GtkButton* next = nullptr;
+    GtkButton* favorite = nullptr;
+    GtkLabel* filename = nullptr;
+    GtkLabel* date = nullptr;
+    GtkLabel* camera = nullptr;
+    GtkLabel* exposure = nullptr;
+    GtkLabel* size = nullptr;
+    GtkLabel* sharpness = nullptr;
+    GtkFlowBox* tags = nullptr;
+    GtkEntry* tag_entry = nullptr;
+    GtkEntry* gallery_entry = nullptr;
+
+    // The model the viewer steps through. Its own reference, so a gallery
+    // reload does not move the image under it.
+    GRef<PhigGalleryModel> model;
+    guint position = 0;
+    int64_t id = 0;
+    // Bumped on every image shown. A decode, details read or thumbnail that
+    // finishes for an older one is dropped.
+    guint seq = 0;
+    bool full_shown = false;  // the decode for seq has landed; a thumbnail must not replace it
+    bool details_loaded = false;
+    phig::gtk::Details details;       // of id, once details_loaded
+    GRef<GCancellable> thumb_cancel;  // the thumbnail request for seq
+};
+
 // The filter popover's fields.
 struct FilterFields {
     GtkMenuButton* button = nullptr;
@@ -67,6 +98,7 @@ struct PhigApp {
     guint query_seq = 0;
     GRef<PhigGalleryModel> model;
     GtkSelectionModel* selection = nullptr;  // the grid's; owned by the grid
+    Viewer viewer;
 
     guint thumb_failed_count = 0;
     bool page_fetch_toast_shown = false;  // one toast per session, not one per failed page
@@ -95,6 +127,7 @@ struct PhigApp {
 
 // main.cpp
 void show_toast(PhigApp& app, const std::string& text);
+void launch_file(PhigApp& app, const std::string& path);
 void open_catalog(PhigApp& app);  // opens app.catalog_dir in the background, then startup_done
 // PHIG_MEASURE's scroll harness; reload starts it when the first model attaches.
 void phig_measure_maybe_start(PhigApp* app);
@@ -114,8 +147,14 @@ void reload(PhigApp& app);
 void update_selection_bar(PhigApp& app);
 
 // Runs a metadata write against the collection on a worker. On success the
-// sidebar's counts refresh and the gallery reloads if the write can change
-// what it shows. On failure a toast says why and that nothing changed.
+// sidebar's counts refresh, the gallery reloads if the write can change what
+// it shows, and the viewer re-reads its image. On failure a toast says why and
+// that nothing changed.
 void run_write(
     PhigApp& app,
     std::move_only_function<phig::gtk::WriteResult(phig::gtk::Collection&) noexcept> write);
+
+// viewer.cpp
+void viewer_build(PhigApp& app);
+void viewer_open(PhigApp& app, guint position);
+void viewer_refresh(PhigApp& app);  // re-reads the shown image's metadata

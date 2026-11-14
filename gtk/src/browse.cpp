@@ -352,6 +352,7 @@ void run_write(
             }
             refresh_counts(*a);
             if (phig::gtk::selects_by_annotation(a->query.filter)) reload(*a);
+            viewer_refresh(*a);
         });
 }
 
